@@ -374,6 +374,28 @@ class TimelineTests(unittest.TestCase):
         self.assertTrue(timeline.changes(1, first['epoch'], first['before'])['reset'])
         self.assertEqual(len(timeline.versions), 16)
 
+    def test_paged_changes_keep_the_history_window_when_delta_or_revision_expires(self):
+        timeline = Timeline()
+        timeline.update(view(320, 1))
+        first = timeline.page()
+        for sequence in range(2, 25):
+            timeline.update(view(620, sequence))
+        cursor = None
+        received = []
+        while True:
+            result = timeline.changes(1, first['epoch'], first['before'], paged=True, through=cursor)
+            self.assertNotIn('reset', result)
+            self.assertLessEqual(len(result['rows']), 100)
+            self.assertLessEqual(len(json.dumps(result['rows']).encode()), PAGE_BYTES)
+            received.extend(row['key'] for row in result['rows'])
+            cursor = result.get('next')
+            if not cursor:
+                break
+        self.assertEqual(received, [row['key'] for row in timeline.rows[300:]])
+        self.assertEqual(len(received), len(set(received)))
+        timeline.update(view(5, 26))
+        self.assertTrue(timeline.changes(1, first['epoch'], first['before'], paged=True)['reset'])
+
     def test_saved_call_and_result_are_one_record(self):
         state = {'turns': [{'turnId': 'turn', 'items': [
             {'type': 'function_call', 'call_id': 'call', 'name': 'test', 'arguments': '{}'},

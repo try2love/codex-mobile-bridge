@@ -166,13 +166,31 @@ class Timeline:
                 'before': self.cursor(selected[0]['key']) if selected else None,
                 'hasMore': start > 0 or self.window_more or self.meta.get('savedHistoryMore', False), 'meta': self.meta}
 
-    def changes(self, after, epoch, start):
+    def changes(self, after, epoch, start, paged=False, through=None):
         first = self.position(start) if start else None
-        if epoch != self.epoch or after not in self.versions or (start and first is None):
+        if epoch != self.epoch or (not paged and after not in self.versions) or (start and first is None):
             return {**self.page(), 'reset': True}
-        previous, current = self.versions[after], self.versions[self.sequence]
+        previous, current = self.versions.get(after, {}), self.versions[self.sequence]
         rows = [row for row in self.rows[first or 0:]
                 if previous.get(row['key']) != current[row['key']]]
+        if paged:
+            # Revision expiry requires a bounded resync, not replacement of the
+            # reader's loaded history. A true source replacement changes epoch.
+            position = self.position(through) if through else None
+            if through and position is None:
+                return {**self.page(), 'reset': True}
+            if position is not None:
+                rows = [row for row in rows if self.positions[row['key']] > position]
+            selected, size = [], 0
+            for row in rows:
+                cost = len(encoded(row))
+                if selected and (len(selected) >= 100 or size + cost > PAGE_BYTES):
+                    break
+                selected.append(row)
+                size += cost
+            return {'epoch': self.epoch, 'sequence': self.sequence, 'rows': selected,
+                    'next': self.cursor(selected[-1]['key']) if len(selected) < len(rows) else None,
+                    'meta': self.meta}
         if len(rows) > 100 or sum(len(encoded(row)) for row in rows) > PAGE_BYTES:
             return {**self.page(), 'reset': True}
         return {'epoch': self.epoch, 'sequence': self.sequence, 'rows': rows, 'meta': self.meta}

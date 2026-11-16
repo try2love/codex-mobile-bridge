@@ -329,17 +329,25 @@ class ChatTimeline {
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   async updates(){
+    let after=this.sequence,through='',snapshot=null;
     while(!this.abort.signal.aborted){
       if(!this.active()){await this.pause(1000);continue;}
       try{
         const generation=this.generation,windowRevision=this.windowRevision;
-        const page=await this.read('changes',{after:this.sequence,epoch:this.epoch,start:this.before||''});
+        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through});
         if(this.abort.signal.aborted)return;
-        if(generation!==this.generation||windowRevision!==this.windowRevision)continue;
+        if(generation!==this.generation||windowRevision!==this.windowRevision){after=-1;through='';snapshot=null;continue;}
         // History may have expanded the window while this poll was in flight.
         // Polls never replace the oldest loaded cursor.
         this.apply(page,!!page.reset);
-        await this.pause(200);
+        if(page.reset){after=this.sequence;through='';snapshot=null;}
+        else{
+          snapshot=snapshot===null?page.sequence:Math.min(snapshot,page.sequence);
+          through=page.next||'';
+          // Revisit edits made during a multi-page resync on the next poll.
+          if(!through){after=snapshot;snapshot=null;}
+        }
+        await this.pause(through?0:200);
       }catch(e){if(this.abort.signal.aborted)return;this.status(timelineText('重新连接中'));await this.pause(3000);}
     }
   }

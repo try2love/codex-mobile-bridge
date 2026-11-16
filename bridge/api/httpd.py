@@ -1396,7 +1396,8 @@ class Handler(BaseHTTPRequestHandler):
                                                                offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0]))
                 if action == 'changes':
                     return self.changes(bridge, thread_id, int(query.get('after', ['-1'])[0]),
-                                        query.get('epoch', [''])[0], query.get('start', [''])[0])
+                                        query.get('epoch', [''])[0], query.get('start', [''])[0],
+                                        query.get('paged', [''])[0] == '1', query.get('through', [None])[0])
                 if action is None:
                     return self.output(200, bridge.view(thread_id, background=True))
                 if action == "catalog":
@@ -1627,7 +1628,7 @@ class Handler(BaseHTTPRequestHandler):
                 session.viewers -= 1
                 session.touched = time.monotonic()
 
-    def changes(self, bridge, thread_id, after, epoch, start):
+    def changes(self, bridge, thread_id, after, epoch, start, paged=False, through=None):
         session = bridge.session(thread_id, background=True)
         with session.condition:
             session.viewers += 1
@@ -1635,7 +1636,8 @@ class Handler(BaseHTTPRequestHandler):
             with session.condition:
                 session.condition.wait_for(lambda: session.sequence != after or epoch != session.timeline.epoch or bridge.closed.is_set(), timeout=12)
             if self.authorized():
-                self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start))
+                self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start,
+                                                            **({'paged': True, 'through': through} if paged else {})))
         finally:
             with session.condition:
                 session.viewers -= 1
