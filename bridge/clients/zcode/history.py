@@ -176,6 +176,7 @@ def saved_detail(home, sid, body=None):
             args.extend(pos)
         rows = db.execute("""
             SELECT m.id, m.time_created, json_extract(m.data, '$.role') AS role,
+                   json_extract(m.data, '$.anchor.turnId') AS turn_id,
                    CASE WHEN json_type(m.data, '$.metadata.conversationInputIntent.attachments')='array'
                         THEN json_extract(m.data, '$.metadata.conversationInputIntent.attachments')
                         WHEN json_type(m.data, '$.metadata.inputIntent.attachmentRefs')='array'
@@ -194,6 +195,8 @@ def saved_detail(home, sid, body=None):
         messages = []
         for row in reversed(rows[:limit]):
             message = {'id': row['id'], 'role': row['role'], 'text': '', 'timestamp': row['time_created']}
+            if isinstance(row['turn_id'], str) and row['turn_id']:
+                message['turnId'] = row['turn_id']
             if row['role'] == 'user' and row['files']:
                 message['attachments'] = attachments(sid, json.loads(row['files']), row['command'])
             messages.append(message)

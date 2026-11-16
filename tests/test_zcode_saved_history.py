@@ -96,6 +96,15 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
             with self.subTest(sid=sid), self.assertRaises(ValueError):
                 ZCodeDesktop.record_path(adapter, sid)
 
+    def test_saved_messages_preserve_native_turn_identity(self):
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("UPDATE message SET data=json_set(data,'$.anchor.turnId','turn-shared') WHERE id IN ('0','2')")
+            db.commit()
+        rows = saved_detail(self.home, 'sess_ok')['messages']
+        for row in rows:
+            if row['id'] in ('0', '2'):
+                self.assertEqual(row.get('turnId'), 'turn-shared')
+
     def test_historical_reply_uses_its_own_completed_model_call(self):
         from bridge.clients.zcode.reply_metadata import native_reply_models
         with closing(sqlite3.connect(self.transcript)) as db:
