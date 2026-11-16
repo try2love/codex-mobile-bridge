@@ -274,7 +274,8 @@ class HookIPCServer:
         try:
             signaled = pending.event.wait(timeout=APPROVAL_TIMEOUT)
             with self._lock:
-                self._heartbeats[cid] = time.monotonic()
+                if cid not in self._stop_requests:
+                    self._heartbeats[cid] = time.monotonic()
             if not signaled or pending.decision not in ('allow', 'deny'):
                 return {'decision': 'ask'}
             if pending.decision == 'allow':
@@ -509,6 +510,7 @@ class HookIPCServer:
     def request_stop(self, conversation_id):
         with self._lock:
             self._stop_requests.add(conversation_id)
+            self._heartbeats.pop(conversation_id, None)
             for item in list(self._pending.values()):
                 if item.conversation_id == conversation_id:
                     item.decision = 'deny'

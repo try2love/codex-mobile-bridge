@@ -1982,3 +1982,32 @@ test('split button works directly from chat tab, restores last tool tab, and ope
  assert.equal(wb.splitButton.hidden,true);
  assert.equal(wb.splitButton.disabled,true);
 });
+
+test('stop stays interactive while another write is in flight',async()=>{
+ const ui=fixture();let resolveSend;
+ ui.setHandler((url)=>{
+  if(url.includes('/send'))return new Promise(resolve=>resolveSend=resolve);
+  if(url.includes('/stop'))return Promise.resolve({status:'accepted'});
+  if(url.includes('/detail'))return Promise.resolve({
+   session:{id:'a',title:'Active Chat',status:'active',model:'',requests:[]},
+   capabilities:{send:true,stop:true,models:true,effort:false,manualModels:true,manualEffort:false},
+   messages:[],
+  });
+  return Promise.resolve({sessions:[{id:'a',title:'Active Chat'}]});
+ });
+ await ui.view.choose('antigravity');
+ await ui.view.open('a');
+ await new Promise(setImmediate);
+ ui.view.input.value='in flight task';
+ const sending=ui.view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.view.busy,true);
+ assert.equal(ui.view.send.disabled,true);
+ assert.equal(ui.view.stop.disabled,false);
+ await ui.view.stop.click();
+ assert.ok(ui.calls.some(c=>c.body&&c.url.includes('/stop')));
+ assert.equal(ui.view.busy,true);
+ resolveSend({status:'accepted'});
+ await sending;
+ assert.equal(ui.view.busy,false);
+});

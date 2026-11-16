@@ -51,11 +51,23 @@ class Antigravity:
         cid, transcript = payload.get('conversationId'), payload.get('transcriptPath')
         if not isinstance(cid, str) or not isinstance(transcript, str):
             return None
+        try:
+            transcript_path = Path(transcript).expanduser().resolve()
+        except OSError:
+            return None
         candidates = [row for row in self.store.list_sessions() if row['nativeId'] == cid]
         for row in candidates:
             expected = Path(row['surfaceRoot'])/'brain'/cid/'.system_generated/logs/transcript.jsonl'
-            if Path(transcript).expanduser().resolve() == expected.resolve():
+            if transcript_path == expected.resolve():
                 return row['id']
+        if not candidates and re.fullmatch(r'[0-9a-fA-F-]{36}', cid):
+            for surface in self.store.surfaces():
+                conv_dir = Path(surface['root'])/'brain'/cid
+                if conv_dir.is_symlink():
+                    continue
+                expected = conv_dir/'.system_generated/logs/transcript.jsonl'
+                if transcript_path == expected.resolve():
+                    return gateway_id(surface['key'], cid)
         return None
 
     def ensure_plugin(self):
