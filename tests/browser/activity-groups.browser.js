@@ -45,6 +45,7 @@ async function runActivityGroupBrowserChecks(){
       check(tools&&!tools.open&&tools.parentElement===task.lastChild,provider+' consecutive tools default to a collapsed tools group');
       check(getNode('cmd2').closest('.chat-activity-tools')===tools&&getNode('answered').closest('.chat-activity-tools')===tools,provider+' explicit processed interaction joins the adjacent tool batch');
       check(getNode('reason-mid').closest('.chat-activity-tools')===tools&&getNode('reason-mid').tagName==='DETAILS',provider+' reasoning between tools joins their batch without splitting it or losing its detail');
+      check(getNode('cmd1').dataset.icon==='command'&&tools.dataset.icon==='command'&&reasoningOnly.dataset.icon==='reasoning',provider+' shared batches and native details use their semantic activity icons');
       check(getNode('cmd1').tagName==='DETAILS'&&getNode('cmd2').tagName==='DETAILS',provider+' original per-tool details remain inside the batch');
       check(outside('user')&&outside('supplement')&&getNode('supplement').getBoundingClientRect().height>0,provider+' initial and temporary steering user tasks remain outside the batch');
       check(afterSupplement&&afterSupplement!==task&&afterSupplement.open&&outside('supplement'),provider+' same native turn continues in a separate task fragment around the visible supplement');
@@ -84,6 +85,8 @@ async function runActivityGroupBrowserChecks(){
         document.documentElement.dataset.theme=theme;document.documentElement.style.setProperty('--message-size',size+'px');await frame();
         const summary=tools.firstChild,style=getComputedStyle(summary),rect=tools.getBoundingClientRect(),parent=container.getBoundingClientRect();
         check(parseFloat(style.fontSize)===size&&rect.width<=parent.width+1&&summary.scrollWidth<=summary.clientWidth+1,provider+' '+theme+' '+size+'px tools group scales within its container');colors.push({theme,size,color:style.color});
+        const groupIcon=getComputedStyle(summary,'::before'),leafIcon=getComputedStyle(getNode('cmd1').firstElementChild,'::before');
+        check(parseFloat(groupIcon.width)===size&&parseFloat(leafIcon.width)===size&&groupIcon.maskImage===leafIcon.maskImage&&groupIcon.maskImage.includes('data:image/svg+xml'),provider+' '+theme+' '+size+'px activity icons reuse static masks at one em');
         if(provider==='claude'&&globalThis.__captureActivityGroup&&(innerWidth<500&&theme==='dark'&&size===32||innerWidth>=500&&theme==='light'&&size===16)){
           const details=[getNode('reason'),getNode('cmd1'),getNode('cmd2')],states=details.map(node=>node.open),scroll=groupBody.scrollTop;details.forEach(node=>node.open=false);groupBody.scrollTop=0;await frame();
           viewport.scrollTop+=tools.getBoundingClientRect().top-viewport.getBoundingClientRect().top-12;await frame();await globalThis.__captureActivityGroup({theme,size,width:innerWidth});

@@ -13,6 +13,19 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_tool_identity_is_short_metadata_without_repeating_body(self):
+        state = {'turns': [{'turnId': 'turn', 'items': [
+            {'id': 'computer', 'type': 'mcpToolCall', 'server': 'cua_repl', 'tool': 'js', 'arguments': {'code': 'native body'}},
+            {'id': 'long', 'type': 'dynamicToolCall', 'toolName': 'x' * 200}]}]}
+        value = normalize_state(state)
+        value['sequence'] = 1
+        timeline = Timeline()
+        timeline.update(value)
+        rows = timeline.page()['rows']
+        self.assertEqual(rows[0]['toolName'], 'cua_repl.js')
+        self.assertEqual(len(rows[1]['toolName']), 160)
+        self.assertNotIn('native body', rows[0]['toolName'])
+
     def test_recent_page_keeps_native_start_clock_when_input_is_not_loaded(self):
         value = view(30)
         value['turns'][0]['startedAt'] = 1700000000000

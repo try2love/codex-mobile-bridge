@@ -7,6 +7,17 @@ def event(seq, kind, data):
 
 
 class DeepSeekTaskPresentationTests(unittest.TestCase):
+    def test_tool_identity_is_metadata_and_unknown_results_remain_unknown(self):
+        rows = messages([event(1, 'tool/call', {'name': 'bash'}),
+                         event(2, 'tool/result', {'text': 'Read computer output'}),
+                         event(3, 'todo/write', {'toolName': 'x' * 200})])
+        self.assertEqual(rows[0]['kind'], 'tool/call')
+        self.assertEqual(rows[0]['toolName'], 'bash')
+        self.assertEqual(rows[1]['kind'], 'tool/result')
+        self.assertNotIn('toolName', rows[1])
+        self.assertEqual(rows[2]['kind'], 'todo/write')
+        self.assertEqual(len(rows[2]['toolName']), 160)
+
     def test_native_turn_contains_supplements_and_only_terminal_reply_is_final(self):
         rows = messages([
             event(1, 'turn/start', {'turn': 3}),

@@ -363,7 +363,10 @@ def messages(records):
                 else:
                     visible = True
         elif kind in ('tool/call', 'tool/result', 'todo/write'):
-            result.append({'id': str(event.get('seq')), 'role': 'activity', 'title': data.get('name') or data.get('toolName') or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2)})
+            tool = data.get('name') or data.get('toolName')
+            result.append({'id': str(event.get('seq')), 'role': 'activity', 'kind': kind,
+                           'title': tool or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2),
+                           **({'toolName': tool[:160]} if isinstance(tool, str) and tool else {})})
         # Presentation metadata follows native boundaries, including a user
         # supplement inside a turn. It does not change write/approval routing.
         for row in result[first_row:]:

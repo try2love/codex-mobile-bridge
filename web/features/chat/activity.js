@@ -98,6 +98,21 @@ function chatActivityKind(row){
   if(row.role==='reasoning'||row.kind==='reasoning')return 'reasoning';
   return row.role==='activity'?'tool':'';
 }
+function chatActivityIcon(row){
+  if(chatActivityKind(row)==='reasoning')return 'reasoning';
+  if(row.kind==='commandExecution')return 'command';
+  if(['fileChange','FileChange'].includes(row.kind)||row.kind==='code'&&['write','edit'].includes(row.changeType))return 'file';
+  if(['ImageView','imageView'].includes(row.kind))return 'read';
+  const tool=row.toolName||row.tool;
+  if(['Bash','bash'].includes(tool))return 'command';
+  if(['Write','Edit','MultiEdit'].includes(tool))return 'file';
+  if(tool==='Read')return 'read';
+  if(['Grep','Glob','WebSearch'].includes(tool))return 'search';
+  if(tool==='WebFetch')return 'browser';
+  if(['cua_repl.js','mcp__cua_repl__js'].includes(tool))return 'computer';
+  if(row.kind==='todo/write'||['TaskCreate','TaskUpdate','TodoWrite'].includes(tool))return 'task';
+  return 'tool';
+}
 function chatActivityLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(row.interaction==='response')return t('已回答问题');
@@ -175,6 +190,10 @@ function chatTaskSegments(nodes,state={}){
     const last=task.nodes.at(-1);
     for(const node of task.nodes){
       const row=node.__chatMessage;
+      if(chatActivityKind(row)){
+        node.dataset.icon=chatActivityIcon(row);
+        if(node.firstElementChild?.classList?.contains('activity'))node.firstElementChild.dataset.icon=node.dataset.icon;
+      }
       node.__chatRunning=task.active&&node===last&&!!chatActivityKind(row)&&!['completed','failed','interrupted','accepted'].includes(row.status);
       node.dataset.running=String(node.__chatRunning);byNode.set(node,task);
     }
@@ -239,7 +258,8 @@ function groupChatActivities(container,nodes){
     const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':reasoningOnly?'思考摘要':'执行了操作';
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
     group.dataset.running=String(cluster.some(node=>node.__chatRunning));
-    group.dataset.icon=files?'file':commands?'command':'tool';
+    const icons=cluster.map(node=>node.dataset.icon);
+    group.dataset.icon=files?'file':commands?'command':icons.every(icon=>icon===icons[0])?icons[0]:'tool';
     if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
     group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
   };

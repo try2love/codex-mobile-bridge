@@ -222,6 +222,9 @@ def normalize_item(item, *, image_cache=None):
         else:
             output, images = extract(source)
         row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json.dumps(item.get("arguments", {}), ensure_ascii=False, indent=2), output=json.dumps(output, ensure_ascii=False, indent=2))
+        tool = item.get('tool') or item.get('toolName')
+        if isinstance(tool, str) and tool:
+            row['toolName'] = (str(item['server']) + '.' + tool if item.get('server') else tool)[:160]
         if images:
             row['attachments'] = images
     elif kind == "error":
@@ -353,6 +356,8 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
                 message = {'id': item.get('call_id', item.get('id')), 'kind': 'storedToolEvent',
                            'role': 'activity', 'title': item.get('name') or '工具调用',
                            'text': str(item.get('arguments', item.get('input', '')))}
+                if isinstance(item.get('name'), str) and item['name']:
+                    message['toolName'] = item['name'][:160]
                 calls[message['id']] = message
             elif kind in ('function_call_output', 'custom_tool_call_output') and item.get('call_id') in calls:
                 extract = image_cache.extract if image_cache is not None else extract_tool_images
