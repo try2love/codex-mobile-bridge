@@ -62,6 +62,7 @@ class _PendingApproval:
         self.event = threading.Event()
         self.decision = None
         self.reason = None
+        self.stopped = False
         self.created_at = time.time()
 
 
@@ -214,7 +215,8 @@ class HookIPCServer:
             return {'decision': 'ask'} if event == 'pre_tool_use' else {}
         transcript_path = str(payload.get('transcriptPath') or '')
         with self._lock:
-            self._heartbeats[cid] = time.monotonic()
+            if cid not in self._stop_requests:
+                self._heartbeats[cid] = time.monotonic()
             if transcript_path:
                 self._surface_hints[cid] = transcript_path
 
@@ -229,12 +231,15 @@ class HookIPCServer:
     def _handle_pre_tool_use(self, cid, payload):
         if not cid:
             return {'decision': 'ask'}
-        mode = self.permission_mode(cid)
-        if mode == 'auto-allow':
-            return {'decision': 'allow'}
-        if mode != 'mobile-ask':
-            # Default 'desktop' mode: let desktop Antigravity handle permission prompts natively
-            return {'decision': 'ask'}
+        with self._lock:
+            if cid in self._stop_requests:
+                return {'decision': 'deny', 'reason': '手机端已停止当前操作'}
+            mode = self._permissions.get(cid, 'desktop')
+            if mode == 'auto-allow':
+                return {'decision': 'allow'}
+            if mode != 'mobile-ask':
+                # Default 'desktop' mode: let desktop Antigravity handle permission prompts natively
+                return {'decision': 'ask'}
 
         tool_call = payload.get('toolCall') if isinstance(payload.get('toolCall'), dict) else {}
         tool_name = str(tool_call.get('name') or 'tool')
@@ -267,6 +272,8 @@ class HookIPCServer:
         }
         pending = _PendingApproval(request_id, cid, tool_name, tool_args, prompt)
         with self._lock:
+            if cid in self._stop_requests:
+                return {'decision': 'deny', 'reason': '手机端已停止当前操作'}
             if self._closed:
                 return {'decision': 'ask'}
             self._pending[request_id] = pending
@@ -274,16 +281,18 @@ class HookIPCServer:
         try:
             signaled = pending.event.wait(timeout=APPROVAL_TIMEOUT)
             with self._lock:
-                if cid not in self._stop_requests:
-                    self._heartbeats[cid] = time.monotonic()
-            if not signaled or pending.decision not in ('allow', 'deny'):
-                return {'decision': 'ask'}
-            if pending.decision == 'allow':
-                return {'decision': 'allow'}
-            return {
-                'decision': 'deny',
-                'reason': pending.reason or '手机端已拒绝此操作 (Denied from mobile bridge)',
-            }
+                # An explicit next turn may clear the session marker before this waiter resumes.
+                if pending.stopped or cid in self._stop_requests:
+                    return {'decision': 'deny', 'reason': '手机端已停止当前操作'}
+                self._heartbeats[cid] = time.monotonic()
+                if not signaled or pending.decision not in ('allow', 'deny'):
+                    return {'decision': 'ask'}
+                if pending.decision == 'allow':
+                    return {'decision': 'allow'}
+                return {
+                    'decision': 'deny',
+                    'reason': pending.reason or '手机端已拒绝此操作 (Denied from mobile bridge)',
+                }
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -316,7 +325,7 @@ class HookIPCServer:
             return {}
         with self._lock:
             if cid in self._stop_requests:
-                self._stop_requests.discard(cid)
+                # Only an explicit next turn may re-enable tool execution and queued delivery.
                 self._heartbeats.pop(cid, None)
                 return {'terminationBehavior': 'terminate'}
             texts = self._pop_queued_texts(cid, modes={'steer'})
@@ -333,7 +342,9 @@ class HookIPCServer:
             return {}
         reason = str(payload.get('terminationReason') or '').lower()
         with self._lock:
-            self._stop_requests.discard(cid)
+            if cid in self._stop_requests:
+                self._heartbeats.pop(cid, None)
+                return {}
             if payload.get('fullyIdle') is not True or reason != 'model_stop':
                 self._heartbeats.pop(cid, None)
                 return {}
@@ -507,12 +518,18 @@ class HookIPCServer:
                 return removed
         return None
 
+    def begin_user_turn(self, conversation_id):
+        """Clear a stale stop only before an explicit, native-idle-verified send."""
+        with self._lock:
+            self._stop_requests.discard(conversation_id)
+
     def request_stop(self, conversation_id):
         with self._lock:
             self._stop_requests.add(conversation_id)
             self._heartbeats.pop(conversation_id, None)
             for item in list(self._pending.values()):
                 if item.conversation_id == conversation_id:
+                    item.stopped = True
                     item.decision = 'deny'
                     item.reason = '手机端已停止当前操作'
                     item.event.set()

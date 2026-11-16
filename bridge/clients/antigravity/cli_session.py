@@ -561,6 +561,10 @@ class AntigravityCli:
         self.home = Path(home or Path.home()).resolve()
         self.model_catalog = model_catalog
         self._lock = threading.RLock()
+        self._stop_lock = threading.RLock()
+        self._turn_lock = threading.Lock()
+        self._stop_generations = {}
+        self._stop_generation = 0
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
         self._waiting_cache = {}
@@ -577,8 +581,9 @@ class AntigravityCli:
     def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
-        # This serializes bridge writes; ownership remains with the native LS.
-        with self._lock:
+        # Native cancellation must reach the LS while SendUserCascadeMessage is
+        # still waiting for its response. Other writes retain their serialization.
+        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree') else self._lock:
             try:
                 target = endpoint(surface, self.home)
                 if expected_identity is not None and target['identity'] != expected_identity:
@@ -812,19 +817,15 @@ class AntigravityCli:
         # Detect ungrouped IDs first so grouped base IDs never collide with standalone rows.
         ungrouped_ids = set()
         parsed_rows = []
+        variant_ids = {}
         for row in configs:
             if not self._is_enabled_model_row(row):
                 continue
             mid = row['modelId']
-        variant_ids = {}
             raw_label = row.get('label') or mid
             base_id, base_name, effort = _split_model_variant(mid, raw_label)
             if not effort:
                 ungrouped_ids.add(mid)
-            parsed_rows.append((row, mid, raw_label, base_id, base_name, effort))
-
-        groups = {}
-        ordered_keys = []
             else:
                 variant = (mid, row['modelOrAlias']['model'])
                 previous = variant_ids.setdefault((base_id, effort), variant)
@@ -832,6 +833,10 @@ class AntigravityCli:
                     # A display label is not an identity. Keep ambiguous native
                     # variants selectable rather than overwriting one model.
                     ungrouped_ids.add(base_id)
+            parsed_rows.append((row, mid, raw_label, base_id, base_name, effort))
+
+        groups = {}
+        ordered_keys = []
         for row, mid, raw_label, base_id, base_name, effort in parsed_rows:
             alias = row['modelOrAlias']
             native_model = alias['model']
@@ -1139,7 +1144,16 @@ class AntigravityCli:
             })
         return commands
 
-    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None):
+    def turn_generation(self, conversation_id=None, *, surface='app'):
+        with self._turn_lock:
+            if conversation_id is None:
+                return self._stop_generation
+            return self._stop_generations.get((surface, conversation_id), 0)
+
+    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None,
+                          turn_generation=None, before_send=None):
+        if turn_generation is None:
+            turn_generation = self.turn_generation(conversation_id, surface=surface)
         normalized_items = list(items) if items is not None else [{'text': prompt}]
         if not normalized_items:
             raise ValueError('Antigravity 消息内容不能为空')
@@ -1147,7 +1161,14 @@ class AntigravityCli:
         selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
-        result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface)
+        with self._lock:
+            with self._turn_lock:
+                if turn_generation < self._stop_generations.get((surface, conversation_id), 0):
+                    raise BridgeUnavailable('此消息准备期间会话已停止，请明确重新发送')
+                if before_send is not None:
+                    before_send()
+            # No generation lock spans HTTP: native RPC has no atomic cancel/submit token.
+            result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface)
         self._invalidate_trajectories_cache(surface)
         return result
 
@@ -1170,7 +1191,13 @@ class AntigravityCli:
         self._invalidate_trajectories_cache(surface)
         return cid
 
-    def stop(self, conversation_id, *, surface='app'):
+    def stop(self, conversation_id, *, surface='app', before_stop=None):
+        with self._turn_lock:
+            key = (surface, conversation_id)
+            self._stop_generation += 1
+            self._stop_generations[key] = self._stop_generation
+            if before_stop is not None:
+                before_stop()
         cancel_result = None
         try:
             cancel_result = self.call_ls_rpc(

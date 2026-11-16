@@ -32,6 +32,8 @@ def _parse_slash_prefix(text):
 
 
 class Antigravity:
+    concurrent_stop = True
+
     def __init__(self, directory, home=None, model_catalog=None):
         self.directory = Path(directory).resolve()
         self.home = Path(home or Path.home()).expanduser().resolve()
@@ -195,7 +197,7 @@ class Antigravity:
                 'permissionLabel': next(option['label'] for option in PERMISSION_OPTIONS if option['value'] == permission),
                 'composerCapabilities': dict(COMPOSER_PRESENTATION),
                 'connectionState': 'ready' if live else 'detached', 'readOnly': not live,
-                'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
+                'capabilities': {'send': live, 'stop': live, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
                                  'slashCommands': live, 'compact': live, 'rename': False,
@@ -369,14 +371,20 @@ class Antigravity:
         if cmd_name in (known_names | _KNOWN_NATIVE_SYSTEM_COMMANDS):
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
 
-    def _send_prompt_or_items(self, cid, prompt, *, model, surface, effort=None, items=None):
+    def _send_prompt_or_items(self, cid, prompt, *, model, surface, effort=None, items=None,
+                              turn_generation=None, before_send=None):
         selection = {'effort': effort} if effort else {}
+        if turn_generation is not None:
+            selection['turn_generation'] = turn_generation
+        if before_send is not None:
+            selection['before_send'] = before_send
         if items is not None:
             return self.cli.send_user_message(cid, prompt, model=model, surface=surface, items=items, **selection)
         return self.cli.send_user_message(cid, prompt, model=model, surface=surface, **selection)
 
     def call(self, action, sid=None, body=None):
         body = body or {}
+        turn_generation = self.cli.turn_generation() if action in ('send', 'goal', 'compact') else None
         if action == 'status':
             return self.status()
         if action in ('list', 'lifecycle'):
@@ -442,6 +450,14 @@ class Antigravity:
         if row is None:
             raise ValueError('找不到此 Antigravity 会话')
         key, cid, surface = row['id'], row['nativeId'], row['surfaceDirKey']
+        # Stop does not need the model/catalog or activity reads held by a send.
+        if action == 'stop':
+            if self.hooks:
+                self.cli.stop(cid, surface=surface, before_stop=lambda: self.hooks.request_stop(key))
+            else:
+                self.cli.stop(cid, surface=surface)
+            return {'status': 'accepted'}
+        begin_turn = (lambda: self.hooks.begin_user_turn(key)) if self.hooks else None
         session = self._session(row, waiting_state=None if action == 'detail' else ({}, set()))
         if action == 'detail':
             if not session['readOnly'] and session.get('model') and not session.get('modelDisplayName'):
@@ -546,6 +562,7 @@ class Antigravity:
                 raise BridgeUnavailable('当前 Antigravity 原生环境暂未提供 /goal 指令')
             self._send_prompt_or_items(
                 cid, f'/goal {objective}', model=session['model'], effort=session['effort'], surface=surface,
+                turn_generation=turn_generation, before_send=begin_turn,
                 items=[{'item': {'slashCommand': {'info': dict(goal_cmd['info'])}}}, {'text': ' ' + objective}],
             )
             return {'status': 'accepted', 'delivery': 'native', 'operation': 'set'}
@@ -561,14 +578,10 @@ class Antigravity:
                 raise BridgeUnavailable('当前 Antigravity 原生环境暂未提供 /compact 指令')
             self._send_prompt_or_items(
                 cid, '/compact', model=session['model'], effort=session['effort'], surface=surface,
+                turn_generation=turn_generation, before_send=begin_turn,
                 items=[{'item': {'slashCommand': {'info': dict(compact_cmd['info'])}}}],
             )
             return {'status': 'accepted', 'delivery': 'native'}
-        if action == 'stop':
-            if self.hooks:
-                self.hooks.request_stop(key)
-            self.cli.stop(cid, surface=surface)
-            return {'status': 'accepted'}
         if action == 'queue-action':
             if not self.hooks:
                 raise ValueError('排队连接不可用')
@@ -605,7 +618,9 @@ class Antigravity:
                 prompt, plugins=plugins, default_command=default_command,
                 surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
             )
-            self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface, items=items)
+            before_send = begin_turn if self.hooks and not waiting_by_cid.get(cid) and not self.hooks.has_pending_approvals(key) else None
+            self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
+                                       items=items, turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
         raise ValueError('此 Antigravity 操作尚不支持')
 

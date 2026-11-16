@@ -13,7 +13,7 @@ import sys
 import uuid
 import weakref
 from pathlib import Path
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext, ExitStack
 from concurrent.futures import Future
 
 from bridge.clients.claude.accounts import ClaudeLoginDatabaseUnavailable
@@ -217,6 +217,7 @@ class DesktopSessions:
         self._configure_zcode()
         self._configure_antigravity()
         self.locks = {name: threading.RLock() for name in ('codex', 'zcode', 'antigravity', *self.adapters)}
+        self.interrupt_locks = {name: threading.RLock() for name in self.locks}
         self.read_lock = threading.Lock()
         self.reads = {}
         self.pending_resumes = {provider: {} for provider in self.locks}
@@ -469,10 +470,22 @@ class DesktopSessions:
         return self.receipt_dbs[path]
 
     @contextmanager
-    def _changing(self, provider, rebind=True):
+    def _changing(self, provider, rebind=True, *, interrupt=False):
         # Keep progress reads available during writes, but never join a read from
         # an earlier account/connector generation. Safety checks bypass _read.
-        with self.locks[provider]:
+        with ExitStack() as stack:
+            if not interrupt:
+                stack.enter_context(self.locks[provider])
+            gate = self.interrupt_locks[provider]
+            if rebind or interrupt:
+                stack.enter_context(gate)
+            else:
+                # A new write waits for an existing stop, but an in-flight send
+                # must not hold the gate needed to cancel that native request.
+                with gate:
+                    pass
+            if self.closed.is_set():
+                raise BridgeUnavailable('客户端连接已关闭')
             if rebind and provider == 'zcode' and self.adapters.get(provider) is not None:
                 self.adapters[provider].release_window()
             if rebind:
@@ -1442,6 +1455,8 @@ class DesktopSessions:
             if set(body) not in ({'pinned'}, {'pinned', 'clientId', 'revision'}):
                 raise ValueError('聊天置顶设置无效')
             return self.session_pins[provider].set(sid, body['pinned'], body.get('clientId'), body.get('revision'))
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
         adapter = self.adapters[provider]
         if action == 'archive':
             return self._archive(provider, sid, body)
@@ -1553,7 +1568,10 @@ class DesktopSessions:
         fingerprint = hashlib.sha256(json.dumps([provider, action, sid, creation_intent(body) if action == 'create' else body], sort_keys=True).encode()).hexdigest()
         # Normal chat writes keep progress reads available; account/lifecycle
         # operations additionally invalidate the connector binding.
-        with self._changing(provider, rebind=False):
+        interrupt = action == 'stop' and getattr(type(adapter), 'concurrent_stop', False) is True
+        with self._changing(provider, rebind=False, interrupt=interrupt):
+            if interrupt and (adapter is not self.adapters[provider] or binding != self.binding_epochs[provider]):
+                raise BridgeUnavailable('客户端接入已变化，停止尚未提交，请刷新后重试')
             if self.config.get('enabled', {}).get(provider) is False and not (provider == 'claude' and self._wsl_claude_enabled()):
                 raise ValueError('此应用已关闭，请在应用管理中开启')
             native_claude_model_write = (provider == 'claude' and action == 'settings' and
@@ -3737,6 +3755,8 @@ class DesktopSessions:
             self.terminals.close()
         for lock in self.locks.values():
             lock.acquire()
+        for lock in self.interrupt_locks.values():
+            lock.acquire()
         try:
             claude = self.adapters.get('claude')
             if claude is not None:
@@ -3751,6 +3771,8 @@ class DesktopSessions:
                     db.close()
                 self.db.close()
         finally:
+            for lock in reversed(list(self.interrupt_locks.values())):
+                lock.release()
             for lock in self.locks.values():
                 lock.release()
 
