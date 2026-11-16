@@ -9,7 +9,7 @@ test('chat readiness follows fresh content rendering and excludes pending, cache
  ui.apply(page,false,false,true);ui.apply(page,false,true);ui.abort.abort();ui.apply(page);assert.equal(ready,1);
 });
 function fixture(){
- const ctx=vm.createContext({window:{},AbortController,URLSearchParams,BridgeI18n:{t:s=>s}});vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);
+ const ctx=vm.createContext({window:{},AbortController,URLSearchParams,BridgeI18n:{t:s=>s}});vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);
  const type=vm.runInContext('ChatTimeline',ctx),pending=[],rows=new Map([['recent',{row:{key:'recent'}}]]);
  const ui=Object.assign(Object.create(type.prototype),{cached:false,busy:false,hasMore:true,abort:new AbortController(),generation:1,before:'a.recent',epoch:'a',retryCount:0,rows,
   historyStatus(){},capture(){return {key:'recent',offset:0};},following:false,active:()=>true,

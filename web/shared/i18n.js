@@ -3,6 +3,7 @@
 const BridgeI18n=(()=>{
 const en={
   "编辑了文件，运行了命令": "Edited files and ran commands",
+  "加载更早过程": "Load earlier activity",
   "已回答问题": "Answered questions",
   "已运行": "Ran",
   "已编辑": "Edited",

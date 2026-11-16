@@ -118,6 +118,7 @@ class ChatTimeline {
       const page=await this.read('timeline',{limit:20});
       if(this.abort.signal.aborted)return;
       this.apply(page,true);this.updates();
+      if(this.hasMore&&page.rows.length&&page.rows.every(row=>chatActivityKind(row)))this.loadOlder(100);
     }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
     finally{this.starting=false;}
   }
@@ -130,14 +131,24 @@ class ChatTimeline {
       // of hidden tool activity may otherwise leave scrollTop stuck at zero.
       for(let attempt=0;attempt<3;attempt++){
         const generation=this.generation,before=this.before;
-        const page=await this.read('timeline',{before,limit:count});
+        const result=await readChatHistoryBatch(cursor=>this.read('timeline',{before:cursor,limit:count}),before,{
+          known:new Set(this.rows.keys()),current:()=>!this.abort.signal.aborted&&generation===this.generation});
         if(this.abort.signal.aborted)return;
-        if(generation!==this.generation)continue;
-        if(page.reset||page.epoch!==this.epoch){this.apply(page,true);if(!this.hasMore)return;continue;}
-        if(page.hasMore&&(!page.rows.length||page.before===before)){this.retryCount=count;return;}
-        const visible=page.rows.some(row=>!this.rows.has(row.key)&&this.rowVisible(row));
-        this.apply(page,false,true);
-        if(visible||!this.hasMore||!this.active()||!this.nearTop())return;
+        if(result.cancelled)continue;
+        const reset=result.reset||result.pages.find(page=>page.epoch!==this.epoch);
+        if(reset){this.apply(reset,true);if(!this.hasMore)return;continue;}
+        if(result.pages.length){
+          const pages=result.pages,last=pages.at(-1),rows=new Map(),files=new Map();
+          for(const page of [...pages].reverse()){
+            for(const row of page.rows)rows.set(row.key,row);
+            for(const file of page.files||[])files.set(file.id,file);
+          }
+          // Commit one visual change for one history intent, even when several
+          // native pages contained only folded process records.
+          this.apply({...last,sequence:Math.min(...pages.map(page=>page.sequence)),rows:[...rows.values()],files:[...files.values()]},false,true);
+        }
+        if(result.error||result.stalled)this.retryCount=count;
+        return;
       }
     }catch(e){if(this.abort.signal.aborted)return;this.retryCount=count;}
     finally{this.busy=false;if(!this.abort.signal.aborted)this.historyStatus();}

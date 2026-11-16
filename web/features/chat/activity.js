@@ -50,9 +50,16 @@ function restoreChatActivityState(node,state){
   const details=node.tagName==='DETAILS'?node:node.querySelector('details.activity');
   if(!details)return;
   details.open=state.open;
+  if(state.open)details.__loadActivityBody?.();
   const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
   for(const [child,reading] of state.children||[])restoreChatActivityState(child,reading);
+}
+// Desktop adapters already delivered bounded native pages. Reuse that text
+// only when the reader opens the activity; do not build hidden output bodies.
+function deferChatActivityBody(details,body,text){
+  details.__loadActivityBody=()=>{if(body.textContent!==text)body.textContent=text;};
+  details.addEventListener('toggle',()=>{if(details.open)details.__loadActivityBody();});
 }
 function renderChatFileSummary(content,row,onFile){
   const translate=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source),heading=content.children[0];
@@ -91,6 +98,42 @@ function chatActivityLabel(row){
   if(['fileChange','FileChange'].includes(row.kind)&&text)return t('已编辑')+' '+text;
   return t(row.title||(row.kind==='reasoning'||row.role==='reasoning'?'思考摘要':'执行过程'));
 }
+// One history gesture seeks ordinary conversation, not a page of folded tools.
+// Native pages stay bounded; collect before rendering once, preserving a manual
+// continuation after four pages or a transport failure.
+async function readChatHistoryBatch(read,before,{known=new Set(),current=()=>true}={}){
+  const pages=[],seen=new Set();let cursor=before;
+  for(let count=0;count<4;count++){
+    let page;
+    try{page=await read(cursor);}catch(error){return current()?{pages,error}:{pages:[],cancelled:true};}
+    if(!current())return {pages:[],cancelled:true};
+    if(page.reset||pages.length&&page.epoch!==pages[0].epoch)return {pages:[],reset:page};
+    if(page.hasMore&&(!page.rows.length||page.before===cursor||seen.has(page.before)))return {pages,stalled:true};
+    pages.push(page);seen.add(page.before);
+    if(!page.hasMore||page.rows.some(row=>!known.has(row.key??row.id)&&!chatActivityKind(row)))break;
+    cursor=page.before;
+  }
+  return {pages};
+}
+function syncChatActivityPage(group){
+  const body=group.lastChild,rows=group.__rows;
+  let start=rows.findIndex(node=>node.dataset.key===group.__firstKey);
+  if(start<0||!group.open&&!group.__readPage)start=Math.max(0,rows.length-20);
+  const shown=rows.slice(start),top=body.scrollTop;
+  if(!group.__older){
+    const older=document.createElement('button');older.type='button';older.className='plain chat-activity-older';
+    older.onclick=()=>{
+      const rows=group.__rows,index=rows.findIndex(node=>node.dataset.key===group.__firstKey),anchor=rows[index],offset=anchor?.getBoundingClientRect().top;
+      group.__readPage=true;group.__firstKey=rows[Math.max(0,index-20)].dataset.key;syncChatActivityPage(group);
+      if(anchor&&offset!==undefined)body.scrollTop+=anchor.getBoundingClientRect().top-offset;
+    };
+    group.__older=older;
+  }
+  group.__older.textContent=typeof BridgeI18n==='undefined'?'加载更早过程':BridgeI18n.t('加载更早过程');
+  group.__older.hidden=start===0;
+  group.__firstKey=shown[0].dataset.key;group.dataset.key=group.__firstKey;
+  syncChatMessageNodes(body,[group.__older,...shown],false);body.scrollTop=top;
+}
 // Consecutive tools share one lightweight disclosure. Commentary, thoughts,
 // supplements and final results are siblings, never a catch-all outer group.
 function groupChatActivities(container,nodes){
@@ -113,8 +156,7 @@ function groupChatActivities(container,nodes){
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
     group.dataset.icon=files?'file':commands?'command':'tool';
     if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
-    const body=group.lastChild,top=body.scrollTop;
-    syncChatMessageNodes(body,cluster,false);body.scrollTop=top;result.push(group);cluster=[];
+    group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
   };
   for(const node of nodes){
     if(node.dataset?.chatActivity==='tool'){
