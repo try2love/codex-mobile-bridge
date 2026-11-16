@@ -43,7 +43,7 @@ function captureChatActivityState(node){
   const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
   if(!details)return null;
   const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
-  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0};
+  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0,children:details.classList?.contains('chat-activity-group')?[...details.querySelectorAll('details.activity')].map(node=>[node,captureChatActivityState(node)]):[]};
 }
 function restoreChatActivityState(node,state){
   if(!state)return;
@@ -52,6 +52,7 @@ function restoreChatActivityState(node,state){
   details.open=state.open;
   const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
+  for(const [child,reading] of state.children||[])restoreChatActivityState(child,reading);
 }
 // Classification is presentation-only: a user supplement stays a user message.
 function chatActivityKind(row){

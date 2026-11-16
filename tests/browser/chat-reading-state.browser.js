@@ -37,7 +37,7 @@ async function runChatReadingStateChecks(){
     }
     try{
       const positions={thought:210,tool:330};
-      for(const id of Object.keys(positions))getNode(id).open=true;
+      for(const id of Object.keys(positions)){const node=getNode(id),group=node.closest('.chat-activity-tools');if(group)group.open=true;node.open=true;}
       await frame();await frame();
       for(const [id,top] of Object.entries(positions)){
         const body=getNode(id).querySelector('.activity-body');body.scrollTop=top;
