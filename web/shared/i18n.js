@@ -2,6 +2,11 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+  "思考与执行过程": "Thoughts and actions",
+  "正在思考与执行…": "Thinking and working…",
+  "运行了命令": "Ran commands",
+  "编辑了文件": "Edited files",
+  "执行了操作": "Performed actions",
 "展开聊天列表":"Expand chat list",
 "收起聊天列表":"Collapse chat list",
 "Codex 会话同步格式已变化，请更新 Bridge；历史和草稿仍可查看。":"The Codex session format has changed. Update Bridge; history and drafts remain available.",

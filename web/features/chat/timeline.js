@@ -86,6 +86,7 @@ class ChatTimeline {
       }
       entry.node.hidden=!this.rowVisible(row);
     }
+    syncChatMessageNodes(this.container,[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order).map(row=>this.nodes.get(row.key).node));
     this.refreshActions();
     this.restore(anchor,bottom);
   }
@@ -153,7 +154,7 @@ class ChatTimeline {
     }
     this.cached=cached;
     const anchor=this.capture(),bottom=this.following;
-    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
+    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.container.__chatActivityGroups=null;this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
     if((!history&&page.sequence>=this.sequence)||reset){this.sequence=page.sequence;this.meta=page.meta;if(!cached)this.renderMeta({...page.meta,files:[...this.files.values()]});}
     if(!history)this.pendingRequests=!cached&&!!page.meta.requests?.length;
@@ -204,6 +205,7 @@ class ChatTimeline {
     const activity=row.role==='activity'||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
+    if(activity||row.phase==='commentary'){node.dataset.chatActivity=row.kind==='reasoning'?'reasoning':activity?'tool':'commentary';node.dataset.chatActivityState=row.turnStatus==='inProgress'?'active':'complete';node.dataset.chatToolKind=row.kind||'';node.dataset.chatTurnId=row.turnId||'';}
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';

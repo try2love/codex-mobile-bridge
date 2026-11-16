@@ -376,6 +376,7 @@ for(const [name,file,invoke] of [
 }
 
 for (const [name, file, invoke] of [
+  ['shared native activity groups preserve reading and presentation', 'activity-groups', 'runActivityGroupBrowserChecks'],
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],
   ['chat history, list entry and scroll position', 'desktop-history', 'runDesktopHistoryBrowserChecks'],
@@ -388,6 +389,13 @@ for (const [name, file, invoke] of [
   test(name, async ({page}, testInfo) => {
     await ready(page, file==='agent-model-settings'?'session-menu':'success');
     await expect(page.locator('#bootstrap-status')).toBeHidden();
+    if(file==='activity-groups'){
+      await page.route('**/__browser/activity-groups.browser.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(path.join(__dirname,'activity-groups.browser.js'),'utf8')}));
+      await page.exposeBinding('__captureActivityGroup',async(source,value)=>{
+        const screenshot=await source.page.screenshot({path:testInfo.outputPath('activity-groups-'+value.width+'-'+value.theme+'-'+value.size+'.png')});
+        await testInfo.attach('activity-group-rendering',{body:screenshot,contentType:'image/png'});
+      });
+    }
     await page.addScriptTag({url: `/__browser/${file}.browser.js`});
     const result = await page.evaluate(name => globalThis[name](), invoke);
     expect(Array.isArray(result) ? result.length : result.passed).toBeGreaterThan(0);

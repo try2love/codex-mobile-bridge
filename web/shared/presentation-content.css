@@ -75,3 +75,11 @@
 .appearance-actions .primary{width:auto;min-width:92px}
 
 .chat-detail-execution{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.chat-detail-execution #copy-session-link{flex:none}
+
+.chat-activity-group{margin:0 0 var(--message-gap);color:var(--muted);font-size:var(--message-size);line-height:var(--message-leading)}
+.chat-activity-group>summary{cursor:pointer;list-style-position:inside;padding:.35em 0;overflow-wrap:anywhere}
+.chat-activity-items{padding:0;margin:0}
+.chat-activity-items .chat-activity-group{margin:.25em 0;background:var(--surface)}
+.chat-activity-group .activity,.chat-activity-group .activity summary{font-size:inherit;color:inherit}
+.chat-activity-group .activity summary{padding:.35em 0}
+.chat-activity-group>.chat-activity-items{max-height:24em;overflow:auto;overscroll-behavior:contain}
