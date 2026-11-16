@@ -112,12 +112,36 @@ function saved(c,tag='v11'){
 }
 function loginBrowser(c,data){
  const {EventEmitter}=require('node:events');
+ const windows=[],partitions=[],browserSession={setPermissionRequestHandler(){},setPermissionCheckHandler(){}};
  class Window extends EventEmitter{
-  constructor(){super();this.destroyed=false;this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=()=>{};this.webContents.executeJavaScript=async()=>data;}
+  constructor(options){super();this.options=options;this.destroyed=false;windows.push(this);this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=handler=>{this.openHandler=handler;};this.webContents.executeJavaScript=async()=>data;}
   isDestroyed(){return this.destroyed;}show(){}focus(){}async loadURL(){}destroy(){if(!this.destroyed){this.destroyed=true;this.emit('closed');}}
  }
- c.electron.BrowserWindow=Window;c.electron.session={fromPartition:()=>({setPermissionRequestHandler(){},setPermissionCheckHandler(){}})};
+ c.electron.BrowserWindow=Window;c.electron.session={fromPartition:name=>{partitions.push(name);return browserSession;}};
+ return {windows,partitions,browserSession};
 }
+
+test('official login popups share the ephemeral session and enforce the same origin policy at every depth',async t=>{
+ const c=platformFixture(t,'linux');t.after(()=>c.dispose());const browser=loginBrowser(c,null);await c.login(link);
+ const main=c.loginWindow,authorize='https://accounts.google.com/o/oauth2/v2/auth?client_id=synthetic';
+ assert.equal(browser.partitions.length,1);assert.match(browser.partitions[0],/^zcode-official-login-/);assert.ok(!browser.partitions[0].startsWith('persist:'));
+ const secure=preferences=>{assert.equal(preferences.session,browser.browserSession);assert.equal(preferences.nodeIntegration,false);assert.equal(preferences.contextIsolation,true);assert.equal(preferences.sandbox,true);};secure(main.options.webPreferences);
+ assert.equal(main.openHandler({url:authorize}).action,'allow');
+ assert.equal(main.openHandler({url:'https://zchat.z.ai/api/oauth/authorize?state=synthetic'}).action,'allow');
+ const allowed=main.openHandler({url:'about:blank'});assert.equal(allowed.action,'allow');assert.equal(allowed.outlivesOpener,false);secure(allowed.overrideBrowserWindowOptions.webPreferences);
+ const childContents=allowed.createWindow({webPreferences:allowed.overrideBrowserWindowOptions.webPreferences}),child=browser.windows.at(-1);assert.equal(childContents,child.webContents);assert.equal(child.options.webPreferences.session,browser.browserSession);
+ const nested=child.openHandler({url:'https://github.com/login/oauth/authorize'});assert.equal(nested.action,'allow');nested.createWindow({webPreferences:nested.overrideBrowserWindowOptions.webPreferences});const grandchild=browser.windows.at(-1);
+ const denied=['https://evil.invalid/authorize','https://accounts.google.com.evil.invalid/','https://user@accounts.google.com/','https://user:pass@zcode.z.ai/','http://zcode.z.ai/','file:///tmp/login','javascript:alert(1)','blob:https://zcode.z.ai/fixture','blob:https://accounts.google.com/fixture','about:blank#untrusted','about:blank?untrusted'];
+ for(const win of [main,child,grandchild]){
+  for(const url of denied){
+   assert.equal(win.openHandler({url}).action,'deny',url);
+   for(const event of ['will-navigate','will-redirect']){let prevented=false;win.webContents.emit(event,{preventDefault(){prevented=true;}},url);assert.equal(prevented,true,event+' '+url);}
+  }
+  for(const event of ['will-navigate','will-redirect']){let prevented=false;win.webContents.emit(event,{preventDefault(){prevented=true;}},authorize);assert.equal(prevented,false);}
+ }
+ main.destroy();assert.equal(child.isDestroyed(),true);assert.equal(grandchild.isDestroyed(),true);assert.equal(c.loginWindow,null);
+ for(const win of [main,child,grandchild])assert.equal(win.openHandler({url:authorize}).action,'deny');
+});
 
 test('unconfigured startup, status, saving a link and disposal never touch safeStorage',async t=>{
  let served=0;const safe=new Proxy({}, {get(){throw Error('unconfigured safeStorage probe');}});

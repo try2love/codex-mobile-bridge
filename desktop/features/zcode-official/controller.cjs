@@ -187,11 +187,25 @@ class OfficialRemote {
     const win=new BrowserWindow({width:1000,height:760,title:'ZCode 官方远控登录',webPreferences:{session:browserSession,nodeIntegration:false,contextIsolation:true,sandbox:true}});
     this.loginWindow=win;
     const generation=this.authGeneration,authIdentity=this.fileIdentity(this.authFile),settingsIdentity=this.fileIdentity(this.settingsFile);
-    const allowed=new Set([ORIGIN,'https://chat.z.ai','https://bigmodel.cn','https://open.bigmodel.cn','https://accounts.google.com','https://github.com']);
-    const allow=url=>{try{return allowed.has(new URL(url).origin);}catch{return false;}};
-    win.webContents.on('will-navigate',(event,url)=>{if(!allow(url))event.preventDefault();});
-    win.webContents.on('will-redirect',(event,url)=>{if(!allow(url))event.preventDefault();});
-    win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+    const allowed=new Set([ORIGIN,'https://chat.z.ai','https://zchat.z.ai','https://bigmodel.cn','https://open.bigmodel.cn','https://accounts.google.com','https://github.com']);
+    const allow=url=>{try{const value=new URL(url);return value.protocol==='https:'&&!value.username&&!value.password&&allowed.has(value.origin);}catch{return false;}};
+    const popups=new Set();
+    const guard=target=>{
+      target.webContents.on('will-navigate',(event,url)=>{if(!allow(url))event.preventDefault();});
+      target.webContents.on('will-redirect',(event,url)=>{if(!allow(url))event.preventDefault();});
+      target.webContents.setWindowOpenHandler(({url})=>{
+        // Official login opens a blank placeholder before its asynchronous
+        // authorization request; subsequent navigation still uses the guard.
+        if(this.loginWindow!==win||win.isDestroyed()||url!=='about:blank'&&!allow(url))return {action:'deny'};
+        return {action:'allow',outlivesOpener:false,
+          overrideBrowserWindowOptions:{webPreferences:{session:browserSession,nodeIntegration:false,contextIsolation:true,sandbox:true}},
+          createWindow:options=>{
+            const popup=new BrowserWindow(options);popups.add(popup);guard(popup);
+            popup.on('closed',()=>popups.delete(popup));return popup.webContents;
+          }};
+      });
+    };
+    guard(win);
     let capturing=false,encrypting=null;
     const capture=async()=>{
       if(capturing||encrypting||win.isDestroyed())return;
@@ -215,7 +229,7 @@ class OfficialRemote {
       finally{capturing=false;}
     };
     const timer=setInterval(capture,1200);timer.unref();
-    win.on('closed',()=>{clearInterval(timer);if(this.loginWindow===win){this.loginWindow=null;this.authGeneration++;}});
+    win.on('closed',()=>{clearInterval(timer);for(const popup of [...popups])if(!popup.isDestroyed())popup.destroy();if(this.loginWindow===win){this.loginWindow=null;this.authGeneration++;}});
     win.webContents.on('did-finish-load',capture);
     await win.loadURL(parsed.url);return this.status();
   }
