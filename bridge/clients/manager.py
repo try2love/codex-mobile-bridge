@@ -1830,7 +1830,9 @@ class DesktopSessions:
             if self.config.get(key):
                 preferences[key] = self.config[key]
         if self.bridge:
-            preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
+            index = self.bridge.accounts.index
+            if index.get('desktopExecutableSource') != 'scan':
+                preferences['desktopExecutable'] = index.get('desktopExecutable')
         return preferences
 
     def _prepare_discovered(self, provider, row):
@@ -1875,7 +1877,7 @@ class DesktopSessions:
             return scan_profile(self)
         # Discovery only: neither a GUI refresh nor a manual rescan launches apps.
         # Keep the old setup argument for callers from older desktop packages.
-        from bridge.clients.discovery import discover_clients, inventory_current, inventory_preferences, DISCOVERY_REVISION
+        from bridge.clients.discovery import discover_clients, inventory_current, inventory_preferences, inventory_fingerprint, DISCOVERY_REVISION
         with self.client_lock:
             preferences = self._discovery_preferences()
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
@@ -1884,13 +1886,28 @@ class DesktopSessions:
             if sys.platform == 'win32' and (scan_wsl and not inventory_only or inventory_only and not self.wsl_inventory_scanned):
                 self._scan_wsl_inventory()
             if inventory_only and inventory_current(self.config, preferences):
-                return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
-            discovered = discover_clients(preferences)
+                previous = self.config.get('discovered', {})
+                if not any(row.get('pendingInstallation') for row in previous.values()):
+                    return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
+                discovered = {provider: dict(row.get('pendingInstallation') or row) for provider, row in previous.items()}
+            else:
+                discovered = discover_clients(preferences)
+            previous_discovered = self.config.get('discovered', {})
+            discovered = self._retain_running_installations(discovered, preferences)
             if custom_claude and not self.config.get('claudeHome'):
                 discovered['claude']['dataDirectoryExplicit'] = False
+            if self.bridge and self.bridge.accounts.index.get('desktopExecutableSource') == 'scan':
+                accounts = self.bridge.accounts
+                with _closing_gate(accounts.lock, opening=True):
+                    if accounts.index.get('desktopExecutableSource') == 'scan':
+                        executable = discovered.get('codex', {}).get('executable')
+                        if executable and executable != accounts.index.get('desktopExecutable'):
+                            accounts.index['desktopExecutable'] = executable
+                            accounts.save()
             self.config['discovered'] = discovered
             self.config['discoveryRevision'] = DISCOVERY_REVISION
             self.config['discoveryPreferences'] = inventory_preferences(preferences)
+            self.config['discoveryFingerprint'] = inventory_fingerprint(discovered, preferences)
             with self.read_lock:
                 self._configure_zcode()
                 self._configure_antigravity()
@@ -1899,6 +1916,9 @@ class DesktopSessions:
                 if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
                     continue  # Discovery cannot replace an explicit plugin binding.
                 row = discovered[provider]
+                if inventory_only and ({key: value for key, value in row.items() if key != 'pendingInstallation'} ==
+                                       {key: value for key, value in previous_discovered.get(provider, {}).items() if key != 'pendingInstallation'}):
+                    continue
                 if not row['installed']:
                     outcomes[provider] = {'setupStatus': 'not-installed', 'reason': '尚未安装此客户端'}
                     continue
@@ -1911,6 +1931,52 @@ class DesktopSessions:
             self.client_cache = None
             probe_dsh = not inventory_only and discovered['deepseek']['installed'] and not self.config.get('deepseekManualBinding')
             return {**self.clients(refresh=True, probe='deepseek' if probe_dsh else None), 'errors': self.wsl_inventory_errors}
+
+    def _retain_running_installations(self, discovered, preferences):
+        """An updater's new path must not hide a still-running previous image."""
+        from bridge.clients.desktop_app import process_inventory
+        from bridge.clients.discovery import inventory_fingerprint
+        previous = self.config.get('discovered', {})
+        changed, result = {}, dict(discovered)
+        for provider, old in previous.items():
+            fresh = discovered.get(provider, {})
+            if not fresh.get('installed') and (old.get('installed') or old.get('installationWatchPaths')):
+                # Preserve known entry points through an updater's remove/install gap.
+                watch = set(inventory_fingerprint({provider: old}, {}))
+                parents = {str(parent) for native in [old, *old.get('installations', {}).values()]
+                           if native.get('executable') for parent in Path(native['executable']).parents}
+                watch.update(set(self.config.get('discoveryFingerprint', {})) & parents)
+                fresh = {**fresh, 'installationWatchPaths': sorted(watch)}
+                result[provider] = fresh
+            old_paths = {row['executable'] for row in [old, *old.get('installations', {}).values()] if row.get('executable')}
+            new_paths = {row['executable'] for row in [fresh, *fresh.get('installations', {}).values()] if row.get('executable')}
+            if old_paths - new_paths:
+                changed[provider] = old_paths - new_paths
+                if fresh and old.get('dataDirectory') and not preferences.get(provider+'Home'):
+                    # A different GUI installation does not select a new account profile.
+                    result[provider] = {**fresh, 'dataDirectory': old['dataDirectory']}
+                    if 'dataDirectoryExplicit' in old:
+                        result[provider]['dataDirectoryExplicit'] = old['dataDirectoryExplicit']
+        if not changed:
+            return result
+        states = process_inventory({path for paths in changed.values() for path in paths})
+        for provider, paths in changed.items():
+            if any(states[Path(path)]['pids'] for path in paths):
+                old = {key: value for key, value in previous[provider].items() if key != 'pendingInstallation'}
+                candidate = result.get(provider) or {'id': provider, 'installed': False, 'executable': '',
+                                                    'dataDirectory': old.get('dataDirectory', '')}
+                result[provider] = {**old, 'pendingInstallation': dict(candidate)}
+        return result
+
+    def _refresh_installation_inventory(self):
+        if self.instance is not None or not self.config.get('discovered'):
+            return False
+        from bridge.clients.discovery import inventory_current
+        if (not inventory_current(self.config, self._discovery_preferences()) or
+                any(row.get('pendingInstallation') for row in self.config['discovered'].values())):
+            self.scan(scan_wsl=False, inventory_only=True)
+            return True
+        return False
 
     def start_enabled(self):
         """Start selected clients only after the gateway service has started."""
@@ -1981,6 +2047,10 @@ class DesktopSessions:
             from bridge.clients.zcode.connections import selected_mode
             from bridge.clients.zcode.installation import installation
             app = installation(config.get('application', ''))
+            previous = self.config.get('discovered', {}).get(provider, {})
+            if not app and previous.get('pendingInstallation'):
+                return {**previous, 'officialRemote': selected_mode(self.config) == 'official-remote',
+                        'pipeSupported': False, 'debugFallbackPort': None}
             return {'id': provider, 'installed': bool(app), 'compatibilitySupported': False,
                     'officialRemote': selected_mode(self.config) == 'official-remote',
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported(inventory=inventory)),
@@ -1999,8 +2069,9 @@ class DesktopSessions:
             from bridge.clients.desktop_app import DesktopApp
             accounts = self.bridge.for_host('local').accounts
             executable = self._codex_executable(accounts)
+            retained = bool(row.get('pendingInstallation') and executable == row.get('executable'))
             row.update(id='codex', executable=executable, dataDirectory=str(accounts.home),
-                       installed=bool(executable and Path(executable).is_file()))
+                       installed=bool(executable and (Path(executable).is_file() or retained)))
         if provider in ('claude', 'deepseek') and getattr(self, 'instances', None) is not None:
             row['excludeProfiles'] = [value['home'] for value in self.instances.metadata(provider)]
             if self.instances.error:
@@ -2807,7 +2878,8 @@ class DesktopSessions:
     def _refresh_clients_status(self):
         try:
             if not self.closed.is_set():
-                self.clients(refresh=True)
+                if not self._refresh_installation_inventory():
+                    self.clients(refresh=True)
         except Exception:
             with self.client_snapshot_lock:
                 self.client_refresh_error = True
@@ -2976,6 +3048,8 @@ class DesktopSessions:
         quit_desktop = value.get('quitDesktop', provider not in ('zcode', 'antigravity'))
         if provider == 'antigravity':
             with self.client_lock, self._changing(provider):
+                if enabled:
+                    self._refresh_installation_inventory()
                 if not enabled and quit_desktop:
                     raise ValueError('请在电脑端退出 Antigravity；此处仅停用手机访问')
                 adapter = self.adapters['antigravity']
@@ -3009,6 +3083,8 @@ class DesktopSessions:
         account_lock = (_closing_gate(accounts.lock, opening=enabled) if explicit_codex
                         else accounts.lock if accounts else nullcontext())
         with client_gate, provider_gate, self._changing(provider, rebind='connectionMode' not in value), account_gate, account_lock:
+            if enabled:
+                self._refresh_installation_inventory()
             if provider == 'zcode' and 'connectionMode' in value:
                 self._select_zcode_connection(value['connectionMode'])
             if not enabled and not quit_desktop:

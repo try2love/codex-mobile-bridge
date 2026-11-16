@@ -4,11 +4,13 @@ import json
 import threading
 import time
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.manager import DesktopSessions, DesktopWorkspace
+from bridge.clients.discovery import DISCOVERY_REVISION, inventory_fingerprint, inventory_preferences
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.accounts.operation_gate import OperationGate
 
@@ -122,6 +124,18 @@ class ClientLifecycleTests(unittest.TestCase):
                                     'dataDirectory': str(self.root), 'desktopProfileReady': True}
         self.accounts.index['desktopExecutable'] = discovered['codex']['executable']
         self.manager.config.update(discovered=discovered, enabled=dict.fromkeys(discovered, True))
+        # Installation discovery stays inside the synthetic lifecycle fixture.
+        # Upgrade handoffs are covered separately in test_installation_updates.
+        for target, options in (
+            ('bridge.app.desktop.Desktop.preferences', {'return_value': {'codexHome': str(self.root)}}),
+            ('bridge.clients.discovery.discover_clients', {'side_effect': lambda _: deepcopy(self.manager.config['discovered'])}),
+        ):
+            patcher = patch(target, **options)
+            patcher.start(); self.addCleanup(patcher.stop)
+        preferences = self.manager._discovery_preferences()
+        self.manager.config.update(discoveryRevision=DISCOVERY_REVISION,
+            discoveryPreferences=inventory_preferences(preferences),
+            discoveryFingerprint=inventory_fingerprint(discovered, preferences))
         self.running = True
         self.inspect = self.patch('inspect_client', side_effect=lambda _: {'running': self.running,
             'pids': [11, 12] if self.running else [], 'mainPids': [11] if self.running else [], 'runtimePids': [12] if self.running else [], 'unknown': False})

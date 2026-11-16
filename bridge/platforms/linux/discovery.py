@@ -43,7 +43,7 @@ def candidate(path, provider):
     return None
 
 
-def candidates(provider, app_names, home, env):
+def candidates(provider, app_names, home, env, *, metadata=None):
     names = BINARIES[provider]
     for folder in ('/opt', '/usr/lib', '/usr/local/lib', str(home/'.local/share')):
         for name in (*app_names, *names):
@@ -52,7 +52,7 @@ def candidates(provider, app_names, home, env):
     for name in names:
         executable = shutil.which(name, path=env.get('PATH', ''))
         if executable:
-            yield Path(executable).resolve()
+            yield Path(executable)
     # Desktop entries also cover AppImages and nonstandard install locations.
     directories = [Path(env.get('XDG_DATA_HOME') or home/'.local/share')]
     directories += [Path(p) for p in env.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':') if p]
@@ -72,7 +72,9 @@ def candidates(provider, app_names, home, env):
                         continue
                     executable = parts[0] if Path(parts[0]).is_absolute() else shutil.which(parts[0], path=env.get('PATH', ''))
                     if executable:
-                        yield Path(executable).resolve()
+                        if metadata is not None:
+                            metadata.setdefault(Path(executable), {}).setdefault('discoveryFile', str(path))
+                        yield Path(executable)
                 except (OSError, ValueError, KeyError, configparser.Error):
                     continue
         except OSError:

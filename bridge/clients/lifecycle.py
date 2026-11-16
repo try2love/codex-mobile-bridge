@@ -21,7 +21,9 @@ def launch_deepseek(descriptor, restart=False):
         from bridge.clients.profile_process import launch_profile
         return launch_profile(descriptor)
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
-    if not executable or not home or not Path(executable).is_file() or (Path(home).exists() and not Path(home).is_dir()):
+    if (not executable or not home or
+            not Path(executable).is_file() and not descriptor.get('pendingInstallation') or
+            Path(home).exists() and not Path(home).is_dir()):
         raise ValueError('DeepSeek Harness 应用或数据目录不可用，请重新扫描')
     app = DesktopApp(executable, home)
     running = bool(inspect_client(descriptor)['running'])
@@ -35,6 +37,8 @@ def launch_deepseek(descriptor, restart=False):
     if running and not restart:
         return {'running': True, 'launched': False, 'restarted': False,
                 'restartRequired': bool(descriptor.get('restartRequired'))}
+    # A retained old owner may be inspected, but a restart needs a launchable image.
+    _app(descriptor, launching=True)
     if running:
         stop_client(descriptor, state=state)
     working = app.home
@@ -56,11 +60,12 @@ def launch_deepseek(descriptor, restart=False):
     return {'running': True, 'launched': True, 'restarted': running, 'restartRequired': False}
 
 
-def _app(descriptor):
+def _app(descriptor, *, launching=False):
     if descriptor.get('id') not in ('codex', 'claude', 'deepseek', 'zcode') or not descriptor.get('installed'):
         raise ValueError('未找到已配置的桌面应用，请重新扫描')
     executable, home = descriptor.get('executable'), descriptor.get('dataDirectory')
-    if not executable or not home or not Path(executable).is_file():
+    if (not executable or not home or
+            not Path(executable).is_file() and (launching or not descriptor.get('pendingInstallation'))):
         raise ValueError('桌面应用或数据目录不可用，请重新扫描')
     return DesktopApp(executable, home)
 
@@ -302,9 +307,9 @@ def launch_client(descriptor, *, allow_native_relaunch=False, allow_unprepared_c
         return launch_profile(descriptor, allow_native_relaunch=allow_native_relaunch)
     if descriptor.get('id') == 'deepseek':
         return launch_deepseek(descriptor)
-    app = _app(descriptor)
     if inspect_client(descriptor)['running']:
         return {'running': True, 'launched': False}
+    app = _app(descriptor, launching=True)
     if descriptor['id'] == 'codex':
         app.start(**({'allow_unprepared': True} if allow_unprepared_codex else {}))
     elif descriptor['id'] == 'zcode':
