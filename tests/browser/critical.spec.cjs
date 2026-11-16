@@ -18,6 +18,48 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+async function historyCacheFixture(browser,viewport){
+  const context=await browser.newContext({viewport});
+  await context.route('**/*',route=>new URL(route.request().url()).origin==='https://history-cache.fixture.invalid'
+    ?route.fulfill({contentType:'text/html',body:'<!doctype html><title>Synthetic history cache</title><body></body>'}):route.abort());
+  const page=async()=>{const result=await context.newPage();await result.goto('https://history-cache.fixture.invalid/');
+    await result.addScriptTag({content:readFileSync(path.join(__dirname,'../../web/features/chat/history-cache.js'),'utf8')});return result;};
+  return {context,page};
+}
+
+test('persistent history cache isolates scopes bounds storage and survives unavailable IndexedDB',async({browser},info)=>{
+  const fixture=await historyCacheFixture(browser,info.project.use.viewport);
+  try{
+    const page=await fixture.page();await page.addScriptTag({content:readFileSync(path.join(__dirname,'history-cache.browser.js'),'utf8')});
+    const result=await page.evaluate(()=>runHistoryCacheBrowserChecks());
+    expect(result.failures).toEqual([]);expect(result.passed).toBe(14);
+  }finally{await fixture.context.close();}
+});
+
+test('history cache logout session and namespace forget defeat stale writes from another real page',async({browser},info)=>{
+  const fixture=await historyCacheFixture(browser,info.project.use.viewport);
+  try{
+    const writer=await fixture.page(),cleaner=await fixture.page();
+    for(const page of [writer,cleaner])await page.evaluate(()=>{window.__historyClock=1000000;window.__historyCache=new ChatHistoryCache(indexedDB,()=>window.__historyClock);});
+    for(const mode of ['session','namespace','logout']){
+      const scope=JSON.stringify(['auth-a','host-a','claude',mode+'-race']),namespace=JSON.stringify(['auth-a','host-a','claude']),other=JSON.stringify(['auth-a','host-a','codex','keep']);
+      await cleaner.evaluate(async other=>{await __historyCache.forget();window.__historyClock+=10;await __historyCache.write(other,'recent',{text:'keep'});},other);
+      const now=await cleaner.evaluate(()=>window.__historyClock);
+      await writer.evaluate(async({scope,now})=>{
+        window.__historyClock=now;const db=await __historyCache.open();let release;const gate=new Promise(resolve=>release=resolve);
+        window.__restoreOpen=__historyCache.open.bind(__historyCache);__historyCache.open=async()=>{await gate;return db;};window.__releaseWrite=release;
+        window.__staleWrite=__historyCache.write(scope,'recent',{text:'old cached history'});
+      },{scope,now});
+      await cleaner.evaluate(async({scope,mode,namespace})=>{window.__historyClock++;if(mode==='namespace')await __historyCache.forgetNamespace(namespace);else await __historyCache.forget(mode==='logout'?undefined:scope);},{scope,mode,namespace});
+      expect(await writer.evaluate(async now=>{window.__historyClock=now;window.__releaseWrite();const written=await window.__staleWrite;__historyCache.open=window.__restoreOpen;return written;},now+1)).toBe(false);
+      expect(await cleaner.evaluate(scope=>__historyCache.read(scope),scope)).toBeNull();
+      expect(await cleaner.evaluate(other=>__historyCache.read(other),other)).toEqual(mode==='logout'?null:{text:'keep'});
+      expect(await writer.evaluate(async({scope,now})=>{window.__historyClock=now+2;return __historyCache.write(scope,'recent',{text:'new history'});},{scope,now})).toBe(true);
+      expect(await cleaner.evaluate(async({scope,now})=>{window.__historyClock=now+2;return __historyCache.read(scope);},{scope,now})).toEqual({text:'new history'});
+    }
+  }finally{await fixture.context.close();}
+});
+
 test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
   await page.route('**/api/auth', route => route.fulfill({json: {
     authenticated: false, passwordless: false,

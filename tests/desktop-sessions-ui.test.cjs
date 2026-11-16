@@ -61,6 +61,31 @@ function hostPages(ui,handler){
    entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
  });
 }
+test('persistent history is display only and cannot override fresh disconnected history',async()=>{
+ const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
+ ui.run('window.historyReads=[];window.historyWrites=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push({scope,resolve})),write:(...args)=>window.historyWrites.push(args)}');
+ view.prepareChat('a');
+ ui.run('window.historyReads.shift().resolve({session:{id:"a",title:"Cached",readOnly:true,requests:[],capabilities:{}},messages:[{id:"old",role:"assistant",text:"Cached content"}],connected:false})');
+ await Promise.resolve();assert.match(view.messageList.textContent,/Cached content/);assert.equal(view.canMutate(),false);assert.equal(view.canResume(),false);
+ view.prepareChat('b');view.applyDetail({session:{id:'b',title:'Fresh',requests:[{id:'live'}]},messages:[{id:'fresh',role:'assistant',text:'Fresh content'}],connected:false});
+ ui.run('window.historyReads.shift().resolve({session:{id:"b",title:"Old"},messages:[{id:"old",role:"assistant",text:"Obsolete content"}]})');
+ await Promise.resolve();assert.match(view.messageList.textContent,/Fresh content/);assert.doesNotMatch(view.messageList.textContent,/Obsolete/);
+ const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'recent');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
+});
+test('late persistent history cannot cross a desktop chat or authentication switch',async()=>{
+ const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
+ ui.run('window.historyReads=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push(resolve))}');
+ view.prepareChat('a');view.prepareChat('b');view.listCacheIdentity='auth-b';
+ ui.run('for(const done of window.historyReads)done({session:{id:"a",title:"Private"},messages:[{id:"old",role:"assistant",text:"Private cache"}]})');
+ await Promise.resolve();assert.doesNotMatch(view.messageList.textContent,/Private cache/);
+});
+test('fresh empty desktop history replaces persisted content and account changes invalidate only that client',async()=>{
+ const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
+ ui.run('window.historyWrites=[];window.historyClears=[];window.BridgeChatHistoryCache={write:(...args)=>window.historyWrites.push(args),forgetNamespace:scope=>window.historyClears.push(scope)}');
+ view.applyDetail({session:{id:'a',title:'Now empty'},messages:[],files:[],connected:false});
+ assert.equal(ui.run('window.historyWrites.at(-1)[2].messages.length'),0);
+ await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
+});
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));

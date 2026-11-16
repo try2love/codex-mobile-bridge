@@ -21,6 +21,44 @@ function fixture(){
 }
 const page=(epoch,key,role='assistant',more=true)=>({epoch,rows:[{key,role}],before:epoch+'.'+key,hasMore:more});
 const tick=()=>new Promise(r=>setImmediate(r));
+function persistentFixture(){
+ const writes=[],meta=[],window={BridgeChatHistoryCache:{read:()=>new Promise(resolve=>cachedResolve=resolve),write:(...args)=>writes.push(args)}};let cachedResolve,freshResolve;
+ const ctx=vm.createContext({window,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},syncChatMessageNodes(container,nodes){container.children=nodes;}});
+ vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);const Type=vm.runInContext('ChatTimeline',ctx);
+ const ui=Object.assign(Object.create(Type.prototype),{cacheKey:'synthetic-history',sequence:-1,epoch:'',generation:0,windowRevision:0,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),abort:new AbortController(),older:{},newer:{},following:true,
+  container:{children:[],replaceChildren(){this.children=[];}},viewport:{removeEventListener(){}},resize:{disconnect(){}},
+  read:()=>new Promise(resolve=>freshResolve=resolve),renderMeta:value=>meta.push(value),renderRow:()=>({dataset:{}}),capture(){},refreshActions(){},historyStatus(){},restore(){},updates(){},status(){}});
+ return {ui,writes,meta,cached:value=>cachedResolve(value),fresh:value=>freshResolve(value)};
+}
+const historyPage=(key,meta={},sequence=1)=>({rows:key?[{key,role:'assistant',order:1}]:[],files:[],sequence,epoch:'fixture',before:null,hasMore:false,meta:{requests:[],...meta}});
+
+test('late persistent history cannot replace any accepted fresh timeline including disconnected and empty responses',async()=>{
+ for(const fresh of [historyPage('fresh'),historyPage('fresh',{connected:false},0),historyPage(null,{connected:false},0),historyPage(null,{connected:false},-1)]){
+  const f=persistentFixture(),starting=f.ui.start();f.fresh(fresh);await starting;
+  f.cached(historyPage('stale'));await tick();assert.equal(f.ui.rows.has('stale'),false,'late cache after fresh sequence '+fresh.sequence);assert.equal(f.ui.cached,false);assert.equal(f.ui.rows.size,fresh.rows.length);
+ }
+});
+
+test('a disposed timeline ignores both outstanding persistent history and its fresh response',async()=>{
+ const f=persistentFixture(),starting=f.ui.start();f.ui.dispose();f.cached(historyPage('stale'));f.fresh(historyPage('fresh'));await starting;await tick();
+ assert.equal(f.ui.rows.size,0);assert.equal(f.writes.length,0);assert.equal(f.meta.length,0);
+});
+
+test('temporary pages never persist while fresh empty history replaces the old page and loading history preserves it',()=>{
+ const temporary=persistentFixture();temporary.ui.apply(historyPage('temporary',{temporary:true}),true);assert.equal(temporary.writes.length,0);
+ const empty=persistentFixture();empty.ui.apply(historyPage('old'),true);empty.ui.apply(historyPage(null,{connected:false}),true);
+ assert.equal(empty.writes.length,2);assert.equal(empty.writes[1][0],empty.writes[0][0]);assert.equal(empty.writes[1][1],'recent');assert.equal(empty.writes[1][2].rows.length,0);
+ const loading=persistentFixture();loading.ui.apply(historyPage('old'),true);loading.ui.cached=true;loading.ui.apply(historyPage(null,{loadingHistory:true,connected:false}),true);
+ assert.equal(loading.writes.length,1);assert.equal(loading.ui.rows.has('old'),true);
+});
+
+test('showLogin clears persistent history even before the timeline feature has loaded',()=>{
+ const source=fs.readFileSync('web/shell/app.js','utf8'),entry=source.slice(source.indexOf('function showLogin('),source.indexOf('\nasync function start('));let forgotten=0,replaced='';
+ const context=vm.createContext({window:{BridgeSharedRelay:true,BridgeChatHistoryCache:{forget(){forgotten++;}}},sessionPins:{suspend(){}},clearQuoteComposer(){},clearCodexProvisionalDrafts(){},claudeCliAccessPanel:null,draftGateway:'old',codexDraftScope:'old',codexActiveAccountId:'old',$:()=>({}),location:{replace:value=>replaced=value}});
+ vm.runInContext("'use strict';"+entry,context);assert.equal(vm.runInContext('typeof ChatTimeline',context),'undefined');vm.runInContext('showLogin()',context);
+ assert.equal(forgotten,1);assert.equal(replaced,'/relay/');
+});
+
 test('history intent survives a live reset while page is in flight',async()=>{
  const {ui,pending}=fixture(),done=ui.loadOlder(100);
  ui.apply(page('b','recent'),true);

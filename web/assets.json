@@ -28,7 +28,7 @@
     "features/chat/session-menu.css",
     "shared/visualize.css"
   ],
-  "/activity.js": "features/chat/activity.js",
+  "/activity.js": ["features/chat/history-cache.js", "features/chat/activity.js"],
   "/attachments.js": [
     "features/chat/composer-drafts.js",
     "features/chat/composer-quotes.js",
