@@ -178,6 +178,38 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertFalse(ready['pending'])
         self.assertEqual(len(ready['clients']), 3)
 
+    def test_running_desktop_control_reuses_snapshot_while_lifecycle_holds_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        entered, release = threading.Event(), threading.Event()
+        previous = self.manager.client_snapshot
+        def hold():
+            with self.manager.client_lock:
+                entered.set()
+                release.wait(3)
+        holder = threading.Thread(target=hold)
+        holder.start()
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            self.assertTrue(entered.wait(1))
+            future = executor.submit(self.manager.control, {'action': 'clients', 'refresh': True})
+            result = future.result(timeout=.3)
+            self.assertTrue(result['pending'])
+            self.assertEqual(result['clients'], previous['clients'])
+        finally:
+            release.set(); holder.join(1); executor.shutdown(wait=True)
+        deadline = time.monotonic() + 1
+        while self.manager.client_refreshing and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(self.manager.control({'action': 'clients'})['pending'])
+        self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_offline_desktop_control_keeps_synchronous_inventory(self):
+        self.manager.gateway_running = False
+        with patch.object(self.manager, 'clients', return_value={'clients': [], 'inventoryAvailable': False}) as read:
+            result = self.manager.control({'action': 'clients', 'refresh': True})
+        read.assert_called_once_with(refresh=True)
+        self.assertFalse(result['inventoryAvailable'])
+
     def test_client_status_failed_refresh_is_visible_and_can_retry(self):
         manager = self.manager
         manager.client_cache = None

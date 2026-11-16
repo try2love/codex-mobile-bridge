@@ -64,8 +64,10 @@ class DesktopConnectionsPanel {
     }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.scanMessage=error.message;this.scanError=true;this.renderScan();this.renderDetails();}
   }
   applyClientSnapshot(value){
-    ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));
-    this.clients=value.clients;this.instanceError=value.instanceError||'';
+    this.clientsPending=value.pending===true;this.clientsError=value.refreshError||'';
+    const clients=(this.clientsPending||this.clientsError)&&!value.clients.length&&this.clients?.length?this.clients:value.clients;
+    if(!this.clientsPending&&!this.clientsError)ClientLifecycle.reconcile(this.operationFailures,this.managementClients(clients));
+    this.clients=clients;this.instanceError=value.instanceError||'';
     this.inventoryAvailable=value.inventoryAvailable??this.inventoryAvailable;
     this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;
   }
@@ -79,7 +81,7 @@ class DesktopConnectionsPanel {
     const revision=this.clientsRevision;
     const pending=(async()=>{
       try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;this.applyClientSnapshot(value);this.renderClients();this.renderScan();}
-      catch(error){if(revision!==this.clientsRevision)return;this.scanMessage=error.message;this.scanError=true;this.renderScan();}
+      catch(error){if(revision!==this.clientsRevision)return;this.clientsPending=false;this.clientsError=error.message;this.renderScan();}
     })();
     this.clientsLoading=pending;try{await pending;}finally{if(this.clientsLoading===pending)this.clientsLoading=null;this.renderClients();}
   }
@@ -98,17 +100,17 @@ class DesktopConnectionsPanel {
   }
   syncPolling(){
     const visible=!document.hidden&&!document.getElementById('clients-page').hidden;
-    const interval=visible?(this.managementClients().some(client=>this.connection(client).waiting)?2000:15000):0;
+    const interval=visible?(this.clientsPending||this.managementClients().some(client=>this.connection(client).waiting)?2000:15000):0;
     if(interval===(this.pollInterval||0))return;
     clearInterval(this.pollTimer);this.pollInterval=interval;
     if(interval)this.pollTimer=setInterval(()=>this.pollClients(),interval);
   }
   pollClients(fast=false){
-    if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
+    if(document.hidden||document.getElementById('clients-page').hidden||(this.hasUncertain()&&!this.clientsPending)||(fast&&!this.clientsPending&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
     return this.refreshClients();
   }
   async scan(manual=false){
-    if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
+    if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.clientsError='';this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
     let gotSnapshot=false;
     try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanError=!!value.errors?.length;this.scanMessage=this.scanError?value.errors.map(row=>row.distribution+'：'+BridgeI18n.t(row.error)).join('\n'):'扫描完成；各客户端的接入状态如下。';}
     catch(error){this.scanMessage=error.message;this.scanError=true;if(manual)this.feedback(error.message,true);}
@@ -160,7 +162,7 @@ class DesktopConnectionsPanel {
     }catch(error){release();this.feedback(error.message,true);}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有客户端，或通过“添加客户端”配置新的客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError);}
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.clientsError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有客户端，或通过“添加客户端”配置新的客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError||!!this.clientsError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.dataset.i18n=this.scanning?'正在扫描…':'重新扫描';button.textContent=BridgeI18n.t(button.dataset.i18n);}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
