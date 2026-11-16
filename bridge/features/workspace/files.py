@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
 from bridge.features.sessions.model import ordered_turns, items_array, desktop_file_attachments
+from bridge.features.workspace.visualize import reference_candidates, descriptors
 
 MARKDOWN_PATH = re.compile(r'!?\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
 IMAGE_MARKDOWN_PATH = re.compile(r'!\[[^\]\n]*\]\((?:<([^>]+)>|([^\n)]+))\)')
@@ -34,6 +35,18 @@ def code_comment_references(text):
 def file_citation_references(text):
     """Extract complete file citations; grant resolution still enforces its roots."""
     yield from _directive_references(text, _code_comment_candidates(text, citation=True))
+
+
+def visualization_paths(texts):
+    """Extract references from assistant texts outside Markdown code."""
+    return {path for text in texts
+            for path in _directive_references(text, reference_candidates(text))}
+
+
+def visualization_files(state, files):
+    texts = (item.get('text', '') for turn in ordered_turns(state) for item in items_array(turn.get('items'))
+             if item.get('type') in ('agentMessage', 'assistantMessage'))
+    return [*files, *descriptors(visualization_paths(texts))]
 
 
 def _directive_references(text, matches):

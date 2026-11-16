@@ -447,7 +447,8 @@ class DesktopSessions:
             home = str(data_dir.parent.parent if data_dir.parent.name == '.gemini' else data_dir)
         if 'antigravity' not in self.adapters:
             from bridge.clients.antigravity.adapter import Antigravity
-            self.adapters.defer('antigravity', lambda: Antigravity(directory, home=home))
+            self.adapters.defer('antigravity', lambda: Antigravity(directory, home=home,
+                model_catalog=lambda surface: self._desktop_model_directory('antigravity', surface)))
         if 'antigravity' not in self.session_pins:
             self.session_pins['antigravity'] = SessionPins(directory, 'antigravity')
 
@@ -565,7 +566,7 @@ class DesktopSessions:
             row = adapter.store.resolve_session(sid)
             if row is None:
                 raise ValueError('找不到此 Antigravity 会话')
-            return self._surface_model_identity(self._account_model_identity(provider), row['surfaceDirKey'])
+            return self._account_model_identity(provider, row['surfaceDirKey'])
         if provider in ('deepseek', 'zcode'):
             return self._account_model_identity(provider)
         if provider == 'claude' and creation is None and sid in adapter.index:
@@ -612,13 +613,9 @@ class DesktopSessions:
 
     def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
         if provider == 'antigravity' and surface is not None:
-            identity = self._account_model_identity(provider)
-            value = self._read(provider, 'account', None, {'surface': surface, 'refresh': refresh})
-            if self._account_model_identity(provider) != identity:
-                raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-            return {**value, 'cache': {'identity': self._surface_model_identity(identity, surface),
-                                      'directoryIdentity': identity, 'surface': surface,
-                                      'updatedAt': time.time(), 'state': 'fresh'}}
+            value = self._account_models(provider, refresh=refresh, surface=surface)
+            return {**value, 'capabilities': {'models': self.adapters[provider].cli.available(surface),
+                    'effort': False, 'manualModels': True, 'manualEffort': False}}
         value = self._account_models(provider, refresh=refresh)
         if provider != 'claude' or surface is None:
             return value
@@ -798,15 +795,10 @@ class DesktopSessions:
 
     def _catalog_models(self, provider, sid, body):
         native_claude = provider == 'claude' and sid in self.adapters[provider].index
-        if provider == 'antigravity':
-            identity = self._model_identity(provider, sid)
-            value = self._read(provider, 'catalog', sid, body)
-            if self._model_identity(provider, sid) != identity:
-                raise BridgeUnavailable('客户端账号或配置已变化，请重试')
-            return {**value, 'cache': {'identity': identity, 'updatedAt': time.time(), 'state': 'fresh'}}
         if provider in ('deepseek', 'zcode', 'antigravity') or native_claude:
             identity = self._model_identity(provider, sid)
-            surface = self.adapters[provider].index[sid]['backend'] if native_claude else None
+            surface = (self.adapters[provider].store.resolve_session(sid)['surfaceDirKey'] if provider == 'antigravity'
+                       else self.adapters[provider].index[sid]['backend'] if native_claude else None)
             value = self._desktop_model_directory(provider, surface, refresh=body.get('refresh') is True)
             if self._model_identity(provider, sid) != identity or value.get('cache', {}).get('identity') != identity:
                 raise BridgeUnavailable('客户端账号或配置已变化，请重试')
@@ -815,6 +807,8 @@ class DesktopSessions:
             if not self._model_live(provider, sid):
                 value['capabilities'] = {'models': False, 'effort': False}
                 value['notice'] = '桌面客户端未连接'
+            elif provider == 'antigravity':
+                value['capabilities'] = {'models': True, 'effort': False, 'manualModels': True, 'manualEffort': False}
             elif native_claude:
                 native = self.adapters[provider].session_capabilities(surface)
                 value['capabilities'] = {key: native[key] for key in ('models', 'effort', 'manualModels', 'manualEffort')}
@@ -916,8 +910,10 @@ class DesktopSessions:
             self.model_timers[identity] = timer
             timer.start()
 
-    def _account_model_identity(self, provider):
+    def _account_model_identity(self, provider, surface=None):
         adapter = self.adapters[provider]
+        if provider == 'antigravity' and surface is not None:
+            return ModelStore.key('antigravity-model-directory-v1', str(adapter.home), surface, adapter.account_scope(surface))
         if provider in ('zcode', 'antigravity'):
             return ModelStore.key('desktop-model-directory-v2', provider, str(adapter.home),
                                   adapter.account_scope())
@@ -978,28 +974,30 @@ class DesktopSessions:
                 return False
         return (adapter.directory/'endpoint.json').is_file()
 
-    def _account_model_result(self, provider, identity, persisted, error=None):
-        if self._account_model_identity(provider) != identity:
+    def _account_model_result(self, provider, identity, persisted, error=None, surface=None):
+        if self._account_model_identity(provider, surface) != identity:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
         value = ModelStore.directory(persisted[1])
         value['cache'] = {'state': 'stale' if error or time.time()-persisted[0] >= MODEL_REFRESH_SECONDS else 'fresh',
                           'updatedAt': persisted[0], 'identity': identity}
         if error:
             value['modelError'] = error
-        if self._account_model_identity(provider) != identity:
+        if self._account_model_identity(provider, surface) != identity:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
         return value
 
-    def _account_models(self, provider, refresh=False):
-        identity = self._account_model_identity(provider)
+    def _account_models(self, provider, refresh=False, surface=None):
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
+        identity = self._account_model_identity(provider, surface)
         try:
             persisted = self.model_store.read(identity)
         except (OSError, sqlite3.DatabaseError, ValueError):
             persisted = None
         if persisted and not refresh:
             if self._account_model_live(provider):
-                self._schedule_account_model_refresh(provider, identity, persisted[0])
-            return self._account_model_result(provider, identity, persisted)
+                self._schedule_account_model_refresh(provider, identity, persisted[0], surface=surface)
+            return self._account_model_result(provider, identity, persisted, surface=surface)
         with self.model_lock:
             lock = self.model_locks.setdefault(identity, threading.Lock())
         with lock:
@@ -1009,7 +1007,7 @@ class DesktopSessions:
                 except (OSError, sqlite3.DatabaseError, ValueError):
                     persisted = None
                 if persisted:
-                    return self._account_model_result(provider, identity, persisted)
+                    return self._account_model_result(provider, identity, persisted, surface=surface)
             try:
                 if provider == 'claude':
                     store = self._account_store(provider)
@@ -1032,32 +1030,41 @@ class DesktopSessions:
                                       for row in group.get('models', []) if isinstance(row, dict) and isinstance(row.get('id'), str)}
                             value = {**native, 'groups': groups, 'models': list(models.values()), 'modelSourcesVersion': 1}
                 else:
-                    value = self._read(provider, 'account')
+                    value = (self._read(provider, 'account', None, {'surface': surface, 'refresh': refresh})
+                             if surface is not None else self._read(provider, 'account'))
             except (OSError, ValueError, BridgeUnavailable):
+                # A rebind rejection is not a catalog outage, even when the
+                # restored credentials resolve to the same model identity.
+                with self.read_lock:
+                    if self.closed.is_set() or self.binding_epochs[provider] != binding:
+                        raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+                if self._account_model_identity(provider, surface) != identity:
+                    raise BridgeUnavailable('客户端账号或配置已变化，请重试')
                 if persisted:
-                    return self._account_model_result(provider, identity, persisted, '模型目录刷新失败，已保留上次结果')
-                raise
-            if self._account_model_identity(provider) != identity:
+                    return self._account_model_result(provider, identity, persisted, '模型目录刷新失败，已保留上次结果', surface=surface)
+                return {'models': [], 'modelError': '模型目录暂不可用，可手动填写',
+                        'cache': {'state': 'unavailable', 'updatedAt': None, 'identity': identity}}
+            if self._account_model_identity(provider, surface) != identity:
                 raise BridgeUnavailable('客户端账号或配置已变化，请重试')
             if (value.get('modelError') or value.get('capabilities', {}).get('models') is False
                     or not isinstance(value.get('models'), list)
-                    or provider == 'claude' and not value.get('models')):
+                    or not value.get('models') and not any(group.get('models') for group in value.get('groups', []) if isinstance(group, dict))):
                 if persisted:
                     return self._account_model_result(provider, identity, persisted,
-                                                      value.get('modelError') or '模型目录刷新失败，已保留上次结果')
-                if self._account_model_identity(provider) != identity:
+                                                      value.get('modelError') or '模型目录刷新失败，已保留上次结果', surface=surface)
+                if self._account_model_identity(provider, surface) != identity:
                     raise BridgeUnavailable('客户端账号或配置已变化，请重试')
                 return {**value, 'cache': {'state': 'unavailable', 'updatedAt': None, 'identity': identity}}
             try:
                 updated_at = self.model_store.write(identity, ModelStore.directory(value))
-                self._schedule_account_model_refresh(provider, identity, updated_at, replace=True)
+                self._schedule_account_model_refresh(provider, identity, updated_at, replace=True, surface=surface)
             except (OSError, sqlite3.DatabaseError):
                 updated_at = time.time()
-            if self._account_model_identity(provider) != identity:
+            if self._account_model_identity(provider, surface) != identity:
                 raise BridgeUnavailable('客户端账号或配置已变化，请重试')
             return {**value, 'cache': {'state': 'fresh', 'updatedAt': updated_at, 'identity': identity}}
 
-    def _schedule_account_model_refresh(self, provider, identity, updated_at, replace=False):
+    def _schedule_account_model_refresh(self, provider, identity, updated_at, replace=False, surface=None):
         with self.model_lock:
             if replace and identity in self.model_timers:
                 self.model_timers.pop(identity).cancel()
@@ -1070,17 +1077,17 @@ class DesktopSessions:
                 if self.closed.is_set() or not self._account_model_live(provider):
                     return
                 try:
-                    self._account_models(provider, refresh=True)
+                    self._account_models(provider, refresh=True, surface=surface)
                 except (OSError, ValueError, BridgeUnavailable):
                     pass
                 finally:
                     if not self.closed.is_set() and self.enabled(provider):
                         try:
-                            if self._account_model_identity(provider) == identity:
+                            if self._account_model_identity(provider, surface) == identity:
                                 record = self.model_store.read(identity)
                                 if record:
                                     self._schedule_account_model_refresh(provider, identity,
-                                        max(record[0], time.time()-MODEL_REFRESH_SECONDS+300))
+                                        max(record[0], time.time()-MODEL_REFRESH_SECONDS+300), surface=surface)
                         except (OSError, sqlite3.DatabaseError, ValueError, BridgeUnavailable):
                             pass
             timer = threading.Timer(delay, due)
@@ -1310,8 +1317,8 @@ class DesktopSessions:
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
         value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
         capabilities = {'models': value.get('capabilities', {}).get('models') is True if provider == 'antigravity' else True,
-                        'effort': provider != 'antigravity', 'manualModels': provider == 'deepseek',
-                        'manualEffort': provider == 'deepseek'}
+                        'effort': provider != 'antigravity', 'manualModels': True,
+                        'manualEffort': provider != 'antigravity'}
         return {**value, 'capabilities': capabilities}
 
     def _project_alias(self, environment):
@@ -1474,7 +1481,13 @@ class DesktopSessions:
                     return result
                 try:
                     result['modelCatalogIdentity'] = self._model_identity(provider, sid)
-                except ClaudeLoginDatabaseUnavailable:
+                except (ClaudeLoginDatabaseUnavailable, BridgeUnavailable) as error:
+                    if provider != 'antigravity' and not isinstance(error, ClaudeLoginDatabaseUnavailable):
+                        raise
+                    if provider == 'antigravity':
+                        result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
+                        result['notice'] = 'Antigravity 账号暂不可读，已保留历史和草稿；请稍后重试模型设置'
+                        return result
                     # History was read from its native owner. Only account-bound
                     # capabilities require the unreadable Desktop fingerprint.
                     result['modelCatalogIdentity'] = result['draftAccountIdentity'] = ''
@@ -1540,7 +1553,7 @@ class DesktopSessions:
                 raise ValueError('此应用已关闭，请在应用管理中开启')
             native_claude_model_write = (provider == 'claude' and action == 'settings' and
                                          ('model' in body or 'effort' in body) and sid in adapter.index)
-            if action == 'settings' and ('modelCatalogIdentity' in body or native_claude_model_write):
+            if action == 'settings' and ('modelCatalogIdentity' in body or native_claude_model_write or provider == 'antigravity'):
                 current_identity = self._model_identity(provider, sid)
                 if 'modelCatalogIdentity' in body and (not body['modelCatalogIdentity'] or
                                                        current_identity != body['modelCatalogIdentity']):
@@ -3196,7 +3209,8 @@ class DesktopSessions:
                     if operation == 'import-current':
                         result = store.import_current(value.get('name', ''))
                     elif operation == 'switch':
-                        result = store.restore(value.get('id'))
+                        from bridge.clients.antigravity.account_switch import switch_account
+                        result = switch_account(store, adapter, self._descriptor(provider), value.get('id'))
                     elif operation == 'rename':
                         result = store.rename(value.get('id'), value.get('name'))
                     else:
@@ -3397,9 +3411,11 @@ class DesktopSessions:
         if operation == 'catalog' and set(value) <= {'action', 'operation', 'surface', 'sessionId', 'refresh'}:
             return self.call('antigravity', 'catalog', sid, {'section': 'models', 'refresh': value.get('refresh') is True})
         fields = {'settings': {'model', 'modelCatalogIdentity'}, 'access': {'mode'}}.get(operation)
-        if fields is None or set(value) != {'action', 'operation', 'surface', 'sessionId', 'id', *fields}:
+        required = {'action', 'operation', 'surface', 'sessionId', 'id', *(fields or ())}
+        optional = {'manualModel'} if operation == 'settings' else set()
+        if fields is None or not required <= set(value) or set(value) - required - optional:
             raise ValueError('Antigravity 配置请求无效')
-        return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields)})
+        return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields, *optional) if key in value})
 
     def control(self, value):
         action = value.get('action', 'status')

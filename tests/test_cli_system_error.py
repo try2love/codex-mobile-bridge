@@ -72,7 +72,7 @@ class SystemErrorTests(unittest.TestCase):
         self.assert_no_write()
 
     def test_unverified_native_version_cannot_enable_error_terminal_release_or_switch(self):
-        self.client.connect.return_value['userAgent'] = 'codex-mobile-bridge-cli/0.165.0 (fixture)'
+        self.client.connect.return_value['userAgent'] = 'codex-mobile-bridge-cli/0.163.0 (fixture)'
         with self.assertRaises(ValueError):
             self.check_idle()
         with self.assertRaisesRegex(ValueError, '版本'):

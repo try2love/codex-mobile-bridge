@@ -5,8 +5,9 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   if(!items?.length)return;
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
   for(const item of items){
-    if(item.type==='toolImage'&&!showToolImages)continue;
-    if(!['localImage','image','toolImage'].includes(item.type)&&!(item.type==='file'&&item.desktopId))continue;
+    const kind=item.type||item.kind;
+    if(kind==='toolImage'&&!showToolImages)continue;
+    if(!['localImage','image','toolImage'].includes(kind)&&!(kind==='file'&&item.desktopId))continue;
     const source=url(item);if(!source)continue;
     const link=document.createElement('a');link.href=source.original;link.target='_blank';link.rel='noopener';
     link.dataset.imagePreview=source.original;link.dataset.imageName=item.name||t('图片附件');
@@ -17,8 +18,8 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   const label=document.createElement('small');label.className='muted';label.append(document.createTextNode(t('附件：')));
   items.forEach((item,index)=>{
     if(index)label.append(document.createTextNode('、'));
-    const name=item.name||item.type;
-    if(item.type!=='file'||!item.path){label.append(document.createTextNode(name));return;}
+    const kind=item.type||item.kind,name=item.name||kind;
+    if(kind!=='file'||!item.path){label.append(document.createTextNode(name));return;}
     const href=fileUrl?.(item),link=document.createElement(href?'a':'button');link.textContent=name;
     if(href)link.href=href;
     else{link.type='button';link.className='plain';link.dataset.unavailableFile='true';}

@@ -38,14 +38,31 @@ def configuration_stamp(home):
 
 
 def daemon_version(info):
-    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex_mobile_bridge_wsl|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)(?:\s|$)', info.get('userAgent', ''))
+    version = re.match(r'^(?:Codex Desktop|codex_cli_rs|codex|codex-tui|codex_mobile_bridge_wsl|codex-mobile-bridge(?:-(?:cli|target-check|network-check|network-setting|auth-check|final-idle-check|network-verify))?)/((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[a-zA-Z0-9.-]+)?)(?:\s|$)', info.get('userAgent', ''))
     return version.group(1) if version else None
 
 
 def graceful_restart_supported(info, *, platform=None):
-    if (platform or sys.platform) == 'win32':
-        return daemon_version(info) == '0.167.0-alpha.3.2'
-    return daemon_version(info) in ('0.164.0', '0.167.0')
+    # These are protocol introduction points, not a release allowlist. Actual
+    # dispatch still verifies the process/home, idle tasks and native transport.
+    platform = platform or sys.platform
+    version = daemon_version(info)
+    if not version or platform not in ('darwin', 'linux', 'win32'):
+        return False
+    release, _, prerelease = version.partition('-')
+    release = tuple(map(int, release.split('.')))
+    minimum = (0, 167, 0) if platform == 'win32' else (0, 164, 0)
+    if release != minimum:
+        return release > minimum
+    if not prerelease:
+        return True
+    if platform != 'win32':
+        return False
+    # Windows first exposed the verified shutdown socket in alpha.3.2.
+    parts = prerelease.split('.')
+    return (parts[0] in ('beta', 'rc') or parts[0] == 'alpha' and len(parts) >= 2
+            and all(part.isdecimal() for part in parts[1:])
+            and tuple(map(int, parts[1:])) >= (3, 2))
 
 
 class CliProviderMismatch(IPCError):

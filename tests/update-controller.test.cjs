@@ -22,6 +22,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
     setInterval(fn,ms){intervals.push(ms);return {unref(){}};},
     require(name){
       if(name==='electron')return {app};
+      if(name==='./features/updates/mac-handoff.cjs')return {...requireMain(name),relaunchMacUpdate(){}};
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
       if(name==='node:fs')return fixtureFiles?fs:{mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},

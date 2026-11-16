@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 
 from bridge.clients.claude import model, file_archive
-from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title, local_command_text
+from bridge.clients.claude.history import file_stamp, page as history_page, image_event, session_custom_title, local_command_text, merge_live_page
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.session_registry import assert_session_closed
 from bridge.clients.claude.creation import creation_launch_options
@@ -60,18 +60,6 @@ def project_account_identity(profile):
     from bridge.clients.claude.remote_worker import auth_fingerprint
     environment = managed_api_env() if profile.get('managedApi') else os.environ.copy()
     return auth_fingerprint(profile['binary'], profile['directory'], environment)
-
-
-def _permission_prompt_args(binary, env):
-    """Claude 2.1.168 routes stdio prompts before --permission-prompts existed."""
-    try:
-        version = subprocess.run([binary, '--version'], env=env, capture_output=True,
-                                 text=True, encoding='utf-8', errors='replace', timeout=5)
-        if version.returncode == 0 and re.match(r'\A2\.1\.168(?:\s|\Z)', version.stdout):
-            return []
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return ['--permission-prompts', 'host']
 
 
 def _supports_compact(catalog, *, desktop_projection=False):
@@ -861,7 +849,7 @@ class ClaudeCli:
         command = [profile['binary'], '-p', '--session-id', native, '--input-format', 'stream-json',
                    '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
                    '--setting-sources', 'user,project,local', '--permission-prompt-tool', 'stdio',
-                   *_permission_prompt_args(profile['binary'], env), '--allow-dangerously-skip-permissions']
+                   '--allow-dangerously-skip-permissions']
         arguments, environment = creation_launch_options(selection)
         command.extend(arguments)
         for name, value in environment.items():
@@ -983,14 +971,15 @@ class ClaudeCli:
                         live_events = list(owned.events)
                 else:
                     live_events = []
-                events = history_events + (live_events if before is None else [])
+                events = merge_live_page(history_events, live_events) if before is None else history_events
                 public.update(context_fields(row['contextEvents'] + live_events))
                 messages = model.transcript(events)
                 unique = {item['id']: item for item in messages}
                 can_resume = (not row['archived'] and not live and row['permissionKnown'] and self._ready(self.profile_resolver())
                               and Path(row['cwd']).is_dir())
                 return {'connected': True, 'session': public, 'messages': list(unique.values()),
-                        'turns': model.turns(events),
+                        # Completion UUIDs are notification anchors, not message-window state.
+                        'turns': model.turns(history_events + (live_events if before is None else [])),
                         'history': {'before': cursor, 'hasMore': has_more},
                         'notice': '无法确认原会话权限模式，请在电脑端继续' if not live and not row['permissionKnown'] else '',
                         'capabilities': {
@@ -1037,7 +1026,6 @@ class ClaudeCli:
                     command.extend(('--add-dir', str(upload_dir.resolve())))
                 if row['model']:
                     command.extend(('--model', row['model']))
-                command.extend(_permission_prompt_args(profile['binary'], env))
                 try:
                     assert_session_closed(profile['directory'], native)
                 except BridgeUnavailable as exc:

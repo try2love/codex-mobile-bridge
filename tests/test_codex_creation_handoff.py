@@ -160,8 +160,8 @@ class CodexCreationHandoff(unittest.TestCase):
                 self.bridge.ipc.request.assert_not_called()
 
     def test_catalog_rejection_before_settings_write_can_be_explicitly_retried(self):
-        self.bridge.catalog.return_value = {**self.catalog, 'models': []}
-        with self.assertRaisesRegex(CreationError, '推理能力'):
+        self.bridge.catalog.return_value = {**self.catalog, 'models': [{'id': self.selected['model'], 'efforts': ['high']}]}
+        with self.assertRaisesRegex(CreationError, '不支持所选推理强度'):
             self.create()
         self.assertEqual(self.bridge.creations[self.request_id]['modelSettingsPhase'], 'pending')
         self.bridge.ipc.request.assert_not_called()

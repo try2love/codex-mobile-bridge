@@ -155,6 +155,7 @@ export async function nativeRequest(request, environment) {
       id: provider.providerId + '/' + model.modelId, name: model.modelId + ' · ' + provider.providerName,
       provider: provider.providerId, model: model.modelId,
       efforts: model.config.optionSpecs?.reasoningLevel?.values || [],
+      defaultEffort: model.config.optionSpecs?.reasoningLevel?.values?.at(-1) || '',
     })));
   };
   if (request.action === 'account') {
@@ -394,7 +395,6 @@ export async function nativeRequest(request, environment) {
     const body = request.body;
     if (typeof body.firstMessage !== 'string' || !body.firstMessage.trim() || body.firstMessage.length > 100000)
       throw Error('请输入首条消息');
-    if (!hasModels) throw Error('ZCode 原 App 未提供模型目录');
     const sid = 'sess_' + body.id;
     let workspacePath = request.workspace, projectId = null;
     if (body.directoryProject || body.projectKey && body.projectKey !== request.workspace) {
@@ -412,14 +412,15 @@ export async function nativeRequest(request, environment) {
         throw Error('原生项目目录已变化，请重新选择');
       workspacePath = prepared.workspacePath; projectId = prepared.projectId;
     }
-    const view = await services.modelSelectionService.getView();
+    let view;
+    try { view = await services.modelSelectionService.getView(); } catch (error) { if (body.model === undefined) throw error; }
     const previous = anchor?.lease.store.getState();
     if (anchor && (previous.status !== 'live' || previous.snapshot?.sessionId !== request.sessionId))
       throw Error('ZCode 原生会话连接尚未就绪');
     let selection;
     if (body.model !== undefined) {
       const slash = typeof body.model === 'string' ? body.model.indexOf('/') : -1;
-      if (slash < 1) throw Error('请选择有效的 ZCode 模型');
+      if (slash < 1 || slash === body.model.length-1 || /[\s\x00-\x1f\x7f]/.test(body.model)) throw Error('请选择原 App 的完整 provider/model 标识');
       selection = { providerId: body.model.slice(0, slash), modelId: body.model.slice(slash + 1),
                     options: { reasoningLevel: body.effort } };
     } else if (previous) {
@@ -432,9 +433,11 @@ export async function nativeRequest(request, environment) {
       try { recent = JSON.parse(localStorage.getItem(recentKey) || 'null'); } catch { /* No valid preference. */ }
       selection = recent?.modelSelection || view.preferredSelection;
     }
-    const model = view.providers.find(p => p.providerId === selection?.providerId)?.models.find(m => m.modelId === selection.modelId);
-    const thought = selection?.options?.reasoningLevel;
-    if (!model || model.config.enabled === false || !model.config.optionSpecs?.reasoningLevel?.values?.includes(thought))
+    const model = view?.providers.find(p => p.providerId === selection?.providerId)?.models.find(m => m.modelId === selection.modelId);
+    const levels = model?.config.optionSpecs?.reasoningLevel?.values || [];
+    const thought = selection?.options?.reasoningLevel || levels.at(-1) || '';
+    if ((!model && body.model === undefined) || model?.config.enabled === false ||
+        levels.length && !levels.includes(thought) || thought && !/^[A-Za-z0-9_-]{1,64}$/.test(thought))
       throw Error('请先在 ZCode 选择有效的模型和思考深度');
     if (!same(anchor ? await identity() : await clientIdentity(), current)) throw Error('ZCode owner changed before create');
     checkDeadline();
@@ -508,7 +511,7 @@ export async function nativeRequest(request, environment) {
     const hasAccount = typeof services.oauthService?.getActiveProvider === 'function' &&
       typeof services.credentialService?.load === 'function';
     return { binding: current, snapshot: before, ...(hasAccount ? { account: await account() } : {}),
-      capabilities: { rename: typeof services.zcodeTaskService?.renameTask === 'function', models: hasModels, effort: hasModels, create: hasModels, skills: hasSkills,
+      capabilities: { rename: typeof services.zcodeTaskService?.renameTask === 'function', models: true, effort: true, manualModels: true, manualEffort: true, create: hasModels, skills: hasSkills,
         attachments: hasAttachments, uploadFiles: hasAttachments, projectReferences: hasAttachments } };
   }
   if (request.action === 'tasks') return { tasks: (before.backgroundWorks || []).map(work => ({
@@ -525,7 +528,7 @@ export async function nativeRequest(request, environment) {
     }));
   };
   if (request.action === 'catalog') {
-    const value = { capabilities: { models: hasModels, effort: hasModels, skills: hasSkills },
+    const value = { capabilities: { models: true, effort: true, manualModels: true, manualEffort: true, skills: hasSkills },
       currentModel: before.config.provider + '/' + before.config.model, currentEffort: before.config.thought };
     if (hasModels && body.section !== 'skills') value.models = await models();
     if (hasSkills && body.section !== 'models') value.skills = await skills();
@@ -635,10 +638,15 @@ export async function nativeRequest(request, environment) {
   } else if (request.action === 'settings') {
     if (before.control.activeWorks.length || before.pendingInteractions.length || before.queue.items.length)
       throw Error('请等待当前任务结束后再切换模型');
-    const row = (await models()).find(model => model.id === body.model);
-    if (!row || (row.efforts.length && !row.efforts.includes(body.effort)))
-      throw Error('请选择原 App 当前提供的模型和思考深度');
-    type = 'switchModelConfig'; payload = { provider: row.provider, model: row.model, thought: body.effort || '' };
+    const slash = typeof body.model === 'string' ? body.model.indexOf('/') : -1;
+    if (slash < 1 || slash === body.model.length-1 || /[\s\x00-\x1f\x7f]/.test(body.model))
+      throw Error('请选择原 App 的完整 provider/model 标识');
+    let rows = [];
+    try { rows = await models(); } catch { /* Discovery failure does not replace an explicit native selection. */ }
+    const row = rows.find(model => model.id === body.model);
+    if (body.effort && (!/^[A-Za-z0-9_-]{1,64}$/.test(body.effort) || row?.efforts.length && !row.efforts.includes(body.effort)))
+      throw Error('请选择原 App 当前提供的思考深度');
+    type = 'switchModelConfig'; payload = { provider: body.model.slice(0, slash), model: body.model.slice(slash+1), thought: body.effort || '' };
   } else if (request.action === 'stop') {
     if (!body.executionId || !before.control.canStop ||
         !before.control.activeWorks.some(w => w.foregroundExecutionId === body.executionId))

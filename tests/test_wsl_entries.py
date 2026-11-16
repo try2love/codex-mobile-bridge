@@ -57,6 +57,38 @@ class RegistryTests(unittest.TestCase):
             self.entries.get('wsl:unknown')
         self.assertFalse(self.entries.path.exists())
 
+    def test_display_query_failure_keeps_registered_clients_and_connections_with_unknown_state(self):
+        from bridge.clients.claude.wsl import WslClaudeEntries, entry_id as claude_id
+        row = {'id': entry_id('Ubuntu', 'fixture', '/home/fixture/.codex'),
+               'distribution': 'Ubuntu', 'user': 'fixture', 'home': '/home/fixture/.codex',
+               'label': 'WSL fixture', 'enabled': True}
+        self.entries.entries = [row]
+        owner = SimpleNamespace(server=SimpleNamespace(closed=True))
+        self.entries.bridges[row['id']] = owner
+        claude = WslClaudeEntries(self.temp.name)
+        claude.entries = [{**row, 'id': claude_id('Ubuntu', 'fixture', '/home/fixture/.claude'),
+                           'configDir': '/home/fixture/.claude'}]
+        scenarios = [(subprocess.TimeoutExpired('wsl.exe', 8), None),
+                     (OSError('unavailable'), None),
+                     (subprocess.CompletedProcess([], 1, b'', b''), None),
+                     (subprocess.CompletedProcess([], 0, b'', b''), False),
+                     (subprocess.CompletedProcess([], 0, 'Ubuntu\r\n'.encode('utf-16-le'), b''), True)]
+        for outcome, expected in scenarios:
+            with self.subTest(expected=expected, outcome=outcome), \
+                    patch.object(wsl, 'os', SimpleNamespace(name='nt')), patch.object(wsl, '_options', return_value={}), \
+                    patch.object(wsl.subprocess, 'run', **({'side_effect': outcome} if isinstance(outcome, Exception)
+                                                         else {'return_value': outcome})) as query, \
+                    patch.object(wsl, 'probe', side_effect=AssertionError('Display must not probe or launch')):
+                for result in (self.entries.applications(), claude.applications()):
+                    self.assertEqual(len(result), 1)
+                    self.assertIs(result[0]['distributionRunning'], expected)
+                    self.assertTrue(result[0]['enabled'])
+                    self.assertFalse(result[0]['canQuitDesktop'])
+                self.assertIs(self.entries.bridges[row['id']], owner)
+                self.assertEqual(self.entries.entries, [row])
+                for call in query.call_args_list:
+                    self.assertEqual(call.args[0], ['wsl.exe', '--list', '--running', '--quiet'])
+
     def test_same_windows_and_wsl_configuration_home_cannot_be_registered_twice(self):
         self.entries.desktop_home = Path(self.temp.name).resolve()
         identifier = entry_id('Ubuntu', 'fixture', '/mnt/c/shared')

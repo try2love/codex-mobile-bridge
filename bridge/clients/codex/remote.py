@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path, PurePath
 
-from bridge.clients.codex.catalog import CatalogError
+from bridge.clients.codex.catalog import CatalogError, CatalogIdentityChanged
 from bridge.features.network.retry import (
     ConnectionUnavailable as RemoteUnavailable, TransportUnavailable as SshTransportUnavailable, ssh_connection)
 from bridge.features.network.stdio import run_with_input
@@ -328,15 +328,18 @@ class RemoteCatalog:
                 if kind == 'skills' and previous and not refresh and time.monotonic() - previous[0] < 300:
                     return previous[1]
             source = self._source()
-            source += ('print(json.dumps(reader.get_kind(' + payload(kind) + ', ' + payload(cwd) +
+            source += ('try:\n print(json.dumps(reader.get_kind(' + payload(kind) + ', ' + payload(cwd) +
                         ', refresh=' + payload(refresh) + ', provider=' + payload(provider) +
                         ', query=' + payload(query) + ', offset=' + payload(offset) +
                         ', limit=' + payload(limit) + ', ids=' + payload(list(identifiers)) +
-                        '), ensure_ascii=False))\n')
+                        '), ensure_ascii=False))\n'
+                        'except CatalogIdentityChanged as exc:\n print(json.dumps({\"error\":str(exc),\"code\":exc.code}))\n')
             try:
                 result = ssh_read(self.alias, source, timeout=120)
             except RemoteUnavailable as exc:
                 raise CatalogError(str(exc)) from exc
+            if result.get('code') == 'model_identity_changed':
+                raise CatalogIdentityChanged(result.get('error') or '模型接入已变化，请重试')
             with self.lock:
                 cache[key] = (time.monotonic(), result)
                 if kind == 'models':

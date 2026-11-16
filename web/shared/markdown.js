@@ -4,13 +4,14 @@
   // Math delimiters must be consumed before Markdown removes backslash escapes.
   markdown.use(texmath, {engine:window.katex, delimiters:['brackets','dollars']});
   window.BridgeOutputDirectives?.install(markdown);
+  window.BridgeVisualize?.install(markdown);
   const tags = new Set(['p','h1','h2','h3','h4','h5','h6','ul','ol','li','strong','em','s','blockquote','hr','br','table','thead','tbody','tr','th','td']);
 
   // Build nodes from parsed tokens; model output never becomes executable HTML.
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
     const body = document.createElement('div');
     body.className = 'markdown-body';
-    const artifacts = new Map(files.flatMap(file =>
+    const artifacts = new Map(files.filter(file => !file.visualization).flatMap(file =>
       [file.reference, ...(file.references || [])].flatMap(reference =>
         [reference, markdown.utils.unescapeAll(reference)].map(value => [markdown.normalizeLink(value), file]))));
     function parse(source) {
@@ -87,6 +88,9 @@
             formula.append(number);
           }
           parent.append(formula);
+        } else if (token.type === 'visualize') {
+          if (node.__visualizeContext && node.__visualizeAssistant) parent.append(window.BridgeVisualize.create(token.meta, {owner:node, resolve:reference => files.find(file => file.visualization && file.reference === reference)}));
+          else parent.append(document.createTextNode(token.content));
         } else if (token.type === 'output_directive') {
           parent.append(window.BridgeOutputDirectives.create(token.meta, reference => {
             const file=artifacts.get(markdown.normalizeLink(reference));
