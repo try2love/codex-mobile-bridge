@@ -295,7 +295,7 @@ class Workbench {
     if (this.previewFullscreen?.tab === session.files[index]) this.closePreviewFullscreen();
     if (!session.files[index] || session.files[index].id !== id) return;
     session.files[index].controller?.abort(); session.files[index].pdf?.dispose(); session.files[index].html?.dispose(); session.files[index].markdown?.dispose(); session.files[index].fileFont?.dispose(); session.files[index].git?.dispose(); session.files[index].terminal?.dispose(); session.files[index].agents?.dispose(); session.files[index].sideChat?.dispose(); session.files.splice(index, 1);
-    if(session.splitTab===id)session.splitTab=(session.files[index]||session.files[index-1])?.id||null;
+    if(session.splitTab===id)session.splitTab=(session.files.slice(index).find(tab=>!tab.chatId)||session.files.slice(0,index).reverse().find(tab=>!tab.chatId))?.id||null;
     if(session.lastToolTab===id)session.lastToolTab=session.splitTab||session.files.find(t=>!t.chatId)?.id||null;
     const wasActive=session.active===id;
     if(wasActive)session.active=session.splitTab||(session.files.some(t=>t.id==='files')?'files':'chat');

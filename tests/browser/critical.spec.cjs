@@ -1054,3 +1054,102 @@ test('wide chat list collapse preserves conversation and drafts across clients a
  await page.evaluate(()=>BridgeI18n.setLanguage('en'));await expect(toggle).toHaveAttribute('aria-label','Collapse chat list');await toggle.click();await info.attach('collapsed-wide',{body:await page.screenshot(),contentType:'image/png'});
  await page.setViewportSize({width:390,height:844});await expect(toggle).toBeHidden();
 });
+
+
+test.describe('workbench split',()=>{
+
+test.beforeEach(async({page})=>{
+ await page.goto('/?case=success');
+ await page.waitForFunction(()=>document.getElementById('bootstrap-status')?.hidden);
+ await page.evaluate(async()=>{
+  await BridgeFeatures.load('chat');
+  for(const id of ['app','chat'])document.getElementById(id).hidden=false;
+  for(const id of ['login','sessions','welcome'])document.getElementById(id).hidden=true;
+  document.getElementById('app').classList.add('chat-open');BridgeI18n.setLanguage('zh');
+  const wb=window.BridgeWorkbench;
+  window.__workspaceReads=[];
+  wb.request=async url=>{
+   window.__workspaceReads.push(url);
+   if(new URL(url,location.origin).pathname.endsWith('/preview'))return {kind:'image',mime:'image/png',data:window.__thumbnailData};
+   return {project:'/project',path:'/project',parentPath:'/',projectPath:'',entries:[{kind:'file',name:'photo.png',path:'/project/photo.png',size:100}],total:1,nextOffset:null};
+  };
+  const canvas=document.createElement('canvas');canvas.width=400;canvas.height=200;
+  canvas.getContext('2d').fillRect(0,0,400,200);window.__thumbnailData=canvas.toDataURL('image/png').split(',')[1];
+  wb.openChat=(id,host)=>wb.open(id,host,{rootId:'parent',title:'侧边聊天'});
+  wb.open('parent','local');
+  document.getElementById('message').value='Unsent parent draft';
+ });
+});
+
+test('split opens files directly from main and child chats and restores the last tool',async({page},testInfo)=>{
+ const wide=await page.evaluate(()=>BridgeWorkbench.canSplit());
+ const button=page.locator('#chat .wb-split-button');
+ if(!wide){
+  await expect(button).toBeHidden();await expect(button).toBeDisabled();
+  expect(await page.evaluate(()=>{BridgeWorkbench.toggleSplit();return BridgeWorkbench.current.files.length;})).toBe(0);
+  return;
+ }
+ await button.click();
+ await expect(page.locator('#chat')).toHaveClass(/wb-split/);
+ await expect(page.locator('#chat .wb-file-name')).toHaveText('photo.png');
+ await expect(page.locator('#message')).toBeVisible();
+ await button.click();
+ await page.evaluate(()=>{
+  const wb=BridgeWorkbench,tab={id:'file:/project/readme.txt',name:'readme.txt',body:wb.node('pre','','Saved tool content')};
+  wb.current.files.push(tab);wb.select(tab.id);wb.select('chat');
+ });
+ await button.click();
+ await expect(page.locator('#chat .workbench-panel')).toHaveText('Saved tool content');
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('file:/project/readme.txt');
+ await button.click();
+ await page.evaluate(()=>{BridgeWorkbench.open('child','local',{rootId:'parent',title:'侧边聊天'});});
+ await button.click();
+ expect(await page.evaluate(()=>({chat:BridgeWorkbench.current.chatId,tool:BridgeWorkbench.current.splitTab}))).toEqual({chat:'child',tool:'file:/project/readme.txt'});
+ await expect(page.locator('#chat .wb-tab[data-tab="child:child"] [role="tab"]')).toHaveAttribute('aria-selected','true');
+ await expect(page.locator('#chat .wb-tab[data-tab="child:child"]')).toHaveAttribute('draggable','false');
+ await expect(page.locator('#message')).toHaveValue('Unsent parent draft');
+ await testInfo.attach('chat-and-tool-split',{body:await page.screenshot(),contentType:'image/png'});
+});
+
+test('fresh child chat opens files in the right pane without treating the child as a tool',async({page})=>{
+ await page.evaluate(()=>BridgeWorkbench.open('child','local',{rootId:'parent',title:'侧边聊天'}));
+ if(!await page.evaluate(()=>BridgeWorkbench.canSplit())){
+  await expect(page.locator('#chat .wb-split-button')).toBeHidden();
+  expect(await page.evaluate(()=>{BridgeWorkbench.split('child:child');BridgeWorkbench.toggleSplit();return BridgeWorkbench.splitMode;})).toBe(false);return;
+ }
+ await page.locator('#chat .wb-split-button').click();
+ await expect(page.locator('#chat .wb-file-name')).toHaveText('photo.png');
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('files');
+ await page.evaluate(()=>BridgeWorkbench.split('child:child'));
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('files');
+ await expect(page.locator('#message')).toBeVisible();
+});
+
+for(const order of [['files','child:child','file:notes'],['file:notes','child:child','files']]){
+ test('closing the split tool skips neighboring child tabs: '+order.join(', '),async({page})=>{
+  test.skip(!await page.evaluate(()=>BridgeWorkbench.canSplit()),'Requires a wide split pane');
+  await page.evaluate(order=>{
+   const wb=BridgeWorkbench,s=wb.current;
+   s.files=order.map(id=>({id,name:id,body:wb.node('div','','Tool '+id),...(id.startsWith('child:')?{chatId:'child'}:{})}));
+   wb.split('files');
+  },order);
+  await page.locator('#chat .wb-tab[data-tab="files"] button[aria-label="关闭"]').click();
+  expect(await page.evaluate(()=>({split:BridgeWorkbench.current.splitTab,chat:BridgeWorkbench.current.chatId}))).toEqual({split:'file:notes',chat:'parent'});
+  await expect(page.locator('#chat .workbench-panel')).toHaveText('Tool file:notes');
+  await page.locator('#chat .wb-tab[data-tab="file:notes"] button[aria-label="关闭"]').click();
+  expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBeNull();
+  await expect(page.locator('#message')).toBeVisible();
+  await expect(page.locator('#chat .workbench-panel')).toBeHidden();
+ });
+}
+
+test('visible files render decoded thumbnails in the right split pane and narrow layout',async({page},testInfo)=>{
+ await page.evaluate(()=>{const wb=BridgeWorkbench;wb.setThumbnails(true);if(wb.canSplit())wb.toggleSplit();else wb.files();});
+ const image=page.locator('#chat .wb-file-icon .wb-thumbnail');
+ await expect(image).toBeVisible();
+ expect(await image.evaluate(node=>({width:node.naturalWidth,height:node.naturalHeight}))).toEqual({width:96,height:48});
+ expect(await page.evaluate(()=>window.__workspaceReads.filter(url=>new URL(url,location.origin).pathname.endsWith('/preview')).length)).toBe(1);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+ await testInfo.attach('files-thumbnail',{body:await page.screenshot(),contentType:'image/png'});
+});
+});
