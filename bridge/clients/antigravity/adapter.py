@@ -330,10 +330,10 @@ class Antigravity:
         if native_busy or cid in active_cids:
             raise BridgeUnavailable(busy_msg)
 
-    def _reject_busy_structured_follow_up(self, prompt, body, *, surface, cid, model, cwd):
+    def _reject_busy_structured_follow_up(self, prompt, body, *, surface, cid, model, cwd, work_mode):
         if self._validate_plugins_arg(body.get('plugins')):
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
-        if body.get('workMode') in ('plan', 'goal'):
+        if body.get('workMode') in ('plan', 'goal') or work_mode == 'plan':
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
         cmd_name, _ = _parse_slash_prefix(prompt)
         if not cmd_name:
@@ -341,7 +341,8 @@ class Antigravity:
         try:
             known_names = set(self._commands_by_name(surface=surface, cid=cid, model=model, cwd=cwd))
         except (OSError, ValueError, BridgeUnavailable, AttributeError):
-            known_names = set(_KNOWN_NATIVE_SYSTEM_COMMANDS)
+            # A failed catalog cannot prove this is plain text rather than a workflow.
+            raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR) from None
         if cmd_name in (known_names | _KNOWN_NATIVE_SYSTEM_COMMANDS):
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
 
@@ -539,7 +540,7 @@ class Antigravity:
                 if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
                 self._reject_busy_structured_follow_up(
-                    prompt, {**body, 'plugins': plugins},
+                    prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
                     surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'),
                 )
                 item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)

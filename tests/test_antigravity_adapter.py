@@ -1454,6 +1454,33 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(queued, {'status': 'queued', 'id': 'q1', 'delivery': 'hook-queue'})
             adapter.hooks.enqueue_follow_up.assert_called_once_with(sid, 'plain follow-up', mode='queue')
 
+    def test_busy_follow_up_keeps_persisted_mode_and_unknown_command_semantics(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        adapter.hooks = mock.MagicMock()
+        adapter.hooks.permission_mode.return_value = 'desktop'
+        adapter.hooks.has_pending_approvals.return_value = False
+        adapter.hooks.has_recent_heartbeat.return_value = True
+        adapter.hooks.enqueue_follow_up.return_value = {'id': 'q1'}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, {CID})), \
+                mock.patch.object(adapter.cli, 'slash_commands', side_effect=BridgeUnavailable('catalog unavailable')):
+            for mode in ('queue', 'steer'):
+                with self.subTest(mode=mode, case='unknown workflow'):
+                    with self.assertRaises(BridgeUnavailable):
+                        adapter.call('send', sid, {'text': '/deploy-flow prod', 'mode': mode})
+                adapter._settings[sid] = {'workMode': 'plan'}
+                with self.subTest(mode=mode, case='persisted plan'):
+                    with self.assertRaises(BridgeUnavailable):
+                        adapter.call('send', sid, {'text': 'design api', 'mode': mode})
+                adapter._settings.pop(sid)
+            adapter.hooks.enqueue_follow_up.assert_not_called()
+            # A normal prompt or an absolute path needs no command catalog.
+            for prompt in ('plain follow-up', '/usr/bin/python inspect.py'):
+                self.assertEqual(adapter.call('send', sid, {'text': prompt, 'mode': 'queue'})['status'], 'queued')
+            self.assertEqual(adapter.hooks.enqueue_follow_up.call_count, 2)
+
     def test_desktop_sessions_routes_antigravity_compact_goal_and_work_mode(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory / 'desktop-sessions/settings.json'
