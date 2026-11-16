@@ -21,6 +21,39 @@ function fixture(){
 }
 const page=(epoch,key,role='assistant',more=true)=>({epoch,rows:[{key,role}],before:epoch+'.'+key,hasMore:more});
 const tick=()=>new Promise(r=>setImmediate(r));
+function scrollFixture(){
+ const listeners=new Map(),requests=[],viewport={scrollTop:3000,scrollHeight:10000,clientHeight:600,getBoundingClientRect:()=>({top:100}),closest:()=>null,
+  addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
+ const container={children:Array.from({length:8},(_,index)=>({hidden:false,dataset:{key:'row-'+index},getBoundingClientRect:()=>({top:100+index*1000-viewport.scrollTop,bottom:1100+index*1000-viewport.scrollTop})}))};
+ const document={documentElement:{dataset:{}}},ctx=vm.createContext({window:{},document,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},ResizeObserver:class{observe(){}disconnect(){}}});
+ for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
+ const Type=vm.runInContext('ChatTimeline',ctx),ui=new Type({elements:{viewport,container,older:{},newer:{}},url:action=>'/fixture/'+action+'?scope=synthetic',renderMeta(){},renderText(){},status(){},request:(url,body,signal)=>{
+  requests.push(url);return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('fixture disposed')),{once:true}));
+ }});
+ ui.sequence=1;ui.epoch='test';ui.before='test.oldest';ui.hasMore=true;ui.lastTop=3200;
+ return {ui,viewport,requests,emit:(type,event={})=>listeners.get(type)({target:viewport,...event})};
+}
+test('upward scrolling within the first few tall messages does not load history far from the actual top',async()=>{
+ const f=scrollFixture();
+ try{
+  f.emit('scroll');assert.equal(f.requests.length,0,'reading 3000px into eight tall outer rows is not near the history edge');
+  f.ui.lastTop=180;f.viewport.scrollTop=120;f.emit('scroll');assert.equal(f.requests.length,1,'genuine upward scrolling near the top still loads history');
+ }finally{f.ui.dispose();await tick();}
+});
+for(const className of ['chat-activity-items','activity-body'])for(const gesture of ['wheel','touch']){
+ test('history edge ignores '+gesture+' originating inside '+className,async()=>{
+  const f=scrollFixture(),inner={scrollTop:90},target={closest:selector=>selector.split(',').some(value=>value.trim()==='.'+className)?inner:null};
+  f.viewport.scrollTop=0;
+  const upward=target=>{
+   if(gesture==='wheel')f.emit('wheel',{target,deltaY:-100});
+   else{f.emit('touchstart',{target,touches:[{clientY:100}]});f.emit('touchmove',{target,touches:[{clientY:130}]});}
+  };
+  try{
+   upward(target);assert.equal(f.requests.length,0,'the inner reading surface owns this gesture even when the outer timeline is at its top');
+   upward(f.viewport);assert.equal(f.requests.length,1,'the same gesture on the outer timeline still requests its older page');
+  }finally{f.ui.dispose();await tick();}
+ });
+}
 function persistentFixture(){
  const writes=[],meta=[],window={BridgeChatHistoryCache:{read:()=>new Promise(resolve=>cachedResolve=resolve),write:(...args)=>writes.push(args)}};let cachedResolve,freshResolve;
  const ctx=vm.createContext({window,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},syncChatMessageNodes(container,nodes){container.children=nodes;}});

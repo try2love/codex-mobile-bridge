@@ -50,9 +50,9 @@ class ChatTimeline {
     this.viewport.addEventListener('scroll',this.onScroll,{passive:true});
     // At the scroll boundary wheel/touch intent produces no scroll event.
     this.atHistoryEdge=()=>!this.suppress&&this.viewport.clientHeight&&this.viewport.scrollTop<=1&&!this.retryCount;
-    this.onWheel=event=>{if(event.deltaY<0&&this.atHistoryEdge())this.loadOlder(100);};
-    this.onTouchStart=event=>{this.touchY=event.touches.length===1?event.touches[0].clientY:null;};
-    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1)return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
+    this.onWheel=event=>{if(event.deltaY<0&&!event.target?.closest?.('.chat-activity-items,.activity-body')&&this.atHistoryEdge())this.loadOlder(100);};
+    this.onTouchStart=event=>{this.touchY=event.touches.length===1&&!event.target?.closest?.('.chat-activity-items,.activity-body')?event.touches[0].clientY:null;};
+    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1||event.target?.closest?.('.chat-activity-items,.activity-body'))return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
     this.viewport.addEventListener('wheel',this.onWheel,{passive:true});
     this.viewport.addEventListener('touchstart',this.onTouchStart,{passive:true});
     this.viewport.addEventListener('touchmove',this.onTouchMove,{passive:true});
