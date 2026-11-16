@@ -831,7 +831,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  Dialog panel(String title,LinearLayout content){
   resetExitGesture();
   Dialog dialog=new Dialog(ui.context);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-  LinearLayout body=column();body.setBackground(background(0xfff5f5f3,22));body.setPadding(dp(18),dp(12),dp(18),dp(12));
+  LinearLayout body=column();body.setBackground(background(pageColor(),22));body.setPadding(dp(18),dp(12),dp(18),dp(12));
   LinearLayout heading=new LinearLayout(ui.context);heading.setGravity(Gravity.CENTER_VERTICAL);TextView name=text(title,23);name.setTypeface(null,android.graphics.Typeface.BOLD);heading.addView(name,new LinearLayout.LayoutParams(0,-2,1));Button done=button(L("完成"),dialog::dismiss);heading.addView(done);body.addView(heading);
   ScrollView scroll=new ScrollView(ui.context);content.setPadding(0,dp(20),0,dp(16));scroll.addView(content);body.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   dialog.setContentView(body);dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(getResources().getDisplayMetrics().widthPixels-dp(24),getResources().getDisplayMetrics().heightPixels-dp(100));return dialog;
