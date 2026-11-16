@@ -587,6 +587,20 @@ test('official settings save independently and connect through the shared client
  ui.confirm(true);await button('forget').onclick();assert.equal(state.configured,false);assert.equal(input.value,state.link);assert.ok(state.link);
 });
 
+test('system browser login and receipt preserve drafts and refresh status only once',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];
+ const state={configured:false,connected:false,link:'https://zcode.z.ai/remote/v4?sid=fixture&mid=fixture',browserLoginPending:false,canSubmitLoginReceipt:false};
+ ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-browser-login')state.browserLoginPending=true;return {...state};});
+ await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),[linkInput,receipt]=section.querySelectorAll('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ await button('browser-login').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-browser-login',link:state.link});
+ const callback='https://zcode.z.ai/remote/v4?state=fixture&code=fixture';receipt.value=' '+callback+' ';receipt.oninput();assert.equal(button('login-receipt').disabled,false,'pending browser login accepts a receipt despite the initial stale canSubmit value');
+ linkInput.value=state.link+'&name=draft';linkInput.oninput();assert.equal(button('login-receipt').disabled,true);
+ const reads=ui.calls.filter(request=>request.action==='zcode-official-state').length;await ui.panel.zcodeOfficial.refresh();await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(request=>request.action==='zcode-official-state').length,reads+1);assert.equal(linkInput.value,state.link+'&name=draft');assert.equal(receipt.value,' '+callback+' ');
+ linkInput.value=state.link;linkInput.oninput();await button('login-receipt').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-login-receipt',receipt:callback});assert.equal(receipt.value,'');
+ receipt.value=callback;receipt.oninput();state.browserLoginPending=false;await ui.panel.zcodeOfficial.refresh();assert.equal(receipt.value,'');assert.equal(receipt.parent.parent.hidden,true);assert.equal(button('login-receipt').disabled,true);
+});
+
 test('official actions block overlap and reread state after a failed save without losing the draft',async()=>{
  const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];let finish;
  const state={configured:true,connected:false,selected:false,link:'https://zcode.z.ai/pair?fixture=one'};

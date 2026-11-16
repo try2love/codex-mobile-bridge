@@ -162,6 +162,8 @@ function register(){
       if(payload.action==='zcode-official-state')return service.status();
       if(payload.action==='zcode-official-save')return service.save(payload.link);
       if(payload.action==='zcode-official-login')return service.login(payload.link);
+      if(payload.action==='zcode-official-browser-login')return service.login(payload.link,{external:true});
+      if(payload.action==='zcode-official-login-receipt')return service.completeLoginReceipt(payload.receipt);
       if(payload.action==='zcode-official-connect'){
         if(service.localLink(payload.link).url!==service.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
         await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});

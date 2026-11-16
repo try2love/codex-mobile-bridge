@@ -114,8 +114,8 @@ function loginBrowser(c,data){
  const {EventEmitter}=require('node:events');
  const windows=[],partitions=[],browserSession={setPermissionRequestHandler(){},setPermissionCheckHandler(){}};
  class Window extends EventEmitter{
-  constructor(options){super();this.options=options;this.destroyed=false;windows.push(this);this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=handler=>{this.openHandler=handler;};this.webContents.executeJavaScript=async source=>typeof data==='function'?data(source):data;}
-  isDestroyed(){return this.destroyed;}show(){}focus(){}async loadURL(){}destroy(){if(!this.destroyed){this.destroyed=true;this.emit('closed');}}
+  constructor(options){super();this.options=options;this.loaded=[];this.shown=0;this.destroyed=false;windows.push(this);this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=handler=>{this.openHandler=handler;};this.webContents.executeJavaScript=async source=>typeof data==='function'?data(source):data;}
+  isDestroyed(){return this.destroyed;}show(){this.shown++;}focus(){}async loadURL(url){this.loaded.push(url);}destroy(){if(!this.destroyed){this.destroyed=true;this.emit('closed');}}
  }
  c.electron.BrowserWindow=Window;c.electron.session={fromPartition:name=>{partitions.push(name);return browserSession;}};
  return {windows,partitions,browserSession};
@@ -123,6 +123,73 @@ function loginBrowser(c,data){
 function loginStorage(c,values){
  const reads=[];loginBrowser(c,source=>require('node:vm').runInNewContext(source,{localStorage:{getItem(key){reads.push(key);return values[key]??null;}}}));return reads;
 }
+async function browserAuthorization(t,{external=true,direct=false,failShell=false,bigmodel=false,beforeOpen}={}){
+ const c=platformFixture(t,'linux');t.after(()=>c.dispose());const browser=loginBrowser(c,null),opened=[];
+ c.electron.shell={openExternal:async url=>{opened.push(url);if(failShell)throw Error('synthetic shell failure');}};
+ await c.login(link,{external});const main=c.loginWindow,authorize=new URL(bigmodel?'https://open.bigmodel.cn/login':'https://zchat.z.ai/api/oauth/authorize');
+ authorize.searchParams.set('state','fixture-authorization-nonce');authorize.searchParams.set(bigmodel?'redirect':'redirect_uri',link);
+ const decision=main.openHandler({url:direct?authorize.href:'about:blank'});assert.equal(decision.action,'allow');
+ decision.createWindow(decision.overrideBrowserWindowOptions);const popup=browser.windows.at(-1);let prevented=false;
+ popup.webContents.emit('will-navigate',{preventDefault(){prevented=true;}},authorize.href);beforeOpen?.({c,main,popup});await tick();
+ const receipt=new URL(link);receipt.searchParams.set('state','fixture-authorization-nonce');receipt.searchParams.set('code','fixture-code');
+ return {c,main,popup,opened,authorize,receipt,prevented,browser};
+}
+
+test('system browser authorization handles blank and direct popups and accepts each matching receipt only once',async t=>{
+ for(const direct of [false,true]){
+  const {c,popup,opened,authorize,receipt,prevented}=await browserAuthorization(t,{direct,bigmodel:direct});
+  assert.equal(prevented,true);assert.deepEqual(opened,[authorize.href]);assert.equal(popup.options.show,false);assert.equal(c.status().browserLoginPending,true);assert.equal(c.status().canSubmitLoginReceipt,true);
+  popup.webContents.emit('will-redirect',{preventDefault(){}},authorize.href);await tick();assert.equal(opened.length,1,'the same pending authorization cannot open the browser twice');
+  await assert.rejects(c.login(link),/切换登录方式/);
+  if(direct){receipt.searchParams.delete('code');receipt.searchParams.set('authCode','fixture-code');}
+  await c.completeLoginReceipt(receipt.href);assert.deepEqual(popup.loaded,[receipt.href]);assert.equal(c.status().canSubmitLoginReceipt,false);
+  await assert.rejects(c.completeLoginReceipt(receipt.href),/结束或过期/);assert.equal(popup.loaded.length,1);assert.equal(c.auth,null);assert.equal(fs.existsSync(c.authFile),false);
+ }
+});
+
+test('system browser receipts require the exact nonce callback origin path and expected query',async t=>{
+ const {c,popup,receipt}=await browserAuthorization(t);
+ const invalid=[receipt.href.replace('https:','http:'),receipt.href.replace('zcode.z.ai','evil.invalid'),receipt.href.replace('/remote/v4','/other'),receipt.href.replace('https://','https://user@'),receipt.href+'#fragment',receipt.href.replace('fixture-authorization-nonce','other-nonce'),receipt.href+'&state=fixture-authorization-nonce',receipt.href+'&code=duplicate',receipt.href+'&authCode=second-code',receipt.href+'&unexpected=value',receipt.href.replace('this-machine','other-machine'),receipt.href+'&mid=this-machine'];
+ const missing=new URL(receipt);missing.searchParams.delete('state');invalid.push(missing.href);missing.searchParams.set('state','fixture-authorization-nonce');missing.searchParams.delete('code');invalid.push(missing.href);missing.searchParams.set('code',' ');invalid.push(missing.href);
+ for(const value of invalid){await assert.rejects(c.completeLoginReceipt(value),/不匹配/);assert.equal(c.pendingAuthorization.used,false);}
+ for(const value of ['not a URL',{},'x'.repeat(16385)])await assert.rejects(c.completeLoginReceipt(value),/完整/);
+ assert.equal(popup.loaded.length,0);assert.equal(fs.existsSync(c.authFile),false);await c.completeLoginReceipt(receipt.href);assert.equal(popup.loaded.length,1);
+});
+
+test('expired closed cancelled or replaced login bindings reject receipts before navigation',async t=>{
+ for(const action of ['expire','close-main','close-popup','generation','settings','auth-file','forget']){
+  const {c,main,popup,receipt}=await browserAuthorization(t);
+  if(action==='expire')c.pendingAuthorization.expiresAt=Date.now()-1;
+  else if(action==='close-main')main.destroy();else if(action==='close-popup')popup.destroy();else if(action==='generation')c.authGeneration++;
+  else if(action==='forget')await c.forget();else {const file=action==='settings'?c.settingsFile:c.authFile;fs.writeFileSync(file+'.replacement','synthetic replacement');fs.renameSync(file+'.replacement',file);}
+  await assert.rejects(c.completeLoginReceipt(receipt.href),/结束或过期/);assert.equal(popup.loaded.length,0);assert.equal(c.auth,null);
+ }
+});
+
+test('system browser shell and callback failures are visible without replaying and embedded login remains embedded',async t=>{
+ const failed=await browserAuthorization(t,{failShell:true});assert.match(failed.c.status().reason,/无法打开系统浏览器/);assert.ok(failed.c.loginWindow);assert.equal(failed.opened.length,1);
+ let loads=0;failed.popup.loadURL=async()=>{loads++;throw Error('synthetic callback failure');};
+ await assert.rejects(failed.c.completeLoginReceipt(failed.receipt.href),/已提交.*尚未确认/);await assert.rejects(failed.c.completeLoginReceipt(failed.receipt.href),/结束或过期/);assert.equal(loads,1);
+ const embedded=await browserAuthorization(t,{external:false});assert.equal(embedded.prevented,false);assert.equal(embedded.opened.length,0);assert.equal(embedded.popup.options.show,true);assert.equal(embedded.c.pendingAuthorization,null);assert.equal(embedded.c.status().browserLoginPending,false);
+ await assert.rejects(embedded.c.completeLoginReceipt(embedded.receipt.href),/结束或过期/);assert.equal(embedded.popup.loaded.length,0);
+});
+
+test('cancelled system browser authorizations cannot run their queued shell launch',async t=>{
+ for(const action of ['main','popup','generation','settings']){
+  const {opened}=await browserAuthorization(t,{beforeOpen({c,main,popup}){
+   if(action==='main')main.destroy();else if(action==='popup')popup.destroy();else if(action==='generation')c.authGeneration++;
+   else{fs.writeFileSync(c.settingsFile+'.replacement','replaced');fs.renameSync(c.settingsFile+'.replacement',c.settingsFile);}
+  }});assert.equal(opened.length,0,action);
+ }
+});
+
+test('system browser placeholders stay hidden only until a recognized official page is needed',async t=>{
+ const {main,opened,browser}=await browserAuthorization(t);
+ const ordinary=main.openHandler({url:'https://accounts.google.com/login'});assert.equal(ordinary.overrideBrowserWindowOptions.show,true);
+ const blank=main.openHandler({url:'about:blank'});assert.equal(blank.overrideBrowserWindowOptions.show,false);const contents=blank.createWindow(blank.overrideBrowserWindowOptions);
+ const popup=browser.windows.at(-1);
+ contents.emit('will-navigate',{preventDefault(){throw Error('official non-authorization navigation should remain available');}},'https://accounts.google.com/login');assert.equal(popup.shown,1);assert.equal(opened.length,1);
+});
 
 test('official browser session capture executes the injected script for all providers and restores zai_cn',async t=>{
  for(const provider of ['zai','zai_cn','bigmodel']){
