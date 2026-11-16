@@ -2,6 +2,8 @@
 
 Status: implemented
 
+本篇持有的共享中继与云 HTTP 分工继续有效；[云服务分支范围收窄](../simplification/2026-11-16-cloud-only-fork-scope.md)进一步要求共享中继文件完整跟随上游，云 Range 校验归 `relay/http_framing.py`，并移除开发热刷新与通用测试修复。下文保留 preview.1 的历史集成和验收证据。
+
 ## Problem
 
 共享中继与账号云服务都调用 `relay.protocol.validate`，但两者要求不同。上游共享中继按方法、客户端和操作限定转发；Noise/P2P 与账号 Web 已依赖通用 HTTP 转发，由网关处理业务权限。合并两套实现后，云网页的新建项目、独立客户端与未来写方法会在到达网关前被共享中继拒绝。

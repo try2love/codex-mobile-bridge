@@ -133,3 +133,4 @@ class WebSocket:
         mask = os.urandom(4)
         self._write(bytes((0x80 | opcode, 0x80 | len(payload))) + mask +
                     bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))
+

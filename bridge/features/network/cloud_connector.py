@@ -11,8 +11,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from relay.protocol import MAX_BODY, content_type, download_headers, request_headers
-from relay.http_framing import validate_http_request
+from relay.protocol import MAX_BODY, content_type, download_headers
+from relay.http_framing import validate_http_request, request_headers
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 from bridge.features.network.cloud_account import Controller, CloudError, scope
@@ -358,6 +358,10 @@ class Connector:
         headers = {'Cookie': self.server.auth.cookie_name + '=' + token, 'Origin': self.local_origin,
                    'X-CSRF-Token': session['csrf'], 'Accept-Encoding': 'identity',
                    'Content-Type': value['content_type'], **value['headers']}
+        # Upstream may reject a write before reading its body. Keep leftover
+        # bytes out of the cloud connection pool without changing the handler.
+        if body:
+            headers['Connection'] = 'close'
         async with self.local.request(value['method'], self.local_origin + value['path'], headers=headers,
                                       data=bytes(body) if body else None, allow_redirects=False) as response:
             if 300 <= response.status < 400:

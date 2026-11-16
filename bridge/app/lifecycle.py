@@ -62,15 +62,10 @@ class GatewayControl:
                         request.unlink(missing_ok=True)
                         if not isinstance(value, dict) or value.get('control') != self.record:
                             continue
-                        payload = value.get('payload', {})
-                        if not isinstance(payload, dict):
-                            continue
-                        handlers = {'accounts': accounts, 'account': account, 'harness': harness,
-                                    'desktop-sessions': desktop_sessions, 'cli-access': cli_access, 'cloud': cloud}
-                        if payload.get('action') in handlers:
+                        if value.get('payload', {}).get('action') in ('account', 'accounts', 'harness', 'desktop-sessions', 'cli-access', 'cloud') and (account or harness or desktop_sessions or cli_access or cloud):
                             def account_request(request=request, value=value):
                                 try:
-                                    handler = handlers[value['payload']['action']]
+                                    handler = {'accounts': accounts, 'account': account, 'harness': harness, 'desktop-sessions': desktop_sessions, 'cli-access': cli_access, 'cloud': cloud}[value['payload']['action']]
                                     if handler is None:
                                         raise ValueError('请更新网关')
                                     result = {'ok': True, 'result': handler(value['payload'].get('value', {}))}

@@ -4,6 +4,24 @@ const assert=require('node:assert/strict');
 const {validateCloud}=require('../desktop/features/connections/cloud.cjs');
 const {pairingImage}=require('../desktop/features/connections/qr.cjs');
 
+test('desktop entry loads the cloud panel before rendering and exposes scoped cloud IPC',()=>{
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const root=path.resolve(__dirname,'..');
+  const scripts=[...fs.readFileSync(path.join(root,'desktop/index.html'),'utf8').matchAll(/<script src="([^"]+)"><\/script>/g)].map(match=>match[1]);
+  const panel=scripts.indexOf('features/connections/cloud.js');
+  assert.ok(panel>scripts.indexOf('../web/shared/i18n.js'));
+  assert.ok(panel<scripts.indexOf('shell/renderer.js'));
+  let api;const calls=[];
+  vm.runInNewContext(fs.readFileSync(path.join(root,'desktop/preload.cjs'),'utf8'),{
+    process:{platform:'win32'},require:()=>({
+      contextBridge:{exposeInMainWorld(name,value){assert.equal(name,'bridgeDesktop');api=value;}},
+      ipcRenderer:{invoke(...args){calls.push(args);}},
+    }),
+  });
+  const payload={action:'status'};api.cloud(payload);
+  assert.deepEqual(calls,[['bridge:cloud',payload]]);
+});
+
 test('cloud IPC exposes only explicit scoped operations',()=>{
   assert.deepEqual(validateCloud(),{action:'status'});
   assert.deepEqual(validateCloud({action:'entitlement'}),{action:'entitlement'});

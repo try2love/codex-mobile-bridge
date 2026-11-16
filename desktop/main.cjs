@@ -19,20 +19,18 @@ const loginStartup=createLoginStartup(app);
 const {spawn}=require('node:child_process');
 const {randomUUID}=require('node:crypto');
 const {interfaces}=require('./features/connections/network.cjs');
-const {createDevelopmentReload}=require('./shared/dev-reload.cjs');
 let language='zh-CN';
 const t=text=>translate(text,language);
 const root=path.resolve(__dirname,'..');
-const developmentUI=!app.isPackaged&&process.argv.includes('--dev-ui');
 // An explicit data directory also keeps test caches inside the project.
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
-let installPending,installStatus={},updater,workerWrites=0,developmentReload,officialRemote;
+let installPending,installStatus={},updater,workerWrites=0,officialRemote;
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){developmentReload?.close();officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function officialService(){
   if(!officialRemote){
     const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
@@ -139,10 +137,6 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
-  if(developmentUI){
-    ipcMain.handle('bridge:dev-state',event=>{authorize(event);return developmentReload.state();});
-    ipcMain.handle('bridge:dev-reload',(event,value)=>{authorize(event);return developmentReload.request(value);});
-  }
   ipcMain.handle('bridge:cloud',async(event,payload)=>{
     authorize(event);
     return worker('cloud',validateCloud(payload));
@@ -360,7 +354,7 @@ async function acknowledgeUpdate(){
   }catch{} // Missing acknowledgement makes the independent helper restore the old app.
 }
 function createWindow(hidden=false){
-  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true,additionalArguments:developmentUI?['--cmb-dev-ui']:[]}});
+  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -377,12 +371,8 @@ else{
   app.whenReady().then(async()=>{
     language=normalize(app.getLocale());
     try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();publishLanguage(dataDir,language);setupUpdater();
-    if(developmentUI)developmentReload=createDevelopmentReload({root,enabled:true,
-      notify:value=>{if(window&&!window.isDestroyed()&&window.webContents.getURL()===entry)window.webContents.send('bridge:dev-change',value);},
-      canReload:()=>!!window&&!window.isDestroyed()&&window.webContents.getURL()===entry&&!workerWrites&&!setupPending&&!installPending&&!updater.busy&&!updateManaged(),
-      reload:()=>window.webContents.reloadIgnoringCache()});
-    register();
+    dataDir=loadDataDir();publishLanguage(dataDir,language);
+    setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
       const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');

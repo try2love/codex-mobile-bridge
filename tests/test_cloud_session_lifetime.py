@@ -104,6 +104,9 @@ class CloudSessionLifetimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((start['status'], start['headers']['Content-Length'], raw), (200, '32', b''))
         start, raw = await self.forward_raw('GET', '/api/not-implemented')
         self.assertEqual((start['status'], json.loads(raw)), (404, {'error': '页面不存在'}))
+        start, raw = await self.forward_raw('POST', '/api/not-implemented', b'{}')
+        self.assertEqual((start['status'], json.loads(raw)), (404, {'error': '页面不存在'}))
+        self.assertTrue((await self.forward())['authenticated'])
 
     async def test_connected_binding_survives_twelve_hours_and_direct_sessions_still_expire(self):
         self.assertTrue((await self.forward())['authenticated'])

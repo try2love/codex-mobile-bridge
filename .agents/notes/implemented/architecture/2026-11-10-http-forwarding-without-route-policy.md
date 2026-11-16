@@ -4,7 +4,7 @@ Status: implemented
 
 共享中继的转发规则由[上游共享中继与云 HTTP 分别校验](2026-11-14-shared-relay-cloud-framing.md)持有；本篇对 Noise/P2P 与账号 Web 的通用转发决定继续有效。以下保留取消各链路操作表时的理由与取舍。
 
-拒绝写入响应统一关闭连接的实现决定由[v2.2.1 上游优先合并](../process/2026-11-16-upstream-v2.2.1-integration.md)部分取代；当前采用上游 HTTP 处理器，未知 POST 后连接复用的回归未通过。下文保留原关闭连接规则的理由与历史验证范围。
+拒绝写入响应统一关闭连接的实现决定由[v2.2.1 上游优先合并](../process/2026-11-16-upstream-v2.2.1-integration.md)部分取代；当前按[云服务分支范围](../simplification/2026-11-16-cloud-only-fork-scope.md)采用上游 HTTP 处理器，云请求方对带正文的回环请求声明关闭连接。下文保留原关闭连接规则的理由与历史验证范围。
 
 ## Problem
 

@@ -1,8 +1,8 @@
 import unittest
 
 from bridge.features.network.cloud_connector import validate_request
-from relay.http_framing import validate_http_request
-from relay.protocol import validate, request_headers
+from relay.http_framing import validate_http_request, request_headers
+from relay.protocol import validate
 
 SID = '12345678-1234-1234-1234-123456789abc'
 
