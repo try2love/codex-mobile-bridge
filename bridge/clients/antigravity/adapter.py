@@ -152,13 +152,18 @@ class Antigravity:
         hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
         active = row.get('status') == 'active' or hooked or (cid in active_cids) or bool(requests)
         permission = self.hooks.permission_mode(key) if self.hooks else 'desktop'
+        saved_settings = self._settings.get(key, {})
+        raw_model = saved_settings.get('model') or ''
+        raw_effort = saved_settings.get('effort') or ''
+        proj_model, proj_effort, display_name = self.cli.resolve_model_display(surface, raw_model, raw_effort)
         return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
-                'model': self._settings.get(key, {}).get('model') or '', 'effort': '',
+                'model': proj_model, 'effort': proj_effort,
+                **({'modelDisplayName': display_name} if display_name else {}),
                 'permissionMode': permission,
                 'permissionLabel': next(option['label'] for option in PERMISSION_OPTIONS if option['value'] == permission),
                 'composerCapabilities': dict(COMPOSER_PRESENTATION),
                 'connectionState': 'ready' if live else 'detached', 'readOnly': not live,
-                'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': False, 'manualModels': live, 'manualEffort': False,
+                'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': False, 'rename': False,
                                  'plan': False, 'goal': False, 'archive': False, 'unarchive': False}}
@@ -204,13 +209,29 @@ class Antigravity:
     def _account(self, surface='app', refresh=False):
         payload = self.cli.catalog_models(surface=surface, refresh=refresh)
         user = payload['userStatus']
+        has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in payload.get('models', []))
         out = {'account': {'provider': 'antigravity', 'name': user.get('name') or 'Antigravity',
                            'email': user.get('email') or '', 'tier': (user.get('userTier') or {}).get('name') or ''},
                'models': payload['models'], 'notice': payload['notice'],
-               'capabilities': {'models': True, 'effort': False, 'manualModels': True, 'manualEffort': False}}
+               'capabilities': {'models': True, 'effort': has_effort, 'manualModels': True, 'manualEffort': False}}
         if payload.get('usageSummary'):
             out['usageSummary'] = payload['usageSummary']
         return out
+
+    def _save_session_model(self, key, model, effort=''):
+        with self._lock:
+            entry = dict(self._settings.get(key) or {})
+            entry['model'] = model
+            if effort:
+                entry['effort'] = effort
+            else:
+                entry.pop('effort', None)
+            self._settings[key] = entry
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temp = self.settings_file.with_suffix('.tmp')
+            temp.write_text(json.dumps(self._settings), encoding='utf-8')
+            temp.chmod(0o600)
+            temp.replace(self.settings_file)
 
     def call(self, action, sid=None, body=None):
         body = body or {}
@@ -253,9 +274,23 @@ class Antigravity:
                 raise ValueError('请选择 Antigravity 项目并输入首条消息')
             surface = project.get('surface') or 'app'
             cwd = project.get('cwd')
-            cid = self.cli.start_cascade(surface=surface, model=body.get('model'), cwd=cwd)
-            self.cli.send_user_message(cid, prompt, model=body.get('model'), surface=surface)
+            model = body.get('model')
+            effort = body.get('effort')
+            if body.get('manualEffort') is True:
+                raise ValueError('Antigravity 暂不支持手动填写思考强度')
+            extra_effort = {'effort': effort} if effort else {}
+            cid = self.cli.start_cascade(surface=surface, model=model, cwd=cwd, **extra_effort)
+            self.cli.send_user_message(cid, prompt, model=model, surface=surface, **extra_effort)
             key = gateway_id(surface, cid)
+            if model:
+                try:
+                    _, canonical_model, canonical_effort, _ = self.cli.canonicalize_model_selection(
+                        model, effort, surface=surface, require_effort=False,
+                    )
+                except (OSError, ValueError, BridgeUnavailable):
+                    canonical_model, canonical_effort = model, (effort or '')
+                if canonical_model:
+                    self._save_session_model(key, canonical_model, canonical_effort)
             return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key}}
         row = self.store.resolve_session(sid)
         if row is None:
@@ -263,6 +298,17 @@ class Antigravity:
         key, cid, surface = row['id'], row['nativeId'], row['surfaceDirKey']
         session = self._session(row, waiting_state=None if action == 'detail' else ({}, set()))
         if action == 'detail':
+            if not session['readOnly'] and session.get('model') and not session.get('modelDisplayName'):
+                try:
+                    proj_model, proj_effort, display_name = self.cli.resolve_model_display(
+                        surface, session['model'], session.get('effort') or '', refresh_if_unknown=True,
+                    )
+                    session['model'] = proj_model
+                    session['effort'] = proj_effort
+                    if display_name:
+                        session['modelDisplayName'] = display_name
+                except (OSError, ValueError, BridgeUnavailable):
+                    pass
             page = self.store.read_transcript_page(row['surfaceRoot'], cid, limit=body.get('historyLimit') or 40,
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
             if page.get('contextUsage'):
@@ -274,7 +320,8 @@ class Antigravity:
                     'requests': session['requests'], 'queued': queued, 'capabilities': session['capabilities'],
                     'submissions': queued, 'draftAccountIdentity': self.account_scope()}
         if action == 'catalog':
-            return {**self._account(surface, body.get('refresh') is True), 'currentModel': session['model'], 'skills': []}
+            return {**self._account(surface, body.get('refresh') is True), 'currentModel': session['model'],
+                    **({'currentEffort': session['effort']} if session.get('effort') else {}), 'skills': []}
         if action == 'tasks':
             return {'tasks': self.store.list_tasks(row['surfaceRoot'], cid)}
         if action == 'image':
@@ -300,18 +347,15 @@ class Antigravity:
             self.hooks.resolve_approval(key, request_id, body.get('decision'))
             return {'status': 'accepted'}
         if action == 'settings':
-            if body.get('effort'):
-                raise ValueError('请使用原客户端提供的完整模型条目选择思考强度')
+            if body.get('manualEffort') is True:
+                raise ValueError('Antigravity 暂不支持手动填写思考强度')
             model = body.get('model')
-            self.cli._model(model, surface)
-            with self._lock:
-                self._settings[key] = {'model': model}
-                self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                temp = self.settings_file.with_suffix('.tmp')
-                temp.write_text(json.dumps(self._settings), encoding='utf-8')
-                temp.chmod(0o600)
-                temp.replace(self.settings_file)
-            return {'status': 'accepted', 'model': model}
+            effort = body.get('effort')
+            _, canonical_model, canonical_effort, _ = self.cli.canonicalize_model_selection(
+                model, effort, surface=surface, require_effort=True,
+            )
+            self._save_session_model(key, canonical_model, canonical_effort)
+            return {'status': 'accepted', 'model': canonical_model, **({'effort': canonical_effort} if canonical_effort else {})}
         if action == 'stop':
             if self.hooks:
                 self.hooks.request_stop(key)
@@ -343,7 +387,8 @@ class Antigravity:
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
                 item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)
                 return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
-            self.cli.send_user_message(cid, prompt, model=session['model'], surface=surface)
+            extra_effort = {'effort': session['effort']} if session.get('effort') else {}
+            self.cli.send_user_message(cid, prompt, model=session['model'], surface=surface, **extra_effort)
             return {'status': 'accepted', 'delivery': 'native'}
         raise ValueError('此 Antigravity 操作尚不支持')
 

@@ -614,8 +614,9 @@ class DesktopSessions:
     def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
         if provider == 'antigravity' and surface is not None:
             value = self._account_models(provider, refresh=refresh, surface=surface)
+            has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
             return {**value, 'capabilities': {'models': self.adapters[provider].cli.available(surface),
-                    'effort': False, 'manualModels': True, 'manualEffort': False}}
+                    'effort': has_effort, 'manualModels': True, 'manualEffort': False}}
         value = self._account_models(provider, refresh=refresh)
         if provider != 'claude' or surface is None:
             return value
@@ -808,7 +809,8 @@ class DesktopSessions:
                 value['capabilities'] = {'models': False, 'effort': False}
                 value['notice'] = '桌面客户端未连接'
             elif provider == 'antigravity':
-                value['capabilities'] = {'models': True, 'effort': False, 'manualModels': True, 'manualEffort': False}
+                has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
+                value['capabilities'] = {'models': True, 'effort': has_effort, 'manualModels': True, 'manualEffort': False}
             elif native_claude:
                 native = self.adapters[provider].session_capabilities(surface)
                 value['capabilities'] = {key: native[key] for key in ('models', 'effort', 'manualModels', 'manualEffort')}
@@ -1316,8 +1318,10 @@ class DesktopSessions:
                     'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True},
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
         value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
+        has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
         capabilities = {'models': value.get('capabilities', {}).get('models') is True if provider == 'antigravity' else True,
-                        'effort': provider != 'antigravity', 'manualModels': True,
+                        'effort': (value.get('capabilities', {}).get('models') is True and has_effort) if provider == 'antigravity' else True,
+                        'manualModels': True,
                         'manualEffort': provider != 'antigravity'}
         return {**value, 'capabilities': capabilities}
 
@@ -3412,7 +3416,7 @@ class DesktopSessions:
             return self.call('antigravity', 'catalog', sid, {'section': 'models', 'refresh': value.get('refresh') is True})
         fields = {'settings': {'model', 'modelCatalogIdentity'}, 'access': {'mode'}}.get(operation)
         required = {'action', 'operation', 'surface', 'sessionId', 'id', *(fields or ())}
-        optional = {'manualModel'} if operation == 'settings' else set()
+        optional = {'manualModel', 'effort'} if operation == 'settings' else set()
         if fields is None or not required <= set(value) or set(value) - required - optional:
             raise ValueError('Antigravity 配置请求无效')
         return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields, *optional) if key in value})

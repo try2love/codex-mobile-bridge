@@ -519,6 +519,31 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise BridgeUnavailable('Antigravity 本机服务不允许重定向')
 
 
+_EFFORT_ORDER = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+_EFFORT_RANK = {name: idx for idx, name in enumerate(_EFFORT_ORDER)}
+_EFFORT_LABEL_RE = re.compile(
+    r'^(?P<base>.+?)\s*\((?P<effort>' + '|'.join(_EFFORT_ORDER) + r')\)$',
+    re.IGNORECASE,
+)
+
+
+def _split_model_variant(model_id, label):
+    """Extract (base_id, base_name, effort) when a model label carries an effort suffix."""
+    text = str(label or '').strip()
+    match = _EFFORT_LABEL_RE.match(text)
+    if not match:
+        return model_id, (text or model_id), ''
+    base_name = match.group('base').strip()
+    effort = match.group('effort').lower()
+    if not base_name:
+        return model_id, (text or model_id), ''
+    stripped_id = re.sub(rf'[-_]{re.escape(effort)}$', '', model_id, flags=re.IGNORECASE).strip('-_')
+    if stripped_id and stripped_id != model_id:
+        return stripped_id, base_name, effort
+    slug = re.sub(r'[^a-z0-9.]+', '-', base_name.lower()).strip('-')
+    return (slug or model_id), base_name, effort
+
+
 class AntigravityCli:
     _ALLOWED_METHODS = (
         'GetUserStatus',
@@ -537,6 +562,8 @@ class AntigravityCli:
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
         self._waiting_cache = {}
+        self._variant_cache = {}
+        self._base_cache = {}
 
     def available(self, surface='app'):
         try:
@@ -769,41 +796,126 @@ class AntigravityCli:
             'resetNote': reset_note,
         }
 
-    def catalog_models(self, *, refresh=False, surface='app'):
-        status = self.user_status(surface)
-        configs = status.get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
+    def _build_catalog_from_status(self, status, *, surface='app'):
+        model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
+        configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
+        default_override = model_data.get('defaultOverrideModelConfig') if isinstance(model_data.get('defaultOverrideModelConfig'), dict) else {}
+        default_alias = default_override.get('modelOrAlias') if isinstance(default_override.get('modelOrAlias'), dict) else {}
+        default_override_enum = str(default_alias.get('model') or '').strip()
+
         user_tier = status.get('userTier') if isinstance(status.get('userTier'), dict) else {}
         tier_name = str(user_tier.get('name') or '').strip()
         plan_status = status.get('planStatus') if isinstance(status.get('planStatus'), dict) else {}
+
+        # Detect ungrouped IDs first so grouped base IDs never collide with standalone rows.
+        ungrouped_ids = set()
+        parsed_rows = []
+        for row in configs:
+            if not self._is_enabled_model_row(row):
+                continue
+            mid = row['modelId']
+            raw_label = row.get('label') or mid
+            base_id, base_name, effort = _split_model_variant(mid, raw_label)
+            if not effort:
+                ungrouped_ids.add(mid)
+            parsed_rows.append((row, mid, raw_label, base_id, base_name, effort))
+
+        groups = {}
+        ordered_keys = []
+        for row, mid, raw_label, base_id, base_name, effort in parsed_rows:
+            alias = row['modelOrAlias']
+            native_model = alias['model']
+            quota = self._quota_info(row)
+            q_raw = row.get('quotaInfo') if isinstance(row.get('quotaInfo'), dict) else {}
+            frac = q_raw.get('remainingFraction', 0) if q_raw else None
+            if effort and base_id not in ungrouped_ids:
+                key = ('grouped', base_id)
+                bucket = groups.get(key)
+                if bucket is None:
+                    bucket = {
+                        'grouped': True,
+                        'id': base_id,
+                        'name': base_name,
+                        'variants': {},
+                        'quotas': [],
+                    }
+                    groups[key] = bucket
+                    ordered_keys.append(key)
+                bucket['variants'][effort] = {'id': mid, 'nativeModel': native_model, 'label': raw_label}
+                if quota:
+                    bucket['quotas'].append((frac if isinstance(frac, (int, float)) else 2.0, quota))
+            else:
+                key = ('flat', mid)
+                groups[key] = {
+                    'grouped': False,
+                    'id': mid,
+                    'name': raw_label,
+                    'nativeModel': native_model,
+                    'quotas': [(frac if isinstance(frac, (int, float)) else 2.0, quota)] if quota else [],
+                }
+                ordered_keys.append(key)
+
         models = []
         usage_items = []
         notice_lines = []
-        for row in configs:
-            if not isinstance(row, dict) or row.get('disabled') is True or not isinstance(row.get('modelId'), str):
-                continue
-            mid = row['modelId']
-            if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
-                continue
-            alias = row.get('modelOrAlias')
-            if not isinstance(alias, dict) or not alias.get('model'):
-                continue
-            name = row.get('label') or mid
-            entry = {'id': mid, 'name': name, 'efforts': [], 'supportsEffort': False, 'nativeModel': alias['model']}
-            quota = self._quota_info(row)
-            if quota:
+        variant_cache = {}
+        base_cache = {}
+
+        for key in ordered_keys:
+            bucket = groups[key]
+            if bucket['grouped']:
+                variants = bucket['variants']
+                efforts = sorted(variants.keys(), key=lambda item: _EFFORT_RANK.get(item, len(_EFFORT_ORDER)))
+                ordered_variants = {eff: variants[eff] for eff in efforts}
+                default_effort = next(
+                    (eff for eff in efforts if ordered_variants[eff]['nativeModel'] == default_override_enum),
+                    'medium' if 'medium' in ordered_variants else efforts[0],
+                )
+                entry = {
+                    'id': bucket['id'],
+                    'name': bucket['name'],
+                    'efforts': efforts,
+                    'supportsEffort': True,
+                    'defaultEffort': default_effort,
+                    'nativeModel': ordered_variants[default_effort]['nativeModel'],
+                    'variants': ordered_variants,
+                }
+                for eff, variant in ordered_variants.items():
+                    variant_cache[variant['id']] = (bucket['id'], eff, bucket['name'])
+                base_cache[bucket['id']] = {
+                    'name': bucket['name'],
+                    'efforts': efforts,
+                    'defaultEffort': default_effort,
+                }
+            else:
+                entry = {
+                    'id': bucket['id'],
+                    'name': bucket['name'],
+                    'efforts': [],
+                    'supportsEffort': False,
+                    'nativeModel': bucket['nativeModel'],
+                }
+                base_cache[bucket['id']] = {'name': bucket['name'], 'efforts': [], 'defaultEffort': ''}
+
+            if bucket['quotas']:
+                _, quota = min(bucket['quotas'], key=lambda pair: pair[0])
                 entry.update({k: v for k, v in quota.items() if v})
                 if quota['quotaTag']:
                     usage_items.append({
-                        'name': name,
+                        'name': entry['name'],
                         'val': quota['quotaTag'],
                         'note': quota['resetNote'],
                         'status': quota['quotaStatus'],
                     })
-                    line = f"• {name}: {quota['quotaTag']}"
+                    line = f"• {entry['name']}: {quota['quotaTag']}"
                     if quota['resetNote']:
                         line += f" ({quota['resetNote']})"
                     notice_lines.append(line)
             models.append(entry)
+
+        with self._lock:
+            self._variant_cache[surface] = variant_cache
+            self._base_cache[surface] = base_cache
 
         p_credits = plan_status.get('availablePromptCredits', 0)
         f_credits = plan_status.get('availableFlowCredits', 0)
@@ -820,21 +932,133 @@ class AntigravityCli:
             result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
         return result
 
-    def _model(self, model, surface):
+    def catalog_models(self, *, refresh=False, surface='app'):
+        status = self.user_status(surface)
+        return self._build_catalog_from_status(status, surface=surface)
+
+    @staticmethod
+    def _is_enabled_model_row(row):
+        if not isinstance(row, dict):
+            return False
+        mid = row.get('modelId')
+        if not isinstance(mid, str) or not mid:
+            return False
+        if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
+            return False
+        alias = row.get('modelOrAlias')
+        return isinstance(alias, dict) and bool(alias.get('model'))
+
+    @staticmethod
+    def _resolve_from_catalog(model, effort, catalog, *, require_effort=False):
+        rows = catalog.get('models', []) if isinstance(catalog, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
+            if row.get('id') == model:
+                if variants:
+                    if effort:
+                        variant = variants.get(effort)
+                        if isinstance(variant, dict) and variant.get('nativeModel'):
+                            return variant['nativeModel'], row['id'], effort, row.get('name') or row['id']
+                        raise ValueError('所选模型不支持此思考强度，请重新选择')
+                    if require_effort:
+                        raise ValueError('请先选择思考强度')
+                    default_eff = row.get('defaultEffort')
+                    if default_eff and isinstance(variants.get(default_eff), dict) and variants[default_eff].get('nativeModel'):
+                        return variants[default_eff]['nativeModel'], row['id'], default_eff, row.get('name') or row['id']
+                    if row.get('nativeModel'):
+                        return row['nativeModel'], row['id'], default_eff or '', row.get('name') or row['id']
+                else:
+                    if effort:
+                        raise ValueError('所选模型不支持单独设置思考强度')
+                    if row.get('nativeModel'):
+                        return row['nativeModel'], row['id'], '', row.get('name') or row['id']
+        if not effort:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
+                if not variants:
+                    continue
+                for eff, variant in variants.items():
+                    if isinstance(variant, dict) and variant.get('id') == model and variant.get('nativeModel'):
+                        return variant['nativeModel'], row['id'], eff, row.get('name') or row['id']
+        return None, None, '', ''
+
+    def _index_catalog_display(self, surface, catalog):
+        variant_cache = {}
+        base_cache = {}
+        for row in catalog.get('models', []) if isinstance(catalog, dict) else []:
+            if not isinstance(row, dict) or not row.get('id'):
+                continue
+            rid = row['id']
+            name = row.get('name') or rid
+            efforts = list(row.get('efforts') or [])
+            base_cache[rid] = {'name': name, 'efforts': efforts, 'defaultEffort': row.get('defaultEffort') or ''}
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else {}
+            for eff, variant in variants.items():
+                if isinstance(variant, dict) and variant.get('id'):
+                    variant_cache[variant['id']] = (rid, eff, name)
+        with self._lock:
+            self._variant_cache[surface] = variant_cache
+            self._base_cache[surface] = base_cache
+
+    def resolve_model_display(self, surface, model, effort='', *, refresh_if_unknown=False):
+        """Map a stored flat or grouped model into (model, effort, displayName)."""
+        if not model:
+            return '', '', ''
+        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+            return model, '', model
+        with self._lock:
+            variants = dict(self._variant_cache.get(surface, {}))
+            bases = dict(self._base_cache.get(surface, {}))
+        if refresh_if_unknown and model not in bases and model not in variants:
+            catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+            self._index_catalog_display(surface, catalog)
+            with self._lock:
+                variants = dict(self._variant_cache.get(surface, {}))
+                bases = dict(self._base_cache.get(surface, {}))
+        if not effort and model in variants:
+            base_id, var_eff, base_name = variants[model]
+            return base_id, var_eff, base_name
+        if model in bases:
+            return model, effort, bases[model]['name']
+        return model, effort, ''
+
+    def canonicalize_model_selection(self, model, effort=None, *, surface='app', require_effort=False):
+        if model is None:
+            if effort:
+                raise ValueError('请先选择模型后再设置思考强度')
+            return None, None, '', ''
+        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+            if effort:
+                raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
+            return model, model, '', model
+        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+        self._index_catalog_display(surface, catalog)
+        native_enum, canonical_model, canonical_effort, display_name = self._resolve_from_catalog(
+            model, effort, catalog, require_effort=require_effort,
+        )
+        if not native_enum:
+            raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
+        return native_enum, canonical_model, canonical_effort, display_name
+
+    def _model(self, model, surface, effort=None, *, require_effort=False):
         if model is None:
             return None  # Preserve the original server's selected default.
         if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+            if effort:
+                raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
             return model  # Explicit native enum, validated by the original service.
-        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
-        found = [row.get('nativeModel') for row in catalog.get('models', [])
-                 if isinstance(row, dict) and row.get('id') == model]
-        if len(found) != 1 or not found[0]:
-            raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
-        return found[0]
+        native_enum, _, _, _ = self.canonicalize_model_selection(
+            model, effort, surface=surface, require_effort=require_effort,
+        )
+        return native_enum
 
     def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app'):
         body = {'cascade_id': conversation_id, 'items': [{'text': prompt}]}
-        selected = self._model(model, surface)
+        selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
         result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface)
@@ -847,7 +1071,7 @@ class AntigravityCli:
             raise ValueError('请选择有效的本机项目目录')
         uri = path.as_uri()
         body = {'source': 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', 'workspace_uris': [uri]}
-        selected = self._model(model, surface)
+        selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['requested_model'] = selected
         result = self.call_ls_rpc('StartCascade', body, surface=surface)
