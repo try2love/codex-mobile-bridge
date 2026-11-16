@@ -213,7 +213,7 @@ function groupChatTasks(container,nodes){
   }
   flush();container.__chatTaskGroups=next;return result;
 }
-// Consecutive tools form the second disclosure level inside a task. Each
+// Consecutive tools and reasoning share the second disclosure level. Each
 // native tool still owns its original third-level detail and lazy body.
 function groupChatActivities(container,nodes){
   const previous=container.__chatActivityGroups||new Map(),next=new Map(),used=new Set(),result=[];
@@ -231,7 +231,8 @@ function groupChatActivities(container,nodes){
     used.add(group);next.set(key,group);group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
     group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
     const kinds=cluster.map(node=>node.dataset.chatToolKind),files=kinds.some(kind=>['fileChange','FileChange'].includes(kind)),commands=kinds.includes('commandExecution');
-    const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':'执行了操作';
+    const reasoningOnly=cluster.every(node=>node.dataset.chatActivity==='reasoning');
+    const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':reasoningOnly?'思考摘要':'执行了操作';
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
     group.dataset.running=String(cluster.some(node=>node.__chatRunning));
     group.dataset.icon=files?'file':commands?'command':'tool';
@@ -239,7 +240,7 @@ function groupChatActivities(container,nodes){
     group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
   };
   for(const node of nodes){
-    if(node.dataset?.chatActivity==='tool'){
+    if(['tool','reasoning'].includes(node.dataset?.chatActivity)){
       if(cluster.length&&node.dataset.chatTurnId&&cluster[0].dataset.chatTurnId&&node.dataset.chatTurnId!==cluster[0].dataset.chatTurnId)flush();
       cluster.push(node);
     }else{flush();result.push(node);}
