@@ -14,7 +14,10 @@ def _process_rows():
         try:
             if path.stat().st_uid != os.getuid():
                 continue
-            executable = (path/'exe').resolve(strict=True)
+            # /proc retains the original image path after an update unlinks it.
+            executable = Path(os.readlink(path/'exe').removesuffix(' (deleted)'))
+            if not executable.is_absolute():
+                continue
         except (OSError, RuntimeError):
             continue
         yield path, executable
