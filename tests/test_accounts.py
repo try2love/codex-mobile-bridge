@@ -149,6 +149,9 @@ class AccountsTests(unittest.TestCase):
         scan.assert_called_once_with()
         self.assertEqual(result['desktopExecutable'], str(gui.resolve()))
         self.assertEqual(json.loads((self.manager.root/'index.json').read_text())['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(self.manager.index['desktopExecutableSource'], 'scan')
+        self.manager.control({'action': 'configure', 'desktopExecutable': str(gui.resolve())})
+        self.assertEqual(self.manager.index['desktopExecutableSource'], 'manual')
         self.assertEqual(self.manager.snapshot_files(), self.original)
 
     def prepare(self, row, before):

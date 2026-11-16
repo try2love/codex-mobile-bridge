@@ -876,6 +876,7 @@ class Accounts:
             self.assert_editable()
             if action == 'scanDesktop':
                 self.index['desktopExecutable'] = DesktopApp.scan(self.runtime, self.home)
+                self.index['desktopExecutableSource'] = 'scan'
             elif action == 'configure':
                 executable = value.get('desktopExecutable')
                 if not isinstance(executable, str) or not Path(executable).is_absolute():
@@ -883,6 +884,7 @@ class Accounts:
                 app = DesktopApp(executable, self.home)
                 app.validate(self.runtime)
                 self.index['desktopExecutable'] = str(app.executable)
+                self.index['desktopExecutableSource'] = 'manual'
             elif action in ('rename', 'delete'):
                 row = self.row(value.get('id'))
                 if action == 'rename':
