@@ -240,7 +240,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.running = False
         with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''), \
              patch.object(self.manager, '_prepare_codex_runtime') as prepare:
-            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
+            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)['clients']
         descriptor = prepare.call_args.args[0]
         self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
         self.assertTrue(descriptor['installed'])
@@ -555,9 +555,43 @@ class ClientLifecycleTests(unittest.TestCase):
         self.claude.reconnect.assert_called_once_with()
         self.claude.connect.assert_not_called()
 
+    def test_codex_explicit_enable_launches_without_waiting_for_side_chat_preparation(self):
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        # A stale preparation receipt or unavailable task audit must not consume
+        # an explicit App launch as a successful background scheduling request.
+        self.accounts.prepare_desktop_runtime.return_value = True
+        with patch.object(self.manager, '_prepare_codex_runtime') as prepare:
+            self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.launch.assert_called_once()
+        self.assertTrue(self.running)
+        self.assertTrue(self.manager.enabled('codex'))
+        prepare.assert_not_called()
+        self.accounts.idle.assert_not_called()
+
+    def test_codex_explicit_enable_cancels_preparation_and_keeps_shared_launch_lock(self):
+        from bridge.clients.codex.desktop_runtime import initialization_lock
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        with initialization_lock(self.accounts.home):
+            with self.assertRaisesRegex(ValueError, '共享接入仍在使用'):
+                self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertTrue(self.manager.runtime_preparation_cancel.is_set())
+        self.launch.assert_not_called()
+        self.assertFalse(self.manager.enabled('codex'))
+
+    def test_codex_explicit_failed_launch_does_not_persist_enabled(self):
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        self.launch.side_effect = None
+        self.launch.return_value = {'running': False, 'launched': True}
+        with self.assertRaisesRegex(ValueError, '客户端尚未启动'):
+            self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertFalse(self.manager.enabled('codex'))
+
     def test_codex_background_preparation_waits_for_enabled_selection(self):
         self.manager.config['enabled']['codex'] = False
-        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.manager.runtime_preparation_thread.join(3)
         self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
         self.accounts.prepare_desktop_runtime.assert_called_once()
@@ -577,7 +611,7 @@ class ClientLifecycleTests(unittest.TestCase):
                     cancelled.set()
             return False
         self.accounts.prepare_desktop_runtime.side_effect = held_prepare
-        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.assertTrue(entered.wait(2))
         self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': False})
         self.manager.runtime_preparation_thread.join(3)

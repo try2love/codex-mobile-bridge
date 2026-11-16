@@ -2998,7 +2998,7 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
-        if provider == 'codex' and not enabled:
+        if provider == 'codex' and (not enabled or not startup):
             self.runtime_preparation_cancel.set()
         account_gate = (_closing_gate(accounts.gate) if accounts and not enabled and quit_desktop
                         else accounts.gate if accounts else nullcontext())
@@ -3084,11 +3084,16 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
-                elif (provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
+                elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
                       and getattr(self.bridge, 'host', 'local') == 'local'):
                     self._prepare_codex_runtime(descriptor)
                 else:
-                    result = launch_client(descriptor)
+                    launch_gate = nullcontext()
+                    if provider == 'codex' and sys.platform in ('darwin', 'win32'):
+                        from bridge.clients.codex.desktop_runtime import initialization_lock
+                        launch_gate = initialization_lock(descriptor['dataDirectory'])
+                    with launch_gate:
+                        result = launch_client(descriptor)
                     if provider == 'zcode' and not startup and not result.get('launched'):
                         adapter = self.adapters[provider]
                         if getattr(adapter, 'sid', None) and adapter.status().get('retryable'):
