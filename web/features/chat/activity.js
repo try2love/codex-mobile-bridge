@@ -148,7 +148,8 @@ function chatTaskSegments(nodes,state={}){
   const tasks=new Map();let current='history';
   for(const node of nodes){
     const row=node.__chatMessage;if(!row)continue;
-    if(row.turnId)current='turn:'+row.turnId;
+    // Legacy saved history uses a placeholder, not a native task boundary.
+    if(row.turnId&&row.turnId!=='history')current='turn:'+row.turnId;
     else if(row.role==='user'&&row.interaction!=='response')current='user:'+node.dataset.key;
     let task=tasks.get(current);if(!task){task={nodes:[],finals:new Set()};tasks.set(current,task);}
     task.nodes.push(node);
@@ -157,7 +158,10 @@ function chatTaskSegments(nodes,state={}){
   for(const task of tasks.values()){
     const rows=task.nodes.map(node=>node.__chatMessage),status=[...rows].reverse().find(row=>row.turnStatus)?.turnStatus;
     task.active=status?status==='inProgress':task===latest&&state.status==='active';
-    for(const node of task.nodes)if(node.__chatMessage.phase==='final_answer')task.finals.add(node);
+    // Native asynchronous questions may also carry final_answer before the
+    // same task resumes. Only its latest final is the task result.
+    const final=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase==='final_answer');
+    if(final)task.finals.add(final);
     if(!task.active&&!task.finals.size){
       const last=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase!=='commentary');
       if(last)task.finals.add(last);
