@@ -4,7 +4,7 @@
 class ChatHistoryCache {
   constructor(database=globalThis.indexedDB,now=()=>Date.now()){
     this.database=database;this.now=now;this.generation=0;this.nativeQueue=Promise.resolve();
-    this.ttl=7*24*60*60*1000;this.maxBytes=32*1024*1024;this.maxPageBytes=2*1024*1024;this.maxPages=256;
+    this.ttl=7*24*60*60*1000;
   }
   native(){return globalThis.window?.BridgeMobileStorage;}
   nativeKey(scope,slot){return 'history:'+JSON.stringify([scope,slot]);}
@@ -69,7 +69,6 @@ class ChatHistoryCache {
     const savedAt=this.now();
     let bytes;
     try{bytes=new TextEncoder().encode(JSON.stringify(value)).byteLength;}catch{return false;}
-    if(bytes>this.maxPageBytes)return false;
     const generation=this.generation;
     if(this.native()){const written=await this.serialNative(async()=>generation===this.generation&&await this.native().request('write',this.nativeKey(scope,slot),{savedAt,value}));if(written===true)return true;}
     const db=await this.open();if(!db||generation!==this.generation)return false;
@@ -84,12 +83,10 @@ class ChatHistoryCache {
           // other tabs. Same-millisecond writes conservatively miss the cache.
           if(savedAt<=Math.max(globalClear.result??-1,scopeClear.result??-1,namespaceClear.result??-1)||savedAt>this.now()||this.now()-savedAt>=this.ttl)return;
           store.put({id:JSON.stringify([scope,slot]),scope,savedAt,bytes,value});written=true;
-          let size=0,count=0;
           store.index('budget').openKeyCursor(null,'prev').onsuccess=event=>{
             const cursor=event.target.result;if(!cursor)return;
-            const [recordTime,recordBytes]=cursor.key,expired=this.now()-recordTime>=this.ttl||recordTime>this.now();
-            if(!expired){size+=recordBytes;count++;}
-            if(expired||size>this.maxBytes||count>this.maxPages)store.delete(cursor.primaryKey);
+            const [recordTime]=cursor.key,expired=this.now()-recordTime>=this.ttl||recordTime>this.now();
+            if(expired)store.delete(cursor.primaryKey);
             cursor.continue();
           };
         };

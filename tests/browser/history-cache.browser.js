@@ -26,15 +26,14 @@ async function runHistoryCacheBrowserChecks(){
       clock.now++;await cache.write('fresh','recent',value('fresh'));check(!(await records()).some(row=>row.scope==='ttl'),'expired record was retained');clock.now--;equal(await cache.read('fresh'),null,'future timestamp was displayed');
       cache.ttl=7*24*60*60*1000;
     });
-    await test('page count evicts the oldest persisted page across scopes',async()=>{
-      cache.maxPages=2;for(const key of ['first','second','third']){clock.now++;await cache.write(key,'recent',value(key));}
-      equal(await cache.read('first'),null,'oldest page survived the count limit');check(await cache.read('second')&&await cache.read('third'),'newer pages were lost');check((await records()).length<=2,'persisted page count exceeds its limit');cache.maxPages=256;
-    });
-    await test('UTF-8 byte limit evicts old records and an oversized page cannot replace a cached page',async()=>{
-      const page=value('中文'.repeat(12)),bytes=new TextEncoder().encode(JSON.stringify(page)).byteLength;cache.maxBytes=2*bytes;
-      for(const key of ['first','second','third']){clock.now++;await cache.write(key,'recent',page);}
-      equal(await cache.read('first'),null,'byte limit retained oldest page');check((await records()).reduce((sum,row)=>sum+row.bytes,0)<=cache.maxBytes,'persisted bytes exceed the limit');
-      cache.maxPageBytes=bytes-1;check(await cache.write('third','recent',page)===false,'oversized page was accepted');equal(await cache.read('third'),page,'oversized write damaged existing history');cache.maxBytes=32*1024*1024;cache.maxPageBytes=2*1024*1024;
+    await test('many valid pages and a page larger than the old limit survive unrelated writes',async()=>{
+      const page=value('x'.repeat(2*1024*1024+1));
+      check(await cache.write('large','recent',page),'old single-page limit still rejects history');
+      for(let i=0;i<16;i++){clock.now++;check(await cache.write('large-'+i,'recent',page),'large page write failed');}
+      for(let i=0;i<260;i++){clock.now++;await cache.write('small-'+i,'recent',value(String(i)));}
+      equal(await cache.read('large'),page,'another chat evicted the retained large page');
+      equal(await cache.read('large-0'),page,'old global byte limit still evicts valid history');
+      equal(await cache.read('small-0'),value('0'),'old page-count limit still evicts valid history');
     });
     await test('session forget removes every slot only from that session',async()=>{
       await cache.write('session-a','recent',value('a'));await cache.write('session-a','older',value('older'));await cache.write('session-b','recent',value('b'));await cache.forget('session-a');

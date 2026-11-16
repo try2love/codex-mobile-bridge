@@ -27,12 +27,12 @@ async function historyCacheFixture(browser,viewport){
   return {context,page};
 }
 
-test('persistent history cache isolates scopes bounds storage and survives unavailable IndexedDB',async({browser},info)=>{
+test('persistent history cache isolates scopes retains valid pages and survives unavailable IndexedDB',async({browser},info)=>{
   const fixture=await historyCacheFixture(browser,info.project.use.viewport);
   try{
     const page=await fixture.page();await page.addScriptTag({content:readFileSync(path.join(__dirname,'history-cache.browser.js'),'utf8')});
     const result=await page.evaluate(()=>runHistoryCacheBrowserChecks());
-    expect(result.failures).toEqual([]);expect(result.passed).toBe(14);
+    expect(result.failures).toEqual([]);expect(result.passed).toBe(13);
   }finally{await fixture.context.close();}
 });
 
