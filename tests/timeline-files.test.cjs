@@ -31,7 +31,7 @@ test('missing context, sibling paths, traversal and URL schemes never become wor
 });
 test('summary file controls preserve literal text and only dispatch the supplied path',()=>{
  class Node{
-  constructor(tag){this.tagName=tag;this.children=[];this.classList={add(){}};}
+  constructor(tag){this.tagName=tag;this.children=[];this.dataset={};this.classList={add(){}};}
   append(...children){this.children.push(...children);}
   replaceChildren(...children){this.children=children;}
  }
@@ -40,6 +40,7 @@ test('summary file controls preserve literal text and only dispatch the supplied
  const ui=Object.assign(Object.create(Type.prototype),{onFile:path=>calls.push(path)});
  const path='<img src=x onerror=alert(1)>.py';
  const card=ui.renderRow({role:'fileChanges',fileSummary:{count:1,added:1,removed:0,files:[{path,added:1,removed:0}]}},true);
+ assert.equal(card.dataset.chatActivity,undefined,'result summary must stay outside process groups');
  const control=card.children[1].children[0].children[0];
  assert.equal(control.tagName,'button');assert.equal(control.type,'button');assert.equal(control.textContent,path);assert.equal(control.children.length,0);
  control.onclick();assert.deepEqual(calls,[path]);

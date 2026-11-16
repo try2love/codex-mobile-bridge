@@ -205,7 +205,7 @@ class ChatTimeline {
     const activity=row.role==='activity'||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
-    if(activity||row.phase==='commentary'){node.dataset.chatActivity=row.kind==='reasoning'?'reasoning':activity?'tool':'commentary';node.dataset.chatActivityState=row.turnStatus==='inProgress'?'active':'complete';node.dataset.chatToolKind=row.kind||'';node.dataset.chatTurnId=row.turnId||'';}
+    if(!row.fileSummary&&row.role!=='fileChanges'&&(activity||row.phase==='commentary')){node.dataset.chatActivity=row.kind==='reasoning'?'reasoning':activity?'tool':'commentary';node.dataset.chatActivityState=row.turnStatus==='inProgress'?'active':'complete';node.dataset.chatToolKind=row.kind||'';node.dataset.chatTurnId=row.turnId||'';}
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
