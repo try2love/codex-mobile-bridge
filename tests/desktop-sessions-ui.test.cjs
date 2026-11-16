@@ -2011,3 +2011,40 @@ test('stop stays interactive while another write is in flight',async()=>{
  await sending;
  assert.equal(ui.view.busy,false);
 });
+
+test('Antigravity grouped models submit base id and effort',async()=>{
+ const ui=fixture();
+ ui.setHandler((url,body)=>{
+  if(url.includes('/settings'))return Promise.resolve({status:'accepted',model:body.model,effort:body.effort});
+  if(url.includes('/catalog'))return Promise.resolve({
+   models:[{id:'gemini-4-hydrogen',name:'Gemini 4 Hydrogen',efforts:['low','medium','high','xhigh'],supportsEffort:true,defaultEffort:'medium',quotaTag:'剩余 61.2%',quotaStatus:'good'}],
+   usageSummary:{tier:'Google AI Pro',items:[{name:'Gemini 4 Hydrogen',val:'剩余 61.2%',status:'good'}],credits:'可用 Prompt 点数: 120'},
+   currentModel:'gemini-4-hydrogen',currentEffort:'medium',
+   capabilities:{models:true,effort:true,manualModels:true,manualEffort:false},
+   cache:{identity:'ag-id',updatedAt:1000},
+  });
+  if(url.includes('/detail'))return Promise.resolve({
+   session:{id:'a',title:'Antigravity Chat',status:'idle',model:'gemini-4-hydrogen',modelDisplayName:'Gemini 4 Hydrogen',effort:'medium',requests:[]},
+   capabilities:{send:true,stop:false,models:true,effort:true,manualModels:true,manualEffort:false},
+   messages:[],modelCatalogIdentity:'ag-id',
+  });
+  return Promise.resolve({sessions:[{id:'a',title:'Antigravity Chat'}]});
+ });
+ await ui.view.choose('antigravity');
+ await ui.view.open('a');
+ await new Promise(setImmediate);
+ assert.equal(ui.view.modelName.textContent,'Gemini 4 Hydrogen');
+ assert.equal(ui.view.modelEffort.textContent,'· medium');
+ await ui.view.models();
+ const dialog=ui.document.querySelector('dialog');
+ assert.equal(dialog.querySelectorAll('.model-choice').length,2);
+ const effortOptions=dialog.querySelector('.effort-options');
+ assert.equal(effortOptions.parentElement.hidden,false);
+ const xhighRadio=effortOptions.querySelectorAll('input')[3];
+ assert.equal(xhighRadio.value,'xhigh');
+ xhighRadio.checked=true;xhighRadio.onchange();
+ await dialog.querySelector('.ds-model-form').onsubmit({preventDefault(){}});
+ const settingsWrite=ui.calls.filter(c=>c.body&&c.url.includes('/settings')).at(-1);
+ assert.equal(settingsWrite.body.model,'gemini-4-hydrogen');
+ assert.equal(settingsWrite.body.effort,'xhigh');
+});
