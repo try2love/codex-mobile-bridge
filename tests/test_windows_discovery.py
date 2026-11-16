@@ -67,9 +67,30 @@ class WindowsDiscoveryTests(unittest.TestCase):
             '<uap:VisualElements AppListEntry="none"/></Application>'
             '<Application Id="App" Executable="gui\\ChatGPT.exe"><uap:VisualElements/></Application>'
             '</Applications></Package>')
-        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent)}]})
+        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent),
+                                       'PackageFamilyName': 'OpenAI.Codex_fixture'}]})
         self.assertEqual(rows['codex']['executable'], str(gui))
+        self.assertEqual(rows['codex']['applicationUserModelId'], 'OpenAI.Codex_fixture!App')
         self.assertNotEqual(rows['codex']['executable'], str(helper))
+
+    def test_aumid_requires_valid_family_and_visible_manifest_identifier(self):
+        gui = self.executable('Store/App/app/ChatGPT.exe')
+        manifest = gui.parent.parent/'AppxManifest.xml'
+        for family, identifier, visual, expected in (
+            ('OpenAI.Codex_fixture', 'Native.App-1', '<VisualElements/>', 'OpenAI.Codex_fixture!Native.App-1'),
+            ('OpenAI.Codex_fixture', '', '<VisualElements/>', None),
+            ('OpenAI.Codex_fixture', 'Bad!Id', '<VisualElements/>', None),
+            ('Bad!Family', 'App', '<VisualElements/>', None),
+            ('', 'App', '<VisualElements/>', None),
+            ('OpenAI.Codex_fixture', 'Hidden', '<VisualElements AppListEntry="none"/>', None),
+            ('OpenAI.Codex_fixture', 'Invisible', '', None)):
+            with self.subTest(family=family, identifier=identifier, visual=visual):
+                manifest.write_text('<Package><Applications><Application Id="'+identifier+'" '
+                                    'Executable="app/ChatGPT.exe">'+visual+'</Application></Applications></Package>')
+                row = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(gui.parent.parent),
+                                              'PackageFamilyName': family}]})['codex']
+                self.assertEqual(row['executable'], str(gui))
+                self.assertEqual(row.get('applicationUserModelId'), expected)
 
     def test_store_fallback_prefers_chatgpt_over_codex_shim(self):
         shim = self.executable('Store/App/app/Codex.exe')

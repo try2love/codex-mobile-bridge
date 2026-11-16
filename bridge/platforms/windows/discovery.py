@@ -1,7 +1,8 @@
 """Windows user, Squirrel and Store installation paths."""
 import re
 from pathlib import Path
-from .discovery_ext import registered_candidates, windows_installations, launch_windows_desktop
+from .discovery_ext import (registered_candidates, windows_installations, launch_windows_desktop,
+                            package_registration_fingerprint)
 
 
 def _version_key(path):

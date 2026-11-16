@@ -21,7 +21,7 @@ APP_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop
 def inventory_preferences(preferences):
     """Installation inputs only; never persist credentials with the inventory."""
     return deepcopy({key: value for key, value in preferences.items()
-                     if value and (key.endswith(('Home', 'Application', 'Applications', 'Executable')) or key == 'desktopExecutable')})
+                     if value and (key.endswith(('Home', 'Application', 'Applications', 'Executable')) or key == 'desktopInstallation')})
 
 
 def inventory_current(config, preferences):
@@ -37,7 +37,16 @@ def inventory_current(config, preferences):
             executable = native.get('executable')
             if native.get('installed', True) and executable and not Path(executable).is_file() and not row.get('pendingInstallation'):
                 return False
-    return config.get('discoveryFingerprint', {}) == inventory_fingerprint(rows, preferences)
+    return (config.get('discoveryFingerprint', {}) == inventory_fingerprint(rows, preferences) and
+            config.get('discoveryPackages', {}) == inventory_registration(rows))
+
+
+def inventory_registration(rows):
+    if sys.platform != 'win32':
+        return {}
+    families = {native['packageFamilyName'] for row in rows.values()
+                for native in (row, row.get('pendingInstallation') or {}) if native.get('packageFamilyName')}
+    return native_discovery('win32').package_registration_fingerprint(families)
 
 
 def inventory_fingerprint(rows, preferences):
@@ -143,11 +152,25 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
                 path = Path(row['executable'])
                 candidates.append(path)
                 metadata.setdefault(path, {}).update({key: value for key, value in row.items() if key != 'executable'})
+            selected = preferences.get('desktopInstallation', {}) if provider == 'codex' else {}
+            if explicit and selected.get('executable') == str(explicit) and selected.get('packageFamilyName'):
+                matches = [path for path, info in metadata.items()
+                           if info.get('packageFamilyName') == selected['packageFamilyName']
+                           and info.get('applicationUserModelId') and
+                           (not selected.get('applicationUserModelId') or
+                            info['applicationUserModelId'] == selected['applicationUserModelId'])]
+                if len(matches) == 1:
+                    candidates.insert(0, matches[0])
             candidates += list(native.candidates(provider, APP_NAMES[provider], home, env))
         elif platform == 'linux':
             candidates += list(native.candidates(provider, APP_NAMES[provider], home, env, metadata=metadata))
         found = next(({**row, **metadata.get(path, {}), 'discoveryPath': str(path)} for path in dict.fromkeys(candidates)
                       if (row := _candidate(path, provider, platform))), {})
+        if explicit and found and found.get('executable') != str(explicit):
+            bundle = next((path for path in (explicit, *explicit.parents) if path.suffix == '.app'), None)
+            if ((platform == 'darwin' and bundle and found.get('application') == str(bundle)) or
+                    (platform == 'win32' and candidates[0] != explicit and found.get('executable') == str(candidates[0]))):
+                found['replacesExecutable'] = str(explicit)
         if provider == 'zcode' and not found:
             continue
         if provider == 'claude':

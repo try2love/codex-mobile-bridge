@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import tempfile
 from threading import RLock
@@ -11,8 +12,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bridge.clients import lifecycle
-from bridge.clients.discovery import (DISCOVERY_REVISION, inventory_current,
-                                      inventory_fingerprint, inventory_preferences)
+from bridge.clients.discovery import (DISCOVERY_REVISION, discover_clients, inventory_current,
+                                      inventory_fingerprint, inventory_preferences, inventory_registration)
 from bridge.clients.manager import DesktopSessions
 from bridge.platforms.linux import discovery as linux
 from bridge.platforms.windows import discovery as windows
@@ -46,6 +47,19 @@ class InstallationFixtures(unittest.TestCase):
 
 
 class InventoryFingerprintTests(InstallationFixtures):
+    def test_registered_package_fullname_change_invalidates_inventory_without_disk_changes(self):
+        image = self.file('Codex.exe'); rows = self.rows(image); family = 'OpenAI.Codex_fixture'
+        rows['codex']['packageFamilyName'] = family
+        with patch('bridge.clients.discovery.sys', SimpleNamespace(platform='win32')), \
+             patch.object(windows, 'package_registration_fingerprint', return_value={family: ['OpenAI.Codex_1']}) as registration:
+            config = self.cached(rows); config['discoveryPackages'] = inventory_registration(rows)
+            fingerprint = inventory_fingerprint(rows, {})
+            self.assertTrue(inventory_current(config, {}))
+            registration.return_value = {family: ['OpenAI.Codex_2']}
+            self.assertEqual(inventory_fingerprint(rows, {}), fingerprint)
+            self.assertFalse(inventory_current(config, {}))
+            registration.assert_called_with({family})
+
     def test_binary_and_three_platform_metadata_changes_invalidate_an_existing_inventory(self):
         for name, binary, metadata in (
             ('macos', 'Codex.app/Contents/MacOS/Codex', 'Codex.app/Contents/Info.plist'),
@@ -100,6 +114,51 @@ class InventoryFingerprintTests(InstallationFixtures):
                 env = {'LOCALAPPDATA': str(self.root/'local'), 'ProgramFiles': str(self.root/'programs')}
                 candidates = windows.candidates(provider, ('Claude',) if provider == 'claude' else ('Codex', 'ChatGPT'), self.root, env)
                 self.assertEqual(next(path for path in candidates if path.is_file()), new)
+
+
+class SelectedInstallationDiscoveryTests(InstallationFixtures):
+    def windows_scan(self, selected, registered):
+        with patch.object(windows, 'registered_candidates', side_effect=lambda provider, inventory: registered if provider == 'codex' else []), \
+             patch.object(windows, 'candidates', return_value=[]):
+            return discover_clients(selected, platform='win32', home=self.root, env={}, windows_inventory={})['codex']
+
+    def test_unique_registered_same_family_and_aumid_migrates_selected_path_even_if_old_still_exists(self):
+        for old_exists in (True, False):
+            with self.subTest(old_exists=old_exists):
+                old, new = self.file('selected/Codex.exe'), self.file('registered/Codex.exe')
+                identity = {'packageFamilyName': 'OpenAI.Codex_fixture', 'applicationUserModelId': 'OpenAI.Codex_fixture!App'}
+                preferences = {'desktopExecutable': str(old), 'desktopInstallation': {'executable': str(old), **identity}}
+                if not old_exists: old.unlink()
+                row = self.windows_scan(preferences, [{'executable': str(new), **identity}])
+                self.assertEqual(row['executable'], str(new)); self.assertEqual(row['replacesExecutable'], str(old))
+
+    def test_other_family_ambiguous_gui_and_unregistered_manual_path_cannot_authorize_migration(self):
+        old, new, alternate = self.file('selected/Codex.exe'), self.file('registered/Codex.exe'), self.file('other/Codex.exe')
+        identity = {'packageFamilyName': 'OpenAI.Codex_fixture', 'applicationUserModelId': 'OpenAI.Codex_fixture!App'}
+        selected = {'desktopExecutable': str(old), 'desktopInstallation': {'executable': str(old), **identity}}
+        for preferences, registered in (
+            (selected, [{'executable': str(new), **identity, 'packageFamilyName': 'Other.Codex_fixture'}]),
+            (selected, [{'executable': str(new), **identity, 'applicationUserModelId': 'OpenAI.Codex_fixture!Other'}]),
+            (selected, [{'executable': str(path), **identity} for path in (new, alternate)]),
+            ({'desktopExecutable': str(old)}, [{'executable': str(new), **identity}])):
+            row = self.windows_scan(preferences, registered)
+            self.assertEqual(row['executable'], str(old)); self.assertNotIn('replacesExecutable', row)
+
+    def test_mac_executable_rename_is_verified_only_within_the_selected_bundle(self):
+        bundle = self.root/'Applications/Codex.app'
+        old = self.file('Applications/Codex.app/Contents/MacOS/OldCodex')
+        new = self.file('Applications/Codex.app/Contents/MacOS/NewCodex')
+        metadata = bundle/'Contents/Info.plist'
+        metadata.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.openai.codex', 'CFBundleExecutable': new.name}))
+        row = discover_clients({'desktopExecutable': str(old)}, platform='darwin', home=self.root,
+                               env={}, applications=[bundle.parent])['codex']
+        self.assertEqual(row['executable'], str(new)); self.assertEqual(row['replacesExecutable'], str(old))
+        old.unlink(); new.unlink()
+        other = self.file('Applications/OtherCodex.app/Contents/MacOS/Codex')
+        (other.parent.parent/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.openai.codex', 'CFBundleExecutable': other.name}))
+        row = discover_clients({'desktopExecutable': str(old)}, platform='darwin', home=self.root,
+                               env={}, applications=[bundle.parent])['codex']
+        self.assertEqual(row['executable'], str(other)); self.assertNotIn('replacesExecutable', row)
 
 
 class InstallationHandoffTests(InstallationFixtures):
@@ -195,6 +254,53 @@ class InstallationHandoffTests(InstallationFixtures):
                 self.manager.scan()
                 self.assertEqual(self.accounts.index, original)
                 self.accounts.save.assert_not_called(); self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_verified_same_installation_updates_manual_selection_without_changing_source_or_home(self):
+        old = self.previous['codex']['executable']; self.preferences['desktopExecutable'] = old
+        self.accounts.index['desktopExecutableSource'] = 'manual'
+        self.accounts.home = self.root/'account-home'
+        replacement = self.replacement(); replacement['codex']['replacesExecutable'] = old
+        self.discovery.return_value = replacement
+        self.manager.scan()
+        self.assertEqual(self.accounts.index, {'desktopExecutable': replacement['codex']['executable'], 'desktopExecutableSource': 'manual'})
+        self.assertEqual(self.accounts.home, self.root/'account-home')
+        self.assertEqual(self.manager.config['discovered']['codex']['dataDirectory'], self.previous['codex']['dataDirectory'])
+        self.accounts.save.assert_called_once()
+
+    def test_manual_selection_needs_matching_replacement_proof_and_is_rechecked_inside_the_lock(self):
+        old = self.previous['codex']['executable']; other = str(self.file('manual-other/Codex'))
+        for proof, change_in_lock in ((None, False), (other, False), (old, True)):
+            with self.subTest(proof=proof, change_in_lock=change_in_lock):
+                self.manager.config.update(self.cached(self.previous))
+                self.preferences['desktopExecutable'] = old
+                self.accounts.index = {'desktopExecutable': old, 'desktopExecutableSource': 'manual'}
+                replacement = self.replacement()
+                if proof: replacement['codex']['replacesExecutable'] = proof
+                self.discovery.return_value = replacement
+                lock = RLock()
+                def acquire(**kwargs):
+                    if change_in_lock: self.accounts.index['desktopExecutable'] = other
+                    return lock.acquire(**kwargs)
+                self.accounts.lock = SimpleNamespace(acquire=acquire, release=lock.release)
+                self.manager.scan()
+                self.assertEqual(self.accounts.index['desktopExecutable'], other if change_in_lock else old)
+                self.assertEqual(self.accounts.index['desktopExecutableSource'], 'manual')
+                self.accounts.save.assert_not_called()
+
+    def test_registration_failure_preserves_configuration_and_selected_index_before_saving(self):
+        old = self.previous['codex']['executable']; self.preferences['desktopExecutable'] = old
+        self.accounts.index['desktopExecutableSource'] = 'manual'
+        replacement = self.replacement(); replacement['codex']['replacesExecutable'] = old
+        self.discovery.return_value = replacement
+        self.manager.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.manager.config_path.write_text(json.dumps(self.manager.config))
+        previous, index = copy.deepcopy(self.manager.config), dict(self.accounts.index)
+        saved = self.manager.config_path.read_bytes()
+        with patch('bridge.clients.discovery.inventory_registration', side_effect=OSError('registration unavailable')):
+            with self.assertRaisesRegex(OSError, 'registration unavailable'): self.manager.scan()
+        self.assertEqual(self.manager.config, previous); self.assertEqual(self.accounts.index, index)
+        self.assertEqual(self.manager.config_path.read_bytes(), saved)
+        self.accounts.save.assert_not_called(); self.launch.assert_not_called(); self.stop.assert_not_called()
 
     def test_explicit_new_home_survives_pending_installation_across_scans(self):
         replacement = self.replacement()

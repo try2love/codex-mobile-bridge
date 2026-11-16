@@ -1833,6 +1833,10 @@ class DesktopSessions:
             index = self.bridge.accounts.index
             if index.get('desktopExecutableSource') != 'scan':
                 preferences['desktopExecutable'] = index.get('desktopExecutable')
+                previous = self.config.get('discovered', {}).get('codex', {})
+                if previous.get('executable') == index.get('desktopExecutable') and previous.get('packageFamilyName'):
+                    preferences['desktopInstallation'] = {key: previous[key] for key in
+                        ('executable', 'packageFamilyName', 'applicationUserModelId') if previous.get(key)}
         return preferences
 
     def _prepare_discovered(self, provider, row):
@@ -1877,7 +1881,8 @@ class DesktopSessions:
             return scan_profile(self)
         # Discovery only: neither a GUI refresh nor a manual rescan launches apps.
         # Keep the old setup argument for callers from older desktop packages.
-        from bridge.clients.discovery import discover_clients, inventory_current, inventory_preferences, inventory_fingerprint, DISCOVERY_REVISION
+        from bridge.clients.discovery import (discover_clients, inventory_current, inventory_preferences,
+                                              inventory_fingerprint, inventory_registration, DISCOVERY_REVISION)
         with self.client_lock:
             preferences = self._discovery_preferences()
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
@@ -1896,18 +1901,28 @@ class DesktopSessions:
             discovered = self._retain_running_installations(discovered, preferences)
             if custom_claude and not self.config.get('claudeHome'):
                 discovered['claude']['dataDirectoryExplicit'] = False
-            if self.bridge and self.bridge.accounts.index.get('desktopExecutableSource') == 'scan':
+            fingerprint = inventory_fingerprint(discovered, preferences)
+            registration = inventory_registration(discovered)
+            if self.bridge:
                 accounts = self.bridge.accounts
-                with _closing_gate(accounts.lock, opening=True):
-                    if accounts.index.get('desktopExecutableSource') == 'scan':
-                        executable = discovered.get('codex', {}).get('executable')
-                        if executable and executable != accounts.index.get('desktopExecutable'):
-                            accounts.index['desktopExecutable'] = executable
-                            accounts.save()
+                codex = discovered.get('codex', {})
+                selected = accounts.index.get('desktopExecutable')
+                replacement = codex.get('replacesExecutable')
+                same_installation = bool(selected and selected == preferences.get('desktopExecutable') == replacement)
+                if accounts.index.get('desktopExecutableSource') == 'scan' or same_installation:
+                    with _closing_gate(accounts.lock, opening=True):
+                        selected = accounts.index.get('desktopExecutable')
+                        same_installation = bool(selected and selected == preferences.get('desktopExecutable') == replacement)
+                        if accounts.index.get('desktopExecutableSource') == 'scan' or same_installation:
+                            executable = codex.get('executable')
+                            if executable and executable != selected:
+                                accounts.index['desktopExecutable'] = executable
+                                accounts.save()
             self.config['discovered'] = discovered
             self.config['discoveryRevision'] = DISCOVERY_REVISION
             self.config['discoveryPreferences'] = inventory_preferences(preferences)
-            self.config['discoveryFingerprint'] = inventory_fingerprint(discovered, preferences)
+            self.config['discoveryFingerprint'] = fingerprint
+            self.config['discoveryPackages'] = registration
             with self.read_lock:
                 self._configure_zcode()
                 self._configure_antigravity()
@@ -1947,6 +1962,8 @@ class DesktopSessions:
                            if native.get('executable') for parent in Path(native['executable']).parents}
                 watch.update(set(self.config.get('discoveryFingerprint', {})) & parents)
                 fresh = {**fresh, 'installationWatchPaths': sorted(watch)}
+                if old.get('packageFamilyName'):
+                    fresh['packageFamilyName'] = old['packageFamilyName']
                 result[provider] = fresh
             old_paths = {row['executable'] for row in [old, *old.get('installations', {}).values()] if row.get('executable')}
             new_paths = {row['executable'] for row in [fresh, *fresh.get('installations', {}).values()] if row.get('executable')}
