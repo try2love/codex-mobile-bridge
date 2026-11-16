@@ -25,17 +25,25 @@ function chatShouldSlideHistory(count,following){
 function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
-  for(const node of container.children){
-    if(node.hidden||node.dataset.key===undefined||!accept(node))continue;
+  const candidates=[];
+  const visit=node=>{
+    if(node.hidden||node.dataset.key===undefined||!accept(node))return;
+    if(node.classList.contains('chat-activity-turn')&&node.open&&node.firstChild.getBoundingClientRect().bottom<=top){
+      for(const child of node.lastChild.children)visit(child);
+    }else candidates.push(node);
+  };
+  for(const node of container.children)visit(node);
+  for(const node of candidates){
     const rect=node.getBoundingClientRect();
-    anchor={key:node.dataset.key,offset:rect.top-top};
+    anchor={key:node.dataset.key,offset:rect.top-top,group:node.classList.contains('chat-activity-turn')?'turn':node.classList.contains('chat-activity-tools')?'tools':null};
     if(rect.bottom>top)break;
   }
   return anchor;
 }
 function restoreChatScrollAnchor(viewport,node,anchor){
   if(!node||node.hidden||!anchor)return false;
-  for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.classList?.contains('chat-activity-group'))node=parent;
+  if(anchor.group)node=node.closest('.chat-activity-'+anchor.group)||node;
+  for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.classList?.contains('chat-activity-group')&&!parent.open)node=parent;
   viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-anchor.offset;
   return true;
 }
@@ -43,7 +51,7 @@ function captureChatActivityState(node){
   const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
   if(!details)return null;
   const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
-  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0,children:details.classList?.contains('chat-activity-group')?[...details.querySelectorAll('details.activity')].map(node=>[node,captureChatActivityState(node)]):[]};
+  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0,children:details.classList?.contains('chat-activity-group')?[...details.querySelectorAll('details.activity,details.chat-activity-group')].map(node=>[node,captureChatActivityState(node)]):[]};
 }
 function restoreChatActivityState(node,state){
   if(!state)return;
@@ -134,8 +142,72 @@ function syncChatActivityPage(group){
   group.__firstKey=shown[0].dataset.key;group.dataset.key=group.__firstKey;
   syncChatMessageNodes(body,[group.__older,...shown],false);body.scrollTop=top;
 }
-// Consecutive tools share one lightweight disclosure. Commentary, thoughts,
-// supplements and final results are siblings, never a catch-all outer group.
+// Task boundaries come from native turn IDs when available. Older adapters
+// without them use ordinary user messages; response envelopes are never a task.
+function chatTaskSegments(nodes,state={}){
+  const tasks=new Map();let current='history';
+  for(const node of nodes){
+    const row=node.__chatMessage;if(!row)continue;
+    if(row.turnId)current='turn:'+row.turnId;
+    else if(row.role==='user'&&row.interaction!=='response')current='user:'+node.dataset.key;
+    let task=tasks.get(current);if(!task){task={nodes:[],finals:new Set()};tasks.set(current,task);}
+    task.nodes.push(node);
+  }
+  const latest=[...tasks.values()].at(-1),byNode=new Map();
+  for(const task of tasks.values()){
+    const rows=task.nodes.map(node=>node.__chatMessage),status=[...rows].reverse().find(row=>row.turnStatus)?.turnStatus;
+    task.active=status?status==='inProgress':task===latest&&state.status==='active';
+    for(const node of task.nodes)if(node.__chatMessage.phase==='final_answer')task.finals.add(node);
+    if(!task.active&&!task.finals.size){
+      const last=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase!=='commentary');
+      if(last)task.finals.add(last);
+    }
+    // Only native message/turn clocks; no wall-clock estimate for old history.
+    const first=rows.find(row=>row.role==='user'&&row.interaction!=='response');
+    const start=rows.find(row=>row.turnStartedAt)?.turnStartedAt??first?.timestamp;
+    const end=[...task.finals].at(-1)?.__chatMessage.timestamp;
+    const a=chatMessageDate(start),b=chatMessageDate(end);
+    task.seconds=!task.active&&a&&b&&b>=a?Math.floor((b-a)/1000):null;
+    for(const node of task.nodes)byNode.set(node,task);
+  }
+  return byNode;
+}
+function chatTaskLabel(task){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(task.active)return t('正在处理');
+  if(task.seconds===null)return t('执行过程');
+  const minutes=Math.floor(task.seconds/60),seconds=task.seconds%60;
+  return minutes?t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',minutes).replace('{seconds}',seconds):t('用时 {seconds} 秒').replace('{seconds}',seconds);
+}
+function groupChatTasks(container,nodes){
+  const previous=container.__chatTaskGroups||new Map(),next=new Map(),used=new Set(),result=[],tasks=chatTaskSegments(nodes,container.__chatTaskState);
+  let cluster=[],current=null;
+  const flush=()=>{
+    if(!cluster.length)return;
+    const key=cluster[0].dataset.key;
+    let group=previous.get(key)||[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys.has(node.dataset.key)));
+    if(!group){
+      group=document.createElement('details');group.className='chat-activity-group chat-activity-turn';
+      const summary=document.createElement('summary'),body=document.createElement('div');body.className='chat-task-items';group.append(summary,body);group.open=current.active;
+    }else if(group.__active&&!current.active)group.open=false;
+    group.dataset.state=current.active?'active':'complete';
+    group.__active=current.active;group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
+    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
+    const label=chatTaskLabel(current);if(group.firstChild.textContent!==label)group.firstChild.textContent=label;
+    // Keep the independently scrollable tool batches inside the task disclosure.
+    syncChatMessageNodes(group.lastChild,groupChatActivities(group.lastChild,cluster),false);
+    used.add(group);next.set(key,group);result.push(group);cluster=[];
+  };
+  for(const node of nodes){
+    const row=node.__chatMessage,task=tasks.get(node);
+    const process=row&&(chatActivityKind(row)||row.role==='assistant'&&!task.finals.has(node))&&!row.fileSummary;
+    if(!process){flush();result.push(node);current=null;continue;}
+    if(current&&current!==task)flush();current=task;cluster.push(node);
+  }
+  flush();container.__chatTaskGroups=next;return result;
+}
+// Consecutive tools form the second disclosure level inside a task. Each
+// native tool still owns its original third-level detail and lazy body.
 function groupChatActivities(container,nodes){
   const previous=container.__chatActivityGroups||new Map(),next=new Map(),used=new Set(),result=[];
   let cluster=[];
@@ -169,7 +241,7 @@ function groupChatActivities(container,nodes){
 // Stable row keys are local to this conversation container. Do not detach
 // unchanged rows: even reattaching the same node resets nested scroll areas.
 function syncChatMessageNodes(container,nodes,group=true){
-  if(group){if(nodes.some(node=>node.dataset?.chatActivity))nodes=groupChatActivities(container,nodes);else container.__chatActivityGroups=null;}
+  if(group)nodes=groupChatTasks(container,nodes);
   const previous=new Map([...container.children].filter(node=>node.dataset.key!==undefined).map(node=>[node.dataset.key,node]));
   const reading=new Map(),wanted=new Set(nodes);
   for(const node of nodes){

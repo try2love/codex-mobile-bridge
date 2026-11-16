@@ -9,15 +9,16 @@ async function runActivityGroupBrowserChecks(){
     document.documentElement.dataset.showReasoning='true';document.documentElement.dataset.showProcess='true';document.documentElement.style.setProperty('--message-size','16px');
     const root=document.createElement('div');root.className='app';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:20';document.body.append(root);
     let view,timeline,sequence=0,initialized=false,epoch='groups',rows,apply,getNode,container,viewport;
-    const row=(id,order,role='assistant',kind='',text=longText)=>({id,key:id,order,role,kind,text,version:'v1'});
+    const startedAt='2026-11-16T01:00:00Z';
+    const row=(id,order,role='assistant',kind='',text=longText)=>({id,key:id,order,role,kind,text,version:'v1',turnId:'native-task',turnStartedAt:startedAt});
     const commentary={...row('commentary',1.5,'assistant','','Synthetic progress commentary'),phase:'commentary'};
     const interaction={...row('answered',3.5,'user','steeringUserMessage','Synthetic processed question response'),interaction:'response',status:'accepted'};
     const supplement={...row('supplement',3.75,'user','steeringUserMessage','A temporary user task must stay visible.'),status:'accepted'};
-    const initial=[row('user',0,'user','userMessage','Synthetic user prompt'),row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('cmd2',3,'activity','commandExecution'),interaction,supplement];
-    const final={...row('final',4,'assistant','','Synthetic final reply'),phase:'final_answer'};
+    const initial=[{...row('user',0,'user','userMessage','Synthetic user prompt'),timestamp:startedAt},row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('cmd2',3,'activity','commandExecution'),interaction,supplement,row('cmd3',3.9,'activity','commandExecution')];
+    const final={...row('final',4,'assistant','','Synthetic final reply'),phase:'final_answer',timestamp:'2026-11-16T01:02:05Z'};
     const fileSummary={...row('files',5,'fileChanges','fileChanges',''),fileSummary:{count:1,added:2,removed:1,basis:'recorded',files:[{path:'synthetic.txt',added:2,removed:1}]}};
     const pending={id:'still-pending',tool:'Synthetic pending approval',input:{command:'synthetic-only'}};
-    const detail=(messages,active)=>({connected:true,session:{id:view?.sid||'groups',title:'Synthetic activity groups',status:active?'active':'idle',requests:[pending],capabilities:{}},messages,files:[],history:{before:'native:groups',hasMore:true}});
+    const detail=(messages,active)=>({connected:true,session:{id:view?.sid||'groups',title:'Synthetic activity groups',status:active?'active':'idle',requests:[pending],capabilities:{}},messages:messages.map(message=>({...message,turnStatus:active?'inProgress':'completed'})),files:[],history:{before:'native:groups',hasMore:true}});
     if(provider==='codex'){
       viewport=document.createElement('div');viewport.style.cssText='height:600px;max-height:75vh;overflow:auto';container=document.createElement('div');viewport.append(container);root.append(viewport);
       const older=document.createElement('button'),newer=document.createElement('button');root.append(older,newer);
@@ -33,37 +34,43 @@ async function runActivityGroupBrowserChecks(){
     try{
       rows=initial;apply(rows,true);await frame();await frame();
       let tools=getNode('cmd1').closest('.chat-activity-tools');
+      const task=tools.closest('.chat-activity-turn'),afterSupplement=getNode('cmd3').closest('.chat-activity-turn');
       const outside=id=>getNode(id).parentElement===container&&!getNode(id).closest('.chat-activity-group');
-      check(!container.querySelector('.chat-activity-turn'),provider+' has no outer turn activity wrapper');
-      check(outside('reason')&&getNode('reason').tagName==='DETAILS'&&!getNode('reason').open,provider+' reasoning is an independent collapsed details row');
-      check(outside('commentary')&&getNode('commentary').getBoundingClientRect().height>0,provider+' commentary remains an outer message');
-      check(tools&&!tools.open&&tools.parentElement===container,provider+' consecutive tools default to a collapsed tools group');
+      check(task&&task.open&&task.parentElement===container&&task.dataset.state==='active'&&getComputedStyle(task.firstChild).display==='none',provider+' active task shows process rows without an outer disclosure heading');
+      check(getNode('reason').parentElement===task.lastChild&&getNode('reason').tagName==='DETAILS'&&!getNode('reason').open,provider+' reasoning keeps independent details inside the task');
+      check(getNode('commentary').parentElement===task.lastChild&&getNode('commentary').getBoundingClientRect().height>0,provider+' explicit commentary appears inside the active task');
+      check(tools&&!tools.open&&tools.parentElement===task.lastChild,provider+' consecutive tools default to a collapsed tools group');
       check(getNode('cmd2').closest('.chat-activity-tools')===tools&&getNode('answered').closest('.chat-activity-tools')===tools,provider+' explicit processed interaction joins the adjacent tool batch');
       check(getNode('cmd1').tagName==='DETAILS'&&getNode('cmd2').tagName==='DETAILS',provider+' original per-tool details remain inside the batch');
       check(outside('user')&&outside('supplement')&&getNode('supplement').getBoundingClientRect().height>0,provider+' initial and temporary steering user tasks remain outside the batch');
-      check(container.querySelectorAll('.chat-activity-tools').length===1,provider+' reasoning and commentary never create tool groups');
+      check(afterSupplement&&afterSupplement!==task&&afterSupplement.open&&outside('supplement'),provider+' same native turn continues in a separate task fragment around the visible supplement');
+      check(container.querySelectorAll('.chat-activity-tools').length===2,provider+' task fragments contain only their consecutive tool batches');
       tools.firstChild.click();getNode('reason').open=true;getNode('cmd1').open=true;getNode('cmd2').open=true;await frame();await frame();
       let leaf=getNode('cmd1'),body=leaf.querySelector('.activity-body'),reasonBody=getNode('reason').querySelector('.activity-body'),groupBody=tools.lastChild;body.scrollTop=120;reasonBody.scrollTop=90;groupBody.scrollTop=35;
       check(body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' reasoning, tool detail and batch body scroll independently');
       rows=[...rows,final,fileSummary];apply(rows);await frame();await frame();
-      check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' completion preserves a manually opened batch');
+      const elapsedLabel=BridgeI18n.t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}','2').replace('{seconds}','5');
+      check(!task.open&&!afterSupplement.open&&task.dataset.state==='complete'&&getComputedStyle(task.firstChild).display!=='none'&&task.firstChild.textContent===elapsedLabel&&afterSupplement.firstChild.textContent===elapsedLabel,provider+' completion collapses both task fragments once and shows the native 125-second duration');
+      task.firstChild.click();afterSupplement.firstChild.click();await frame();await frame();
+      check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' opening the completed task preserves its manually opened tool batch');
       check(outside('final')&&getNode('final').getBoundingClientRect().height>0,provider+' final reply stays visible outside the batch');
       check(outside('files')&&getNode('files').getBoundingClientRect().height>0,provider+' fileSummary/fileChanges result remains an outer row');
       check(getNode('files').classList.contains('edited-files-card')&&getNode('files').querySelector('.edited-files-label')?.textContent.includes('1'),provider+' file result uses the shared file summary card');
-      check(outside('commentary')&&outside('supplement'),provider+' completion never reclassifies commentary or user steering');
+      check(getNode('commentary').closest('.chat-activity-turn')===task&&outside('supplement'),provider+' completion keeps commentary folded and user steering outside');
       check(timeline?timeline.pendingRequests&&timeline.meta.requests[0].id===pending.id:view.state.requests[0].id===pending.id&&view.requests.children.length>0&&!view.requests.closest('.chat-activity-group'),provider+' pending approval stays separate from processed interactions');
       leaf=getNode('cmd1');body=leaf.querySelector('.activity-body');reasonBody=getNode('reason').querySelector('.activity-body');groupBody=tools.lastChild;
       check(leaf.open&&getNode('reason').open&&body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' completion preserves detail expansion and reading positions');
-      const tracked=[tools,leaf,body,getNode('reason'),reasonBody],mutations=[],observer=new MutationObserver(records=>mutations.push(...records));observer.observe(container,{subtree:true,childList:true});
+      const tracked=[task,afterSupplement,tools,leaf,body,getNode('reason'),reasonBody],mutations=[],observer=new MutationObserver(records=>mutations.push(...records));observer.observe(container,{subtree:true,childList:true});
       for(let i=0;i<3;i++)apply(rows);await frame();observer.disconnect();
       check(tracked.every(node=>node.isConnected)&&!mutations.some(record=>[...record.removedNodes].some(removed=>tracked.some(node=>removed===node||removed.contains?.(node)))),provider+' unchanged refresh never detaches reading nodes');
-      check(getNode('cmd1')===leaf&&tools.open&&body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' unchanged refresh keeps expansion, identity and inner scrolling');
+      check(task.open&&afterSupplement.open&&getNode('cmd1')===leaf&&tools.open&&body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' unchanged refresh keeps expansion, identity and inner scrolling');
       viewport.scrollTop=100;await frame();await frame();if(timeline)timeline.following=false;else view.reading={following:false,top:viewport.scrollTop,anchor:captureChatScrollAnchor(viewport,container)};
       const groupTop=tools.getBoundingClientRect().top;rows=[row('older',-1,'user','userMessage','Earlier synthetic prompt'),...rows];apply(rows,false,true);await frame();await frame();
-      check(getNode('cmd1')===leaf&&getNode('cmd1').closest('.chat-activity-tools')===tools&&body.scrollTop===120&&reasonBody.scrollTop===90,provider+' history prepend preserves group and leaf reading nodes');
+      check(task.open&&afterSupplement.open&&getNode('cmd1')===leaf&&getNode('cmd1').closest('.chat-activity-tools')===tools&&body.scrollTop===120&&reasonBody.scrollTop===90,provider+' history prepend preserves group and leaf reading nodes');
       check(Math.abs(tools.getBoundingClientRect().top-groupTop)<3,provider+' history prepend preserves the batch pixel anchor');
-      tools.firstChild.click();await frame();apply(rows,true);await frame();check(!tools.open,provider+' manual collapse survives another active update');
-      tools.firstChild.click();await frame();apply(rows);await frame();check(tools.open,provider+' manual expansion survives another completed update');
+      tools.firstChild.click();await frame();apply(rows);await frame();check(!tools.open&&task.open,provider+' manual tool collapse survives a completed refresh');
+      tools.firstChild.click();task.firstChild.click();await frame();apply(rows);await frame();check(tools.open&&!task.open,provider+' manual task collapse survives a completed refresh');
+      task.firstChild.click();await frame();apply(rows);await frame();check(task.open&&tools.open,provider+' manually reopened completed task remains open on later refresh');
       const colors=[];
       for(const theme of ['light','dark'])for(const size of [10,16,32]){
         document.documentElement.dataset.theme=theme;document.documentElement.style.setProperty('--message-size',size+'px');await frame();
@@ -77,7 +84,7 @@ async function runActivityGroupBrowserChecks(){
       }
       check(colors[0].color!==colors[3].color,provider+' tools summary follows the actual light/dark palette');document.documentElement.style.setProperty('--message-size','16px');
       document.documentElement.dataset.showReasoning='false';if(timeline)timeline.setVisibility({showReasoning:false});await frame();await frame();
-      check(getNode('reason').hidden&&outside('reason')&&outside('supplement')&&outside('final')&&outside('files'),provider+' hiding reasoning never groups ordinary user/final/file rows');
+      check(getNode('reason').hidden&&getNode('reason').closest('.chat-activity-turn')===task&&outside('supplement')&&outside('final')&&outside('files'),provider+' hiding reasoning never groups ordinary user/final/file rows');
       document.documentElement.dataset.showReasoning='true';if(timeline)timeline.setVisibility({showReasoning:true});await frame();await frame();check(!getNode('reason').hidden,provider+' reasoning can be shown again independently');
       rows=[...rows,row('tool-before-user',5.5,'activity','commandExecution'),row('plain-reply',6,'user','userMessage','Yes — an ordinary user task without interaction metadata.'),row('after-user-a',7,'activity','commandExecution'),row('after-user-b',8,'activity','commandExecution')];apply(rows);await frame();
       const after=getNode('after-user-a').closest('.chat-activity-tools');
@@ -87,8 +94,16 @@ async function runActivityGroupBrowserChecks(){
       check(!document.getSelection().isCollapsed&&outside('supplement'),provider+' unchanged updates preserve selected ordinary user text');document.getSelection().removeAllRanges();
       if(view)view.prepareChat('different-chat');else epoch='other-groups';apply(initial,false,false,true);await frame();await frame();
       const freshTools=getNode('cmd1').closest('.chat-activity-tools');
+      check(!freshTools.closest('.chat-activity-turn').open,provider+' initially loaded completed history starts folded');
       check(freshTools!==tools&&!freshTools.open&&!getNode('reason').open&&!getNode('cmd1').open&&getNode('cmd1').querySelector('.activity-body').scrollTop===0,provider+' another conversation inherits no group expansion or scroll');
-      if(timeline){timeline.following=true;for(let i=10;i<280;i++)timeline.apply({rows:[row('live-'+i,i)],sequence:++sequence,epoch,meta:{requests:[pending]},files:[]});const groups=container.__chatActivityGroups?.size||0;check(timeline.rows.size<=240&&!freshTools.isConnected&&!groups,provider+' sliding window releases omitted group nodes and cache');}
+      const legacy=(id,order,role,kind,text)=>{const {turnId,turnStartedAt,...message}=row(id,order,role,kind,text);return message;};
+      const fallback=[legacy('legacy-user',0,'user','userMessage','Legacy prompt'),legacy('legacy-tool',1,'activity','commandExecution'),legacy('legacy-final',2,'assistant','','Legacy final answer'),legacy('legacy-unknown-user',3,'user','','Yes, approved — ordinary text without interaction metadata.'),legacy('legacy-next-tool',4,'activity','commandExecution'),legacy('legacy-next-final',5,'assistant','','Next legacy final answer')];
+      apply(fallback,false,false,true);await frame();await frame();
+      const legacyTask=getNode('legacy-tool').closest('.chat-activity-turn'),nextLegacyTask=getNode('legacy-next-tool').closest('.chat-activity-turn');
+      check(legacyTask&&nextLegacyTask&&legacyTask!==nextLegacyTask&&!legacyTask.open&&!nextLegacyTask.open,provider+' legacy adapters without turn IDs use ordinary user boundaries');
+      check(outside('legacy-final')&&outside('legacy-next-final')&&outside('legacy-unknown-user'),provider+' legacy final fallback never infers interactions from unknown user text');
+      check(!legacyTask.firstChild.textContent.match(/\d/),provider+' historical tasks without native clocks show no invented elapsed duration');
+      if(timeline){timeline.following=true;for(let i=10;i<280;i++)timeline.apply({rows:[{...row('live-'+i,i),turnId:'live-'+i,phase:'final_answer',turnStatus:'completed'}],sequence:++sequence,epoch,meta:{requests:[pending]},files:[]});const groups=container.__chatTaskGroups?.size||0;check(timeline.rows.size<=240&&!freshTools.isConnected&&!groups,provider+' sliding window releases omitted group nodes and cache');}
     }finally{document.getSelection().removeAllRanges();view?.clear();timeline?.dispose();root.remove();restore();}
   }}finally{restore();}
   return {passed:checks.length,width:innerWidth,checks};

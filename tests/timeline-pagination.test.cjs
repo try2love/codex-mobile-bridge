@@ -24,7 +24,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
 function scrollFixture(){
  const listeners=new Map(),requests=[],viewport={scrollTop:3000,scrollHeight:10000,clientHeight:600,getBoundingClientRect:()=>({top:100}),closest:()=>null,
   addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
- const container={children:Array.from({length:8},(_,index)=>({hidden:false,dataset:{key:'row-'+index},getBoundingClientRect:()=>({top:100+index*1000-viewport.scrollTop,bottom:1100+index*1000-viewport.scrollTop})}))};
+ const container={children:Array.from({length:8},(_,index)=>({hidden:false,classList:{contains:()=>false},dataset:{key:'row-'+index},getBoundingClientRect:()=>({top:100+index*1000-viewport.scrollTop,bottom:1100+index*1000-viewport.scrollTop})}))};
  const document={documentElement:{dataset:{}}},ctx=vm.createContext({window:{},document,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},ResizeObserver:class{observe(){}disconnect(){}}});
  for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx),ui=new Type({elements:{viewport,container,older:{},newer:{}},url:action=>'/fixture/'+action+'?scope=synthetic',renderMeta(){},renderText(){},status(){},request:(url,body,signal)=>{

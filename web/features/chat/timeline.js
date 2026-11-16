@@ -165,7 +165,7 @@ class ChatTimeline {
     }
     this.cached=cached;
     const anchor=this.capture(),bottom=this.following;
-    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.container.__chatActivityGroups=null;this.epoch=page.epoch;this.retryCount=0;}
+    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.container.__chatActivityGroups=null;this.container.__chatTaskGroups=null;this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
     if((!history&&page.sequence>=this.sequence)||reset){this.sequence=page.sequence;this.meta=page.meta;if(!cached)this.renderMeta({...page.meta,files:[...this.files.values()]});}
     if(!history)this.pendingRequests=!cached&&!!page.meta.requests?.length;
@@ -182,7 +182,7 @@ class ChatTimeline {
         if(actions&&JSON.stringify(before)===JSON.stringify(after)){
           // Late native clocks must not replace text selection or a player.
           actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);
-          old.stamp=stamp;continue;
+          old.node.__chatMessage=row;old.stamp=stamp;continue;
         }
       }
       const node=this.renderRow(row);node.dataset.key=row.key;
@@ -196,6 +196,7 @@ class ChatTimeline {
       for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
       ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
     }
+    this.container.__chatTaskState=this.meta||{};
     syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
@@ -215,6 +216,7 @@ class ChatTimeline {
   renderRow(row,open){
     const activity=!!chatActivityKind(row)||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
+    node.__chatMessage=row;
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
     if(chatActivityKind(row)){node.dataset.chatActivity=chatActivityKind(row);node.dataset.chatActivityState=row.turnStatus==='inProgress'?'active':'complete';node.dataset.chatToolKind=row.kind||'';node.dataset.chatTurnId=row.turnId||'';}
     const content=toolImages?document.createElement('details'):node;

@@ -68,6 +68,7 @@ async function runHistoryBatchBrowserChecks(){
       check(group&&!group.open&&shown().length===20&&shown()[0]===getNode('tool-181')&&shown().at(-1)===getNode('tool-200'),provider+' tools initially attach only the most recent 20 cached rows');
       check(!getNode('tool-1').isConnected&&getNode('tool-181').isConnected,provider+' omitted tool nodes remain cached without entering the DOM');
       check(timeline?timeline.meta.requests[0].id===pending.id:view.state.requests[0].id===pending.id&&view.requests.children.length>0,provider+' stale historical approvals never replace the current pending request');
+      for(let parent=group.parentElement;parent;parent=parent.parentElement)if(parent.matches('details.chat-activity-group'))parent.open=true;
       group.firstChild.click();await frame();await frame();
       const first=getNode('tool-181'),firstTop=first.getBoundingClientRect().top,button=group.querySelector('.chat-activity-older'),reads=requests.length;
       check(!button.hidden&&first.getBoundingClientRect().height>0,provider+' expanded tools expose a local earlier-process control');
