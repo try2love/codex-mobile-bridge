@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import threading
 
 from bridge.clients.errors import BridgeUnavailable
@@ -12,6 +13,22 @@ from .hook_ipc import HookIPCServer
 from .model import COMPOSER_PRESENTATION, PERMISSION_OPTIONS, SURFACE_LABELS, gateway_id
 from .setup import disable_plugin, ensure_plugin, inspect_plugin, plugin_directory
 from .store import AntigravityStore
+
+_UNSET = object()
+_SLASH_PREFIX_RE = re.compile(r'^/([A-Za-z0-9_-]+)(?:$|([ \t\r\n][\s\S]*))')
+_KNOWN_NATIVE_SYSTEM_COMMANDS = frozenset({
+    'goal', 'compact', 'schedule', 'browser', 'plan', 'grill-me', 'teamwork', 'learn', 'boost',
+})
+_BUSY_STRUCTURED_ERROR = '原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送'
+
+
+def _parse_slash_prefix(text):
+    if not isinstance(text, str):
+        return None, ''
+    match = _SLASH_PREFIX_RE.match(text)
+    if not match:
+        return None, text
+    return match.group(1), match.group(2) or ''
 
 
 class Antigravity:
@@ -152,16 +169,20 @@ class Antigravity:
         hooked = bool(self.hooks and self.hooks.has_recent_heartbeat(key))
         active = row.get('status') == 'active' or hooked or (cid in active_cids) or bool(requests)
         permission = self.hooks.permission_mode(key) if self.hooks else 'desktop'
+        work_mode = self._settings.get(key, {}).get('workMode')
+        collaboration_mode = work_mode if (live and work_mode in ('default', 'plan')) else 'default'
         return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
                 'model': self._settings.get(key, {}).get('model') or '', 'effort': '',
+                'collaborationMode': collaboration_mode,
                 'permissionMode': permission,
                 'permissionLabel': next(option['label'] for option in PERMISSION_OPTIONS if option['value'] == permission),
                 'composerCapabilities': dict(COMPOSER_PRESENTATION),
                 'connectionState': 'ready' if live else 'detached', 'readOnly': not live,
                 'capabilities': {'send': live, 'stop': live and active, 'models': live, 'effort': False, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
-                                 'queue': hooked, 'steer': hooked, 'skills': False, 'rename': False,
-                                 'plan': False, 'goal': False, 'archive': False, 'unarchive': False}}
+                                 'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
+                                 'slashCommands': live, 'compact': live, 'rename': False,
+                                 'plan': live, 'goal': live, 'archive': False, 'unarchive': False}}
 
     def management(self):
         """Inspect each native source and existing per-session settings without starting it."""
@@ -212,6 +233,123 @@ class Antigravity:
             out['usageSummary'] = payload['usageSummary']
         return out
 
+    def _update_session_settings(self, key, *, model=_UNSET, work_mode=_UNSET):
+        with self._lock:
+            entry = dict(self._settings.get(key) or {})
+            if model is not _UNSET:
+                entry['model'] = model
+            if work_mode is not _UNSET:
+                if work_mode and work_mode != 'default':
+                    entry['workMode'] = work_mode
+                else:
+                    entry.pop('workMode', None)
+            if entry:
+                self._settings[key] = entry
+            else:
+                self._settings.pop(key, None)
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temp = self.settings_file.with_suffix('.tmp')
+            temp.write_text(json.dumps(self._settings), encoding='utf-8')
+            temp.chmod(0o600)
+            temp.replace(self.settings_file)
+
+    def _commands_by_name(self, *, surface, cid=None, model=None, cwd=None):
+        rows = self.cli.slash_commands(surface=surface, conversation_id=cid, model=model, cwd=cwd)
+        return {row['name']: row for row in rows if isinstance(row, dict) and row.get('name')}
+
+    def _slash_catalog(self, *, surface, cid, model, cwd):
+        try:
+            commands = self.cli.slash_commands(surface=surface, conversation_id=cid, model=model, cwd=cwd)
+        except (OSError, ValueError, BridgeUnavailable):
+            return {'commands': [], 'skills': [], 'pluginError': '暂时无法读取 Antigravity 原生指令与 Skill 列表'}
+        skills = [
+            {'id': cmd['name'], 'name': cmd['title'], 'description': cmd['description'], 'selectable': True}
+            for cmd in commands if cmd.get('category') == 'skill'
+        ]
+        public_commands = [
+            {'id': cmd['name'], 'name': cmd['title'], 'description': cmd['description'], 'category': cmd['category']}
+            for cmd in commands
+        ]
+        return {'commands': public_commands, 'skills': skills}
+
+    @staticmethod
+    def _validate_plugins_arg(raw):
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or any(not isinstance(item, str) or not item.strip() for item in raw):
+            raise ValueError('所选 Skill 参数无效')
+        unique = list(dict.fromkeys(item.strip() for item in raw))
+        if len(unique) > 8:
+            raise ValueError('最多选择 8 个 Skill')
+        return unique
+
+    def _build_message_items(self, prompt, *, plugins, default_command=None, surface, cid=None, model=None, cwd=None):
+        cmd_name, remainder = _parse_slash_prefix(prompt)
+        if not cmd_name and not plugins and not default_command:
+            return None
+        commands_by_name = self._commands_by_name(surface=surface, cid=cid, model=model, cwd=cwd)
+        offered_skills = {name: row for name, row in commands_by_name.items() if row.get('category') == 'skill'}
+        for skill_id in plugins:
+            if skill_id not in offered_skills:
+                raise ValueError('技能已不可用，请刷新后选择')
+        leading_cmd = commands_by_name.get(cmd_name) if cmd_name else None
+        if cmd_name and leading_cmd is None and cmd_name in _KNOWN_NATIVE_SYSTEM_COMMANDS:
+            raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{cmd_name} 指令')
+        items = []
+        seen_commands = set()
+        if leading_cmd is not None:
+            items.append({'item': {'slashCommand': {'info': dict(leading_cmd['info'])}}})
+            seen_commands.add(leading_cmd['name'])
+        elif default_command:
+            mode_cmd = commands_by_name.get(default_command)
+            if not mode_cmd:
+                raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{default_command} 模式')
+            items.append({'item': {'slashCommand': {'info': dict(mode_cmd['info'])}}})
+            seen_commands.add(mode_cmd['name'])
+        for skill_id in plugins:
+            if skill_id not in seen_commands:
+                items.append({'item': {'slashCommand': {'info': dict(offered_skills[skill_id]['info'])}}})
+                seen_commands.add(skill_id)
+        if not items:
+            return None
+        if leading_cmd is not None:
+            if remainder:
+                items.append({'text': remainder})
+        else:
+            text_chunk = ' ' + prompt if not prompt.startswith((' ', '\n', '\t')) else prompt
+            items.append({'text': text_chunk})
+        return items
+
+    def _ensure_native_idle(self, row, key, cid, surface, *, waiting_msg, busy_msg):
+        if not self.cli.available(surface):
+            raise BridgeUnavailable('原客户端服务未连接，请先打开 Antigravity 应用')
+        native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
+        waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
+        if waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key)):
+            raise BridgeUnavailable(waiting_msg)
+        if native_busy or cid in active_cids:
+            raise BridgeUnavailable(busy_msg)
+
+    def _reject_busy_structured_follow_up(self, prompt, body, *, surface, cid, model, cwd):
+        if self._validate_plugins_arg(body.get('plugins')):
+            raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
+        if body.get('workMode') in ('plan', 'goal'):
+            raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
+        cmd_name, _ = _parse_slash_prefix(prompt)
+        if not cmd_name:
+            return
+        try:
+            known_names = set(self._commands_by_name(surface=surface, cid=cid, model=model, cwd=cwd))
+        except (OSError, ValueError, BridgeUnavailable, AttributeError):
+            known_names = set(_KNOWN_NATIVE_SYSTEM_COMMANDS)
+        if cmd_name in (known_names | _KNOWN_NATIVE_SYSTEM_COMMANDS):
+            raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
+
+    def _send_prompt_or_items(self, cid, prompt, *, model, surface, items=None):
+        if items is not None:
+            return self.cli.send_user_message(cid, prompt, model=model, surface=surface, items=items)
+        return self.cli.send_user_message(cid, prompt, model=model, surface=surface)
+
     def call(self, action, sid=None, body=None):
         body = body or {}
         if action == 'status':
@@ -253,8 +391,13 @@ class Antigravity:
                 raise ValueError('请选择 Antigravity 项目并输入首条消息')
             surface = project.get('surface') or 'app'
             cwd = project.get('cwd')
+            plugins = self._validate_plugins_arg(body.get('plugins'))
+            items = self._build_message_items(
+                prompt, plugins=plugins, default_command=None,
+                surface=surface, cid=None, model=body.get('model'), cwd=cwd,
+            )
             cid = self.cli.start_cascade(surface=surface, model=body.get('model'), cwd=cwd)
-            self.cli.send_user_message(cid, prompt, model=body.get('model'), surface=surface)
+            self._send_prompt_or_items(cid, prompt, model=body.get('model'), surface=surface, items=items)
             key = gateway_id(surface, cid)
             return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key}}
         row = self.store.resolve_session(sid)
@@ -274,7 +417,18 @@ class Antigravity:
                     'requests': session['requests'], 'queued': queued, 'capabilities': session['capabilities'],
                     'submissions': queued, 'draftAccountIdentity': self.account_scope()}
         if action == 'catalog':
-            return {**self._account(surface, body.get('refresh') is True), 'currentModel': session['model'], 'skills': []}
+            section = str(body.get('section') or 'all')
+            refresh = body.get('refresh') is True
+            if section == 'models':
+                return {**self._account(surface, refresh), 'currentModel': session['model'],
+                        'capabilities': session['capabilities'], 'skills': []}
+            if section == 'commands':
+                slash_data = self._slash_catalog(surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'))
+                return {'currentModel': session['model'], 'capabilities': session['capabilities'], **slash_data}
+            account_data = self._account(surface, refresh)
+            slash_data = self._slash_catalog(surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'))
+            merged_caps = {**account_data.get('capabilities', {}), **session['capabilities']}
+            return {**account_data, 'currentModel': session['model'], 'capabilities': merged_caps, **slash_data}
         if action == 'tasks':
             return {'tasks': self.store.list_tasks(row['surfaceRoot'], cid)}
         if action == 'image':
@@ -304,14 +458,56 @@ class Antigravity:
                 raise ValueError('请使用原客户端提供的完整模型条目选择思考强度')
             model = body.get('model')
             self.cli._model(model, surface)
-            with self._lock:
-                self._settings[key] = {'model': model}
-                self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                temp = self.settings_file.with_suffix('.tmp')
-                temp.write_text(json.dumps(self._settings), encoding='utf-8')
-                temp.chmod(0o600)
-                temp.replace(self.settings_file)
+            self._update_session_settings(key, model=model)
             return {'status': 'accepted', 'model': model}
+        if action == 'work-mode':
+            mode = body.get('mode')
+            if mode not in ('default', 'plan'):
+                raise ValueError('Antigravity 工作模式无效')
+            self._ensure_native_idle(
+                row, key, cid, surface,
+                waiting_msg='原会话正在等待交互确认，请先回应后再切换工作模式',
+                busy_msg=_BUSY_STRUCTURED_ERROR,
+            )
+            self._update_session_settings(key, work_mode=mode)
+            return {'status': 'accepted', 'mode': mode}
+        if action == 'goal':
+            if body.get('operation') != 'set':
+                raise ValueError('Antigravity 暂不支持此目标状态操作，请在原对话继续交互')
+            objective = str(body.get('objective') or '').strip()
+            if not objective:
+                raise ValueError('请输入目标内容')
+            if len(objective) > 4000:
+                raise ValueError('目标不能超过 4000 字')
+            self._ensure_native_idle(
+                row, key, cid, surface,
+                waiting_msg='原会话正在等待交互确认，请先回应后再设定目标',
+                busy_msg='请等待 Antigravity 原生会话空闲后再设定目标',
+            )
+            commands = self._commands_by_name(surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'))
+            goal_cmd = commands.get('goal')
+            if not goal_cmd:
+                raise BridgeUnavailable('当前 Antigravity 原生环境暂未提供 /goal 指令')
+            self._send_prompt_or_items(
+                cid, f'/goal {objective}', model=session['model'], surface=surface,
+                items=[{'item': {'slashCommand': {'info': dict(goal_cmd['info'])}}}, {'text': ' ' + objective}],
+            )
+            return {'status': 'accepted', 'delivery': 'native', 'operation': 'set'}
+        if action == 'compact':
+            self._ensure_native_idle(
+                row, key, cid, surface,
+                waiting_msg='原会话正在等待交互确认，请先回应后再压缩上下文',
+                busy_msg='请等待 Antigravity 原生会话空闲后再压缩上下文',
+            )
+            commands = self._commands_by_name(surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'))
+            compact_cmd = commands.get('compact')
+            if not compact_cmd:
+                raise BridgeUnavailable('当前 Antigravity 原生环境暂未提供 /compact 指令')
+            self._send_prompt_or_items(
+                cid, '/compact', model=session['model'], surface=surface,
+                items=[{'item': {'slashCommand': {'info': dict(compact_cmd['info'])}}}],
+            )
+            return {'status': 'accepted', 'delivery': 'native'}
         if action == 'stop':
             if self.hooks:
                 self.hooks.request_stop(key)
@@ -333,6 +529,7 @@ class Antigravity:
         if action == 'send':
             native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
             prompt, mode = self._prompt(body), body.get('mode') or 'send'
+            plugins = self._validate_plugins_arg(body.get('plugins'))
             if not prompt or mode not in ('send', 'queue', 'steer'):
                 raise ValueError('Antigravity 消息或发送方式无效')
             waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
@@ -341,9 +538,18 @@ class Antigravity:
             if native_busy or cid in active_cids:
                 if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
+                self._reject_busy_structured_follow_up(
+                    prompt, {**body, 'plugins': plugins},
+                    surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'),
+                )
                 item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)
                 return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
-            self.cli.send_user_message(cid, prompt, model=session['model'], surface=surface)
+            default_command = 'plan' if session.get('collaborationMode') == 'plan' else None
+            items = self._build_message_items(
+                prompt, plugins=plugins, default_command=default_command,
+                surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'),
+            )
+            self._send_prompt_or_items(cid, prompt, model=session['model'], surface=surface, items=items)
             return {'status': 'accepted', 'delivery': 'native'}
         raise ValueError('此 Antigravity 操作尚不支持')
 
