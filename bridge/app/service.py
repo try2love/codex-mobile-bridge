@@ -3674,7 +3674,15 @@ class Bridge:
                         session.error = str(exc)
                         session.changed()
                     return
-            self._load_session_origin(session)
+            try:
+                self._load_session_origin(session)
+            except (OSError, ValueError, KeyError, RemoteUnavailable, StoreUnavailable) as exc:
+                # Metadata can fail after the transport preflight succeeds.
+                # Keep passive maintenance alive and retry on its usual budget.
+                with session.condition:
+                    session.error = str(exc)
+                    session.changed()
+                return
             if self.host.startswith('codex:') and session.origin == 'desktop':
                 with session.condition:
                     session.error = '此独立入口只接入原 VS Code / CLI 会话；桌面会话请使用默认入口。'
