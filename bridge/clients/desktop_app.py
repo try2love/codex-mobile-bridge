@@ -54,11 +54,14 @@ class DesktopApp:
 
     @staticmethod
     def scan(runtime, home):
-        candidate = DesktopApp.discover(runtime)
-        if not candidate and sys.platform == 'win32':
+        # An explicit scan resolves the current installation before consulting
+        # an older bundled runtime which may survive an application update.
+        candidate = ''
+        if sys.platform == 'win32':
             from bridge.clients.discovery import discover_clients
             desktop = discover_clients({'codexHome': str(home)})['codex']
             candidate = desktop.get('executable', '') if desktop.get('installed') else ''
+        candidate = candidate or DesktopApp.discover(runtime)
         if candidate:
             app = DesktopApp(candidate, home)
             app.validate(runtime)

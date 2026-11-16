@@ -497,6 +497,22 @@ class AccountsTests(unittest.TestCase):
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_windows_scan_prefers_current_installation_over_surviving_old_runtime_bundle(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            root = Path(folder)
+            old, current = root/'old/ChatGPT.exe', root/'current/ChatGPT.exe'
+            for path in (old, current):
+                path.parent.mkdir(); path.write_bytes(b'MZ-desktop'); path.chmod(0o700)
+            runtime = old.parent/'resources/codex.exe'
+            runtime.parent.mkdir(); runtime.write_bytes(b'MZ-runtime')
+            with patch('bridge.clients.desktop_app.sys.platform', 'win32'), \
+                    patch('bridge.clients.discovery.discover_clients', return_value={
+                        'codex': {'installed': True, 'executable': str(current)}}), \
+                    patch('bridge.clients.desktop_app.subprocess.Popen') as start:
+                self.assertEqual(DesktopApp.scan(runtime, root), str(current.resolve()))
+            start.assert_not_called()
+            self.assertTrue(old.is_file())
+
     def test_windows_native_scan_still_rejects_runtime_as_desktop(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             runtime = Path(folder)/'bin/version/codex.exe'
