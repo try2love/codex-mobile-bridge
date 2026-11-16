@@ -956,6 +956,41 @@ class ClientLifecycleTests(unittest.TestCase):
         self.stop.assert_called_once()
         self.assertFalse(self.manager.enabled('codex'))
 
+    def test_codex_lifecycle_never_runs_late_after_waiting_for_display_or_account_locks(self):
+        from concurrent.futures import Future
+        self.accounts.gate = OperationGate()
+        force_stop = self.patch('force_stop_client')
+        for lock in (self.manager.client_lock, self.manager.locks['codex'], self.accounts.lock, self.accounts.gate):
+            for action in ('quit', 'force', 'enable'):
+                enabled = action == 'enable'
+                with self.subTest(lock=type(lock).__name__, action=action):
+                    entered, release = threading.Event(), threading.Event()
+                    result = Future()
+                    self.launch.reset_mock(); self.stop.reset_mock()
+                    def hold():
+                        with lock:
+                            entered.set()
+                            release.wait(3)
+                    def change():
+                        try:
+                            result.set_result(self.manager.toggle_client({'provider': 'codex', 'enabled': enabled,
+                                **({} if enabled else {'quitDesktop': True}),
+                                **({'forceDesktop': True, 'forceConfirmed': True} if action == 'force' else {})}))
+                        except BaseException as error:
+                            result.set_exception(error)
+                    holder, operation = threading.Thread(target=hold), threading.Thread(target=change)
+                    holder.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        with patch('bridge.clients.manager.LIFECYCLE_GATE_WAIT', .03):
+                            operation.start()
+                            with self.assertRaisesRegex(ValueError, '操作正在进行'):
+                                result.result(timeout=.3)
+                    finally:
+                        release.set(); holder.join(1); operation.join(1)
+                    self.assertFalse(operation.is_alive())
+                    self.launch.assert_not_called(); self.stop.assert_not_called(); force_stop.assert_not_called()
+
     def test_codex_close_does_not_queue_behind_an_unresponsive_connection(self):
         from concurrent.futures import Future
         self.accounts.gate = OperationGate()

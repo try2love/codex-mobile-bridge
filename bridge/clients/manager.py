@@ -43,7 +43,7 @@ LIFECYCLE_GATE_WAIT = 2
 
 
 @contextmanager
-def _closing_gate(gate):
+def _closing_gate(gate, *, opening=False):
     # Do not let a close command wait behind a stalled reconnect until the
     # phone times out, then unexpectedly quit later. This limits queueing only;
     # fresh task verification and normal native shutdown keep their own budgets.
@@ -52,7 +52,8 @@ def _closing_gate(gate):
         logging.getLogger(__name__).warning(
             'Client lifecycle provider=codex stage=operation-wait outcome=busy elapsed_ms=%.1f',
             (time.monotonic() - started) * 1000)
-        raise ValueError('有 Codex 操作正在进行，尚未执行关闭，请稍后重试')
+        raise ValueError('有 Codex 操作正在进行，尚未执行启动，请稍后重试' if opening else
+                         '有 Codex 操作正在进行，尚未执行关闭，请稍后重试')
     try:
         yield
     finally:
@@ -3000,9 +3001,14 @@ class DesktopSessions:
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
         if provider == 'codex' and (not enabled or not startup):
             self.runtime_preparation_cancel.set()
-        account_gate = (_closing_gate(accounts.gate) if accounts and not enabled and quit_desktop
+        explicit_codex = accounts is not None and not startup
+        client_gate = _closing_gate(self.client_lock, opening=enabled) if explicit_codex else self.client_lock
+        provider_gate = _closing_gate(self.locks[provider], opening=enabled) if explicit_codex else nullcontext()
+        account_gate = (_closing_gate(accounts.gate, opening=enabled) if explicit_codex
                         else accounts.gate if accounts else nullcontext())
-        with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), account_gate, accounts.lock if accounts else nullcontext():
+        account_lock = (_closing_gate(accounts.lock, opening=enabled) if explicit_codex
+                        else accounts.lock if accounts else nullcontext())
+        with client_gate, provider_gate, self._changing(provider, rebind='connectionMode' not in value), account_gate, account_lock:
             if provider == 'zcode' and 'connectionMode' in value:
                 self._select_zcode_connection(value['connectionMode'])
             if not enabled and not quit_desktop:
