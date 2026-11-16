@@ -3,8 +3,26 @@
 // cached content never supplies live permissions, approvals or write receipts.
 class ChatHistoryCache {
   constructor(database=globalThis.indexedDB,now=()=>Date.now()){
-    this.database=database;this.now=now;this.generation=0;
+    this.database=database;this.now=now;this.generation=0;this.nativeQueue=Promise.resolve();
     this.ttl=7*24*60*60*1000;this.maxBytes=32*1024*1024;this.maxPageBytes=2*1024*1024;this.maxPages=256;
+  }
+  native(){return globalThis.window?.BridgeMobileStorage;}
+  nativeKey(scope,slot){return 'history:'+JSON.stringify([scope,slot]);}
+  serialNative(work){const pending=this.nativeQueue.then(work,work);this.nativeQueue=pending.catch(()=>{});return pending;}
+  async readNative(scope,slot){
+    const native=this.native();if(!native)return null;
+    const key=this.nativeKey(scope,slot),record=await native.request('read',key);
+    if(record&&record.savedAt<=this.now()&&this.now()-record.savedAt<this.ttl)return record.value;
+    if(record)native.request('remove',key);
+    return null;
+  }
+  async forgetNative(scope,namespace){
+    const native=this.native();if(!native)return;
+    const keys=await native.request('list','history:');
+    for(const key of Array.isArray(keys)?keys:[]){
+      let stored;try{[stored]=JSON.parse(key.slice(8));}catch{continue;}
+      if(!scope||(namespace?this.namespace(stored)===scope:stored===scope))await native.request('remove',key);
+    }
   }
   namespace(scope){try{const parts=JSON.parse(scope);return Array.isArray(parts)?JSON.stringify(parts.slice(0,-1)):'';}catch{return '';}}
   open(){
@@ -31,12 +49,18 @@ class ChatHistoryCache {
   }
   async read(scope,slot='recent'){
     if(!scope)return null;
-    const generation=this.generation,db=await this.open();if(!db||generation!==this.generation)return null;
+    const generation=this.generation,native=await this.serialNative(()=>this.readNative(scope,slot));
+    if(generation!==this.generation)return null;if(native!==null)return native;
+    const db=await this.open();if(!db||generation!==this.generation)return null;
     return new Promise(resolve=>{
       try{
         const request=db.transaction('pages').objectStore('pages').get(JSON.stringify([scope,slot]));
         request.onerror=()=>resolve(null);
-        request.onsuccess=()=>{const record=request.result;resolve(generation===this.generation&&record&&record.savedAt<=this.now()&&this.now()-record.savedAt<this.ttl?record.value:null);};
+        request.onsuccess=()=>{
+          const record=request.result,valid=generation===this.generation&&record&&record.savedAt<=this.now()&&this.now()-record.savedAt<this.ttl;
+          resolve(valid?record.value:null);
+          if(valid&&this.native())this.serialNative(()=>generation===this.generation&&this.native().request('write',this.nativeKey(scope,slot),{savedAt:record.savedAt,value:record.value}));
+        };
       }catch{resolve(null);}
     });
   }
@@ -46,7 +70,9 @@ class ChatHistoryCache {
     let bytes;
     try{bytes=new TextEncoder().encode(JSON.stringify(value)).byteLength;}catch{return false;}
     if(bytes>this.maxPageBytes)return false;
-    const generation=this.generation,db=await this.open();if(!db||generation!==this.generation)return false;
+    const generation=this.generation;
+    if(this.native()){const written=await this.serialNative(async()=>generation===this.generation&&await this.native().request('write',this.nativeKey(scope,slot),{savedAt,value}));if(written===true)return true;}
+    const db=await this.open();if(!db||generation!==this.generation)return false;
     return new Promise(resolve=>{
       try{
         const transaction=db.transaction(['pages','clears'],'readwrite'),store=transaction.objectStore('pages'),clears=transaction.objectStore('clears');
@@ -73,6 +99,7 @@ class ChatHistoryCache {
   forgetNamespace(namespace){return this.forget(namespace,true);}
   async forget(scope,namespace=false){
     this.generation++;
+    await this.serialNative(()=>this.forgetNative(scope,namespace));
     const db=await this.open();if(!db)return;
     return new Promise(resolve=>{
       try{

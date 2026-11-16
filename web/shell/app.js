@@ -223,7 +223,7 @@ async function enter(authInfo){
   sessionPins.bind(draftGateway?JSON.stringify([window.BridgeRelayBase||location.origin,draftGateway]):'');
   desktopSessions.bindDraftGateway?.(draftGateway);
   listIdentity=await listAuthIdentity(verified);
-  desktopSessions.bindListCache(listIdentity,window.BridgeRelayBase||location.host);
+  desktopSessions.bindListCache(listIdentity,verified.instanceId||window.BridgeRelayBase||location.host);
   restoreListSnapshot();
   const target=clientNavigation.chatTarget?.(chatLink),direct=!!target&&Array.isArray(verified.enabledClients);
   clientNavigation.enabledClients=Array.isArray(verified.enabledClients)?verified.enabledClients.slice():null;
