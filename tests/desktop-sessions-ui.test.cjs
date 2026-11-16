@@ -1932,3 +1932,53 @@ for(const field of ['model','modelCatalogIdentity','account'])test('native Skill
  const newKey=view.nativeCommandKey();finish({commands:[{id:'old-scope-command'}],skills:[]});await pending;
  assert.equal(view.nativeCommands.get(newKey),undefined);assert.equal(view.nativeCommands.get(oldKey),cached);assert.equal(dialog.open,false);
 });
+
+test('Workbench refreshes image thumbnails when Files is visible in right split pane',async()=>{
+ const ui=await opened();
+ ui.run('globalThis.IntersectionObserver = class { observe(){} disconnect(){} };');
+ const wb=ui.view.workbench;
+ wb.showThumbnails=true;
+ wb.current={
+  key:'k',provider:'claude',id:'a',host:'local',active:'chat',splitTab:'files',
+  files:[{id:'files',type:'files',loaded:true,thumbnails:[{entry:{name:'a.png',path:'a.png'},box:{},img:{}}]}],
+ };
+ assert.equal(wb.isVisible(wb.current,{id:'files'}),true);
+ wb.refreshThumbnails();
+ assert.ok(wb.thumbnailObserver,'thumbnailObserver should initialize when Files is visible in right split pane');
+ wb.stopThumbnails();
+});
+
+test('split button works directly from chat tab, restores last tool tab, and opens files on fresh chat',async()=>{
+ const ui=await opened(),wb=ui.view.workbench,session=wb.current;
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'README.md',path:'/project/README.md',kind:'file',size:12}],nextOffset:null}));
+ assert.equal(session.active,'chat');
+ assert.equal(wb.splitButton.hidden,false);
+ assert.equal(wb.splitButton.disabled,false);
+ wb.splitButton.onclick();
+ await new Promise(setImmediate);
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'files');
+ assert.equal(ui.view.conversation.classList.contains('wb-split'),true);
+ wb.splitButton.onclick();
+ assert.equal(wb.splitMode,false);
+ assert.equal(session.active,'files');
+ session.files.push({id:'file:/project/README.md',name:'README.md',body:wb.node('div','wb-preview')});
+ wb.select('file:/project/README.md');
+ wb.select('chat');
+ assert.equal(wb.splitButton.disabled,false);
+ wb.splitButton.onclick();
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'file:/project/README.md');
+ await wb.close('file:/project/README.md');
+ assert.equal(session.splitTab,'files');
+ await wb.close('files');
+ assert.equal(session.active,'chat');
+ assert.equal(session.files.length,0);
+ wb.splitButton.onclick();
+ await new Promise(setImmediate);
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'files');
+ ui.view.conversation.clientWidth=390;wb.paint();
+ assert.equal(wb.splitButton.hidden,true);
+ assert.equal(wb.splitButton.disabled,true);
+});
