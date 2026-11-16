@@ -195,6 +195,8 @@ function groupChatTasks(container,nodes){
       group=document.createElement('details');group.className='chat-activity-group chat-activity-turn';
       const summary=document.createElement('summary'),body=document.createElement('div');body.className='chat-task-items';group.append(summary,body);group.open=current.active;
     }else if(group.__active&&!current.active)group.open=false;
+    // Active tasks have no outer toggle; cached collapsed state must not hide them.
+    if(current.active)group.open=true;
     group.dataset.state=current.active?'active':'complete';
     group.__active=current.active;group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
     group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);

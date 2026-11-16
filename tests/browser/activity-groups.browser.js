@@ -107,6 +107,16 @@ async function runActivityGroupBrowserChecks(){
       check(legacyTask&&nextLegacyTask&&legacyTask!==nextLegacyTask&&!legacyTask.open&&!nextLegacyTask.open,provider+' legacy adapters without turn IDs use ordinary user boundaries');
       check(outside('legacy-final')&&outside('legacy-next-final')&&outside('legacy-unknown-user'),provider+' legacy final fallback never infers interactions from unknown user text');
       check(!legacyTask.firstChild.textContent.match(/\d/),provider+' historical tasks without native clocks show no invented elapsed duration');
+      if(view){
+        view.prepareChat('cached-live-task');
+        const cachedRows=[legacy('cached-user',0,'user','','Cached prompt'),{...legacy('cached-progress',1,'assistant','','Cached progress'),phase:'commentary'},legacy('cached-tool',2,'activity','commandExecution')];
+        const cachedDetail=detail(cachedRows,false);delete cachedDetail.session.status;cachedDetail.messages=cachedRows;
+        view.applyDetail(cachedDetail,true);await frame();
+        const cachedTask=getNode('cached-tool').closest('.chat-activity-turn');
+        check(!cachedTask.open,provider+' cached history without runtime evidence starts folded');
+        view.applyDetail({...detail(cachedRows,true),messages:cachedRows});await frame();await frame();
+        check(getNode('cached-tool').closest('.chat-activity-turn')===cachedTask&&cachedTask.open&&cachedTask.dataset.state==='active'&&getComputedStyle(cachedTask.firstChild).display==='none'&&getNode('cached-progress').getBoundingClientRect().height>0,provider+' fresh active status reopens the cached task and shows its progress');
+      }
       if(timeline){timeline.following=true;for(let i=10;i<280;i++)timeline.apply({rows:[{...row('live-'+i,i),turnId:'live-'+i,phase:'final_answer',turnStatus:'completed'}],sequence:++sequence,epoch,meta:{requests:[pending]},files:[]});const groups=container.__chatTaskGroups?.size||0;check(timeline.rows.size<=240&&!freshTools.isConnected&&!groups,provider+' sliding window releases omitted group nodes and cache');}
     }finally{document.getSelection().removeAllRanges();view?.clear();timeline?.dispose();root.remove();restore();}
   }}finally{restore();}
