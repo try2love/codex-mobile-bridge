@@ -2,8 +2,10 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import plistlib
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -208,6 +210,37 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             manager.config.setdefault('enabled', {})['antigravity'] = True
             with self.assertRaisesRegex(ValueError, '停用'):
                 manager.register_antigravity_application(str(cli))
+
+    @unittest.skipUnless(os.name == 'posix', 'stable application symlink')
+    def test_registered_stable_symlink_follows_update_without_changing_the_configuration_home(self):
+        app, _ = self.bundle()
+        updated = self.home/'updated/Antigravity.app'
+        shutil.copytree(app, updated)
+        selected = self.home/'Stable Antigravity.app'; selected.symlink_to(app, target_is_directory=True)
+        manager = DesktopSessions(self.home/'gateway'); self.addCleanup(manager.close)
+        original_home = str(self.home/'existing-configuration'); manager.config['antigravityHome'] = original_home
+        original = discover_clients
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+             mock.patch.object(manager, '_discovery_preferences', side_effect=lambda: {
+                 'antigravityApplications': manager.config.get('antigravityApplications', {}),
+                 'antigravityHome': manager.config['antigravityHome']}), \
+             mock.patch('bridge.clients.discovery.discover_clients', side_effect=lambda preferences: original(
+                 preferences, platform='darwin', home=self.home, env={}, applications=[])), \
+             mock.patch.object(manager, 'clients', side_effect=lambda **_: {'clients': list(manager.config['discovered'].values())}), \
+             mock.patch('bridge.clients.desktop_app.process_inventory', side_effect=lambda paths: {
+                 Path(path): {'pids': [], 'commands': {}} for path in paths}), \
+             mock.patch('bridge.clients.lifecycle.launch_client', side_effect=AssertionError('launch')):
+            manager.register_antigravity_application(str(selected))
+            self.assertEqual(manager.config['discovered']['antigravity']['application'], str(app.resolve()))
+            original_directory = manager.config['discovered']['antigravity']['dataDirectory']
+            selected.unlink(); selected.symlink_to(updated, target_is_directory=True)
+            manager.scan(inventory_only=True)
+        row = manager.config['discovered']['antigravity']
+        self.assertEqual(row['application'], str(updated.resolve()))
+        self.assertEqual(row['installations']['app']['executable'], str(updated/'Contents/MacOS/Antigravity'))
+        self.assertEqual(row['dataDirectory'], original_directory)
+        self.assertEqual(manager.config['antigravityHome'], original_home)
+        self.assertEqual(json.loads(manager.config_path.read_text())['antigravityApplications']['app'], str(selected))
 
     def test_inventory_survives_restart_without_scanning_but_manual_scan_and_missing_path_refresh(self):
         binary = self.home/'native-app'

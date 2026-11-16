@@ -335,14 +335,14 @@ class DesktopSessions:
             if self._zcode_official_status().get('connected'):
                 raise ValueError('ZCode 客户端仍有活动连接，请先停用后重试')
             try:
-                path = path.resolve(strict=True)
-                found = installation(path)
+                resolved = path.resolve(strict=True)
+                found = installation(resolved)
             except (ValueError, OSError) as exc:
                 raise ValueError('所选路径不是可用的 ZCode 客户端应用') from exc
             if not found:
                 raise ValueError('所选路径不是可用的 ZCode 客户端应用')
             row = {**found, 'id': 'zcode', 'name': 'ZCode', 'installed': True,
-                   'application': str(path), 'dataDirectory': str(Path.home()/'.zcode/v2')}
+                   'application': str(resolved), 'dataDirectory': str(Path.home()/'.zcode/v2')}
             updated = {**self.config, 'zcodeApplication': str(path),
                        'discovered': {**self.config.get('discovered', {}), 'zcode': row},
                        'enabled': {**self.config.get('enabled', {}), 'zcode': False}}
@@ -374,7 +374,7 @@ class DesktopSessions:
             found = installation(path)
             if not found:
                 raise ValueError('所选路径不是可核验的 Antigravity App、IDE 或官方 agy 程序')
-            self.config.setdefault('antigravityApplications', {})[found['surface']] = found['application']
+            self.config.setdefault('antigravityApplications', {})[found['surface']] = str(path)
             # One default provider, with its native App/IDE/CLI installations;
             # selecting a program does not create or relocate a user profile.
             self.config.setdefault('enabled', {})['antigravity'] = False
