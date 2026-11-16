@@ -174,6 +174,12 @@ def transcript(value):
         flush()
         # One native event can contain multiple text/image/tool blocks.
         for row in result[first_part:]:
+            if row['role'] == 'user' and isinstance(event.get('sourceToolAssistantUUID'), str) and any(
+                    isinstance(block, dict) and block.get('type') == 'tool_result' for block in blocks):
+                row['interaction'] = 'response'
+            if row['role'] == 'assistant' and message.get('stop_reason') in ('tool_use', 'end_turn'):
+                row['phase'] = 'commentary' if message['stop_reason'] == 'tool_use' else 'final_answer'
+        for row in result[first_part:]:
             if row['role'] in ('user', 'assistant'):
                 if event.get('timestamp') is not None:
                     row['timestamp'] = event['timestamp']
