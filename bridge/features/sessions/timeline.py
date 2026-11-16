@@ -91,6 +91,8 @@ class Timeline:
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
                            editable=turn.get('actionable', True) and first_user and message.get('kind') == 'userMessage',
                            forkable=turn.get('actionable', True) and message['role'] == 'assistant' and message.get('phase') != 'commentary' and turn.get('status') == 'completed')
+                if turn.get('startedAt') is not None:
+                    row['turnStartedAt'] = turn['startedAt']
                 timestamp = message.get('timestamp')
                 if timestamp is None and first_user:
                     timestamp = turn.get('startedAt')

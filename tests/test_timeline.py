@@ -13,6 +13,18 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_recent_page_keeps_native_start_clock_when_input_is_not_loaded(self):
+        value = view(30)
+        value['turns'][0]['startedAt'] = 1700000000000
+        timeline = Timeline()
+        timeline.update(value)
+        page = timeline.page(1)
+        self.assertEqual(page['rows'][0].get('turnStartedAt'), 1700000000000)
+        del value['turns'][0]['startedAt']
+        value['sequence'] += 1
+        timeline.update(value)
+        self.assertNotIn('turnStartedAt', timeline.page(1)['rows'][0])
+
     def test_native_answers_are_presentational_interactions_not_steered_tasks(self):
         from bridge.features.sessions.model import normalize_item
         reply = '<send_user_message_question_reply>' + json.dumps([{
