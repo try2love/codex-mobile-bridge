@@ -54,6 +54,28 @@ function restoreChatActivityState(node,state){
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
   for(const [child,reading] of state.children||[])restoreChatActivityState(child,reading);
 }
+function renderChatFileSummary(content,row,onFile){
+  const translate=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source),heading=content.children[0];
+      content.classList.add('edited-files-card');
+      heading.replaceChildren();
+      const label=document.createElement('span');label.className='edited-files-label';label.textContent=translate('已编辑 {count} 个文件').replace('{count}',row.fileSummary.count);
+      const stats=document.createElement('span');stats.className='edited-files-stats';
+      const added=document.createElement('span');added.className='edited-files-added';added.textContent='+'+row.fileSummary.added;
+      const removed=document.createElement('span');removed.className='edited-files-removed';removed.textContent='−'+row.fileSummary.removed;
+      stats.append(added,removed);heading.append(label);
+      if(row.fileSummary.basis==='recorded'){
+        const basis=document.createElement('small');basis.className='edited-files-basis';basis.textContent=translate('累计修改');heading.append(basis);
+      }
+      heading.append(stats);
+      const list=document.createElement('ul');list.className='edited-files-list';
+      for(const file of row.fileSummary.files){
+        const item=document.createElement('li'),path=document.createElement(onFile?'button':'span'),counts=document.createElement('span');
+        if(onFile){path.type='button';path.onclick=()=>onFile(file.path);}
+        path.textContent=file.path;path.className='edited-files-path';counts.textContent='+'+file.added+' −'+file.removed;counts.className='edited-files-stats';item.append(path,counts);list.append(item);
+        if(onFile)path.classList.add('plain');
+      }
+      content.append(list);
+}
 // Classification is presentation-only: a user supplement stays a user message.
 function chatActivityKind(row){
   if(row.fileSummary||row.role==='fileChanges')return '';

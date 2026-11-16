@@ -211,25 +211,7 @@ class ChatTimeline {
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     heading.textContent=activity?chatActivityLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');content.append(heading);
     if(row.fileSummary){
-      node.classList.add('edited-files-card');
-      heading.replaceChildren();
-      const label=document.createElement('span');label.className='edited-files-label';label.textContent=fileChangeLabel(row);
-      const stats=document.createElement('span');stats.className='edited-files-stats';
-      const added=document.createElement('span');added.className='edited-files-added';added.textContent='+'+row.fileSummary.added;
-      const removed=document.createElement('span');removed.className='edited-files-removed';removed.textContent='−'+row.fileSummary.removed;
-      stats.append(added,removed);heading.append(label);
-      if(row.fileSummary.basis==='recorded'){
-        const basis=document.createElement('small');basis.className='edited-files-basis';basis.textContent=timelineText('累计修改');heading.append(basis);
-      }
-      heading.append(stats);
-      const list=document.createElement('ul');list.className='edited-files-list';
-      for(const file of row.fileSummary.files){
-        const item=document.createElement('li'),path=document.createElement(this.onFile?'button':'span'),counts=document.createElement('span');
-        if(this.onFile){path.type='button';path.onclick=()=>this.onFile(file.path);}
-        path.textContent=file.path;path.className='edited-files-path';counts.textContent='+'+file.added+' −'+file.removed;counts.className='edited-files-stats';item.append(path,counts);list.append(item);
-        if(this.onFile)path.classList.add('plain');
-      }
-      content.append(list);
+      renderChatFileSummary(content,row,this.onFile);
       // File cards expand the supplied summary only, including old cached rows
       // which may still advertise a patch body. Never request their details.
       content.open=!!open;

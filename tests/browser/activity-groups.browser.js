@@ -49,6 +49,7 @@ async function runActivityGroupBrowserChecks(){
       check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' completion preserves a manually opened batch');
       check(outside('final')&&getNode('final').getBoundingClientRect().height>0,provider+' final reply stays visible outside the batch');
       check(outside('files')&&getNode('files').getBoundingClientRect().height>0,provider+' fileSummary/fileChanges result remains an outer row');
+      check(getNode('files').classList.contains('edited-files-card')&&getNode('files').querySelector('.edited-files-label')?.textContent.includes('1'),provider+' file result uses the shared file summary card');
       check(outside('commentary')&&outside('supplement'),provider+' completion never reclassifies commentary or user steering');
       check(timeline?timeline.pendingRequests&&timeline.meta.requests[0].id===pending.id:view.state.requests[0].id===pending.id&&view.requests.children.length>0&&!view.requests.closest('.chat-activity-group'),provider+' pending approval stays separate from processed interactions');
       leaf=getNode('cmd1');body=leaf.querySelector('.activity-body');reasonBody=getNode('reason').querySelector('.activity-body');groupBody=tools.lastChild;
