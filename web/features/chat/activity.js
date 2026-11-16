@@ -165,7 +165,7 @@ function chatTaskSegments(nodes,state={}){
     // Only native message/turn clocks; no wall-clock estimate for old history.
     const first=rows.find(row=>row.role==='user'&&row.interaction!=='response');
     const start=rows.find(row=>row.turnStartedAt)?.turnStartedAt??first?.timestamp;
-    const end=[...task.finals].at(-1)?.__chatMessage.timestamp;
+    const end=rows.find(row=>row.turnCompletedAt)?.turnCompletedAt??[...task.finals].at(-1)?.__chatMessage.timestamp;
     const a=chatMessageDate(start),b=chatMessageDate(end);
     task.seconds=!task.active&&a&&b&&b>=a?Math.floor((b-a)/1000):null;
     const last=task.nodes.at(-1);
