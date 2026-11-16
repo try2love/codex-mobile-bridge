@@ -1238,6 +1238,7 @@ class AntigravitySafetyTests(unittest.TestCase):
 
     def test_stop_kills_background_tasks_forces_tree_and_clears_hook_heartbeat(self):
         adapter = self.adapter()
+        self.addCleanup(adapter.close)
         sid = gateway_id('app', CID)
         rpc_calls = []
 
