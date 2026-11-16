@@ -372,7 +372,7 @@ def messages(records):
                 row.update(clocks.get(current_turn, {}))
                 if current_turn in states:
                     row['turnStatus'] = states[current_turn]
-                if row['role'] == 'assistant':
+                if row['role'] == 'assistant' and current_turn in states:
                     row['phase'] = 'commentary'
     for message in result:
         display_file_mentions(message)

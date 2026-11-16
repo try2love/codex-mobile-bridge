@@ -30,7 +30,7 @@ class DeepSeekTaskPresentationTests(unittest.TestCase):
         rows = messages([event(10, 'assistant/message', {'turn': 4, 'message': {'content': 'progress'}})])
         self.assertEqual(rows[0]['turnId'], '4')
         self.assertNotIn('turnStatus', rows[0])
-        self.assertNotEqual(rows[0].get('phase'), 'final_answer')
+        self.assertNotIn('phase', rows[0])
         self.assertNotIn('turnStartedAt', rows[0])
 
 if __name__ == '__main__':
