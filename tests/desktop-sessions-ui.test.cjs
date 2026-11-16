@@ -1877,3 +1877,58 @@ test('Antigravity live session enables native slash commands, multi-select skill
  assert.equal(view.contextUsage.compactButton.disabled,true);
  view.contextUsage.dialog.close();
 });
+
+async function nativeCommandFixture(){
+ const ui=await opened(),view=ui.view;
+ view.state={...view.state,cwd:'/repo',model:'model-a',modelCatalogIdentity:'catalog-a',capabilities:{send:true,skills:true,slashCommands:true}};
+ view.draftGateway='gateway-a';view.draftScope={...view.draftScope,account:'account-a'};
+ return ui;
+}
+for(const field of ['model','modelCatalogIdentity'])test('native command cache separates '+field+' and retains the previous scope on return',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,original=view.state[field];let reads=0;
+ ui.setHandler(async()=>({commands:[{id:'command-'+(++reads)}]}));
+ const first=await view.ensureNativeCommands(),firstKey=view.nativeCommandKey();
+ view.state[field]='updated-'+field;
+ assert.notEqual(view.nativeCommandKey(),firstKey);
+ assert.equal(view.nativeCommandActions().some(row=>row.id==='command-1'),false);
+ const second=await view.ensureNativeCommands();assert.equal(reads,2);assert.equal(second.commands[0].id,'command-2');
+ view.state[field]=original;assert.equal(await view.ensureNativeCommands(),first);assert.equal(reads,2);
+ ui.setHandler(async()=>{throw Error('catalog unavailable');});await view.ensureNativeCommands(true);
+ assert.equal(view.nativeCommands.get(firstKey),first);
+ ui.setHandler(async()=>({commands:[],pluginError:'temporarily unavailable'}));await view.ensureNativeCommands(true);
+ assert.equal(view.nativeCommands.get(firstKey),first);
+});
+test('native command cache discards a late model receipt without overwriting either valid scope',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,keyA=view.nativeCommandKey(),cached={commands:[{id:'cached-a'}]},receipts=[];
+ view.nativeCommands.set(keyA,cached);ui.setHandler(()=>new Promise(resolve=>receipts.push(resolve)));
+ const first=view.ensureNativeCommands(true);view.state.model='model-b';const keyB=view.nativeCommandKey(),second=view.ensureNativeCommands();
+ assert.equal(receipts.length,2);
+ receipts[1]({commands:[{id:'current-b'}]});await second;
+ receipts[0]({commands:[{id:'late-a'}]});await first;
+ assert.equal(view.nativeCommands.get(keyA),cached);assert.equal(view.nativeCommands.get(keyB).commands[0].id,'current-b');
+ view.state.model='model-a';assert.equal(await view.ensureNativeCommands(),cached);assert.equal(receipts.length,2);
+});
+for(const action of ['clear','accountChanged'])test('native command cache cannot revive after '+action+' even when its scope returns',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,saved={provider:view.provider,sid:view.sid,state:view.state,draftGateway:view.draftGateway,draftScope:view.draftScope,freshDetail:view.freshDetail};
+ let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=view.ensureNativeCommands();
+ if(action==='clear')view.clear();else{view.refresh=async()=>{};await view.accountChanged(view.provider,{activeId:'old'},{activeId:'new'});}
+ Object.assign(view,saved);finish({commands:[{id:'late-private-command'}]});await pending;
+ assert.equal(view.nativeCommands.size,0);assert.equal(view.nativeCommandsLoading.size,0);
+});
+test('native command cache invalidation starts a new read and rejects the old provider receipt',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,receipts=[];
+ ui.setHandler(()=>new Promise(resolve=>receipts.push(resolve)));const old=view.ensureNativeCommands();
+ view.provider='codex';await view.accountChanged('claude');view.provider='claude';
+ const current=view.ensureNativeCommands();assert.equal(receipts.length,2);
+ receipts[1]({commands:[{id:'fresh-command'}]});await current;
+ receipts[0]({commands:[{id:'stale-command'}]});await old;
+ assert.equal(view.nativeCommands.get(view.nativeCommandKey()).commands[0].id,'fresh-command');
+});
+for(const field of ['model','modelCatalogIdentity','account'])test('native Skill commands never populate a changed '+field+' scope',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,oldKey=view.nativeCommandKey(),cached={commands:[{id:'cached-original'}]};
+ view.nativeCommands.set(oldKey,cached);let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));
+ const pending=view.skills(),dialog=ui.document.body.querySelector('dialog');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};else view.state[field]='updated-'+field;
+ const newKey=view.nativeCommandKey();finish({commands:[{id:'old-scope-command'}],skills:[]});await pending;
+ assert.equal(view.nativeCommands.get(newKey),undefined);assert.equal(view.nativeCommands.get(oldKey),cached);assert.equal(dialog.open,false);
+});

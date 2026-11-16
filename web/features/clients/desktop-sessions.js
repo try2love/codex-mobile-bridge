@@ -258,7 +258,7 @@ class DesktopSessionsView {
     const snapshotKey=this.listSnapshotKey(provider);if(snapshotKey){localStorage.removeItem(snapshotKey);sessionStorage.removeItem(snapshotKey);}
     if(!this.draftGateway||!this.composerDrafts)for(const [key,text] of this.accountDrafts.get(identity(next))||[])this.drafts.set(key,text);
     for(const key of this.detailCache.keys())if(jsonKey(key))this.forgetDetail(key);for(const key of this.skillSelections.keys())if(jsonKey(key))this.skillSelections.delete(key);
-    for(const key of this.nativeCommands.keys()){try{if(JSON.parse(key)[1]===provider)this.nativeCommands.delete(key);}catch{}}
+    for(const cache of [this.nativeCommands,this.nativeCommandsLoading])for(const key of cache.keys()){try{if(JSON.parse(key)[1]===provider)cache.delete(key);}catch{}}
     for(const key of this.pending.keys())if(key.startsWith(provider+':'))this.pending.delete(key);
     for(const key of Object.keys(this.activity.rows))if(key.startsWith(provider+'|'))delete this.activity.rows[key];this.activity.save();
     this.workbench.reset(provider);this.attachments.forget(jsonKey);
@@ -464,11 +464,12 @@ class DesktopSessionsView {
   }
   nativeCommandKey(sid=this.sid,state=this.state,provider=this.provider){
     if(!sid||!state||state.capabilities?.slashCommands!==true)return '';
-    return JSON.stringify([this.draftGateway||'',provider,sid,state.cwd||'',this.draftScope?.account||'']);
+    return JSON.stringify([this.draftGateway||'',provider,sid,state.cwd||'',this.draftScope?.account||'',state.model||'',state.modelCatalogIdentity||'']);
   }
   async ensureNativeCommands(force=false){
     const sid=this.sid,provider=this.provider,state=this.state,generation=this.generation;
     const key=this.nativeCommandKey(sid,state,provider);
+    const epoch=this.readEpoch,providerEpoch=this.providerReadEpochs.get(provider)||0,current=()=>generation===this.generation&&epoch===this.readEpoch&&providerEpoch===(this.providerReadEpochs.get(provider)||0)&&key===this.nativeCommandKey();
     if(!key||!this.canMutate())return null;
     if(!force&&this.nativeCommands.has(key))return this.nativeCommands.get(key);
     if(!force&&this.nativeCommandsLoading.has(key))return this.nativeCommandsLoading.get(key);
@@ -476,8 +477,9 @@ class DesktopSessionsView {
       try{
         const query={section:'commands',...(force?{refresh:'true'}:{})};
         const value=await this.request(this.path('catalog',sid,provider,query));
+        if(!current())return null;
         if(Array.isArray(value?.commands)&&!value?.pluginError)this.nativeCommands.set(key,{commands:value.commands});
-        if(sid===this.sid&&provider===this.provider&&generation===this.generation)this.commands?.refresh();
+        this.commands?.refresh();
         return this.nativeCommands.get(key)||null;
       }catch{
         return null;
@@ -640,11 +642,12 @@ class DesktopSessionsView {
     for(const [id,skill] of selected){const pill=this.button((skill.name||id)+' ×',()=>{selected.delete(id);this.updateComposer();this.saveDraft();});pill.className='skill-pill'+(skill.invalid?' invalid':'');pill.disabled=!!this.busy;this.skillPills.append(pill);}this.skillPills.hidden=this.state?.capabilities?.skills!==true&&this.state?.composerCapabilities?.skills!==true||!selected.size;
   }
   async skills(){
-    if(!this.sid||this.state?.capabilities?.skills!==true)return;const sid=this.sid,generation=this.generation,selected=this.selectedSkills(),dialog=this.dialog('Skill'),loading=this.translated('p','正在读取已安装 Skill…','muted');dialog.append(loading);dialog.showModal();
-    try{const catalog=await this.request(this.path('catalog'));if(sid!==this.sid||generation!==this.generation||!dialog.open)return dialog.close();loading.remove();const nativeKey=this.nativeCommandKey();if(nativeKey&&Array.isArray(catalog?.commands)&&!catalog?.pluginError){this.nativeCommands.set(nativeKey,{commands:catalog.commands});this.commands?.refresh();}const rows=catalog.skills||[],offered=new Set(rows.filter(s=>s.selectable!==false&&catalog.capabilities?.skills!==false).map(s=>s.id));for(const [id,skill] of selected)skill.invalid=!offered.has(id);this.updateComposer();
+    if(!this.sid||this.state?.capabilities?.skills!==true)return;const sid=this.sid,provider=this.provider,generation=this.generation,nativeKey=this.nativeCommandKey(),epoch=this.readEpoch,providerEpoch=this.providerReadEpochs.get(provider)||0,selected=this.selectedSkills(),dialog=this.dialog('Skill'),loading=this.translated('p','正在读取已安装 Skill…','muted');dialog.append(loading);dialog.showModal();
+    const current=()=>sid===this.sid&&provider===this.provider&&generation===this.generation&&epoch===this.readEpoch&&providerEpoch===(this.providerReadEpochs.get(provider)||0)&&nativeKey===this.nativeCommandKey()&&dialog.open;
+    try{const catalog=await this.request(this.path('catalog',sid,provider));if(!current())return dialog.close();loading.remove();if(nativeKey&&Array.isArray(catalog?.commands)&&!catalog?.pluginError){this.nativeCommands.set(nativeKey,{commands:catalog.commands});this.commands?.refresh();}const rows=catalog.skills||[],offered=new Set(rows.filter(s=>s.selectable!==false&&catalog.capabilities?.skills!==false).map(s=>s.id));for(const [id,skill] of selected)skill.invalid=!offered.has(id);this.updateComposer();
       const singleSkillOnly=this.state?.backend==='cli'&&this.state?.capabilities?.multiSkills!==true;
       const search=this.node('input','search'),list=this.node('div','skill-list');search.placeholder=BridgeI18n.t('搜索 Skill');this.label(search,'搜索 Skill');const render=()=>{list.replaceChildren();const query=search.value.trim().toLocaleLowerCase();for(const skill of rows.filter(s=>[s.name,s.description].join(' ').toLocaleLowerCase().includes(query))){const label=this.node('label','skill-option'),check=this.node('input'),info=this.node('span');check.type='checkbox';check.checked=selected.has(skill.id);check.disabled=!offered.has(skill.id);check.onchange=()=>{if(generation!==this.generation||sid!==this.sid)return dialog.close();if(check.checked&&singleSkillOnly)selected.clear();else if(check.checked&&selected.size>=8){check.checked=false;this.notify(BridgeI18n.t('最多选择 8 个 Skill'));return;}if(check.checked)selected.set(skill.id,{id:skill.id,name:skill.name||skill.id});else selected.delete(skill.id);this.updateComposer();this.saveDraft();if(singleSkillOnly)render();};info.append(this.node('strong','',skill.name||skill.id),this.node('small','',skill.description||''));if(skill.kind==='plugin')info.append(this.node('small','',BridgeI18n.t('插件')+' · '+BridgeI18n.t(skill.status||'只读')));label.append(check,info);list.append(label);}if(!list.children.length)list.append(this.translated('p','没有匹配的 Skill','muted'));};search.oninput=render;render();dialog.append(search,list);if(catalog.pluginError)dialog.append(this.node('p','error',BridgeI18n.t(catalog.pluginError)));
-    }catch(error){if(dialog.open){loading.textContent=BridgeI18n.t(error.message);loading.className='error';}}
+    }catch(error){if(!current())return dialog.close();loading.textContent=BridgeI18n.t(error.message);loading.className='error';}
   }
   async goalAction(operation,payload){
     const {id,...body}=payload;const result=await this.mutate('goal',{...body,operation},this.sid,id);
