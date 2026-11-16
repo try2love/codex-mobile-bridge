@@ -1481,6 +1481,26 @@ class AntigravitySafetyTests(unittest.TestCase):
                 self.assertEqual(adapter.call('send', sid, {'text': prompt, 'mode': 'queue'})['status'], 'queued')
             self.assertEqual(adapter.hooks.enqueue_follow_up.call_count, 2)
 
+    def test_plan_mode_requires_current_native_command_before_saving(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        adapter._update_session_settings(sid, model='chosen-model')
+        original = adapter.settings_file.read_bytes()
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=[]) as commands:
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('work-mode', sid, {'mode': 'plan'})
+            self.assertEqual(adapter.settings_file.read_bytes(), original)
+            self.assertEqual(adapter._settings[sid], {'model': 'chosen-model'})
+            commands.return_value = self._sample_slash_commands()
+            self.assertEqual(adapter.call('work-mode', sid, {'mode': 'plan'})['mode'], 'plan')
+            self.assertEqual(commands.call_args.kwargs['model'], 'chosen-model')
+            # Leaving a no-longer-available mode must not require that command.
+            commands.side_effect = BridgeUnavailable('catalog unavailable')
+            self.assertEqual(adapter.call('work-mode', sid, {'mode': 'default'})['mode'], 'default')
+            self.assertEqual(adapter._settings[sid], {'model': 'chosen-model'})
+
     def test_desktop_sessions_routes_antigravity_compact_goal_and_work_mode(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory / 'desktop-sessions/settings.json'

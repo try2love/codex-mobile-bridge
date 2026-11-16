@@ -470,6 +470,10 @@ class Antigravity:
                 waiting_msg='原会话正在等待交互确认，请先回应后再切换工作模式',
                 busy_msg=_BUSY_STRUCTURED_ERROR,
             )
+            if mode == 'plan':
+                commands = self._commands_by_name(surface=surface, cid=cid, model=session['model'], cwd=row.get('cwd'))
+                if 'plan' not in commands:
+                    raise BridgeUnavailable('当前 Antigravity 原生环境暂未提供 /plan 模式')
             self._update_session_settings(key, work_mode=mode)
             return {'status': 'accepted', 'mode': mode}
         if action == 'goal':

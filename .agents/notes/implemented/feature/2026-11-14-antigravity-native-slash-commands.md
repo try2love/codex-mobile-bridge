@@ -14,7 +14,7 @@ Antigravity 原生客户端（Language Server）通过 `GetSlashCommands` 提供
      - `catalog` 新增 `section='commands'` 分支返回 `commands` 和 `skills`；
      - `capabilities`（仅桌面进程在线 `live=True` 时）开放 `skills`、`multiSkills`、`slashCommands`、`compact`、`plan`、`goal`；
      - `_build_message_items()` 将消息开头的已知 `/` 指令及多选 `plugins`（最多 8 个、自动按指令名去重）编码为原生 `{'item': {'slashCommand': {'info': ...}}}` 结构化项；未在原生目录中出现的一般 `/path` 保持纯文本发送；
-     - 新增 `compact`、`goal`（`operation='set'`）及 `work-mode`（`default` / `plan`，持久化于 session settings 并仅在空闲且无待审批确认时应用）；
+     - 新增 `compact`、`goal`（`operation='set'`）及 `work-mode`（`default` / `plan`，持久化于 session settings 并仅在空闲且无待审批确认时应用；进入计划模式前核验当前模型的原生 `/plan` 能力，缺失或读取失败不修改既有设置，回到普通模式不依赖指令目录）；
      - 忙碌状态下通过 hook 执行 `queue` / `steer` 时，显式拒绝包含 `/` 指令、`plugins` 或 `plan`/`goal` 模式的后续消息，避免在原生会话运行期间旁路丢弃结构化字段。此检查同时读取已保存的计划模式；指令目录不可读时，不能证明未知 `/指令` 是普通文本，因此拒绝排队/插话，正常文字与明确的多级路径仍可排队。
 2. **共享前后端与 Relay 协议适配**：
    - 在 `web/features/chat/composer-commands.js` 扩展 `action.native` 行为：支持在菜单显示 `Skill ·` / `工作流 ·` 前缀、选择后自动填充 `/<id> ` 并支持提交时直接透传给后端发送。
@@ -32,3 +32,5 @@ Antigravity 原生客户端（Language Server）通过 `GetSlashCommands` 提供
 - 验证已覆盖：`python3 -B scripts/check-boundaries.py`、Antigravity 与共享调度/Relay 后端测试、`ComposerCommands`/`DesktopSessions`/`i18n` 前端 Node 单测，以及本机真实运行中 Antigravity `GetSlashCommands` 实时目录拉取；完整打包测试（因无本地 `node_modules`）与真实 Playwright 浏览器套件、真机联调（需发往真实对话框的操作）将在 PR 说明中按实际未执行状态如实标出。
 
 本地集成补验：目录读取失败的自定义工作流、已保存计划模式在 queue/steer 各复现一次结构化信息丢失；修复后均在入队前拒绝，普通文本及 `/usr/bin/python` 路径仍可入队。原始作者两条提交保留在本地合并历史中。
+
+计划模式回归：缺少 `/plan` 时原内存设置及设置文件字节保持不变；实际提供能力后可保存，随后目录失效仍可退出计划模式。
