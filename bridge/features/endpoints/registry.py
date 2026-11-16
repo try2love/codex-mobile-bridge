@@ -90,10 +90,12 @@ class Entries:
     def public(self):
         with self.lock:
             running = self.wsl.displayed_distributions((*self.entries, *self.candidates.values())) if self.wsl else set()
-            values = {r['id']: self.public_row(r, r.get('enabled', True), r.get('kind') == 'codex-local' or r.get('distribution') in running)
+            values = {r['id']: self.public_row(r, r.get('enabled', True), True if r.get('kind') == 'codex-local'
+                                              else None if running is None else r.get('distribution') in running)
                       for r in self.entries}
             for key, row in self.candidates.items():
-                values.setdefault(key, self.public_row(row, False, row.get('kind') == 'codex-local' or row.get('distribution') in running))
+                values.setdefault(key, self.public_row(row, False, True if row.get('kind') == 'codex-local'
+                                                      else None if running is None else row.get('distribution') in running))
             return {'wslSupported': self.wsl is not None,
                     'entries': [{'id': 'desktop', 'label': '桌面 Codex', 'kind': 'desktop',
                                  'enabled': True, 'running': True}, *values.values()]}
@@ -241,11 +243,11 @@ class Entries:
             rows.append({'id': row['id'], 'name': 'WSL Codex · ' + row['label'].removeprefix('WSL · '),
                          'kind': 'wsl-cli', 'icon': 'codex', 'installed': True, 'configured': True,
                          'enabled': row['enabled'], 'selectable': True, 'connected': connected,
-                         'running': True if connected else None if row['running'] else False,
+                         'running': True if connected else False if row['running'] is False else None,
                          'distributionRunning': row['running'],
                          'setupStatus': 'ready', 'canQuitDesktop': False, 'canForceQuit': False,
                          'reason': ('可从手机新建、恢复 WSL 会话，并在网关管理 API 接入；官方登录仍在原 Codex CLI 完成。'
-                                    if row['running'] else '打开此应用时可启动已登记的 WSL 环境和原生共享服务。')})
+                                    if row['running'] is not False else '可启动已登记的 WSL 环境；继续聊天时再连接原生 CLI。')})
         return rows
 
     def configure(self, identifier, enabled, *, _manual=False):

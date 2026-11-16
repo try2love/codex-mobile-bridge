@@ -317,7 +317,7 @@ def wait_parent(pid, timeout=45):
 def launch_app(target, transaction, plan, acknowledge=True):
     executable, _, _ = locations(target)
     env = {**os.environ, 'CMB_UPDATE_DATA_DIR': plan['dataDir'], 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
-    for key in ('ELECTRON_RUN_AS_NODE', 'CMB_UPDATE_TRANSACTION', 'CMB_UPDATE_TOKEN'):
+    for key in ('ELECTRON_RUN_AS_NODE', 'CMB_UPDATE_TRANSACTION', 'CMB_UPDATE_TOKEN', 'CMB_UPDATE_LAUNCHER_PID'):
         env.pop(key, None)
     if acknowledge:
         env.update(CMB_UPDATE_TRANSACTION=str(transaction), CMB_UPDATE_TOKEN=plan['token'])

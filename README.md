@@ -21,7 +21,9 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.1-preview.1（预览版）：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1-preview.1) · [更新说明](RELEASE_NOTES.md)。新增 Antigravity 接入、CLI 连接管理与会话体验改进；v2.2.0 仍为最新稳定版。Android 预览版作为独立的 Bridge Preview 安装，保留原 App，需重新添加电脑连接。
+> **v2.2.1：** [正式版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex APP 原生连接；新增 Antigravity、聊天内交互图表并改善长会话与模型缓存。
+
+**Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
 > **v2.2.0 正式版**：[发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.0) · [完整更新说明](RELEASE_NOTES.md) · [手机安装说明](mobile/README.md)。新增 ZCode、多信道连接与原生侧边聊天，优化空闲资源占用。
 
@@ -401,8 +403,6 @@ python -m pip install -r requirements-desktop.txt
 npm ci
 npm run desktop
 ```
-
-界面调试可改用 `npm run desktop:dev`，右下角会显示 `DEV UI`。CSS 保存后无损刷新样式；HTML 和前端 JS 保存后只重载界面，保留当前栏目、展开项和滚动位置，不重启后台网关或重复自动启动。未保存输入、打开的编辑对话框及在途操作会暂缓界面重载，保存、清空或关闭编辑后再刷新。第一次切换开发模式时，请先从菜单退出旧控制面板再运行命令；点击窗口关闭按钮通常只是隐藏。正式安装版和普通 `npm run desktop` 不监听源码。主进程、preload、Python 及依赖变化仍需手动重启相应进程。
 
 源码桌面运行先在同一 Python 环境安装上述依赖，其中包含云中继所需的 `aiohttp`、`noiseprotocol` 和系统凭据库 `keyring`；仅安装 Node 依赖不够。使用 `CMB_PYTHON` 时请指向安装了这些依赖的解释器。修改环境后需重启网关；刷新窗口不会替换正在运行的 Python 进程。桌面打包会提前检查并显式收集这些模块，安装版用户无需自行安装 Python 依赖。
 
@@ -938,7 +938,9 @@ python3 -B -m unittest discover -s tests -v
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
 
-感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供已采纳的 Antigravity 接入基础，以及 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献自定义 HTTPS 端口与 macOS 菜单栏图标。保留实际采纳部分的原作者提交，后续整合调整单独提交。
+感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) 与 [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169) 中贡献聊天内交互图表和 Codex 协议兼容，以及 [@windowmmk](https://github.com/windowmmk) 在 [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171) 中修复大型日志中的原生端口发现。
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #150](https://github.com/try2love/codex-mobile-bridge/pull/150) 中提供已采纳的 Antigravity 接入基础，并在 [PR #170](https://github.com/try2love/codex-mobile-bridge/pull/170) 中贡献原生等待交互、模型额度和历史图片增强；感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #146](https://github.com/try2love/codex-mobile-bridge/pull/146) 和 [PR #157](https://github.com/try2love/codex-mobile-bridge/pull/157) 中贡献自定义 HTTPS 端口与 macOS 菜单栏图标。原作者提交完整保留，选择性采纳、修复与整合调整单独提交。
 
 感谢 [@heiqiu47](https://github.com/heiqiu47) 的 PR [#85](https://github.com/try2love/codex-mobile-bridge/pull/85)、[#86](https://github.com/try2love/codex-mobile-bridge/pull/86)、[#92](https://github.com/try2love/codex-mobile-bridge/pull/92)、[#95](https://github.com/try2love/codex-mobile-bridge/pull/95)，[@mc373906408（waken）](https://github.com/mc373906408) 的 [#88](https://github.com/try2love/codex-mobile-bridge/pull/88)，以及 [@littltstream](https://github.com/littltstream) 的 [#96](https://github.com/try2love/codex-mobile-bridge/pull/96)。原作者提交完整保留，各项贡献见 [v2.1.7 发布说明](RELEASE_NOTES.md#v217)。
 

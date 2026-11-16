@@ -109,7 +109,7 @@ class ClaudeRegistryTests(unittest.TestCase):
                     with self.assertRaises((OSError, ValueError)):
                         reader(1234)
 
-    def test_windows_2168_native_start_ticks_guard(self):
+    def test_windows_native_start_ticks_guard_is_independent_of_cli_release(self):
         start = '638960923680000000'
         self.entry(procStart=start, version='2.1.168')
         entry = json.loads((self.registry/'1234.json').read_text())
@@ -128,13 +128,19 @@ class ClaudeRegistryTests(unittest.TestCase):
         with patch.object(session_registry.sys, 'platform', 'win32'), \
              patch.object(claude_process, 'process_start_ticks', return_value='638960923680000001'):
             assert_session_closed(self.config, self.session_id)
-        entry['version'] = '2.1.287'
-        (self.registry/'1234.json').write_text(json.dumps(entry))
-        with patch.object(session_registry.sys, 'platform', 'win32'), \
-             patch.object(claude_process, 'process_start_ticks') as lookup:
-            with self.assertRaises(BridgeUnavailable):
+        for version in ('2.1.287', '2.1.999'):
+            entry['version'] = version
+            (self.registry/'1234.json').write_text(json.dumps(entry))
+            with self.subTest(version=version), \
+                 patch.object(session_registry.sys, 'platform', 'win32'), \
+                 patch.object(claude_process, 'process_start_ticks', return_value=start) as lookup:
+                with self.assertRaisesRegex(BridgeUnavailable, '仍在其他终端运行'):
+                    assert_session_closed(self.config, self.session_id)
+                lookup.assert_called_once_with(1234)
+                lookup.return_value = None
                 assert_session_closed(self.config, self.session_id)
-        lookup.assert_not_called()
+                lookup.return_value = '638960923680000001'
+                assert_session_closed(self.config, self.session_id)
 
     def test_windows_2168_native_record_without_start_only_confirms_absent(self):
         entry = {'pid': 1234, 'sessionId': self.session_id, 'cwd': '/fixture/project',

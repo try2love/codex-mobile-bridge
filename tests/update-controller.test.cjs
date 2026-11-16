@@ -12,7 +12,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
   const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>userData,exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
-    process:{env:environment,argv:[],platform,arch:'x64',pid:123,execPath,resourcesPath:path.join(userData,'resources')},
+    process:{env:environment,platform,arch:'x64',pid:123,execPath,resourcesPath:path.join(userData,'resources')},
     Date:{now:()=>now},
     setTimeout(fn,ms){
       timers.push(ms);
@@ -22,6 +22,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
     setInterval(fn,ms){intervals.push(ms);return {unref(){}};},
     require(name){
       if(name==='electron')return {app};
+      if(name==='./features/updates/mac-handoff.cjs')return {...requireMain(name),relaunchMacUpdate(){}};
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
       if(name==='node:fs')return fixtureFiles?fs:{mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},

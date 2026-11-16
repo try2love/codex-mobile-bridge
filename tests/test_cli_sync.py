@@ -63,7 +63,7 @@ class LocalCliSyncTests(unittest.TestCase):
                 self.sync.preflight('codex')
         self.bridge.cli_sessions.daemon_may_be_running.assert_called_once_with()
 
-    def test_api_runtime_accepts_only_verified_current_native_client_versions(self):
+    def test_api_runtime_accepts_newer_protocol_versions_with_verified_identity(self):
         client = Mock()
         self.bridge.cli_sessions.client = client
         with patch('bridge.clients.codex.daemon_network.sys', SimpleNamespace(platform='linux')), \
@@ -71,7 +71,9 @@ class LocalCliSyncTests(unittest.TestCase):
              patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, [42, 123])):
             for agent, supported in (('codex-tui/0.164.0', True),
                     ('codex-mobile-bridge-network-verify/0.164.0 (Mac OS)', True),
-                    ('codex-mobile-bridge-network-verify/0.165.0', False),
+                    ('codex-mobile-bridge-network-verify/0.165.0', True),
+                    ('codex-mobile-bridge-network-verify/0.168.0', True),
+                    ('codex-mobile-bridge-network-verify/0.163.0', False),
                     ('codex-mobile-bridge-unknown/0.164.0', False)):
                 with self.subTest(agent=agent):
                     client.connect.return_value = {'codexHome': str(self.home), 'userAgent': agent}

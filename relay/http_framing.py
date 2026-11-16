@@ -2,7 +2,7 @@
 import re
 from urllib.parse import urlsplit
 
-from relay.protocol import MAX_BODY
+from relay.protocol import MAX_BODY, download_headers
 
 MAX_PATH_LENGTH = 8192
 MAX_METHOD_LENGTH = 32
@@ -37,3 +37,21 @@ def validate_http_request(method, path, size=0):
         raise ValueError('Invalid body size')
     if method in READ_METHODS and size:
         raise ValueError('Read request body is not allowed')
+
+
+def request_headers(method, value):
+    """Bound cloud range requests without accepting credentials or HTTP framing."""
+    headers = download_headers(value)
+    if not headers:
+        return headers
+    if method != 'GET' or 'Range' not in headers:
+        raise ValueError('Range negotiation requires a GET range')
+    match = re.fullmatch(r'bytes=(\d{1,18})-(\d{1,18})', headers['Range'])
+    if not match:
+        raise ValueError('Only one bounded byte range is supported')
+    start, end = map(int, match.groups())
+    if end < start or end - start + 1 > MAX_BODY:
+        raise ValueError('Download range exceeds channel limit')
+    if 'If-Range' in headers and not re.fullmatch(r'"[^"\\]*"', headers['If-Range']):
+        raise ValueError('A strong entity tag is required for resuming')
+    return headers

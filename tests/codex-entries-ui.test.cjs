@@ -5,6 +5,7 @@ function fixture(){
  const choices=[],calls=[],switches=[],stored=new Map(),notices=[];
  const node=()=>({children:[],dataset:{},classList:{toggle(){}},querySelectorAll(){return [];},querySelector(){return null;},insertBefore(n){this.children.push(n);},setAttribute(k,v){this[k]=v;},append(...v){this.children.push(...v);},replaceChildren(...v){this.children=[...v];}});
  const context=vm.createContext({document:{createElement:node,getElementById:()=>({hidden:false})},location:{search:''},URLSearchParams,localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k)},BridgeI18n:{t:v=>v},ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push({...client});return Promise.resolve(true);}}});
+ context.window=context;
  context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
   vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
  const Nav=vm.runInContext('ClientNavigation',context),nav=Object.create(Nav.prototype);

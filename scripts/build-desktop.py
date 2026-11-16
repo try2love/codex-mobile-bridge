@@ -10,7 +10,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
-runtime_packages = {'paramiko': 'paramiko', 'keyring': 'keyring', 'aiohttp': 'aiohttp', 'noise': 'noise.connection'}
+runtime_packages = {'keyring': 'keyring', 'aiohttp': 'aiohttp', 'noise': 'noise.connection'}
 for module in runtime_packages.values():
     try:
         import_module(module)
@@ -24,10 +24,9 @@ if sys.platform == 'win32':
 command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'codex-mobile-gateway',
            '--distpath', str(root/'dist'), '--workpath', str(root/'.tmp/pyinstaller'), '--specpath', str(root/'.tmp'),
            '--add-data', str(root/'web')+':web']
-command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared'])
+command.extend(['--add-data', str(root/'dist/cloudflared')+':cloudflared', '--collect-all', 'paramiko', '--collect-all', 'keyring', '--collect-all', 'aiohttp'])
 command.extend(['--add-data', str(root/'dist/p2p')+':p2p'])
-for package in runtime_packages:
-    command.extend(['--collect-all', package])
+command.extend(['--collect-all', 'noise'])
 if sys.platform == 'darwin':
     command.extend(['--target-arch', platform.machine()])
 if sys.platform == 'win32':
@@ -36,7 +35,7 @@ if sys.platform == 'win32':
         command.extend(['--add-binary', str(source)+':'+str(Path('conpty')/Path(relative).parent)])
     for name in ('LICENSE', 'version.json'):
         command.extend(['--add-data', str(root/'dist/conpty'/name)+':conpty'])
-# Ship certificate roots and their license explicitly.
+# Ship roots and their license explicitly; source users still need only stdlib.
 command.extend(['--add-data', certifi.where()+':bridge/features/auth'])
 command.extend([
     '--hidden-import', 'bridge.platforms.linux.interfaces',
@@ -50,7 +49,7 @@ command.extend(['--add-data', str(certificate_package.locate_file(license_file))
 for relative in json.loads((root/'scripts/gateway-resources.json').read_text(encoding='utf-8')):
     source_file = root/relative
     command.extend(['--add-data', str(source_file)+':'+str(Path(relative).parent)])
-helpers = {'darwin': ('claude-bridge-helper', 'zcode-bridge-helper'),
+helpers = {'darwin': ('claude-bridge-helper', 'zcode-bridge-helper', 'update-launcher'),
            'win32': ('claude-bridge-helper.exe', 'codex-quit-helper.exe')}
 for name in helpers.get(sys.platform, ()):
     command.extend(['--add-binary', str(root/'dist/client-helpers'/name)+':client-helpers'])

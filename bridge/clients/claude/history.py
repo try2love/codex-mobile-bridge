@@ -9,6 +9,25 @@ from pathlib import Path
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 
 
+def merge_live_page(saved, live):
+    """Append only the stream tail not already represented by this saved page."""
+    def identity(event):
+        message = event.get('message')
+        identifier = event.get('uuid') or (message.get('id') if isinstance(message, dict) else None)
+        return (event.get('type'), identifier) if isinstance(identifier, str) and identifier else None
+
+    persisted = {key: index for index, event in enumerate(saved) if (key := identity(event)) is not None}
+    for index in range(len(live) - 1, -1, -1):
+        key = identity(live[index])
+        if key in persisted:
+            # Its live body may be newer. Replace in place so a following saved
+            # tool result still sees exactly one preceding call.
+            merged = list(saved)
+            merged[persisted[key]] = live[index]
+            return merged + live[index + 1:]
+    return saved + live
+
+
 def local_command_text(event, chain):
     """Format only the native CLI caveat -> command -> stdout record chain."""
     import re

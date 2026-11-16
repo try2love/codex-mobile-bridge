@@ -16,6 +16,18 @@ function fixture(language='zh'){
  for(const file of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  return {context,document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
 }
+test('WSL clients distinguish a stopped environment, a pending CLI connection and unknown status',()=>{
+ const lifecycle=require('../web/features/clients/client-lifecycle.js');
+ for(const kind of ['wsl-cli','wsl-claude-cli']){
+  const client={kind,enabled:true,installed:true,setupStatus:'ready',connected:false};
+  assert.equal(lifecycle.connection({...client,distributionRunning:false,running:false}).label,'WSL 未启动');
+  assert.equal(lifecycle.connection({...client,distributionRunning:true,running:true}).label,'WSL 已启动，待连接');
+  const unknown=lifecycle.connection({...client,distributionRunning:null,running:null});
+  assert.equal(unknown.label,'WSL 状态暂未确认');assert.match(unknown.reason,/刷新/);assert.equal(unknown.error,false);
+  assert.equal(lifecycle.connection({...client,distributionRunning:null,connected:true}).label,'已连接');
+ }
+ assert.equal(lifecycle.connection({installed:true,running:false}).label,'应用未运行');
+});
 test('a real close dialog presents three distinct choices and defaults focus to cancel',async()=>{
  for(const expected of [false,true,null]){
   const ui=fixture(),result=ui.choose({id:'deepseek',name:'DSH'}),dialog=ui.dialog();

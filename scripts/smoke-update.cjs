@@ -120,8 +120,15 @@ async function main(){
       await verifyPhone(data,phone);
       // Stop only the isolated app launched by this helper before the next scenario.
       const launched=JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'launched.json'),'utf8'));
-      try{process.kill(launched.pid);}catch(error){if(error.code!=='ESRCH')throw error;}
-      await delay(500);
+      let guiPid=launched.pid;
+      if(mac&&scenario==='success'){
+        const receipt=JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'launch-services.json'),'utf8'));
+        const plan=JSON.parse(await fs.readFile(planFile,'utf8'));
+        assert.equal(receipt.launcherPid,launched.pid);assert.equal(receipt.token,plan.token);
+        assert.ok(Number.isSafeInteger(receipt.pid)&&receipt.pid>0);guiPid=receipt.pid;
+      }
+      try{process.kill(guiPid);}catch(error){if(error.code!=='ESRCH')throw error;}
+      await until(()=>{try{process.kill(guiPid,0);return false;}catch(error){if(error.code==='ESRCH')return true;throw error;}},'isolated updated GUI exit');
       console.log('PASS: '+scenario+'; packaged Electron and gateway, exact configuration preservation, original phone binding.');
     }
     console.log(JSON.stringify({ok:true,work,gatewayPid:newPid}));

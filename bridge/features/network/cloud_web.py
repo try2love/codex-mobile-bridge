@@ -145,6 +145,10 @@ class CloudWeb:
                    'Accept-Encoding': 'identity', **(request.get('headers') or {})}
         if request.get('content_type'):
             headers['Content-Type'] = request['content_type']
+        # A rejected write can leave its body unread in the upstream handler.
+        # Only this cloud hop closes; browser and relay sessions stay alive.
+        if body:
+            headers['Connection'] = 'close'
         path = urlsplit(request['path']).path
         # Auth and fixed resources are adapted; their validators describe the adapted bytes.
         adapted = path == '/api/auth' or self.owner.server.cloud_web_resource(path)

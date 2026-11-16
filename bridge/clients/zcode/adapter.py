@@ -722,7 +722,7 @@ class ZCodePrototype(ZCodeDesktop):
                 body['answer'] = {'optionId': decision}
         if action == 'receipt':
             request['commandId'] = str(uuid.UUID(body['commandId']))
-        if action == 'settings' and (set(body) - {'id', 'model', 'effort', 'modelCatalogIdentity'} or
+        if action == 'settings' and (set(body) - {'id', 'model', 'effort', 'modelCatalogIdentity', 'manualModel', 'manualEffort'} or
                                     not isinstance(body.get('model'), str) or not isinstance(body.get('effort', ''), str)):
             raise ValueError('模型设置格式无效')
         request['body'] = body

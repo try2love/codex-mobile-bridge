@@ -1400,7 +1400,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         DownloadManager.allows(url, origin: documentAddress)
     }
     private func isIsolatedShell(_ url: URL) -> Bool {
-        url.absoluteString == documentAddress + "/html-preview-shell" || url.absoluteString == documentAddress + "/mermaid-render-shell"
+        url.absoluteString == documentAddress + "/html-preview-shell" || url.absoluteString == documentAddress + "/mermaid-render-shell" || url.absoluteString == documentAddress + "/visualize-shell"
     }
     private func downloadArtifact(_ request: URLRequest) {
         guard !downloadState.busy else { downloadPanel.expand(); info(MobileStrings.text("已有下载进行中，请稍候")); return }

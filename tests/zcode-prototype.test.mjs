@@ -163,7 +163,7 @@ test('partial optional services keep text working and never begin an unsupported
   const f=fixture();delete f.services.modelSelectionService;delete f.services.oauthService;delete f.agent.attachmentChunkV4;
   await f.request('attach');
   const detail=await f.request('detail');
-  assert.deepEqual(detail.capabilities,{rename:false,models:false,effort:false,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
+  assert.deepEqual(detail.capabilities,{rename:false,models:true,effort:true,manualModels:true,manualEffort:true,create:false,skills:false,attachments:false,uploadFiles:false,projectReferences:false});
   assert.equal(detail.account,undefined);
   await assert.rejects(f.request('send',{id:'file',text:'one',files:[{name:'a.txt',data:'MQ==',mime:'text/plain'}]}),/附件/);
   assert.deepEqual(f.calls,['acquire']);
@@ -605,4 +605,17 @@ test('native access switch requires confirmation for full access and preserves r
  const cmd=f.calls.at(-1).envelope;
  assert.equal(cmd.type,'switchCollaborationMode');assert.equal(cmd.baseRevision,7);
  assert.equal(cmd.baseLogEpoch,'epoch');assert.equal(cmd.payload.mode,'yolo');
+});
+
+
+test('explicit model survives unavailable discovery with exact provider path and native default effort',async()=>{
+ const f=fixture();await f.request('attach');f.services.modelSelectionService.getView=async()=>{throw Error('directory offline');};
+ await f.request('settings',{id:'manual-model',model:'custom:my-api/org/model',manualModel:true});
+ const settings=f.calls.at(-1).envelope;assert.equal(settings.type,'switchModelConfig');assert.deepEqual(settings.payload,{provider:'custom:my-api',model:'org/model',thought:''});
+ assert.equal(settings.baseRevision,7);assert.equal(settings.baseLogEpoch,'epoch');
+ f.agent.sendConversationCommandV4=async p=>{f.calls.push(p);return {status:'rejected',message:'native model unavailable'};};
+ const result=await f.request('create',{id:'manual-new',firstMessage:'FIRST',model:'custom:my-api/org/model',effort:'high',manualModel:true,manualEffort:true});
+ const creates=f.calls.filter(row=>row.envelope?.type==='createSession');assert.equal(creates.length,1);assert.equal(result.status,'rejected');
+ assert.deepEqual(creates[0].envelope.payload.firstInput.modelSelection,{providerId:'custom:my-api',modelId:'org/model',options:{reasoningLevel:'high'}});
+ assert.deepEqual(creates[0].envelope.payload.config,{provider:'custom:my-api',model:'org/model',thought:'high',mode:'build'});
 });

@@ -224,6 +224,8 @@ class ChatTimeline {
     }
     const body=document.createElement(activity?'pre':'div');body.className=activity?'activity-body':'message-body';
     body.__mermaidScope=this.mermaidScope;body.__mermaidIdentity=row.key;
+    body.__visualizeAssistant=row.role==='assistant';
+    body.__visualizeContext={key:JSON.stringify([this.cacheKey,this.url('visualizations'),row.key]),url:id=>this.url('visualizations/'+id),signal:this.abort.signal,canCompose:()=>!this.cached&&!this.abort.signal.aborted&&this.active()};
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);

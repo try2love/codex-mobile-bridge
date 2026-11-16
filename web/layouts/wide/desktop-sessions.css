@@ -1,1 +1,6 @@
 .desktop-sessions{height:100%;display:grid;grid-template-columns:310px minmax(0,1fr);min-height:0}
+@media(min-width:1101px){
+ .app.chat-list-collapsed .desktop-sessions{grid-template-columns:24px minmax(0,1fr)}
+ .app.chat-list-collapsed .desktop-sessions>.ds-list{display:none}
+ .app.chat-list-collapsed .desktop-sessions>.ds-main{grid-column:2}
+}

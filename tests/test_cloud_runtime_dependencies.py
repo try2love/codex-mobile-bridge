@@ -25,13 +25,15 @@ class CloudRuntimeDependenciesTests(unittest.TestCase):
         self.assertEqual(packages['aiohttp'], 'aiohttp')
         self.assertEqual(packages['keyring'], 'keyring')
         self.assertNotIn('noiseprotocol', packages)
-        collect = next(node for node in tree.body if isinstance(node, ast.For)
-                       and isinstance(node.iter, ast.Name) and node.iter.id == 'runtime_packages')
-        self.assertEqual(ast.unparse(collect.body[0]), "command.extend(['--collect-all', package])")
+        collections = [ast.literal_eval(node.value.args[0]) for node in tree.body
+                       if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                       and ast.unparse(node.value.func) == 'command.extend'
+                       and ast.unparse(node.value.args[0]) == "['--collect-all', 'noise']"]
+        self.assertEqual(collections, [['--collect-all', 'noise']])
 
     def test_missing_runtime_dependencies_fail_before_native_helpers(self):
         certifi = types.ModuleType('certifi')
-        for missing in ('paramiko', 'keyring', 'aiohttp', 'noise.connection'):
+        for missing in ('keyring', 'aiohttp', 'noise.connection'):
             with self.subTest(module=missing):
                 def load(module):
                     if module == missing:

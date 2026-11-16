@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-源码说明要求先安装 Python requirements，再启动控制器，并说明 `CMB_PYTHON` 边界。构建在原生辅助编译或下载前检查依赖导入，显式收集 `noise`、`aiohttp`、`keyring` 和 `paramiko`；发行包 `noiseprotocol` 的导入名是 `noise.connection`。工作流路径过滤覆盖全部 requirements，不以新增依赖版本掩盖环境缺包。
+源码说明要求先安装 Python requirements，再启动控制器，并说明 `CMB_PYTHON` 边界。构建在原生辅助编译或下载前检查云依赖 `noise.connection`、`aiohttp` 和 `keyring`，在上游既有模块采集之外显式收集 `noise`；发行包 `noiseprotocol` 的导入名是 `noise.connection`。工作流路径过滤覆盖全部 requirements，不以新增依赖版本掩盖环境缺包。检查范围遵循[云服务分支约束](../simplification/2026-11-16-cloud-only-fork-scope.md)。
 
 ## Alternatives considered
 

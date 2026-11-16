@@ -662,7 +662,7 @@ def resume(request):
     arguments = [found['binary'], '-p', '--resume', row['nativeId'], '--input-format', 'stream-json',
                  '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
                  '--setting-sources', 'user,project,local', '--permission-mode', row['permissionMode'],
-                 '--permission-prompt-tool', 'stdio', '--permission-prompts', 'host',
+                 '--permission-prompt-tool', 'stdio',
                  '--allow-dangerously-skip-permissions', '--add-dir', str(directory)]
     if row['model']:
         arguments.extend(('--model', row['model']))
@@ -691,7 +691,7 @@ def create(request):
     arguments = [found['binary'], '-p', '--session-id', native, '--input-format', 'stream-json',
                  '--output-format', 'stream-json', '--verbose', '--replay-user-messages',
                  '--setting-sources', 'user,project,local', '--permission-prompt-tool', 'stdio',
-                 '--permission-prompts', 'host', '--allow-dangerously-skip-permissions',
+                 '--allow-dangerously-skip-permissions',
                  '--add-dir', str(directory)]
     env = os.environ.copy()
     env['CLAUDE_CONFIG_DIR'] = found['directory']

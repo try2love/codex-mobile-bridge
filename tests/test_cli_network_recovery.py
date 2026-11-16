@@ -1565,19 +1565,25 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.assertIsNone(self.bridge.cli_maintenance.worker)
         self.stop.assert_not_called()
 
-    def test_graceful_capability_never_guesses_from_os_or_future_version(self):
+    def test_graceful_protocol_baseline_accepts_compatible_newer_versions(self):
         with patch('sys.platform', 'darwin'):
             self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.164.0 (Mac OS 15.6.1)'}))
             self.assertTrue(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-check/0.167.0 (Mac OS 26.1)'}))
             self.assertFalse(graceful_restart_supported({'userAgent': 'Unknown (Mac OS 0.164.0)'}))
-            self.assertFalse(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
+            self.assertTrue(graceful_restart_supported({'userAgent': 'Codex Desktop/0.165.0'}))
             self.assertTrue(graceful_restart_supported({'userAgent':
                 'codex-mobile-bridge-network-verify/0.164.0 (Mac OS 15.6.1; arm64) dumb (codex-tui; 1)'}))
-            self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-verify/0.165.0'}))
+            self.assertTrue(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-network-verify/0.165.0'}))
+            for version in ('0.163.0', '0.164.0-alpha.1'):
+                self.assertFalse(graceful_restart_supported({'userAgent': 'codex_cli_rs/' + version}))
+            for version in ('0.167.1', '0.168.0', '1.0.0'):
+                self.assertTrue(graceful_restart_supported({'userAgent': 'codex_cli_rs/' + version}))
             self.assertFalse(graceful_restart_supported({'userAgent': 'codex-mobile-bridge-unverified/0.164.0'}))
         with patch('sys.platform', 'win32'):
-            for version in ('0.164.0', '0.167.0', '0.167.0-alpha.3.3', '0.168.0'):
+            for version in ('0.164.0', '0.167.0-alpha.3.1', '0.167.0-alpha.2.10'):
                 self.assertFalse(graceful_restart_supported({'userAgent': 'codex_cli_rs/' + version}))
+            for version in ('0.167.0', '0.167.0-alpha.3.3', '0.167.0-alpha.4', '0.167.0-alpha.10', '0.167.0-beta.1', '0.168.0'):
+                self.assertTrue(graceful_restart_supported({'userAgent': 'codex_cli_rs/' + version}))
             self.assertTrue(graceful_restart_supported({'userAgent': 'codex_cli_rs/0.167.0-alpha.3.2 (Windows)'}))
 
     def test_windows_maintenance_uses_one_native_socket_request_and_waits_before_start(self):

@@ -53,6 +53,15 @@ test('foreign gateway takes over only after the old writer acknowledges the idle
  ui.window.__claudeMobileBridge.stop();await Promise.all([oldRunning,newRunning]);
  assert.equal(ui.api.setAvailableCodeModels,ui.original);
 });
+for(const revision of [14,15])test('staging recovery revision accepts the verified idle handoff from '+revision,async()=>{
+ const first={...config('/gateway-a','first'),connectorRevision:revision},second={...config('/gateway-b','second'),connectorRevision:16},ui=runtime([first,second]);
+ const oldRunning=ui.inject(first);await waitFor(()=>ui.writes.length>0);
+ const newRunning=ui.inject(second);await waitFor(()=>ui.writes.some(row=>row.handoffId));
+ const offer=ui.writes.findLast(row=>row.handoffId);
+ ui.requests.set(first.cwd,packet(first,{type:'handoff-ack',seq:0,handoffId:offer.handoffId}));
+ await waitFor(()=>ui.window.__claudeMobileBridge?.owns(second.cwd));
+ ui.window.__claudeMobileBridge.stop();await Promise.all([oldRunning,newRunning]);assert.equal(ui.nativeStops(),0);
+});
 test('two injectors awaiting one handoff cannot both own the renderer',async()=>{
  const oldCfg=config('/gateway-a','first'),b=config('/gateway-b','second'),c=config('/gateway-c','third');
  const ui=runtime([oldCfg,b,c]);
