@@ -14,7 +14,7 @@ async function runActivityGroupBrowserChecks(){
     const commentary={...row('commentary',1.5,'assistant','','Synthetic progress commentary'),phase:'commentary'};
     const interaction={...row('answered',3.5,'user','steeringUserMessage','Synthetic processed question response'),interaction:'response',status:'accepted'};
     const supplement={...row('supplement',3.75,'user','steeringUserMessage','A temporary user task must stay visible.'),status:'accepted'};
-    const initial=[{...row('user',0,'user','userMessage','Synthetic user prompt'),timestamp:startedAt},row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('cmd2',3,'activity','commandExecution'),interaction,supplement,row('cmd3',3.9,'activity','commandExecution')];
+    const initial=[{...row('user',0,'user','userMessage','Synthetic user prompt'),timestamp:startedAt},row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('cmd2',3,'activity','commandExecution'),interaction,supplement,{...row('cmd3',3.9,'activity','commandExecution'),status:'inProgress'}];
     const final={...row('final',4,'assistant','','Synthetic final reply'),phase:'final_answer',timestamp:'2026-11-16T01:02:05Z'};
     const fileSummary={...row('files',5,'fileChanges','fileChanges',''),fileSummary:{count:1,added:2,removed:1,basis:'recorded',files:[{path:'synthetic.txt',added:2,removed:1}]}};
     const pending={id:'still-pending',tool:'Synthetic pending approval',input:{command:'synthetic-only'}};
@@ -45,12 +45,16 @@ async function runActivityGroupBrowserChecks(){
       check(outside('user')&&outside('supplement')&&getNode('supplement').getBoundingClientRect().height>0,provider+' initial and temporary steering user tasks remain outside the batch');
       check(afterSupplement&&afterSupplement!==task&&afterSupplement.open&&outside('supplement'),provider+' same native turn continues in a separate task fragment around the visible supplement');
       check(container.querySelectorAll('.chat-activity-tools').length===2,provider+' task fragments contain only their consecutive tool batches');
+      const runningTools=getNode('cmd3').closest('.chat-activity-tools'),reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+      check(!runningTools.open&&runningTools.dataset.running==='true'&&tools.dataset.running==='false',provider+' only the currently running last tool batch is marked while remaining folded');
+      check(getComputedStyle(runningTools.firstChild).animationName===(reducedMotion?'none':'chat-activity-breathe'),provider+' running summary gently breathes according to motion preference');
       tools.firstChild.click();getNode('reason').open=true;getNode('cmd1').open=true;getNode('cmd2').open=true;await frame();await frame();
       let leaf=getNode('cmd1'),body=leaf.querySelector('.activity-body'),reasonBody=getNode('reason').querySelector('.activity-body'),groupBody=tools.lastChild;body.scrollTop=120;reasonBody.scrollTop=90;groupBody.scrollTop=35;
       check(body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' reasoning, tool detail and batch body scroll independently');
       rows=[...rows,final,fileSummary];apply(rows);await frame();await frame();
       const elapsedLabel=BridgeI18n.t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}','2').replace('{seconds}','5');
       check(!task.open&&!afterSupplement.open&&task.dataset.state==='complete'&&getComputedStyle(task.firstChild).display!=='none'&&task.firstChild.textContent===elapsedLabel&&afterSupplement.firstChild.textContent===elapsedLabel,provider+' completion collapses both task fragments once and shows the native 125-second duration');
+      check(runningTools.dataset.running==='false'&&getComputedStyle(runningTools.firstChild).animationName==='none',provider+' terminal task stops the running summary animation');
       task.firstChild.click();afterSupplement.firstChild.click();await frame();await frame();
       check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' opening the completed task preserves its manually opened tool batch');
       check(outside('final')&&getNode('final').getBoundingClientRect().height>0,provider+' final reply stays visible outside the batch');

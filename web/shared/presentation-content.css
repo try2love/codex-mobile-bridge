@@ -106,3 +106,7 @@
 
 .chat-activity-turn[data-state=active]>summary{display:none}
 .chat-activity-turn[data-state=active]>.chat-task-items{padding-top:0}
+
+@keyframes chat-activity-breathe{0%,100%{opacity:.55}50%{opacity:1}}
+.chat-activity-tools[data-running=true]>summary,.chat-task-items>.activity[data-running=true]>summary{animation:chat-activity-breathe 2s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){.chat-activity-tools[data-running=true]>summary,.chat-task-items>.activity[data-running=true]>summary{animation:none}}

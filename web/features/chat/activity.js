@@ -168,7 +168,12 @@ function chatTaskSegments(nodes,state={}){
     const end=[...task.finals].at(-1)?.__chatMessage.timestamp;
     const a=chatMessageDate(start),b=chatMessageDate(end);
     task.seconds=!task.active&&a&&b&&b>=a?Math.floor((b-a)/1000):null;
-    for(const node of task.nodes)byNode.set(node,task);
+    const last=task.nodes.at(-1);
+    for(const node of task.nodes){
+      const row=node.__chatMessage;
+      node.__chatRunning=task.active&&node===last&&!!chatActivityKind(row)&&!['completed','failed','interrupted','accepted'].includes(row.status);
+      node.dataset.running=String(node.__chatRunning);byNode.set(node,task);
+    }
   }
   return byNode;
 }
@@ -226,6 +231,7 @@ function groupChatActivities(container,nodes){
     const kinds=cluster.map(node=>node.dataset.chatToolKind),files=kinds.some(kind=>['fileChange','FileChange'].includes(kind)),commands=kinds.includes('commandExecution');
     const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':'执行了操作';
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
+    group.dataset.running=String(cluster.some(node=>node.__chatRunning));
     group.dataset.icon=files?'file':commands?'command':'tool';
     if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
     group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
