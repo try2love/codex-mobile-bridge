@@ -177,7 +177,13 @@ class ChatTimeline {
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});
     }
-    const ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
+    let ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
+    if(!reset&&!history&&!this.busy&&chatShouldSlideHistory(ordered.length,bottom)){
+      // The original epoch/cursor can still fetch omitted rows on demand.
+      // Do not move a reader's history window or an in-flight backfill.
+      for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
+      ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
+    }
     syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);

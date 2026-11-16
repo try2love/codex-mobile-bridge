@@ -492,7 +492,9 @@ class DesktopSessionsView {
     const overlap=incoming.length?previous.findIndex(message=>message.id!=null&&message.id===incoming[0].id):-1;
     // Keep a previously loaded prefix only when the newest page overlaps it.
     // Rollback/replacement without an overlap explicitly replaces the display.
-    const prefix=overlap>0?previous.slice(0,overlap):[];
+    let prefix=overlap>0?previous.slice(0,overlap):[];
+    // Use the current native page's cursor rather than inventing one from an ID.
+    if(!cached&&!this.historyBusy&&value.history?.before&&chatShouldSlideHistory(prefix.length+incoming.length,this.reading?.following!==false))prefix=[];
     this.historyMessages=[...prefix,...incoming];
     this.sessionFiles=prefix.length?Array.from(new Map([...(this.sessionFiles||[]),...(value.files||[])].map(file=>[file.id,file])).values()):value.files||[];
     if(!prefix.length||!this.historyPage)this.historyPage=cached?null:value.history||null;

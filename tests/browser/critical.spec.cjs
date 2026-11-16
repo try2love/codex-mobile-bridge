@@ -361,6 +361,20 @@ for (const scenario of ['success', 'css-once', 'js-twice', 'js-fatal', 'runtime'
   });
 }
 
+for(const [name,file,invoke] of [
+  ['Codex continuous live display stays bounded without losing history', 'timeline', 'runTimelineSlidingWindowChecks'],
+  ['shared desktop continuous live display stays bounded without losing history', 'desktop-history', 'runDesktopSlidingWindowChecks'],
+]){
+  test(name,async({page},testInfo)=>{
+    await ready(page);await page.addScriptTag({url:'/timeline.js'});
+    await page.route('**/__sliding-checks.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(path.join(__dirname,file+'.browser.js'),'utf8')}));
+    await page.addScriptTag({url:'/__sliding-checks.js'});
+    const result=await page.evaluate(name=>globalThis[name](),invoke);
+    expect(result.passed).toBeGreaterThan(0);
+    await testInfo.attach('sliding-window-checks',{body:JSON.stringify(result),contentType:'application/json'});
+  });
+}
+
 for (const [name, file, invoke] of [
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],

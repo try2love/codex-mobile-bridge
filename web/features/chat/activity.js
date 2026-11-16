@@ -19,6 +19,9 @@ function renderChatMessageTime(container,value,now=new Date()){
 function chatFollowsLatest(viewport){
   return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
 }
+function chatShouldSlideHistory(count,following){
+  return following&&count>240&&document.getSelection?.()?.isCollapsed!==false;
+}
 function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
