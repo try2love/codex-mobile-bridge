@@ -1,6 +1,12 @@
 """Windows user, Squirrel and Store installation paths."""
+import re
 from pathlib import Path
 from .discovery_ext import registered_candidates, windows_installations, launch_windows_desktop
+
+
+def _version_key(path):
+    return tuple(int(part) if part.isdigit() else part.casefold()
+                 for part in re.split(r'(\d+)', path.name))
 
 
 def candidates(provider, app_names, home, env):
@@ -18,7 +24,7 @@ def candidates(provider, app_names, home, env):
                 yield folder/'claude.exe'
             try:
                 # Squirrel keeps the current executable in a versioned directory.
-                for version in sorted(folder.glob('app-*'), reverse=True):
+                for version in sorted(folder.glob('app-*'), key=_version_key, reverse=True):
                     yield version/(name+'.exe')
             except OSError:
                 continue
@@ -26,7 +32,7 @@ def candidates(provider, app_names, home, env):
         # The Store installation has a separate CLI; never select that as the GUI.
         root = Path(env.get('ProgramFiles') or 'C:/Program Files')/'WindowsApps'
         try:
-            for folder in sorted(root.glob('OpenAI.Codex_*'), reverse=True):
+            for folder in sorted(root.glob('OpenAI.Codex_*'), key=_version_key, reverse=True):
                 yield folder/'app/ChatGPT.exe'
                 yield folder/'app/Codex.exe'
         except OSError:

@@ -86,6 +86,26 @@ class WindowsDiscoveryTests(unittest.TestCase):
         gui = self.executable('Program Files/WindowsApps/OpenAI.Codex_1/app/ChatGPT.exe')
         self.assertEqual(self.scan({})['codex']['executable'], str(gui))
 
+    def test_squirrel_filesystem_fallback_prefers_newest_numeric_version(self):
+        for provider, name in (('codex', 'Codex'), ('claude', 'Claude'),
+                               ('deepseek', 'DSH Desktop'), ('zcode', 'ZCode')):
+            with self.subTest(provider=provider):
+                self.executable(f'Local/{name}/app-2.9.10/{name}.exe')
+                newest = self.executable(f'Local/{name}/app-2.10.0/{name}.exe')
+                self.assertEqual(self.scan({})[provider]['executable'], str(newest))
+
+    def test_store_filesystem_fallback_prefers_newest_numeric_version(self):
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.9.0_x64/app/ChatGPT.exe')
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/Codex.exe')
+        gui = self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/ChatGPT.exe')
+        runtime = self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/resources/codex.exe',
+                                  electron=False)
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.11.0_x64/app/resources/codex.exe',
+                        electron=False)
+        row = self.scan({})['codex']
+        self.assertEqual(row['executable'], str(gui))
+        self.assertEqual(row['runtime'], str(runtime))
+
     def test_bundled_runtime_discovery_prefers_gui_over_codex_shim(self):
         from bridge.clients.desktop_app import DesktopApp
         runtime = self.executable('Store/App/app/resources/codex.exe', electron=False)
@@ -137,9 +157,12 @@ class WindowsDiscoveryTests(unittest.TestCase):
         self.assertTrue(rows['deepseek']['installed'])
         self.assertFalse(rows['claude']['installed'])
 
-    def test_explicit_application_precedes_registered_app(self):
+    def test_explicit_and_registered_applications_precede_filesystem_versions(self):
         explicit = self.executable('Selected/Claude.exe')
         registered = self.executable('Registered/Claude.exe')
+        self.executable('Local/Claude/app-99.0.0/Claude.exe')
+        self.assertEqual(self.scan({'processes': [{'ProcessName': 'Claude', 'Path': str(registered)}]})
+                         ['claude']['executable'], str(registered))
         rows = self.scan({'processes': [{'ProcessName': 'Claude', 'Path': str(registered)}]},
                          {'claudeApplication': str(explicit)})
         self.assertEqual(rows['claude']['executable'], str(explicit))
