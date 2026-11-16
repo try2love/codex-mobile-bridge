@@ -26,4 +26,4 @@ Antigravity 原生 `GetUserStatus` 的 `clientModelConfigs` 会把同一个基�
 
 ## 影响
 
-完全保留旧扁平 `modelId` 与手动 `MODEL_*` 枚举兼容；不改变其他客户端（Codex / Claude / DeepSeek / ZCode）模型逻辑与模块边界。
+完全保留旧扁平 `modelId` 与手动 `MODEL_*` 枚举兼容；不改变其他客户端（Codex / Claude / DeepSeek / ZCode）模型逻辑与模块边界。与原生指令流程集成后的共享设置保存及 effort 传递见[参数契约修复](../bug-fix/2026-11-16-antigravity-effort-through-native-commands.md)。

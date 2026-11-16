@@ -1744,7 +1744,7 @@ class AntigravitySafetyTests(unittest.TestCase):
                     self.assertEqual(start_payload['requested_model'], 'MODEL_PLACEHOLDER_M528')
 
             # Legacy flat modelId in persisted session-settings.json still projects cleanly & maps to native enum
-            adapter._save_session_model(sid, 'gemini-4-hydrogen-xhigh', '')
+            adapter._update_session_settings(sid, model='gemini-4-hydrogen-xhigh', effort='')
             adapter.cli._variant_cache.clear()
             adapter.cli._base_cache.clear()
             legacy_detail = manager.call('antigravity', 'detail', sid, {})

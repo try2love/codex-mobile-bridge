@@ -470,7 +470,7 @@ class DesktopSessionsView {
   }
   nativeCommandKey(sid=this.sid,state=this.state,provider=this.provider){
     if(!sid||!state||state.capabilities?.slashCommands!==true)return '';
-    return JSON.stringify([this.draftGateway||'',provider,sid,state.cwd||'',this.draftScope?.account||'',state.model||'',state.modelCatalogIdentity||'']);
+    return JSON.stringify([this.draftGateway||'',provider,sid,state.cwd||'',this.draftScope?.account||'',state.model||'',state.effort||'',state.modelCatalogIdentity||'']);
   }
   async ensureNativeCommands(force=false){
     const sid=this.sid,provider=this.provider,state=this.state,generation=this.generation;

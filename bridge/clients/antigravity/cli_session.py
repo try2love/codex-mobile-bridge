@@ -1053,6 +1053,8 @@ class AntigravityCli:
 
     def _model(self, model, surface, effort=None, *, require_effort=False):
         if model is None:
+            if effort:
+                raise ValueError('请先选择模型后再设置思考强度')
             return None  # Preserve the original server's selected default.
         if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
             if effort:
@@ -1063,16 +1065,14 @@ class AntigravityCli:
         )
         return native_enum
 
-    def _raw_model_for_commands(self, model=None, surface='app'):
-        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
-            return model
+    def _raw_model_for_commands(self, model=None, surface='app', effort=None):
+        if model and model != 'auto':
+            return self._model(model, surface, effort=effort)
+        if effort:
+            raise ValueError('请先选择模型后再设置思考强度')
         status = self.user_status(surface)
         model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
         configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
-        if model and model != 'auto':
-            for row in configs:
-                if self._is_enabled_model_row(row) and row.get('modelId') == model:
-                    return row['modelOrAlias']['model']
         default_cfg = model_data.get('defaultOverrideModelConfig')
         if isinstance(default_cfg, dict):
             alias = default_cfg.get('modelOrAlias')
@@ -1083,7 +1083,7 @@ class AntigravityCli:
                 return row['modelOrAlias']['model']
         return None
 
-    def slash_commands(self, *, surface='app', conversation_id=None, model=None, cwd=None):
+    def slash_commands(self, *, surface='app', conversation_id=None, model=None, effort=None, cwd=None):
         payload = {'enablePersonal': True}
         if isinstance(conversation_id, str) and conversation_id.strip():
             payload['cascadeId'] = conversation_id.strip()
@@ -1094,7 +1094,7 @@ class AntigravityCli:
                     payload['workspaceUris'] = [path.as_uri()]
             except (OSError, ValueError):
                 pass
-        raw_model = self._raw_model_for_commands(model, surface)
+        raw_model = self._raw_model_for_commands(model, surface, effort)
         if raw_model:
             payload['cascadeConfig'] = {'plannerConfig': {'requestedModel': {'model': raw_model}}}
         res = self.call_ls_rpc('GetSlashCommands', payload, surface=surface)

@@ -1884,7 +1884,7 @@ async function nativeCommandFixture(){
  view.draftGateway='gateway-a';view.draftScope={...view.draftScope,account:'account-a'};
  return ui;
 }
-for(const field of ['model','modelCatalogIdentity'])test('native command cache separates '+field+' and retains the previous scope on return',async()=>{
+for(const field of ['model','effort','modelCatalogIdentity'])test('native command cache separates '+field+' and retains the previous scope on return',async()=>{
  const ui=await nativeCommandFixture(),view=ui.view,original=view.state[field];let reads=0;
  ui.setHandler(async()=>({commands:[{id:'command-'+(++reads)}]}));
  const first=await view.ensureNativeCommands(),firstKey=view.nativeCommandKey();
@@ -1924,7 +1924,7 @@ test('native command cache invalidation starts a new read and rejects the old pr
  receipts[0]({commands:[{id:'stale-command'}]});await old;
  assert.equal(view.nativeCommands.get(view.nativeCommandKey()).commands[0].id,'fresh-command');
 });
-for(const field of ['model','modelCatalogIdentity','account'])test('native Skill commands never populate a changed '+field+' scope',async()=>{
+for(const field of ['model','effort','modelCatalogIdentity','account'])test('native Skill commands never populate a changed '+field+' scope',async()=>{
  const ui=await nativeCommandFixture(),view=ui.view,oldKey=view.nativeCommandKey(),cached={commands:[{id:'cached-original'}]};
  view.nativeCommands.set(oldKey,cached);let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));
  const pending=view.skills(),dialog=ui.document.body.querySelector('dialog');
