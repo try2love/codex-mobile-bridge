@@ -2048,3 +2048,49 @@ test('Antigravity grouped models submit base id and effort',async()=>{
  assert.equal(settingsWrite.body.model,'gemini-4-hydrogen');
  assert.equal(settingsWrite.body.effort,'xhigh');
 });
+
+async function stopConcurrencyFixture({status='idle',stop=true}={}){
+ const ui=await opened(),view=ui.view,receipts={};
+ view.bindDraftGateway('gateway-a');view.draftScope={gateway:'gateway-a',provider:'claude',account:'account-a',host:'local',session:'a'};
+ view.state={...view.state,status,capabilities:{...view.state.capabilities,send:true,stop}};view.freshDetail=true;view.refresh=async()=>{};view.updateComposer();
+ ui.setHandler((url,body)=>new Promise(resolve=>{receipts[new URL(url,'http://fixture').pathname.split('/').at(-1)]=resolve;}));
+ return {ui,view,receipts};
+}
+test('idle first send exposes stop only for a supported send in the current scope',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture();view.input.value='first task';
+ const sending=view.submit();assert.equal(view.freshDetail,false);assert.equal(view.stop.hidden,false);assert.equal(view.stop.disabled,false);
+ const stopping=view.stop.click();assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,1);
+ await view.stop.click();assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,1);
+ receipts.stop({status:'accepted'});await stopping;receipts.send({status:'accepted'});await sending;
+ assert.equal(view.busy,false);
+});
+for(const field of ['session','provider','gateway','account','generation'])test('pending send never authorizes stop after changing '+field,async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({status:'active'});
+ const sending=view.mutate('send',{text:'old task'});
+ if(field==='session')view.prepareChat('b');
+ if(field==='provider'){await view.choose('deepseek',{loadList:false});view.prepareChat('a');}
+ if(field==='gateway')view.bindDraftGateway('gateway-b');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};
+ if(field==='generation')view.generation++;
+ view.state={id:view.sid,status:'active',capabilities:{send:true,stop:true}};view.freshDetail=false;view.updateComposer();
+ assert.equal(view.canMutate(true),false);assert.equal(view.stop.disabled,true);
+ assert.equal(await view.mutate('stop',{}),null);assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,0);
+ receipts.send({status:'accepted'});await sending;
+});
+for(const action of ['settings','access'])test('idle pending '+action+' does not expose stop as if it were a send',async()=>{
+ const {view,receipts}=await stopConcurrencyFixture();const writing=view.mutate(action,{});
+ assert.equal(view.stop.hidden,true);assert.equal(view.stop.disabled,true);
+ const stopping=view.mutate('stop',{});assert.equal(receipts.stop,undefined);assert.equal(await stopping,null);receipts[action]({status:'accepted'});await writing;
+});
+test('explicit unsupported stop remains hidden and cannot be sent during a first send',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({stop:false});view.input.value='first task';const sending=view.submit();
+ assert.equal(view.stop.hidden,true);assert.equal(view.stop.disabled,true);const stopping=view.mutate('stop',{});
+ assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,0);assert.equal(await stopping,null);receipts.send({status:'accepted'});await sending;
+});
+test('ordinary writes and duplicate stop stay blocked while stop is pending even after fresh detail',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({status:'active'}),stopping=view.mutate('stop',{});
+ view.freshDetail=true;view.input.value='must not send';view.updateComposer();assert.equal(view.send.disabled,true);
+ assert.equal(await view.mutate('settings',{}),null);await view.submit();await view.mutate('stop',{});
+ assert.equal(ui.calls.filter(c=>c.body&&/\/(send|settings|stop)(?:\?|$)/.test(c.url)).length,1);
+ receipts.stop({status:'accepted'});await stopping;
+});
