@@ -174,6 +174,12 @@ def normalize_item(item, *, image_cache=None):
         if replies:
             text = "\n\n".join(str(r.get("question", "")) + "\n" + str(r.get("answer", "")) for r in replies)
         row.update(role="user", text=text)
+        # Display-only: a native answered card is not a new user task. Keep
+        # role/kind/request identity intact for submission and pending checks.
+        if (replies and all(isinstance(r.get('questionItemId'), str) and r['questionItemId']
+                            and isinstance(r.get('answer'), str) for r in replies)
+                and (kind == 'userMessage' or item.get('status') == 'accepted')):
+            row['interaction'] = 'response'
         desktop_attachments = desktop_file_attachments(raw_text)
         if desktop_attachments:
             row["attachments"] = desktop_attachments

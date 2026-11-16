@@ -13,6 +13,29 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_native_answers_are_presentational_interactions_not_steered_tasks(self):
+        from bridge.features.sessions.model import normalize_item
+        reply = '<send_user_message_question_reply>' + json.dumps([{
+            'questionItemId': '["request_user_input_async","question",0]',
+            'question': '是否继续？', 'answer': '继续'}]) + '</send_user_message_question_reply>'
+        for kind, status, expected in [('userMessage', None, True),
+                                       ('steeringUserMessage', 'accepted', True),
+                                       ('steeringUserMessage', 'pending', False),
+                                       ('steeringUserMessage', 'rejected', False)]:
+            row = normalize_item({'id': 'answer', 'type': kind, 'status': status,
+                                  'input': [{'type': 'text', 'text': reply}],
+                                  'content': [{'type': 'text', 'text': reply}]})
+            self.assertEqual(row['role'], 'user')
+            self.assertEqual(row['kind'], kind)
+            self.assertEqual(row.get('interaction') == 'response', expected)
+            timeline = Timeline()
+            timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [row]}]})
+            self.assertEqual(timeline.page()['rows'][0].get('interaction') == 'response', expected)
+        for text in ['继续，同时增加一个检查', '<send_user_message_question_reply>[{"answer":"继续"}]</send_user_message_question_reply>']:
+            row = normalize_item({'id': 'supplement', 'type': 'steeringUserMessage', 'status': 'accepted',
+                                  'input': [{'type': 'text', 'text': text}]})
+            self.assertNotIn('interaction', row)
+
     def test_native_completed_turn_file_summary_survives_history_and_updates(self):
         state = {'turns': [{'turnId': 'patch-turn', 'status': 'inProgress', 'items': [
             {'type': 'fileChange', 'id': 'patch', 'status': 'completed', 'changes': {
