@@ -122,19 +122,32 @@ class DesktopApp:
             return launch_windows_desktop(self.executable, cancelled=cancelled, **options)
         return subprocess.Popen([str(self.executable)], **options)
 
-    def start(self):
+    def start(self, *, allow_unprepared=False):
         environment = {'CODEX_HOME': str(self.home)}
+        environment_unset = ()
         if sys.platform in ('darwin', 'win32'):
-            from bridge.clients.codex.desktop_runtime import launch_environment, wait_stopped
-            shared = launch_environment(self.home, self.executable)
+            from bridge.clients.codex.desktop_runtime import launch_environment, wait_stopped, DesktopRuntimeOutdated
+            try:
+                shared = launch_environment(self.home, self.executable)
+            except DesktopRuntimeOutdated:
+                if not allow_unprepared:
+                    raise
+                # Explicit opening may use the native App after an upgrade, but
+                # never while an old shared writer is alive or unaccounted for.
+                wait_stopped(self.home)
+                shared = {}
+                environment_unset = ('CODEX_CLI_PATH', 'CMB_CODEX_DESKTOP_CONFIGURATION',
+                                     'CODEX_APP_SERVER_WS_URL', 'CODEX_APP_SERVER_FORCE_CLI')
             if shared:
                 wait_stopped(self.home)
             environment.update(shared)
         if sys.platform == 'darwin':
-            _native().start(self.executable, self.home, environment)
+            _native().start(self.executable, self.home, environment,
+                            **({'environment_unset': environment_unset} if environment_unset else {}))
             return
         if sys.platform == 'win32':
-            self.child = self.launch(require_environment=bool(shared), cwd=self.home, env={**os.environ, **environment},
+            inherited = {key: value for key, value in os.environ.items() if key not in environment_unset}
+            self.child = self.launch(require_environment=bool(shared or environment_unset), cwd=self.home, env={**inherited, **environment},
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL,
                                      creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)

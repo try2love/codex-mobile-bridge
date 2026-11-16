@@ -296,7 +296,7 @@ def stop_deepseek(descriptor, adapter, *, state):
         time.sleep(.25)
 
 
-def launch_client(descriptor, *, allow_native_relaunch=False):
+def launch_client(descriptor, *, allow_native_relaunch=False, allow_unprepared_codex=False):
     if descriptor.get('nativeProfile'):
         from bridge.clients.profile_process import launch_profile
         return launch_profile(descriptor, allow_native_relaunch=allow_native_relaunch)
@@ -306,7 +306,7 @@ def launch_client(descriptor, *, allow_native_relaunch=False):
     if inspect_client(descriptor)['running']:
         return {'running': True, 'launched': False}
     if descriptor['id'] == 'codex':
-        app.start()
+        app.start(**({'allow_unprepared': True} if allow_unprepared_codex else {}))
     elif descriptor['id'] == 'zcode':
         from bridge.clients.zcode.installation import launch
         launch(app.executable, app.home, debug_port=descriptor.get('debugFallbackPort'))

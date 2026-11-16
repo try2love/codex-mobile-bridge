@@ -3099,7 +3099,8 @@ class DesktopSessions:
                         from bridge.clients.codex.desktop_runtime import initialization_lock
                         launch_gate = initialization_lock(descriptor['dataDirectory'])
                     with launch_gate:
-                        result = launch_client(descriptor)
+                        result = launch_client(descriptor, **({'allow_unprepared_codex': True}
+                            if provider == 'codex' and not startup else {}))
                     if provider == 'zcode' and not startup and not result.get('launched'):
                         adapter = self.adapters[provider]
                         if getattr(adapter, 'sid', None) and adapter.status().get('retryable'):

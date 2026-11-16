@@ -596,6 +596,7 @@ class ClientLifecycleTests(unittest.TestCase):
         with patch.object(self.manager, '_prepare_codex_runtime') as prepare:
             self.manager.toggle_client({'provider': 'codex', 'enabled': True})
         self.launch.assert_called_once()
+        self.assertEqual(self.launch.call_args.kwargs, {'allow_unprepared_codex': True})
         self.assertTrue(self.running)
         self.assertTrue(self.manager.enabled('codex'))
         prepare.assert_not_called()
