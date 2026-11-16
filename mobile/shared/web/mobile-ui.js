@@ -386,3 +386,24 @@
   document.addEventListener('bridge-chat-visible',schedule);
   observer.observe(document.body,{childList:true,subtree:true});schedule();
 })();
+
+// Private display storage follows the native verified computer binding, not a URL.
+(() => {
+  if(window.top!==window||window.BridgeMobileStorage)return;
+  const token='__BRIDGE_CLIPBOARD_TOKEN__',pending=new Map();let serial=0;
+  function request(op,key,value){return new Promise(resolve=>{
+    const id=String(++serial),timer=setTimeout(()=>{pending.delete(id);resolve(undefined);},5000);
+    pending.set(id,result=>{clearTimeout(timer);resolve(result);});
+    try{if(window.prompt('codexbridge-display:'+token,JSON.stringify({id,op,key,...(value===undefined?{}:{value})}))==='queued')return;}catch{}
+    pending.get(id)?.(undefined);pending.delete(id);
+  });}
+  window.BridgeMobileStorage={request,receive(secret,response){if(secret!==token)return;const done=pending.get(response?.id);pending.delete(response?.id);done?.(response.ok?response.value:undefined);}};
+  let edited=false;
+  document.addEventListener('bridge-appearance-change',event=>{edited=true;request('write','appearance',event.detail);});
+  async function restore(){const value=await request('read','appearance');if(!edited&&value&&typeof value==='object'){
+    try{localStorage.setItem('bridge-appearance',JSON.stringify(value));}catch{}
+    document.dispatchEvent(new CustomEvent('bridge-appearance-restored',{detail:value}));
+  }else if(value===null&&!edited){try{const local=JSON.parse(localStorage.getItem('bridge-appearance'));if(local)await request('write','appearance',local);}catch{}}}
+  document.addEventListener('bridge-authenticated',restore);restore();
+  document.dispatchEvent(new Event('bridge-mobile-storage'));
+})();

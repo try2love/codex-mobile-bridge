@@ -16,6 +16,7 @@ function fixture(initialDialogs=[],frame=false){
     addEventListener:(name,listener)=>{documentEvents[name]=listener;}
   };
   const window={
+    BridgeMobileStorage:{},
     prompt:(name,value)=>{prompts.push({name,value});return 'saved';},
     addEventListener:(name,listener)=>{windowEvents[name]=listener;}
   };

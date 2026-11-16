@@ -25,6 +25,7 @@ F50000000000000000000001 = {isa = PBXBuildFile; fileRef = F500000000000000000000
 E00000000000000000000009 /* mobile-system-bars.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000008; };
 F30000000000000000000001 = {isa = PBXBuildFile; fileRef = F30000000000000000000002; };
 E00000000000000000000002 /* WebScripts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000001; };
+FA7100000000000000000002 /* DisplayStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA7100000000000000000001; };
 E00000000000000000000004 /* mobile-ui.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000003; };
 FA4400000000000000000006 /* channel-link.js in Resources */ = {isa = PBXBuildFile; fileRef = FA4400000000000000000005; };
 E00000000000000000000006 /* mobile-clipboard.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000005; };
@@ -68,6 +69,7 @@ F50000000000000000000000 = {isa = PBXFileReference; lastKnownFileType = sourceco
 E00000000000000000000008 /* mobile-system-bars.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-system-bars.js; sourceTree = SOURCE_ROOT; };
 F30000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionDiscovery.swift; sourceTree = "<group>"; };
 E00000000000000000000001 /* WebScripts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebScripts.swift; sourceTree = "<group>"; };
+FA7100000000000000000001 /* DisplayStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayStorage.swift; sourceTree = "<group>"; };
 E00000000000000000000003 /* mobile-ui.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-ui.js; sourceTree = SOURCE_ROOT; };
 FA4400000000000000000005 /* channel-link.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/channel-link.js; sourceTree = SOURCE_ROOT; };
 E00000000000000000000005 /* mobile-clipboard.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-clipboard.js; sourceTree = SOURCE_ROOT; };
@@ -138,6 +140,7 @@ B00000000000000000000004, F40000000000000000000004,
                 A00000000000000000000020 /* App.swift */,
                 DD1130000000000000000001 /* UURemote.swift */,
 E00000000000000000000001 /* WebScripts.swift */,
+FA7100000000000000000001 /* DisplayStorage.swift */,
 D00000000000000000000001,
 C00000000000000000000001,
 B00000000000000000000001,B00000000000000000000002,
@@ -248,6 +251,7 @@ F40000000000000000000016 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147
                 A00000000000000000000030 /* App.swift in Sources */,
                 DD1130000000000000000002 /* UURemote.swift in Sources */,
 E00000000000000000000002 /* WebScripts.swift in Sources */,
+FA7100000000000000000002 /* DisplayStorage.swift in Sources */,
 D00000000000000000000002,
 C00000000000000000000002,
 B0000000000000000000000A,B0000000000000000000000B,
