@@ -93,3 +93,5 @@
 .chat-activity-items .activity>summary:hover{color:var(--text)}
 
 .chat-activity-items .activity>summary:before{margin-right:.45em;vertical-align:-.1em}
+
+.ds-history-newer{position:sticky;bottom:.5em;display:block;margin:.5em 0 .5em auto;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:.45em .8em}

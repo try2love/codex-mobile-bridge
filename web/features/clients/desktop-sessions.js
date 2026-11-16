@@ -328,7 +328,7 @@ class DesktopSessionsView {
   }
   prepareChat(sid){
     this.resetResume();this.rememberReading();this.detailFailure='';this.resetMermaidScope();
-    this.modelDialog?.close();this.saveDraft();this.sid=sid;this.workModes.open(JSON.stringify([this.draftGateway,this.provider,sid]));this.historyPage=null;this.historyMessages=[];this.initialHistoryExpanded=false;this.historyBusy=false;this.historyRetry=false;this.draftScope=null;this.draftTouched=false;this.quotes?.reset();this.mode.value='send';this.state=null;this.notificationPolicy=null;this.freshDetail=false;this.detailRevision++;this.modelSelectionRevision++;const row=this.rows.find(r=>r.id===sid);if(row)this.state={...row,readOnly:true,capabilities:{send:false,stop:false}};this.title.textContent=row?.title||BridgeI18n.t('正在读取聊天…');this.status.textContent=BridgeI18n.t('正在连接…');this.input.value=this.draftGateway&&this.composerDrafts?'':this.drafts.get(this.provider+':'+sid)||'';this.requestStamp='';this.error.textContent='';this.notice.hidden=true;this.messageList.replaceChildren(this.translated('p','正在读取聊天…','muted'));this.messageList.__chatActivityGroups=null;this.messageNodes.clear();this.lastMessages=[];this.requests.replaceChildren();this.showSelection(true);this.attachments.open(JSON.stringify([this.provider,sid]));this.workbench.open(sid,'local');this.reading=this.workbench.current.reading||{top:0,following:true};const cached=this.detailCache.get(JSON.stringify([this.provider,sid]));if(cached&&typeof renderMarkdown==='function'){this.applyDetail(cached,true);}this.activity.read(this.provider+'|'+sid);this.updateComposer();this.renderList();this.resizeInput();this.rememberView();this.onNavigation?.();
+    this.modelDialog?.close();this.saveDraft();this.sid=sid;this.workModes.open(JSON.stringify([this.draftGateway,this.provider,sid]));this.historyPage=null;this.historyMessages=[];this.deferredHistory=null;this.initialHistoryExpanded=false;this.historyBusy=false;this.historyRetry=false;this.draftScope=null;this.draftTouched=false;this.quotes?.reset();this.mode.value='send';this.state=null;this.notificationPolicy=null;this.freshDetail=false;this.detailRevision++;this.modelSelectionRevision++;const row=this.rows.find(r=>r.id===sid);if(row)this.state={...row,readOnly:true,capabilities:{send:false,stop:false}};this.title.textContent=row?.title||BridgeI18n.t('正在读取聊天…');this.status.textContent=BridgeI18n.t('正在连接…');this.input.value=this.draftGateway&&this.composerDrafts?'':this.drafts.get(this.provider+':'+sid)||'';this.requestStamp='';this.error.textContent='';this.notice.hidden=true;this.messageList.replaceChildren(this.translated('p','正在读取聊天…','muted'));this.messageList.__chatActivityGroups=null;this.messageNodes.clear();this.lastMessages=[];this.requests.replaceChildren();this.showSelection(true);this.attachments.open(JSON.stringify([this.provider,sid]));this.workbench.open(sid,'local');this.reading=this.workbench.current.reading||{top:0,following:true};const cached=this.detailCache.get(JSON.stringify([this.provider,sid]));if(cached&&typeof renderMarkdown==='function'){this.applyDetail(cached,true);}this.activity.read(this.provider+'|'+sid);this.updateComposer();this.renderList();this.resizeInput();this.rememberView();this.onNavigation?.();
     const scope=this.historyCacheScope(),revision=this.detailRevision,token={};this.historyCachePending=token;
     if(!cached&&scope)window.BridgeChatHistoryCache?.read(scope).then(value=>{
       if(value&&this.historyCachePending===token&&revision===this.detailRevision&&scope===this.historyCacheScope()&&typeof renderMarkdown==='function')this.applyDetail(value,true);
@@ -554,6 +554,13 @@ class DesktopSessionsView {
   collapseComposer(value){this.composerBody.hidden=value;this.form.classList.toggle('is-collapsed',value);this.composerToggle.setAttribute('aria-expanded',String(!value));this.label(this.composerToggle,value?'展开输入区':'收起输入区');this.composerToggle.title=BridgeI18n.t(value?'展开输入区':'收起输入区');if(!value)this.resizeInput();}
   applyHistory(value,cached=false){
     const incoming=value.messages||[],previous=this.historyMessages||[];
+    if(!cached&&this.reading?.following===false&&previous.length&&incoming.length&&value.history?.hasMore&&
+       !incoming.some(row=>previous.some(old=>old.id!=null&&old.id===row.id))){
+      // A bounded recent page can outrun a reader's old window. Keep it until
+      // the reader chooses latest; lack of overlap is not evidence of deletion.
+      this.deferredHistory=value;this.renderMessages(previous);return;
+    }
+    this.deferredHistory=null;
     const overlap=incoming.length?previous.findIndex(message=>message.id!=null&&message.id===incoming[0].id):-1;
     // Keep a previously loaded prefix only when the newest page overlaps it.
     // Rollback/replacement without an overlap explicitly replaces the display.
@@ -604,6 +611,10 @@ class DesktopSessionsView {
       node.dataset.key=key;if(chatActivityKind(message)){node.dataset.chatActivity=chatActivityKind(message);node.dataset.chatActivityState=this.state?.status==='active'&&index===messages.length-1?'active':'complete';node.dataset.chatToolKind=message.kind||'';node.dataset.chatTurnId=message.turnId||'';}node.hidden=message.role==='reasoning'?document.documentElement.dataset.showReasoning==='false':message.role==='activity'&&document.documentElement.dataset.showProcess==='false';next.set(key,{stamp,node});nodes.push(node);
     }
     if(this.historyPage?.hasMore){const older=this.button(this.historyRetry?'历史加载失败，点击重试':this.historyBusy?'正在读取…':'加载更早内容',()=>this.loadOlderHistory());older.classList.add('plain','ds-history-older');older.disabled=!!this.historyBusy;nodes.unshift(older);}this.messageNodes=next;if(!nodes.length&&this.state)nodes.push(this.translated('p','这条聊天还没有消息','muted ds-history-empty'));nodes.push(this.progress);
+    if(this.deferredHistory){
+      if(!this.historyNewer){this.historyNewer=this.button('有新内容 ↓',()=>{const latest=this.deferredHistory;if(!latest)return;this.reading={following:true,top:this.messages.scrollTop};this.applyHistory(latest);});this.historyNewer.classList.add('ds-history-newer');}
+      nodes.push(this.historyNewer);
+    }
     syncChatMessageNodes(this.messageList,nodes);this.restoreReading();
   }
   editMessage(message){
