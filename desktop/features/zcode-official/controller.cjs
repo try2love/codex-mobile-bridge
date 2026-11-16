@@ -7,6 +7,24 @@ const {ORIGIN,parseLink}=require('./link.cjs');
 const {serveLocal}=require('../../shared/local-service.cjs');
 const ACTIONS=new Set(['application','projects','target','account','quota','lifecycle','attach','detach','list','create','detail','history','receipt','tasks','stop-task','catalog','send','stop','respond','settings','access','work-mode','goal','compact','fork','edit-message','rename']);
 const failure=message=>Object.assign(Error(message),{publicMessage:message});
+const LOGIN_PROVIDERS=['zai','zai_cn','bigmodel'];
+function readBrowserLogin(providers){
+  // Runs inside the official page. A primary record supersedes legacy keys;
+  // an incomplete new session must never resurrect an earlier account.
+  const primary=localStorage.getItem('oauth:browser_session');
+  try{
+    if(primary!==null){
+      const session=JSON.parse(primary),user=session?.userInfo;
+      if(!providers.includes(session?.provider)||typeof session.revision!=='string'||!session.revision.trim()||
+        typeof user?.id!=='string'||!user.id.trim()||user.id==='unknown')return null;
+      return {jwt:session.zcodeJwtToken,provider:session.provider,name:user.displayName||user.username||user.name||''};
+    }
+    const provider=localStorage.getItem('oauth:active_provider'),jwt=localStorage.getItem('zcodejwttoken');
+    if(!jwt||!providers.includes(provider))return null;
+    const user=JSON.parse(localStorage.getItem('oauth:'+provider+':user_info')||'{}');
+    return {jwt,provider,name:user.name||user.displayName||''};
+  }catch{return null;}
+}
 class OfficialRemote {
   constructor({electron,profile,rendererPath,localServiceWorker}){
     this.electron=electron;this.profile=profile;this.rendererPath=rendererPath;this.localServiceWorker=localServiceWorker;this.serviceAvailable=false;
@@ -69,7 +87,7 @@ class OfficialRemote {
         const decrypted=await this.waitStorage(this.electron.safeStorage.decryptStringAsync(encrypted));
         if(!this.authCurrent(generation,authIdentity,settingsIdentity))return false;
         const auth=JSON.parse(decrypted.result);
-        if(!auth||typeof auth.jwt!=='string'||!auth.jwt||auth.jwt.length>16384||/\s/.test(auth.jwt)||!['zai','bigmodel'].includes(auth.provider))throw Error('Invalid saved login');
+        if(!auth||typeof auth.jwt!=='string'||!auth.jwt||auth.jwt.length>16384||/\s/.test(auth.jwt)||!LOGIN_PROVIDERS.includes(auth.provider))throw Error('Invalid saved login');
         const link=this.localLink(auth.link).url;
         if(!this.link)this.writeLink(link);
         this.auth=auth;this.reason='官方登录已保存，可连接官方远控。';return true;
@@ -213,9 +231,9 @@ class OfficialRemote {
       if(url.origin!==ORIGIN||url.pathname!=='/remote/v4')return;
       capturing=true;
       try{
-        const data=await win.webContents.executeJavaScript(`(()=>{const provider=localStorage.getItem('oauth:active_provider');const jwt=localStorage.getItem('zcodejwttoken');if(!jwt||!['zai','bigmodel'].includes(provider))return null;const user=JSON.parse(localStorage.getItem('oauth:'+provider+':user_info')||'{}');return {jwt,provider,name:user.name||user.displayName||''};})()`);
+        const data=await win.webContents.executeJavaScript(`(${readBrowserLogin.toString()})(${JSON.stringify(LOGIN_PROVIDERS)})`);
         if(!data||this.loginWindow!==win||win.isDestroyed()||!this.authCurrent(generation,authIdentity,settingsIdentity))return;
-        if(typeof data.jwt!=='string'||data.jwt.length>16384||/\s/.test(data.jwt))throw Error('Invalid token');
+        if(typeof data.jwt!=='string'||!data.jwt||data.jwt.length>16384||/\s/.test(data.jwt)||!LOGIN_PROVIDERS.includes(data.provider))throw Error('Invalid token');
         // Close the official web terminal before the gateway claims its own terminal.
         const auth={...data,link:parsed.url};
         const task=Promise.resolve().then(()=>this.electron.safeStorage.encryptStringAsync(JSON.stringify(auth)));

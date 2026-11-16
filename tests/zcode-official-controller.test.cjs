@@ -114,12 +114,47 @@ function loginBrowser(c,data){
  const {EventEmitter}=require('node:events');
  const windows=[],partitions=[],browserSession={setPermissionRequestHandler(){},setPermissionCheckHandler(){}};
  class Window extends EventEmitter{
-  constructor(options){super();this.options=options;this.destroyed=false;windows.push(this);this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=handler=>{this.openHandler=handler;};this.webContents.executeJavaScript=async()=>data;}
+  constructor(options){super();this.options=options;this.destroyed=false;windows.push(this);this.webContents=new EventEmitter();this.webContents.getURL=()=>link;this.webContents.setWindowOpenHandler=handler=>{this.openHandler=handler;};this.webContents.executeJavaScript=async source=>typeof data==='function'?data(source):data;}
   isDestroyed(){return this.destroyed;}show(){}focus(){}async loadURL(){}destroy(){if(!this.destroyed){this.destroyed=true;this.emit('closed');}}
  }
  c.electron.BrowserWindow=Window;c.electron.session={fromPartition:name=>{partitions.push(name);return browserSession;}};
  return {windows,partitions,browserSession};
 }
+function loginStorage(c,values){
+ const reads=[];loginBrowser(c,source=>require('node:vm').runInNewContext(source,{localStorage:{getItem(key){reads.push(key);return values[key]??null;}}}));return reads;
+}
+
+test('official browser session capture executes the injected script for all providers and restores zai_cn',async t=>{
+ for(const provider of ['zai','zai_cn','bigmodel']){
+  const c=platformFixture(t,'linux');t.after(()=>c.dispose());
+  const session={provider,revision:'fixture-revision',zcodeJwtToken:'fixture-token-'+provider,userInfo:{id:'fixture-user',displayName:'Fixture '+provider}};
+  const reads=loginStorage(c,{'oauth:browser_session':JSON.stringify(session)});await c.login(link);const win=c.loginWindow;
+  win.webContents.emit('did-finish-load');await tick();await tick();
+  assert.equal(c.status().configured,true);assert.equal(c.auth.provider,provider);assert.equal(c.auth.jwt,session.zcodeJwtToken);assert.equal(c.auth.name,session.userInfo.displayName);assert.equal(win.isDestroyed(),true);
+  assert.deepEqual(reads,['oauth:browser_session']);const encrypted=fs.readFileSync(c.authFile);assert.ok(encrypted.toString().startsWith('v11sealed:'));
+  const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});t.after(()=>restored.dispose());
+  assert.equal(await restored.restore(),true);assert.equal(restored.status().provider,provider);assert.equal(restored.auth.jwt,session.zcodeJwtToken);assert.deepEqual(fs.readFileSync(c.authFile),encrypted);
+ }
+});
+
+test('legacy browser login remains compatible only when the primary session is absent',async t=>{
+ const c=platformFixture(t,'linux');t.after(()=>c.dispose());
+ const reads=loginStorage(c,{'oauth:active_provider':'bigmodel',zcodejwttoken:'legacy-fixture-token','oauth:bigmodel:user_info':JSON.stringify({name:'Legacy Fixture'})});
+ await c.login(link);c.loginWindow.webContents.emit('did-finish-load');await tick();await tick();
+ assert.equal(c.auth.provider,'bigmodel');assert.equal(c.auth.jwt,'legacy-fixture-token');assert.equal(c.auth.name,'Legacy Fixture');assert.ok(fs.existsSync(c.authFile));
+ assert.deepEqual(reads,['oauth:browser_session','oauth:active_provider','zcodejwttoken','oauth:bigmodel:user_info']);
+});
+
+test('malformed incomplete or invalid primary sessions never resurrect the legacy account',async t=>{
+ const complete={provider:'zai_cn',revision:'fixture-revision',zcodeJwtToken:'current-fixture-token',userInfo:{id:'fixture-user'}};
+ const records=['{broken','null',JSON.stringify({...complete,revision:''}),JSON.stringify({...complete,userInfo:null}),JSON.stringify({...complete,userInfo:{id:'unknown'}}),JSON.stringify({...complete,zcodeJwtToken:''}),JSON.stringify({...complete,provider:'untrusted'})];
+ for(const primary of records){
+  const c=platformFixture(t,'linux');t.after(()=>c.dispose());let encrypted=0;const encrypt=c.electron.safeStorage.encryptStringAsync;c.electron.safeStorage.encryptStringAsync=async value=>{encrypted++;return encrypt(value);};
+  const reads=loginStorage(c,{'oauth:browser_session':primary,'oauth:active_provider':'zai',zcodejwttoken:'stale-legacy-token','oauth:zai:user_info':JSON.stringify({name:'Old Account'})});
+  await c.login(link);c.loginWindow.webContents.emit('did-finish-load');await tick();await tick();
+  assert.deepEqual(reads,['oauth:browser_session']);assert.equal(c.auth,null);assert.equal(encrypted,0);assert.equal(fs.existsSync(c.authFile),false);assert.ok(c.loginWindow);
+ }
+});
 
 test('official login popups share the ephemeral session and enforce the same origin policy at every depth',async t=>{
  const c=platformFixture(t,'linux');t.after(()=>c.dispose());const browser=loginBrowser(c,null);await c.login(link);
