@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const context=vm.createContext({window:{},BridgeI18n:{t:value=>value}});
+vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),context);
 const relative=vm.runInContext('timelineFilePath',context);
 test('explicit host file actions preserve the captured host and legacy image route',()=>{

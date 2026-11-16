@@ -2,6 +2,10 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+  "编辑了文件，运行了命令": "Edited files and ran commands",
+  "已回答问题": "Answered questions",
+  "已运行": "Ran",
+  "已编辑": "Edited",
   "思考与执行过程": "Thoughts and actions",
   "正在思考与执行…": "Thinking and working…",
   "运行了命令": "Ran commands",

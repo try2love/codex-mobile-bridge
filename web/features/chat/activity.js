@@ -53,43 +53,53 @@ function restoreChatActivityState(node,state){
   const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
 }
-// Keep groups and their child nodes stable while native progress is refreshed.
-// Only explicit intermediate roles participate; final replies stay outside.
-function groupChatActivities(container,nodes,level='turn'){
+// Classification is presentation-only: a user supplement stays a user message.
+function chatActivityKind(row){
+  if(row.fileSummary||row.role==='fileChanges')return '';
+  if(row.role==='user')return row.interaction==='response'?'tool':'';
+  if(row.role==='reasoning'||row.kind==='reasoning')return 'reasoning';
+  return row.role==='activity'?'tool':'';
+}
+function chatActivityLabel(row){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(row.interaction==='response')return t('已回答问题');
+  const text=(row.text||'').split('\n')[0];
+  if(row.kind==='commandExecution'&&text)return t('已运行')+' '+text;
+  if(['fileChange','FileChange'].includes(row.kind)&&text)return t('已编辑')+' '+text;
+  return t(row.title||(row.kind==='reasoning'||row.role==='reasoning'?'思考摘要':'执行过程'));
+}
+// Consecutive tools share one lightweight disclosure. Commentary, thoughts,
+// supplements and final results are siblings, never a catch-all outer group.
+function groupChatActivities(container,nodes){
   const previous=container.__chatActivityGroups||new Map(),next=new Map(),used=new Set(),result=[];
   let cluster=[];
-  const flush=finished=>{
+  const flush=()=>{
     if(!cluster.length)return;
-    if(level==='tools'&&cluster.length===1){result.push(cluster[0]);cluster=[];return;}
-    const first=cluster.find(node=>!node.hidden)||cluster[0],key=cluster[0].dataset.key;
+    const key=cluster[0].dataset.key;
     let group=previous.get(key);
     if(!group)group=[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys?.has(node.dataset.key)));
-    const selection=document.getSelection?.();
-    if(group&&selection&&!selection.isCollapsed&&(group.contains(selection.anchorNode)||group.contains(selection.focusNode)))group.__userToggled=true;
     if(!group){
-      group=document.createElement('details');group.className='chat-activity-group chat-activity-'+level;
-      const summary=document.createElement('summary'),body=document.createElement('div');body.className='chat-activity-items';group.append(summary,body);
-      summary.addEventListener('click',()=>{group.__userToggled=true;});body.addEventListener('pointerdown',()=>{group.__userToggled=true;});body.addEventListener('click',()=>{group.__userToggled=true;});
-      group.open=level==='turn'&&!finished;
-    }else if(finished&&!group.__finished&&!group.__userToggled)group.open=false;
-    used.add(group);next.set(key,group);group.__finished=finished;group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
-    group.dataset.key=first.dataset.key;group.hidden=cluster.every(node=>node.hidden);
-    const toolsLabel=cluster.every(node=>node.dataset.chatToolKind==='commandExecution')?'运行了命令':cluster.every(node=>['fileChange','fileChanges'].includes(node.dataset.chatToolKind))?'编辑了文件':'执行了操作';
-    const label=level==='tools'?toolsLabel:finished?'思考与执行过程':'正在思考与执行…';
+      group=document.createElement('details');group.className='chat-activity-group chat-activity-tools';
+      const summary=document.createElement('summary'),label=document.createElement('span'),body=document.createElement('div');
+      label.className='chat-activity-label';body.className='chat-activity-items';summary.append(label);group.append(summary,body);
+    }
+    used.add(group);next.set(key,group);group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
+    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
+    const kinds=cluster.map(node=>node.dataset.chatToolKind),files=kinds.some(kind=>['fileChange','FileChange'].includes(kind)),commands=kinds.includes('commandExecution');
+    const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':'执行了操作';
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
-    if(group.firstChild.textContent!==translated)group.firstChild.textContent=translated;
-    const body=group.lastChild,children=level==='turn'?groupChatActivities(body,cluster,'tools'):cluster;
-    syncChatMessageNodes(body,children,false);result.push(group);cluster=[];
+    group.dataset.icon=files?'file':commands?'command':'tool';
+    if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
+    const body=group.lastChild,top=body.scrollTop;
+    syncChatMessageNodes(body,cluster,false);body.scrollTop=top;result.push(group);cluster=[];
   };
   for(const node of nodes){
-    const intermediate=level==='turn'?!!node.dataset?.chatActivity:node.dataset?.chatActivity==='tool';
-    if(intermediate){
-      if(level==='turn'&&cluster.length&&node.dataset.chatTurnId&&cluster[0].dataset.chatTurnId&&node.dataset.chatTurnId!==cluster[0].dataset.chatTurnId)flush(true);
+    if(node.dataset?.chatActivity==='tool'){
+      if(cluster.length&&node.dataset.chatTurnId&&cluster[0].dataset.chatTurnId&&node.dataset.chatTurnId!==cluster[0].dataset.chatTurnId)flush();
       cluster.push(node);
-    }else{flush(node.dataset?.key!==undefined||!cluster.some(row=>row.dataset.chatActivityState==='active'));result.push(node);}
+    }else{flush();result.push(node);}
   }
-  flush(!cluster.some(node=>node.dataset.chatActivityState==='active'));
-  container.__chatActivityGroups=next;return result;
+  flush();container.__chatActivityGroups=next;return result;
 }
 // Stable row keys are local to this conversation container. Do not detach
 // unchanged rows: even reattaching the same node resets nested scroll areas.
