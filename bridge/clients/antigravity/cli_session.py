@@ -816,6 +816,7 @@ class AntigravityCli:
             if not self._is_enabled_model_row(row):
                 continue
             mid = row['modelId']
+        variant_ids = {}
             raw_label = row.get('label') or mid
             base_id, base_name, effort = _split_model_variant(mid, raw_label)
             if not effort:
@@ -824,6 +825,13 @@ class AntigravityCli:
 
         groups = {}
         ordered_keys = []
+            else:
+                variant = (mid, row['modelOrAlias']['model'])
+                previous = variant_ids.setdefault((base_id, effort), variant)
+                if previous != variant:
+                    # A display label is not an identity. Keep ambiguous native
+                    # variants selectable rather than overwriting one model.
+                    ungrouped_ids.add(base_id)
         for row, mid, raw_label, base_id, base_name, effort in parsed_rows:
             alias = row['modelOrAlias']
             native_model = alias['model']
