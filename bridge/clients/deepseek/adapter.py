@@ -1,4 +1,5 @@
 """Attach to the existing Harness Desktop host; never start another runtime."""
+import http.client
 import json
 import os
 import re
@@ -221,12 +222,17 @@ class DeepSeek:
             value = json.loads(raw)
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read(4096)).get('error', 'Harness 拒绝了操作')
-            except ValueError:
+                payload = json.loads(exc.read(4096))
+                message = payload.get('error', 'Harness 拒绝了操作') if isinstance(payload, dict) else 'Harness 拒绝了操作'
+            except (OSError, http.client.HTTPException, ValueError):
                 message = 'Harness 拒绝了操作'
             raise BridgeUnavailable(message) from exc
-        except (OSError, KeyError) as exc:
+        except (OSError, KeyError, http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # 捕获 HTTPException（如 IncompleteRead）及响应体解码异常，避免泄漏 500 或原始英文错误，
+            # 同时保留上方的明确端口 ValueError 校验。
             raise BridgeUnavailable(self.connection_error()) from exc
+        if not isinstance(value, dict):
+            raise BridgeUnavailable(self.connection_error())
         if action == 'archive' and value.get('archiveNotSent') is True:
             raise ArchiveNotSent(value.get('message') or '原生客户端拒绝归档，操作未发送')
         if action == 'detail':
