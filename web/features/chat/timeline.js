@@ -217,7 +217,7 @@ class ChatTimeline {
   renderRow(row,open,existing){
     if(row.processCursor)return renderChatProcessPage(existing?.__chatMessage?.processCursor?existing:null,row,{
       current:()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version,
-      signal:this.abort.signal,cacheScope:this.cacheKey,
+      signal:this.abort.signal,
       readDirectory:(cursor,after,signal)=>this.request(this.url('process')+'&'+new URLSearchParams({cursor,...(after?{after}:{})}),undefined,signal),
       readDetail:(record,offset,signal)=>this.request(this.url('detail')+'&'+new URLSearchParams({key:record.detailCursor,offset,version:record.version,projection:'conversation'}),undefined,signal),
       renderText:(node,text)=>this.renderText(node,text,[...this.files.values()]),

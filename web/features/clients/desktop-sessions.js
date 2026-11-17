@@ -614,7 +614,7 @@ class DesktopSessionsView {
         const sid=this.sid,provider=this.provider,generation=this.generation,revision=this.detailRevision;
         const current=()=>sid===this.sid&&provider===this.provider&&generation===this.generation&&revision===this.detailRevision;
         const read=(params,signal)=>this.request(this.path('detail',sid,provider)+'&'+new URLSearchParams({historyMode:'conversation',...params}),undefined,signal);
-        node=renderChatProcessPage(prior?.node||null,message,{current,signal:this.processAbort?.signal,cacheScope:this.historyCacheScope(),
+        node=renderChatProcessPage(prior?.node||null,message,{current,signal:this.processAbort?.signal,
           readDirectory:(cursor,after,signal)=>read({historyProcess:cursor,...(after?{historyAfter:after}:{})},signal),
           readDetail:(record,offset,signal)=>read({historyDetail:record.detailCursor,historyOffset:offset,historyVersion:record.version},signal),
           renderText:(node,text)=>renderMarkdown(node,text,this.sessionFiles||[],file=>this.workbench.url(this.workbench.current,'download',file.path)),

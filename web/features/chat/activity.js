@@ -231,7 +231,7 @@ function chatTaskLabel(task){
   return minutes?t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',minutes).replace('{seconds}',seconds):t('用时 {seconds} 秒').replace('{seconds}',seconds);
 }
 // An explicit disclosure owns its reads. Native status updates only its label.
-function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText,renderAttachments,current=()=>true,signal,cacheScope='',onFiles=()=>{}}){
+function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText,renderAttachments,current=()=>true,signal,onFiles=()=>{}}){
   const group=existing||document.createElement('details'),t=text=>typeof BridgeI18n==='undefined'?text:BridgeI18n.t(text);
   if(!existing){
     group.className='chat-activity-group timeline-row chat-process-page';
@@ -242,7 +242,6 @@ function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText
   const start=chatMessageDate(row.turnStartedAt),end=chatMessageDate(row.turnCompletedAt);
   group.firstChild.textContent=chatTaskLabel({active:row.turnStatus==='inProgress',seconds:start&&end&&end>=start?Math.floor((end-start)/1000):null});
   const valid=()=>current()&&!signal?.aborted&&group.isConnected;
-  const cache=window.BridgeChatHistoryCache,persistent=()=>cacheScope&&['completed','interrupted','failed'].includes(group.__chatMessage.turnStatus);
   const cancel=()=>{group.__directoryController?.abort();group.__directoryController=null;for(const entry of group.__records.values()){entry.controller?.abort();entry.controller=null;}};
   group.__cancelProcessReads=cancel;
   const paint=()=>{
@@ -276,16 +275,14 @@ function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText
     const loadBody=async()=>{
       if(!valid()||!group.open||!node.open||entry.controller||entry.detail?.next===null)return;
       const controller=entry.controller=new AbortController(),target=entry.row,prior=entry.detail;
-      const offset=prior?.next||0,slot='process-detail:'+target.detailCursor+':'+target.version+':'+offset;
+      const offset=prior?.next||0;
       try{
-        const saved=persistent()&&await cache?.read(cacheScope,slot);
         if(controller.signal.aborted||!valid()||!group.open||!node.open)return;
-        const detail=saved||await readDetail(target,offset,controller.signal);
+        const detail=await readDetail(target,offset,controller.signal);
         if(controller.signal.aborted||!valid()||!group.open||!node.open||entry.row!==target)return;
         if(detail.version!==target.version||detail.offset!==offset)throw Error(t('消息内容已变化，请重新打开编辑'));
         onFiles(detail.files||[]);
         entry.detail={...detail,text:(offset?prior.text:'')+detail.text,attachments:detail.attachments||prior?.attachments};paintBody();
-        if(persistent()&&!saved)cache?.write(cacheScope,slot,detail);
       }catch(error){if(!controller.signal.aborted&&valid()&&group.open&&node.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>loadBody();entry.body.replaceChildren(retry);}}
       finally{if(entry.controller===controller)entry.controller=null;}
     };
@@ -301,13 +298,12 @@ function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText
     const target=group.__chatMessage,controller=group.__directoryController=new AbortController();
     const slot='process:'+target.processCursor+':'+target.version+':'+(after||'');
     try{
-      const saved=group.__pages.get(slot)||(persistent()&&await cache?.read(cacheScope,slot));
+      const saved=group.__pages.get(slot);
       if(controller.signal.aborted||!valid()||!group.open)return;
       const page=saved||await readDirectory(target.processCursor,after,controller.signal);
       if(controller.signal.aborted||!valid()||!group.open||group.__chatMessage.version!==target.version)return;
       onFiles(page.files||[]);for(const metadata of page.rows||[])record(metadata);
       group.__next=page.next;group.__loadedVersion=target.version;group.__pages.set(slot,page);paint();
-      if(persistent()&&!saved)cache?.write(cacheScope,slot,page);
     }catch(error){if(!controller.signal.aborted&&valid()&&group.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>{retry.remove();load(after);};group.lastChild.append(retry);}}
     finally{if(group.__directoryController===controller)group.__directoryController=null;}
   };

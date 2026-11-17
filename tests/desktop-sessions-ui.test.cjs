@@ -106,6 +106,15 @@ test('closing process cancels directory reads and ignores late results',async()=
  const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await Promise.resolve();group.open=false;group.ontoggle();assert.equal(signal.aborted,true);
  finish({rows:[{key:'late',role:'activity',text:'Late private body'}],next:null});await new Promise(setImmediate);assert.doesNotMatch(group.textContent,/Late private body/);assert.equal(group.__records.size,0);
 });
+test('completed process cache stays in the component and cannot evict shared conversation history',async()=>{
+ const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
+ ui.run('window.cacheReads=[];window.cacheWrites=[];window.BridgeChatHistoryCache={read:(...args)=>{window.cacheReads.push(args);return null;},write:(...args)=>window.cacheWrites.push(args)}');
+ let reads=0;ui.setHandler(async url=>{reads++;return url.includes('historyProcess')?{rows:[{key:'tool',role:'activity',kind:'commandExecution',version:'v',text:'',hasDetail:true,detailCursor:'body'}],next:null}:{version:'v',offset:0,text:'Loaded command output',next:null};});
+ view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',turnStatus:'completed',processCursor:'cursor'}]});
+ const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);const tool=group.__records.get('tool').node;tool.open=true;tool.ontoggle();await new Promise(setImmediate);
+ group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);
+ assert.equal(reads,2);assert.equal(ui.run('window.cacheReads.length'),0);assert.equal(ui.run('window.cacheWrites.every(entry=>entry[1]==="conversation-recent-v1")'),true);
+});
 test('long commentary preview does not request its body until the reader clicks',async()=>{
  const ui=await opened(),view=ui.view;let reads=0;
  ui.setHandler(async url=>{reads++;return {rows:[{key:'note',role:'assistant',phase:'commentary',text:'p'.repeat(8000),version:'v',detailCursor:'full-note'}],next:null};});
