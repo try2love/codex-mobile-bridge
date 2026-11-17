@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import shlex
 import tempfile
 from threading import RLock
 from types import SimpleNamespace
@@ -91,14 +92,31 @@ class InventoryFingerprintTests(InstallationFixtures):
     def test_linux_desktop_entry_change_invalidates_cache_without_removing_old_installation(self):
         old, new = self.file('v1/codex-desktop'), self.file('v2/codex-desktop')
         entry = self.file('data/applications/codex.desktop',
-                          ('[Desktop Entry]\nType=Application\nName=Codex\nExec='+str(old)+'\n').encode())
+                          ('[Desktop Entry]\nType=Application\nName=Codex\nExec='+shlex.quote(old.as_posix())+'\n').encode())
         metadata = {}; env = {'PATH': '', 'XDG_DATA_HOME': str(self.root/'data'), 'XDG_DATA_DIRS': str(self.root/'empty')}
         self.assertIn(old, list(linux.candidates('codex', ('Codex',), self.root, env, metadata=metadata)))
         rows = self.rows(old); rows['codex'].update(metadata[old])
         config = self.cached(rows); self.assertTrue(inventory_current(config, {}))
-        entry.write_text('[Desktop Entry]\nType=Application\nName=Codex\nExec='+str(new)+'\n')
+        entry.write_text('[Desktop Entry]\nType=Application\nName=Codex\nExec='+shlex.quote(new.as_posix())+'\n')
         self.assertTrue(old.is_file()); self.assertFalse(inventory_current(config, {}))
         self.assertIn(new, list(linux.candidates('codex', ('Codex',), self.root, env)))
+
+    def test_new_version_invalidates_inventory_when_parent_stat_is_unchanged(self):
+        old = self.file('WindowsApps/OpenAI.Codex_1/app/Codex.exe')
+        self.file('WindowsApps/OpenAI.Codex_1/AppxManifest.xml')
+        directory = self.root/'WindowsApps'
+        original_stat, original_lstat = Path.stat, Path.lstat
+        stat, lstat = directory.stat(), directory.lstat()
+        with patch.object(Path, 'stat', lambda path, *args, **kwargs: stat if path == directory else original_stat(path, *args, **kwargs)), \
+                patch.object(Path, 'lstat', lambda path, *args, **kwargs: lstat if path == directory else original_lstat(path, *args, **kwargs)):
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
+            self.file('WindowsApps/OpenAI.Codex_2/app/Codex.exe')
+            self.assertFalse(inventory_current(config, {}))
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
+            shutil.rmtree(directory/'OpenAI.Codex_2')
+            self.assertFalse(inventory_current(config, {}))
 
     def test_new_squirrel_and_msix_versions_invalidate_cache_even_when_old_directories_survive(self):
         for provider, old_name, new_name, executable in (

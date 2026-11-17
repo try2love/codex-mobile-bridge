@@ -51,7 +51,7 @@ def inventory_registration(rows):
 
 def inventory_fingerprint(rows, preferences):
     """Cheap installation change evidence, never task or process evidence."""
-    paths = set()
+    paths, version_roots = set(), set()
     for row in rows.values():
         paths.update(Path(value) for value in row.get('installationWatchPaths', []))
         pending = row.get('pendingInstallation') or {}
@@ -72,6 +72,7 @@ def inventory_fingerprint(rows, preferences):
                         if (parent.name.startswith('app-') or
                                 (parent/'AppxManifest.xml').is_file()):
                             paths.add(parent.parent)
+                            version_roots.add(parent.parent)
                             paths.add(parent/'AppxManifest.xml')
     for key, value in inventory_preferences(preferences).items():
         if key.endswith(('Application', 'Executable')) and isinstance(value, str):
@@ -81,8 +82,12 @@ def inventory_fingerprint(rows, preferences):
     result = {}
     for path in sorted(paths):
         try:
+            values = path.lstat(), path.stat()
             result[str(path)] = [[value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns]
-                                 for value in (path.lstat(), path.stat())]
+                                 for value in values]
+            if path in version_roots:
+                # Directory timestamps can collide during a fast side-by-side update.
+                result[str(path)].append(sorted(child.name for child in path.iterdir()))
         except FileNotFoundError:
             result[str(path)] = None
     return result
