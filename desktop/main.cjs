@@ -1,11 +1,12 @@
 'use strict';
-const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net,nativeImage}=require('electron');
+const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net,nativeImage,nativeTheme}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
 const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./shared/controller.cjs');
 const {pairingImage}=require('./features/connections/qr.cjs');
 const {createTray}=require('./shell/tray.cjs');
+const {createIconTheme}=require('./shell/icons.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
@@ -24,12 +25,13 @@ const root=path.resolve(__dirname,'..');
 // An explicit data directory also keeps test caches inside the project.
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
+const iconTheme=createIconTheme({app,nativeTheme,nativeImage,platform:process.platform,assetsDir:path.join(__dirname,'assets'),getWindow:()=>window,getTray:()=>tray});
 let installPending,installStatus={},updater,workerWrites=0,officialRemote;
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){iconTheme.dispose();officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function officialService(){
   if(!officialRemote){
     const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
@@ -351,7 +353,7 @@ async function acknowledgeUpdate(){
   }catch{} // Missing acknowledgement makes the independent helper restore the old app.
 }
 function createWindow(hidden=false){
-  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -372,13 +374,12 @@ else{
     setupUpdater();register();
     if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
     if(['win32','darwin'].includes(process.platform)){
-      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
-      if(process.platform==='darwin')icon.setTemplateImage(true);
-      tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
+      tray=createTray({Tray,Menu,icon:iconTheme.trayIcon(),show:showWindow,worker,t,
         open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
         onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
     }
     createWindow(!!tray&&loginStartup.hidden(process.argv,true));
+    iconTheme.start();
     restoreOfficialService();
   });
   app.on('before-quit',releaseTray);
