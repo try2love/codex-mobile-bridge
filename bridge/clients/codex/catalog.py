@@ -782,7 +782,9 @@ class Catalog:
         if magpie_managed(config=effective) and provider == (effective.get('model_provider') or 'openai'):
             models, cursor = [], None
             for _ in range(10):
-                response = self._dict(request('model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': False}))
+                response = request('model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': False})
+                if not isinstance(response, dict) or not isinstance(response.get('data'), list):
+                    raise CatalogError('模型目录响应无效，请重试或手动填写模型')
                 models.extend(self._list(response.get('data')))
                 cursor = response.get('nextCursor')
                 if not cursor:
@@ -861,7 +863,9 @@ class Catalog:
             return result
         models, cursor = [], None
         for _ in range(10):
-            response = self._dict(request('model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': False}))
+            response = request('model/list', {'cursor': cursor, 'limit': 100, 'includeHidden': False})
+            if not isinstance(response, dict) or not isinstance(response.get('data'), list):
+                raise CatalogError('模型目录响应无效，请重试或手动填写模型')
             models.extend(self._list(response.get('data')))
             cursor = response.get('nextCursor')
             if not cursor:

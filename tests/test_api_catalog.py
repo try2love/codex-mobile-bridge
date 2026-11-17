@@ -589,7 +589,38 @@ for line in sys.stdin:
             self.assertEqual(fetch.call_count, 1)
         self.assertEqual(self.reader.get_kind('models', str(self.home), provider='openai')['models'][0]['id'], 'new')
 
-    def test_null_catalog_lists_and_profiles_return_safe_empty_defaults(self):
+    def test_invalid_native_model_pages_preserve_successful_cache(self):
+        self.reader.allow_background_refresh = False
+        initial = {'models': [{'model': 'kept-model'}], 'skillEntries': [], '_defaultProvider': 'openai'}
+        with patch.object(self.reader, '_fetch', return_value=initial):
+            self.reader.get(str(self.home), provider='openai')
+        identity = self.reader.model_identity(str(self.home), 'openai')
+        saved = self.reader.model_store.read(identity)
+        for invalid in (None, {}, {'data': None}, {'data': {}}, {'data': 'invalid'}):
+            for second_page in (False, True):
+                with self.subTest(invalid=invalid, second_page=second_page):
+                    def request(method, params):
+                        if method == 'config/read':
+                            return {'config': {'model_catalog_json': 'fixture.json'}}
+                        self.assertEqual(method, 'model/list')
+                        if second_page and params['cursor'] is None:
+                            return {'data': [{'model': 'partial'}], 'nextCursor': 'second'}
+                        return invalid
+                    def fetch(*args):
+                        return {**self.reader.read_models(request, str(self.home)), 'skillEntries': []}
+                    with patch.object(self.reader, '_fetch', side_effect=fetch):
+                        with self.assertRaisesRegex(CatalogError, '模型目录响应无效'):
+                            self.reader.get(str(self.home), refresh=True, provider='openai')
+                        stale = self.reader.get_kind('models', str(self.home), refresh=True, provider='openai')
+                    self.assertEqual([row['id'] for row in stale['models']], ['kept-model'])
+                    self.assertEqual(stale['cache']['state'], 'stale')
+                    self.assertEqual(stale['cache']['updatedAt'], saved[0])
+                    self.assertEqual(self.reader.model_store.read(identity), saved)
+        def empty(method, params):
+            return {'config': {'model_catalog_json': 'fixture.json'}} if method == 'config/read' else {'data': []}
+        self.assertEqual(self.reader.read_models(empty, str(self.home))['models'], [])
+
+    def test_null_catalog_lists_fail_but_optional_metadata_remains_compatible(self):
         # 运行时返回 data=null 或 supportedReasoningEfforts=null 时不应抛出 TypeError。
         def null_codex(method, params):
             if method == 'config/read':
@@ -600,9 +631,8 @@ for line in sys.stdin:
                 return {'data': None, 'nextCursor': None}
             raise AssertionError(method)
 
-        result = self.reader.read_models(null_codex, str(self.home))
-        self.assertEqual(result['models'], [])
-        self.assertEqual(result['modelSource'], 'codex')
+        with self.assertRaisesRegex(CatalogError, '模型目录响应无效'):
+            self.reader.read_models(null_codex, str(self.home))
 
         def null_metadata(method, params):
             return {'data': [None, {'model': None, 'id': 'provider-fixture', 'supportedReasoningEfforts': None}]}
