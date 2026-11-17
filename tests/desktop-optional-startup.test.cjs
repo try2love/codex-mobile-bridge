@@ -31,3 +31,105 @@ for(const paired of [false,true])test('optional official service starts after th
   assert.equal(vm.runInContext('officialRemote.serviceAvailable',context),false);
   assert.equal(calls.filter(value=>value==='window').length,1);
 });
+
+test('loadDataDir 对损坏或非法的 bridge-location.json 稳健回退而不崩溃',t=>{
+  const scratch=path.resolve(__dirname,'..','.tmp');fs.mkdirSync(scratch,{recursive:true});
+  const tmp=fs.mkdtempSync(path.join(scratch,'cmb-loc-'));
+  t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
+  const resources=path.join(tmp,'resources');fs.mkdirSync(resources,{recursive:true});
+  function boot({packaged=false}={}){
+    const warnings=[];
+    const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
+      getLocale:()=>'zh-CN',getPath:()=>tmp,getVersion:()=>'2.2.1',isPackaged:packaged};
+    const context=vm.createContext({__dirname:path.dirname(main),console:{warn:(...a)=>warnings.push(a),error(){}},
+      process:{env:{},platform:'linux',pid:process.pid,execPath:path.join(tmp,'codex-mobile-bridge'),resourcesPath:resources},
+      require(name){
+        if(name==='electron')return {app};
+        if(name==='./features/connections/qr.cjs')return {};
+        if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
+        if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
+        if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){}}),createManagementWorker:()=>({close(){}}),workerFor:()=>({})};
+        return requireMain(name);
+      }});
+    vm.runInContext(fs.readFileSync(main,'utf8'),context);
+    return {context,warnings};
+  }
+
+  // 各类损坏 JSON 或非法字段类型均应安全回退默认目录
+  for(const content of ['{','null','[]','{}',JSON.stringify({dataDir:null}),JSON.stringify({dataDir:123}),JSON.stringify({dataDir:'   '})]){
+    fs.writeFileSync(path.join(tmp,'bridge-location.json'),content);
+    const {context,warnings}=boot({packaged:true});
+    assert.equal(context.loadDataDir(),path.join(tmp,'gateway'));
+    assert.equal(warnings.length,1);
+  }
+  // 随包 bridge-data-dir.txt 为空白时同样回退默认目录
+  fs.rmSync(path.join(tmp,'bridge-location.json'));
+  fs.writeFileSync(path.join(resources,'bridge-data-dir.txt'),'   \n');
+  assert.equal(boot({packaged:true}).context.loadDataDir(),path.join(tmp,'gateway'));
+  // 合法配置会正常读取并去除首尾空白
+  fs.writeFileSync(path.join(tmp,'bridge-location.json'),JSON.stringify({dataDir:'  /custom/data  '}));
+  assert.equal(boot({packaged:true}).context.loadDataDir(),'/custom/data');
+});
+
+test('saveDataDir 原子替换配置并在重命名失败时保留原配置且清理临时文件',t=>{
+  const scratch=path.resolve(__dirname,'..','.tmp');fs.mkdirSync(scratch,{recursive:true});
+  const tmp=fs.mkdtempSync(path.join(scratch,'cmb-save-'));
+  t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
+  function boot(fsOverride){
+    const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getLocale:()=>'zh-CN',getPath:()=>tmp,isPackaged:true};
+    const context=vm.createContext({__dirname:path.dirname(main),process:{env:{},platform:'linux',pid:4242,resourcesPath:tmp},
+      require(name){
+        if(name==='electron')return {app};
+        if(name==='node:fs')return fsOverride||fs;
+        if(name==='./features/connections/qr.cjs')return {};
+        if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
+        if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
+        if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){}}),createManagementWorker:()=>({close(){}}),workerFor:()=>({})};
+        return requireMain(name);
+      }});
+    vm.runInContext(fs.readFileSync(main,'utf8'),context);
+    return context;
+  }
+
+  const target=path.join(tmp,'bridge-location.json');
+  boot().saveDataDir('/data/first');
+  assert.deepEqual(JSON.parse(fs.readFileSync(target,'utf8')),{dataDir:'/data/first'});
+  assert.deepEqual(fs.readdirSync(tmp),['bridge-location.json']);
+
+  const broken=boot({...fs,renameSync(){throw Error('Simulated EACCES on rename');}});
+  assert.throws(()=>broken.saveDataDir('/data/second'),/Simulated EACCES/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(target,'utf8')),{dataDir:'/data/first'});
+  assert.deepEqual(fs.readdirSync(tmp),['bridge-location.json']);
+});
+
+test('whenReady 启动异常会被内部捕获，弹窗提示并清理退出，且不会因 activate/second-instance 打开半残窗口',async()=>{
+  let ready;const events={},dialogs=[],errors=[];let quits=0,workerCloses=0;
+  // 故意只提供 then 而不提供 catch，验证不会依赖 Promise.prototype.catch 链式调用
+  const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(fn){ready=fn;}}),on(name,fn){events[name]=fn;},
+    getLocale:()=>'zh-CN',getPath:()=>'/fixture',isPackaged:false,quit(){quits++;}};
+  const context=vm.createContext({__dirname:path.dirname(main),console:{warn(){},error:(...a)=>errors.push(a)},
+    process:{env:{},platform:'linux',pid:1},calls:[],
+    require(name){
+      if(name==='electron')return {app,dialog:{showErrorBox(title,detail){dialogs.push({title,detail});}}};
+      if(name==='./features/connections/qr.cjs')return {};
+      if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
+      if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
+      if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){workerCloses++;}}),createManagementWorker:()=>({close(){workerCloses++;}}),workerFor:()=>({})};
+      return requireMain(name);
+    }});
+  vm.runInContext(fs.readFileSync(main,'utf8'),context);
+  // 就绪前触发 activate/second-instance 不应打开窗口
+  vm.runInContext('showWindow=()=>{calls.push("win");};',context);
+  events.activate();events['second-instance']({},[]);
+  assert.equal(context.calls.length,0);
+
+  vm.runInContext("loadDataDir=()=>{throw Error('磁盘不可写');};",context);
+  await ready();
+  assert.equal(quits,1);
+  assert.equal(workerCloses,2);
+  assert.equal(errors.length,1);
+  assert.deepEqual(dialogs,[{title:'网关操作未完成',detail:'磁盘不可写'}]);
+  // 启动失败后再次触发 activate/second-instance 仍不得打开窗口
+  events.activate();events['second-instance']({},[]);
+  assert.equal(context.calls.length,0);
+});
