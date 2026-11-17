@@ -589,6 +589,29 @@ for line in sys.stdin:
             self.assertEqual(fetch.call_count, 1)
         self.assertEqual(self.reader.get_kind('models', str(self.home), provider='openai')['models'][0]['id'], 'new')
 
+    def test_unknown_config_preserves_default_provider_identity_and_cache(self):
+        self.reader.allow_background_refresh = False
+        with patch.object(self.reader, '_fetch', return_value={
+                'models': [{'model': 'kept-custom-model'}], 'skillEntries': [], '_defaultProvider': 'custom'}):
+            self.reader.get(str(self.home))
+        identity = self.reader.model_identity(str(self.home), None)
+        saved = self.reader.model_store.read(identity)
+        for invalid in (None, [], {}, {'config': None}, {'config': []},
+                        {'config': {'profiles': []}},
+                        {'config': {'profile': 'selected', 'profiles': {'selected': 'invalid'}}}):
+            with self.subTest(invalid=invalid):
+                calls = []
+                def request(method, params):
+                    calls.append(method)
+                    return invalid
+                with patch.object(self.reader, '_fetch', side_effect=lambda *args:
+                        self.reader.read_models(request, str(self.home))):
+                    with self.assertRaisesRegex(CatalogError, '无法确认模型接入配置'):
+                        self.reader.get(str(self.home), refresh=True)
+                self.assertEqual(calls, ['config/read'])
+                self.assertEqual(self.reader.model_identity(str(self.home), None), identity)
+                self.assertEqual(self.reader.model_store.read(identity), saved)
+
     def test_invalid_native_model_pages_preserve_successful_cache(self):
         self.reader.allow_background_refresh = False
         initial = {'models': [{'model': 'kept-model'}], 'skillEntries': [], '_defaultProvider': 'openai'}

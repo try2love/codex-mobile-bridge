@@ -750,6 +750,20 @@ class Catalog:
         return value if isinstance(value, list) else []
 
     @staticmethod
+    def _config(request, cwd):
+        response = request('config/read', {'includeLayers': False, 'cwd': cwd})
+        if not isinstance(response, dict) or not isinstance(response.get('config'), dict):
+            raise CatalogError('无法确认模型接入配置，请重试')
+        config = response['config']
+        profiles = config.get('profiles')
+        if profiles is not None and not isinstance(profiles, dict):
+            raise CatalogError('无法确认模型接入配置，请重试')
+        profile = Catalog._dict(profiles).get(config.get('profile'))
+        if profile is not None and not isinstance(profile, dict):
+            raise CatalogError('无法确认模型接入配置，请重试')
+        return config, Catalog._dict(profile)
+
+    @staticmethod
     def custom_provider(effective, provider=None):
         effective = Catalog._dict(effective)
         provider = provider or effective.get('model_provider') or 'openai'
@@ -773,8 +787,7 @@ class Catalog:
         # Desktop catalog reads have no verified owner environment. Only the
         # native CLI path supplies a verified environment explicitly.
         environment = {} if environment is None else environment
-        config = self._dict(self._dict(request('config/read', {'includeLayers': False, 'cwd': cwd})).get('config'))
-        profile = self._dict(self._dict(config.get('profiles')).get(config.get('profile')))
+        config, profile = self._config(request, cwd)
         effective = {**config, **profile}
         default_provider = effective.get('model_provider') or 'openai'
         provider = provider or default_provider
@@ -878,13 +891,7 @@ class Catalog:
         # Return capability metadata only; credentials/config contents stay in the runtime.
         unavailable = {'allowed': False}
         try:
-            response = request('config/read', {'includeLayers': False, 'cwd': cwd})
-            if not isinstance(response, dict) or not isinstance(response.get('config'), dict):
-                return unavailable
-            config = response['config']
-            # 空的 [profiles.xxx] 配置在反序列化后可能为 None，需与 read_models 一样归一化为空字典，
-            # 否则 {**config, **profile} 会抛出未被 CatalogError 捕获的 TypeError（HTTP 500）。
-            profile = Catalog._dict(Catalog._dict(config.get('profiles')).get(config.get('profile')))
+            config, profile = Catalog._config(request, cwd)
             effective = {**config, **profile}
             configured_provider = effective.get('model_provider') or 'openai'
             provider = provider or configured_provider
