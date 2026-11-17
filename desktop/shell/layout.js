@@ -5,7 +5,7 @@
   const text=(tag,key,cls='')=>{const n=document.createElement(tag);n.className=cls;n.dataset.i18n=key;n.textContent=t(key);return n;};
   const module=name=>{const n=document.createElement('section');n.dataset.panel=name;n.hidden=true;$('settings').insertBefore(n,$('save-bar'));return n;};
   const paths={overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',accounts:'M3 4h18v13H3z M8 21h8 M12 17v4',network:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',devices:'M12 3 3 7v5c0 5 9 10 9 10s9-5 9-10V7z M8 12l3 3 5-6',notifications:'M4 4h16v13H9l-5 4z',advanced:'M4 7h16 M4 17h16 M8 4v6 M16 14v6'};
-  document.querySelector('.brand').innerHTML='<img src="assets/icon.png" data-icon-light="assets/icon.png" data-icon-dark="assets/icon-dark.png" alt=""><span>Bridge<small>DESKTOP GATEWAY</small></span>';
+  document.querySelector('.brand').innerHTML='<img src="assets/icon.png" alt=""><span>Bridge<small>DESKTOP GATEWAY</small></span>';
   document.querySelector('.sidebar-caption').remove();
   for(const [index,button] of [...document.querySelectorAll('aside [data-tab]')].entries()){
     if([0,2,5].includes(index))button.before(text('div',index===0?'工作台':index===2?'访问与提醒':'应用','nav-group'));

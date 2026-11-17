@@ -6,20 +6,14 @@
   "/icon-favicon.png": "icon-favicon.png",
   "/icon-touch.png": "icon-touch.png",
   "/icon-192.png": "icon-192.png",
-  "/icon-dark.png": "icon-dark.png",
-  "/icon-ui-dark.png": "icon-ui-dark.png",
-  "/icon-favicon-dark.png": "icon-favicon-dark.png",
-  "/icon-touch-dark.png": "icon-touch-dark.png",
-  "/icon-192-dark.png": "icon-192-dark.png",
   "/client-icons/antigravity.png": "client-icons/antigravity.png",
   "/manifest.webmanifest": "manifest.webmanifest",
-  "/manifest-dark.webmanifest": "manifest-dark.webmanifest",
   "/app.js": [
     "shared/dialog-dismiss.js",
     "features/chat/session-menu.js",
     "shell/app.js"
   ],
-  "/bootstrap.js": ["shared/bootstrap.js", "shared/brand-icons.js"],
+  "/bootstrap.js": "shared/bootstrap.js",
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",

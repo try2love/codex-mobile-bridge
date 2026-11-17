@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" fill="none">
-  <title>Codex Mobile Bridge menu bar template</title>
-  <path fill="#000" fill-rule="evenodd" d="M7 4A4 4 0 0 0 3 8V22A4 4 0 0 0 7 26H12V23H7A1 1 0 0 1 6 22V10H22V8A4 4 0 0 0 18 4H7ZM7 6H9V8H7V6ZM11 6H13V8H11V6Z"/>
-  <path fill="#000" fill-rule="evenodd" d="M18 11A4 4 0 0 0 14 15V28A4 4 0 0 0 18 32H29A4 4 0 0 0 33 28V15A4 4 0 0 0 29 11H18ZM18 14H29A1 1 0 0 1 30 15V28A1 1 0 0 1 29 29H18A1 1 0 0 1 17 28V15A1 1 0 0 1 18 14Z"/>
-  <path d="M20 19L23 22L20 25M26 25H27" stroke="#000" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>

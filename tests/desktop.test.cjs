@@ -1038,7 +1038,7 @@ test('native window title and local target copy respect their fixed origins',asy
     on(name,handler){events[name]=handler;}loadFile(){}getTitle(){return this.title;}setTitle(value){changes++;this.title=value;}
   }
   const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform:'darwin'},require(name){
-    if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},nativeTheme:{shouldUseDarkColors:false},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler},clipboard:{writeText:value=>copied.push(value)},shell:{openExternal:url=>opened.push(url)}};
+    if(name==='electron')return {app:{requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>'.tmp'},BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers[name]=handler},clipboard:{writeText:value=>copied.push(value)},shell:{openExternal:url=>opened.push(url)}};
     if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){}};
     if(name==='./features/connections/qr.cjs')return {};
     if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
