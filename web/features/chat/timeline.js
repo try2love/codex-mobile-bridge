@@ -223,6 +223,7 @@ class ChatTimeline {
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     heading.textContent=activity?chatActivityLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');content.append(heading);
+    if(activity&&!row.fileSummary)renderChatActivityLabel(heading,row);
     if(row.fileSummary){
       renderChatFileSummary(content,row,this.onFile);
       // File cards expand the supplied summary only, including old cached rows
@@ -315,7 +316,7 @@ class ChatTimeline {
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,activity=!!chatActivityKind(row)||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
       if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
-      else if(heading)heading.textContent=activity?chatActivityLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+      else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');

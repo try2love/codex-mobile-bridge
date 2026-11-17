@@ -211,7 +211,9 @@ def normalize_item(item, *, image_cache=None):
     elif kind == "commandExecution":
         row.update(role="activity", title="执行命令", text=item.get("command", ""), output=item.get("aggregatedOutput", ""), exitCode=item.get("exitCode"))
     elif kind in ("fileChange", "FileChange"):
-        row.update(role="activity", title="文件变更", text="\n\n".join(c["path"] + "\n" + c["diff"] for c in native_file_changes([item])))
+        changes = native_file_changes([item])
+        row.update(role="activity", title="文件变更", text="\n\n".join(c["path"] + "\n" + c["diff"] for c in changes),
+                   activityFiles=[{key: change[key] for key in ('path', 'added', 'removed')} for change in changes])
     elif kind in ("mcpToolCall", "dynamicToolCall"):
         extract = image_cache.extract if image_cache is not None else extract_tool_images
         source = item.get("result", item.get("contentItems", item.get("content", item.get("error", ""))))
@@ -278,9 +280,23 @@ def context_usage(state):
 
 
 def merge_saved_message_times(view, saved):
-    """Enrich presentation only, using unique native identities on both sides."""
+    """Enrich presentation clocks only, using unique native identities."""
     if not view.get('id') or view['id'] != saved.get('id'):
         return
+    turn_groups = []
+    for source in (view, saved):
+        turns = {}
+        for turn in source['turns']:
+            if turn.get('actionable', True):
+                turns.setdefault(turn['id'], []).append(turn)
+        turn_groups.append(turns)
+    for identity, turns in turn_groups[0].items():
+        prior = turn_groups[1].get(identity, [])
+        if (len(turns) == len(prior) == 1 and turns[0].get('status') in ('completed', 'interrupted', 'failed')
+                and turns[0]['status'] == prior[0].get('status')):
+            for clock in ('startedAt', 'completedAt'):
+                if turns[0].get(clock) is None and prior[0].get(clock) is not None:
+                    turns[0][clock] = prior[0][clock]
     groups = []
     for source in (view, saved):
         rows = {}
@@ -315,6 +331,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
     result = []
     for ordinal, turn in enumerate(turns):
         started_at = turn.get('turnStartedAtMs') or turn.get('startedAt')
+        completed_at = turn.get('turnCompletedAtMs') or turn.get('completedAt')
         items = items_array(turn.get("items", []))
         if skip >= len(items) and skip:
             skip -= len(items)
@@ -394,7 +411,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
         model = params.get('model') or settings.get('model') or turn.get('model')
         effort = params.get('effort') or params.get('reasoningEffort') or settings.get('reasoning_effort') or turn.get('reasoningEffort')
         result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
-                       "startedAt": started_at, "messages": messages,
+                       "startedAt": started_at, "completedAt": completed_at, "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
                        "error": turn.get("error"), "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer

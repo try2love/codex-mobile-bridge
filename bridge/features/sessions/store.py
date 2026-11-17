@@ -16,11 +16,11 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
-def rollout_message_times(raw, thread_id):
-    """Native message identities only; text and rollout positions are not keys."""
-    times, turn_id = {}, None
+def rollout_message_times(raw, thread_id, include_turns=False):
+    """Native identities only; text and rollout positions are not clock evidence."""
+    times, completed_turns, turn_id = {}, {}, None
     for line in raw.splitlines():
-        if not any(token in line for token in (b'"task_started"', b'"response_item"', b'"item_completed"')):
+        if not any(token in line for token in (b'"task_started"', b'"response_item"', b'"item_completed"', b'"task_complete"', b'"turn_aborted"')):
             continue
         try:
             record = json.loads(line)
@@ -30,6 +30,11 @@ def rollout_message_times(raw, thread_id):
         kind = payload.get('type')
         if record.get('type') == 'event_msg' and kind == 'task_started':
             turn_id = payload.get('turn_id') if payload.get('thread_id', thread_id) == thread_id else None
+            continue
+        if record.get('type') == 'event_msg' and kind in ('task_complete', 'turn_aborted'):
+            identity, stamp = payload.get('turn_id') or turn_id, record.get('timestamp')
+            if payload.get('thread_id', thread_id) == thread_id and isinstance(identity, str) and identity and stamp is not None:
+                completed_turns.setdefault(identity, []).append(stamp)
             continue
         if record.get('type') == 'response_item' and payload.get('thread_id', thread_id) == thread_id:
             role = payload.get('role') if kind == 'message' else 'assistant' if kind in ('agent_message', 'agentMessage') else None
@@ -54,6 +59,8 @@ def rollout_message_times(raw, thread_id):
         if all(len(values) == 1 for values in sources.values()):
             source = 'rollout-item-completed' if 'rollout-item-completed' in sources else 'rollout-response-item'
             result[key] = (sources[source][0], source)
+    if include_turns:
+        return result, {identity: values[0] for identity, values in completed_turns.items() if len(values) == 1}
     return result
 
 
@@ -693,7 +700,11 @@ class SessionStore:
                         # Legacy raw items need their call to keep row identities
                         # stable. Fall back to a complete-turn tail at this edge.
                         return None
-            apply_rollout_message_times(turns.values(), self._indexed_message_times(thread_id, rollout, rollout_stat))
+            message_times, completed_turns = self._indexed_message_times(thread_id, rollout, rollout_stat, True)
+            apply_rollout_message_times(turns.values(), message_times)
+            for turn in turns.values():
+                if turn['status'] in ('completed', 'interrupted', 'failed') and turn['turnId'] in completed_turns:
+                    turn['completedAt'] = completed_turns[turn['turnId']]
             latest = rollout.stat()
             if (latest.st_ino, latest.st_size, latest.st_mtime_ns) != (rollout_stat.st_ino, rollout_stat.st_size, rollout_stat.st_mtime_ns):
                 return None
@@ -704,24 +715,25 @@ class SessionStore:
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
             return None
 
-    def _indexed_message_times(self, thread_id, rollout, stat):
+    def _indexed_message_times(self, thread_id, rollout, stat, include_turns=False):
         key = ('message-times', thread_id, str(rollout), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
         with self.history_lock:
             if key in self.history_cache:
                 self.history_cache.move_to_end(key)
-                return self.history_cache[key]
+                times = self.history_cache[key]
+                return times if include_turns else times[0]
         with rollout.open('rb') as stream:
             offset = max(0, stat.st_size - ROLLOUT_TIME_BYTES)
             stream.seek(offset)
             raw = stream.read(ROLLOUT_TIME_BYTES)
         if offset:
             raw = raw.partition(b'\n')[2]  # The first record may start before the bounded tail.
-        times = rollout_message_times(raw, thread_id)
+        times = rollout_message_times(raw, thread_id, True)
         with self.history_lock:
             self.history_cache[key] = times
             while len(self.history_cache) > 8:
                 self.history_cache.popitem(last=False)
-        return times
+        return times if include_turns else times[0]
 
     @staticmethod
     def _agent_source(meta):
@@ -811,8 +823,11 @@ class SessionStore:
                 current['params'] = {'model':payload.get('model') or settings.get('model'),
                                      'effort':payload.get('effort') or settings.get('reasoning_effort')}
             elif record.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
-                if current:
+                if (current and payload.get('thread_id', thread_id) == thread_id
+                        and payload.get('turn_id', current['turnId']) == current['turnId']):
                     current["status"] = "completed" if payload["type"] == "task_complete" else "interrupted"
+                    if record.get('timestamp') is not None:
+                        current['completedAt'] = record['timestamp']
             elif record.get("type") == "event_msg" and payload.get("type") == "item_completed":
                 item = payload.get("item", {})
                 if (isinstance(item, dict) and item.get('type') == 'UserMessage' and current is not None and

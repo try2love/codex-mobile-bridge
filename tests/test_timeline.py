@@ -13,6 +13,53 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_file_activity_preserves_complete_native_paths_and_counts_without_copying_patches(self):
+        from bridge.features.sessions.model import normalize_item
+        paths = ['/repo/' + 'long-directory/' * 20 + 'file-' + str(i) + '.py' for i in range(65)]
+        changes = {path: {'type': 'update', 'unified_diff': '@@ -1 +1,2 @@\n-old\n+new\n+extra'} for path in paths}
+        changes[paths[-1]] = {'type': 'add', 'content': '++ heading\n-- text\n'}
+        for kind in ('fileChange', 'FileChange'):
+            with self.subTest(kind=kind):
+                message = normalize_item({'id': 'patch', 'type': kind, 'status': 'completed', 'changes': changes})
+                expected = [{'path': path, 'added': 2, 'removed': 0 if path == paths[-1] else 1} for path in paths]
+                self.assertEqual(message['activityFiles'], expected)
+                self.assertIn('@@ -1 +1,2 @@\n-old\n+new\n+extra', message['text'])
+                timeline = Timeline()
+                timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]})
+                row = timeline.page()['rows'][0]
+                self.assertEqual(row['role'], 'activity')
+                self.assertEqual(row['activityFiles'], expected)
+                self.assertNotIn('diff', json.dumps(row['activityFiles']))
+                self.assertNotIn('fileSummary', row)
+                self.assertEqual(len(row['text']), 180)
+                self.assertTrue(row['truncated'])
+
+    def test_file_activity_does_not_claim_unconfirmed_or_failed_changes(self):
+        from bridge.features.sessions.model import normalize_item
+        for status in ('inProgress', 'failed', 'declined'):
+            with self.subTest(status=status):
+                message = normalize_item({'type': 'fileChange', 'status': status,
+                                          'changes': [{'path': 'a.py', 'diff': '+proposed'}]})
+                self.assertEqual(message['activityFiles'], [])
+                self.assertEqual(message['text'], '')
+
+    def test_file_activity_metadata_updates_version_and_incremental_rows(self):
+        message = {'id': 'patch', 'kind': 'fileChange', 'role': 'activity', 'text': 'unchanged preview',
+                   'activityFiles': [{'path': 'a.py', 'added': 1, 'removed': 0}]}
+        source = {'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]}
+        timeline = Timeline()
+        timeline.update(source)
+        before = timeline.page()
+        original = before['rows'][0]
+        message['activityFiles'] = [{'path': 'renamed.py', 'added': 2, 'removed': 1}]
+        source['sequence'] = 2
+        timeline.update(source)
+        updated = timeline.changes(1, before['epoch'], before['before'])['rows'][0]
+        self.assertEqual(updated['key'], original['key'])
+        self.assertNotEqual(updated['version'], original['version'])
+        self.assertEqual(updated['activityFiles'], message['activityFiles'])
+        self.assertEqual(updated['text'], original['text'])
+
     def test_tool_identity_is_short_metadata_without_repeating_body(self):
         state = {'turns': [{'turnId': 'turn', 'items': [
             {'id': 'computer', 'type': 'mcpToolCall', 'server': 'cua_repl', 'tool': 'js', 'arguments': {'code': 'native body'}},

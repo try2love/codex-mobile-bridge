@@ -95,11 +95,14 @@
 .chat-activity-group>summary:hover{color:var(--text)}
 .chat-activity-items{padding:0 .4em 0 0;margin:0;max-height:min(16em,360px);overflow:auto;overscroll-behavior:contain;overflow-anchor:none;scrollbar-width:thin}
 .chat-activity-items .activity{border:0;background:none;padding:0;margin:.1em 0;border-radius:0;font-size:inherit;color:inherit}
-.chat-activity-items .activity>summary{display:block;padding:.25em 0;list-style:none;font-size:inherit;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-activity-items .activity>summary{display:flex;align-items:center;gap:.45em;padding:.25em 0;list-style:none;font-size:inherit;color:inherit;white-space:nowrap;overflow:hidden}
+.chat-activity-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-activity-file{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:.16em}
+.chat-activity-stats{flex:none;white-space:nowrap;font-size:.9em}
 .chat-activity-items .activity-body{margin:.35em 0 .6em;padding:.55em .7em;border-radius:6px;background:var(--surface);font-size:var(--code-size);line-height:var(--code-leading)}
 .chat-activity-items .activity>summary:hover{color:var(--text)}
 
-.chat-activity-items .activity>summary:before{margin-right:.45em;vertical-align:-.1em}
+.chat-activity-items .activity>summary:before{vertical-align:-.1em}
 
 .ds-history-newer{position:sticky;bottom:.5em;display:block;margin:.5em 0 .5em auto;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:.45em .8em}
 
@@ -109,7 +112,6 @@
 .chat-task-items{padding-top:.65em;min-width:0}
 .chat-task-items>.message{color:var(--text)}
 .chat-task-items>.message>.who,.chat-task-items>.message>.message-actions{display:none}
-.chat-task-items>.chat-activity-tools>.chat-activity-items{border-left:1px solid var(--line);padding-left:1em;margin-left:.5em}
 
 .chat-activity-turn[data-state=active]>summary{display:none}
 .chat-activity-turn[data-state=active]>.chat-task-items{padding-top:0}

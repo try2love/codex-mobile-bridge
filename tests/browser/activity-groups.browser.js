@@ -14,16 +14,17 @@ async function runActivityGroupBrowserChecks(){
     const commentary={...row('commentary',1.5,'assistant','','Synthetic progress commentary'),phase:'commentary'};
     const interaction={...row('answered',3.5,'user','steeringUserMessage','Synthetic processed question response'),interaction:'response',status:'accepted'};
     const supplement={...row('supplement',3.75,'user','steeringUserMessage','A temporary user task must stay visible.'),status:'accepted'};
-    const initial=[{...row('user',0,'user','userMessage','Synthetic user prompt'),timestamp:startedAt},row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('reason-mid',2.5,'reasoning','reasoning'),row('cmd2',3,'activity','commandExecution'),interaction,supplement,{...row('cmd3',3.9,'activity','commandExecution'),status:'inProgress'}];
+    const editedFile={...row('file1',3.85,'activity','fileChange','/project/2026-11-17-长文件名.md\n@@ -1 +1,3 @@\n-old\n+new\n+second\n+third'),status:'completed',activityFiles:[{path:'/project/2026-11-17-长文件名.md',added:3,removed:1}]};
+    const initial=[{...row('user',0,'user','userMessage','Synthetic user prompt'),timestamp:startedAt},row('reason',1,'reasoning','reasoning'),commentary,row('cmd1',2,'activity','commandExecution'),row('reason-mid',2.5,'reasoning','reasoning'),row('cmd2',3,'activity','commandExecution'),interaction,supplement,editedFile,{...row('cmd3',3.9,'activity','commandExecution'),status:'inProgress'}];
     const final={...row('final',4,'assistant','','Synthetic final reply'),phase:'final_answer',timestamp:'2026-11-16T01:02:05Z'};
     const fileSummary={...row('files',5,'fileChanges','fileChanges',''),fileSummary:{count:1,added:2,removed:1,basis:'recorded',files:[{path:'synthetic.txt',added:2,removed:1}]}};
     const pending={id:'still-pending',tool:'Synthetic pending approval',input:{command:'synthetic-only'}};
-    const detail=(messages,active)=>({connected:true,session:{id:view?.sid||'groups',title:'Synthetic activity groups',status:active?'active':'idle',requests:[pending],capabilities:{}},messages:messages.map(message=>({...message,turnStatus:active?'inProgress':'completed'})),files:[],history:{before:'native:groups',hasMore:true}});
+    const detail=(messages,active)=>({connected:true,session:{id:view?.sid||'groups',title:'Synthetic activity groups',status:active?'active':'idle',requests:[pending],capabilities:{}},messages:messages.map(message=>({...message,turnStatus:message.turnStatus||(active?'inProgress':'completed')})),files:[],history:{before:'native:groups',hasMore:true}});
     if(provider==='codex'){
       viewport=document.createElement('div');viewport.style.cssText='height:600px;max-height:75vh;overflow:auto';container=document.createElement('div');viewport.append(container);root.append(viewport);
       const older=document.createElement('button'),newer=document.createElement('button');root.append(older,newer);
       timeline=new ChatTimeline({elements:{viewport,container,older,newer},url:action=>'/synthetic/'+action+'?',request:async()=>{throw Error('Unexpected native request');},renderMeta(){},renderText:(node,text)=>node.textContent=text,status(){}});
-      apply=(messages,active=false,history=false,reset=false)=>{const first=!initialized;initialized=true;timeline.apply({rows:messages.map(message=>({...message,role:message.role==='reasoning'?'activity':message.role,turnStatus:active?'inProgress':'completed'})),sequence:++sequence,epoch,before:epoch+'.'+messages[0].key,hasMore:true,meta:{requests:[pending]},files:[]},first||reset,history);};
+      apply=(messages,active=false,history=false,reset=false)=>{const first=!initialized;initialized=true;timeline.apply({rows:messages.map(message=>({...message,role:message.role==='reasoning'?'activity':message.role,turnStatus:message.turnStatus||(active?'inProgress':'completed')})),sequence:++sequence,epoch,before:epoch+'.'+messages[0].key,hasMore:true,meta:{requests:[pending]},files:[]},first||reset,history);};
       getNode=id=>timeline.nodes.get(id).node;
     }else{
       const select=document.createElement('select');for(const name of ['codex',provider])select.add(new Option(name,name));
@@ -62,6 +63,10 @@ async function runActivityGroupBrowserChecks(){
       check(runningTools.dataset.running==='false'&&getComputedStyle(runningTools.firstChild).animationName==='none',provider+' terminal task stops the running summary animation');
       task.firstChild.click();afterSupplement.firstChild.click();await frame();await frame();
       check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' opening the completed task preserves its manually opened tool batch');
+      runningTools.firstChild.click();await frame();await frame();
+      const fileHeading=getNode('file1').querySelector('summary'),filePath=fileHeading.querySelector('.chat-activity-file'),fileStats=fileHeading.querySelector('.chat-activity-stats');
+      check(filePath?.textContent.includes('2026-11-17-长文件名.md')&&filePath.getBoundingClientRect().height>0,provider+' expanded tools show the native file path in the compact edited-file row');
+      check(fileStats?.textContent.includes('+3')&&/[−-]1/.test(fileStats.textContent)&&fileStats.getBoundingClientRect().height>0,provider+' compact edited-file row shows native added and removed line counts');
       check(outside('final')&&getNode('final').getBoundingClientRect().height>0,provider+' final reply stays visible outside the batch');
       check(outside('files')&&getNode('files').getBoundingClientRect().height>0,provider+' fileSummary/fileChanges result remains an outer row');
       check(getNode('files').classList.contains('edited-files-card')&&getNode('files').querySelector('.edited-files-label')?.textContent.includes('1'),provider+' file result uses the shared file summary card');
@@ -123,6 +128,31 @@ async function runActivityGroupBrowserChecks(){
         check(!cachedTask.open,provider+' cached history without runtime evidence starts folded');
         view.applyDetail({...detail(cachedRows,true),messages:cachedRows});await frame();await frame();
         check(getNode('cached-tool').closest('.chat-activity-turn')===cachedTask&&cachedTask.open&&cachedTask.dataset.state==='active'&&getComputedStyle(cachedTask.firstChild).display==='none'&&getNode('cached-progress').getBoundingClientRect().height>0,provider+' fresh active status reopens the cached task and shows its progress');
+      }
+      for(const terminalStatus of ['interrupted','failed']){
+        if(view)view.prepareChat('terminal-'+terminalStatus);
+        const completedAt=terminalStatus==='interrupted'?'2026-11-16T01:02:05Z':Date.parse('2026-11-16T01:02:05Z');
+        const nativeRows=[row('terminal-user',0,'user','userMessage','Synthetic terminal task'),{...row('terminal-commentary',1,'assistant','','Synthetic terminal progress'),phase:'commentary'},row('terminal-tool',2,'activity','commandExecution')].map(message=>({...message,turnId:'terminal-'+terminalStatus,turnStatus:'inProgress'}));
+        apply(nativeRows,true,false,true);await frame();await frame();
+        const terminalTask=getNode('terminal-tool').closest('.chat-activity-turn');
+        check(terminalTask.open&&terminalTask.dataset.state==='active',provider+' '+terminalStatus+' task initially shows its running process');
+        let terminalRows=nativeRows.map(message=>({...message,turnStatus:terminalStatus,turnCompletedAt:completedAt}));
+        apply(terminalRows);await frame();await frame();
+        check(!terminalTask.open&&terminalTask.dataset.state==='complete'&&terminalTask.firstChild.textContent===elapsedLabel,provider+' '+terminalStatus+' without a final reply collapses once and displays the native 125-second duration');
+        check(!container.querySelector('[data-key="terminal-final"]')&&getNode('terminal-commentary').closest('.chat-activity-turn')===terminalTask,provider+' '+terminalStatus+' keeps commentary in the completed process without inventing a final reply');
+        terminalTask.firstChild.click();await frame();
+        const lateFinal={...row('terminal-final',3,'assistant','','Synthetic delayed final reply'),phase:'final_answer',turnId:'terminal-'+terminalStatus,turnStatus:terminalStatus,turnCompletedAt:completedAt,timestamp:'2026-11-16T01:09:00Z'};
+        terminalRows=[...terminalRows,lateFinal];apply(terminalRows);await frame();await frame();
+        check(getNode('terminal-tool').closest('.chat-activity-turn')===terminalTask&&terminalTask.open&&terminalTask.firstChild.textContent===elapsedLabel&&outside('terminal-final'),provider+' '+terminalStatus+' late final preserves a manually reopened process and its native completion duration');
+        terminalTask.firstChild.click();await frame();
+        const resumedRows=terminalRows.map(({turnCompletedAt,...message})=>({...message,turnStatus:'inProgress'}));
+        apply(resumedRows,true);await frame();await frame();
+        check(terminalTask.open&&terminalTask.dataset.state==='active'&&getComputedStyle(terminalTask.firstChild).display==='none',provider+' '+terminalStatus+' task reopens its process when native execution resumes');
+        const finishedRows=resumedRows.map(message=>({...message,turnStatus:'completed',turnCompletedAt:completedAt}));
+        apply(finishedRows);await frame();await frame();
+        check(!terminalTask.open&&terminalTask.dataset.state==='complete'&&terminalTask.firstChild.textContent===elapsedLabel,provider+' '+terminalStatus+' resumed task automatically collapses on its next completion');
+        terminalTask.firstChild.click();await frame();apply(finishedRows);await frame();
+        check(terminalTask.open,provider+' '+terminalStatus+' repeated completed refresh preserves the reader reopening the process');
       }
       if(timeline){timeline.following=true;for(let i=10;i<280;i++)timeline.apply({rows:[{...row('live-'+i,i),turnId:'live-'+i,phase:'final_answer',turnStatus:'completed'}],sequence:++sequence,epoch,meta:{requests:[pending]},files:[]});const groups=container.__chatTaskGroups?.size||0;check(timeline.rows.size<=240&&!freshTools.isConnected&&!groups,provider+' sliding window releases omitted group nodes and cache');}
     }finally{document.getSelection().removeAllRanges();view?.clear();timeline?.dispose();root.remove();restore();}

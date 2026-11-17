@@ -39,6 +39,21 @@ class SavedMessageTimeJoinTests(unittest.TestCase):
         self.assertEqual(rows[0].get('_timestampSource'), 'rollout-response-item')
         self.assertEqual(self.join(saved, self.state(timestamp=STAMP))['turns'][0]['messages'][0]['timestamp'], STAMP)
 
+    def test_connected_view_enriches_terminal_turn_clocks_only_for_unique_matching_native_turns(self):
+        saved = self.state()
+        saved['turns'][0].update(startedAt=ISO, completedAt='2026-11-10T00:02:05Z')
+        turn = self.join(saved, self.state())['turns'][0]
+        self.assertEqual((turn['startedAt'], turn['completedAt']), (ISO, '2026-11-10T00:02:05Z'))
+        live = self.state()
+        live['turns'][0].update(turnStartedAtMs=STAMP, turnCompletedAtMs=STAMP + 1000)
+        self.assertEqual(self.join(saved, live)['turns'][0]['completedAt'], STAMP + 1000)
+        for status in ('inProgress', 'interrupted'):
+            live = self.state()
+            live['turns'][0]['status'] = status
+            self.assertIsNone(self.join(saved, live)['turns'][0]['completedAt'])
+        saved['turns'] *= 2
+        self.assertIsNone(self.join(saved, self.state())['turns'][0]['completedAt'])
+
     def test_text_position_session_turn_and_kind_cannot_substitute_for_native_identity(self):
         saved = self.state(timestamp=ISO)
         variants = [self.state(item_id='different'), self.state(turn_id='different'),
@@ -177,6 +192,40 @@ class RolloutMessageTimeTests(unittest.TestCase):
         self.write(self.records(turn_id='other'))
         self.assertEqual(read().get('timestamp'), ISO)
 
+    def test_terminal_event_clocks_survive_rollout_tail_index_and_cache_without_using_last_message(self):
+        records = self.records()
+        records[0]['timestamp'] = ISO
+        completion = '2026-11-10T00:02:05Z'
+        records.append({'type': 'event_msg', 'timestamp': completion,
+                        'payload': {'type': 'task_complete', 'turn_id': 'turn', 'thread_id': 'thread'}})
+        self.write(records)
+        self.make_index([{'id': 'native-reply', 'type': 'agentMessage', 'text': 'same reply'}])
+        for turn_limit in (None, 1):
+            with self.subTest(turn_limit=turn_limit):
+                self.assertEqual(self.store._history('thread', self.meta, turn_limit)['turns'][0]['completedAt'], completion)
+        with patch.object(self.store, '_recent_lines', side_effect=AssertionError('unbounded rollout read')):
+            for _ in range(2):
+                indexed = self.store._indexed_history('thread', self.meta, 1)
+                self.assertEqual(indexed['turns'][0]['completedAt'], completion)
+        self.write(records[:-1])
+        saved = self.store._history('thread', self.meta)
+        self.assertNotIn('completedAt', saved['turns'][0])
+
+    def test_terminal_event_joins_only_its_native_turn_and_thread(self):
+        from bridge.features.sessions.store import rollout_message_times
+        terminal = {'type': 'event_msg', 'timestamp': ISO,
+                    'payload': {'type': 'turn_aborted', 'turn_id': 'turn', 'thread_id': 'thread'}}
+        for payload in ({'turn_id': 'other'}, {'thread_id': 'other'}):
+            self.write(self.records() + [{**terminal, 'payload': {**terminal['payload'], **payload}}])
+            self.assertNotIn('completedAt', self.store._history('thread', self.meta)['turns'][0])
+        self.write(self.records() + [terminal])
+        saved = self.store._history('thread', self.meta)['turns'][0]
+        self.assertEqual((saved['status'], saved['completedAt']), ('interrupted', ISO))
+        self.write([terminal, terminal])
+        self.assertEqual(rollout_message_times(self.path.read_bytes(), 'thread', True)[1], {})
+        self.write([{**terminal, 'payload': {'type': 'task_complete'}}])
+        self.assertEqual(rollout_message_times(self.path.read_bytes(), 'thread', True)[1], {})
+
     def test_index_never_joins_duplicate_ids_or_same_text_with_different_ids(self):
         self.write(self.records())
         self.make_index([{'id': 'native-reply', 'type': 'agentMessage', 'text': 'same reply'},
@@ -197,7 +246,9 @@ class RolloutMessageTimeTests(unittest.TestCase):
         self.assertEqual(rollout_message_times(self.path.read_bytes(), 'thread'), {})
 
     def test_index_time_scan_is_bounded_skips_partial_first_line_and_is_thread_scoped(self):
-        line = (json.dumps(self.records()[-1]) + '\n').encode()
+        terminal = {'type': 'event_msg', 'timestamp': ISO,
+                    'payload': {'type': 'task_complete', 'turn_id': 'turn', 'thread_id': 'thread'}}
+        line = (json.dumps(self.records()[-1]) + '\n' + json.dumps(terminal) + '\n').encode()
         self.path.write_bytes(b'incomplete-record' * 1000 + b'\n' + line)
         opened, sizes = Path.open, []
         class Reader:
@@ -213,6 +264,9 @@ class RolloutMessageTimeTests(unittest.TestCase):
             times = self.store._indexed_message_times('thread', self.path, self.path.stat())
             self.assertEqual(times[('turn', 'native-reply', 'agentMessage', 'assistant')][0], STAMP)
             self.assertEqual(self.store._indexed_message_times('thread', self.path, self.path.stat()), times)
+            messages, completed = self.store._indexed_message_times('thread', self.path, self.path.stat(), True)
+            self.assertEqual(messages, times)
+            self.assertEqual(completed, {'turn': ISO})
             self.assertEqual(sizes, [512])
             self.assertEqual(self.store._indexed_message_times('other', self.path, self.path.stat()), {})
             self.assertEqual(sizes, [512, 512])

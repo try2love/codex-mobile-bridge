@@ -84,8 +84,8 @@ class Timeline:
                 activity = message['role'] in ('activity', 'fileChanges')
                 attachments = [{k: str(a[k])[:4096 if k == 'path' else 300] for k in ('type', 'name', 'path', 'desktopId') if k in a}
                                for a in (message.get('attachments') or [])[:20]]
-                version = hashlib.sha256(encoded([text, turn.get('model'), turn.get('effort'), attachments, message.get('fileSummary')])).hexdigest()[:24]
-                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName') if k in message}
+                version = hashlib.sha256(encoded([text, turn.get('model'), turn.get('effort'), attachments, message.get('fileSummary'), message.get('activityFiles')])).hexdigest()[:24]
+                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName', 'activityFiles') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
@@ -93,6 +93,8 @@ class Timeline:
                            forkable=turn.get('actionable', True) and message['role'] == 'assistant' and message.get('phase') != 'commentary' and turn.get('status') == 'completed')
                 if turn.get('startedAt') is not None:
                     row['turnStartedAt'] = turn['startedAt']
+                if turn.get('completedAt') is not None:
+                    row['turnCompletedAt'] = turn['completedAt']
                 timestamp = message.get('timestamp')
                 if timestamp is None and first_user:
                     timestamp = turn.get('startedAt')

@@ -117,9 +117,25 @@ function chatActivityLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(row.interaction==='response')return t('已回答问题');
   const text=(row.text||'').split('\n')[0];
+  if(row.activityFiles?.length)return t('已编辑')+' '+row.activityFiles.map(file=>file.path).join('、');
   if(row.kind==='commandExecution'&&text)return t('已运行')+' '+text;
   if(['fileChange','FileChange'].includes(row.kind)&&text)return t('已编辑')+' '+text;
   return t(row.title||(row.kind==='reasoning'||row.role==='reasoning'?'思考摘要':'执行过程'));
+}
+function renderChatActivityLabel(heading,row){
+  heading.replaceChildren();
+  const label=document.createElement('span');label.className='chat-activity-text';
+  label.textContent=chatActivityLabel(row);label.title=label.textContent;
+  if(row.activityFiles?.length){
+    label.replaceChildren(typeof BridgeI18n==='undefined'?'已编辑 ':BridgeI18n.t('已编辑')+' ');
+    for(const [index,file] of row.activityFiles.entries()){
+      if(index)label.append('、');
+      const path=document.createElement('span');path.className='chat-activity-file';path.textContent=file.path;label.append(path);
+    }
+    const stats=document.createElement('span');stats.className='chat-activity-stats';
+    stats.textContent='+'+row.activityFiles.reduce((sum,file)=>sum+file.added,0)+' −'+row.activityFiles.reduce((sum,file)=>sum+file.removed,0);
+    heading.append(label,stats);
+  }else heading.append(label);
 }
 // One history gesture seeks ordinary conversation, not a page of folded tools.
 // Native pages stay bounded; collect before rendering once, preserving a manual
@@ -142,6 +158,13 @@ function syncChatActivityPage(group){
   const body=group.lastChild,rows=group.__rows;
   let start=rows.findIndex(node=>node.dataset.key===group.__firstKey);
   if(start<0||!group.open&&!group.__readPage)start=Math.max(0,rows.length-20);
+  else{
+    // A native reorder can move an already displayed row before the page
+    // anchor. Keep it in the page so its detail and reading state survive.
+    const visible=new Set([...body.children].map(node=>node.dataset.key));
+    const first=rows.findIndex(node=>visible.has(node.dataset.key));
+    if(first>=0)start=Math.min(start,first);
+  }
   const shown=rows.slice(start),top=body.scrollTop;
   if(!group.__older){
     const older=document.createElement('button');older.type='button';older.className='plain chat-activity-older';
@@ -253,12 +276,11 @@ function groupChatActivities(container,nodes){
     }
     used.add(group);next.set(key,group);group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
     group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
-    const kinds=cluster.map(node=>node.dataset.chatToolKind),files=kinds.some(kind=>['fileChange','FileChange'].includes(kind)),commands=kinds.includes('commandExecution');
+    const icons=cluster.map(node=>node.dataset.icon),files=icons.includes('file'),commands=icons.includes('command');
     const reasoningOnly=cluster.every(node=>node.dataset.chatActivity==='reasoning');
     const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':reasoningOnly?'思考摘要':'执行了操作';
     const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
     group.dataset.running=String(cluster.some(node=>node.__chatRunning));
-    const icons=cluster.map(node=>node.dataset.icon);
     group.dataset.icon=files?'file':commands?'command':icons.every(icon=>icon===icons[0])?icons[0]:'tool';
     if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
     group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
