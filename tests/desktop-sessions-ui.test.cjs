@@ -129,6 +129,16 @@ test('ordinary long message expands in body pages and copy reads its full text',
  const more=view.messageList.querySelector('.detail-more');await more.click();assert.equal(reads,1);assert.equal(view.messageList.querySelector('.message-body').textContent.length,16000);await more.click();assert.equal(view.messageList.querySelector('.message-body').textContent.length,20000);assert.equal(more.hidden,true);
  assert.equal(await view.fullMessage(message),full);
 });
+test('desktop upward reading 36px from the bottom remains stable during resize',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:'Visible reply'}]});
+ view.messages.scrollHeight=1000;view.messages.clientHeight=100;view.messages.scrollTop=864;view.reading={top:900,following:true};view.rememberReading();assert.equal(view.reading.following,false);
+ view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,864);
+});
+test('desktop process disclosure click disables bottom following before content grows',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'cursor'}]});
+ view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};const group=view.messageList.querySelector('.chat-process-page');
+ view.messages.onclick?.({target:group.firstChild});assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
+});
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
  await view.choose('antigravity');assert.equal(view.surface.hidden,false);assert.deepEqual(view.surface.children.map(n=>n.value),['all','app','cli','ide']);

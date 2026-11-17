@@ -23,6 +23,12 @@ class DesktopSessionsView {
     this.messages=this.node('div','ds-messages timeline');this.messages.tabIndex=-1;this.progress=this.node('div','working');this.progress.hidden=true;this.requests=this.node('div','ds-requests');this.notice=this.node('p','notice');this.notice.hidden=true;this.resumeButton=this.button('继续会话',()=>this.continueChat());this.resumeButton.hidden=true;
     this.messageList=this.node('div');this.messages.append(this.messageList);
     this.messages.addEventListener('scroll',()=>this.rememberReading(),{passive:true});
+    this.messages.addEventListener('click',event=>{
+      const group=event.target?.closest?.('summary')?.closest?.('.chat-process-page');
+      if(!group)return;
+      this.reading={top:this.messages.scrollTop,following:false,anchor:{key:group.dataset.key,offset:group.getBoundingClientRect().top-this.messages.getBoundingClientRect().top}};
+      if(this.workbench.current)this.workbench.current.reading=this.reading;
+    },true);
     this.readingResize=new ResizeObserver(()=>{
       this.restoreReading();
       if(this.resumeAttempt&&!this.resumeAttempt.timer&&!this.workbench?.isFileVisible)this.checkResume(this.resumeAttempt);
@@ -316,7 +322,7 @@ class DesktopSessionsView {
     if(!this.isChatOpen||!this.lastMessages?.length||!this.messages.clientHeight||!this.workbench.current)return;
     const top=this.messages.scrollTop;
     if(this.reading?.top!==top){
-      const following=chatFollowsLatest(this.messages);
+      const following=top>=(this.reading?.top??top)&&chatFollowsLatest(this.messages);
       this.reading={top,following,anchor:following?null:captureChatScrollAnchor(this.messages,this.messageList)};
     }
     this.workbench.current.reading=this.reading;

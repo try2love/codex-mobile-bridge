@@ -43,11 +43,17 @@ class ChatTimeline {
     this.onScroll=()=>{
       if(this.suppress||!this.viewport.clientHeight)return;
       const upward=this.viewport.scrollTop<this.lastTop;
-      this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
+      this.lastTop=this.viewport.scrollTop;this.following=!upward&&this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
     this.viewport.addEventListener('scroll',this.onScroll,{passive:true});
+    this.onDisclosure=event=>{
+      const summary=event.target?.closest?.('summary'),group=summary?.closest?.('.chat-process-page');
+      if(!group)return;
+      this.following=false;this.anchor={key:group.dataset.key,offset:group.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top};
+    };
+    this.viewport.addEventListener('click',this.onDisclosure,true);
     // At the scroll boundary wheel/touch intent produces no scroll event.
     this.atHistoryEdge=()=>!this.suppress&&this.viewport.clientHeight&&this.viewport.scrollTop<=1&&!this.retryCount;
     this.onWheel=event=>{if(event.deltaY<0&&!event.target?.closest?.('.chat-activity-items,.activity-body')&&this.atHistoryEdge())this.loadOlder(100);};
@@ -61,7 +67,7 @@ class ChatTimeline {
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
   }
-  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
+  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('click',this.onDisclosure,true);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
   atBottom(){return chatFollowsLatest(this.viewport);}
   nearTop(){return this.viewport.scrollTop<=160;}
   capture(accept){return this.viewport.clientHeight?captureChatScrollAnchor(this.viewport,this.container,accept):this.anchor;}

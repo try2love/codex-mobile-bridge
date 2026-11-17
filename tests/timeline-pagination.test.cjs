@@ -22,17 +22,30 @@ function fixture(){
 const page=(epoch,key,role='assistant',more=true)=>({epoch,rows:[{key,role}],before:epoch+'.'+key,hasMore:more});
 const tick=()=>new Promise(r=>setImmediate(r));
 function scrollFixture(){
+ let resize;
  const listeners=new Map(),requests=[],viewport={scrollTop:3000,scrollHeight:10000,clientHeight:600,getBoundingClientRect:()=>({top:100}),closest:()=>null,
   addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
  const container={children:Array.from({length:8},(_,index)=>({hidden:false,classList:{contains:()=>false},dataset:{key:'row-'+index},getBoundingClientRect:()=>({top:100+index*1000-viewport.scrollTop,bottom:1100+index*1000-viewport.scrollTop})}))};
- const document={documentElement:{dataset:{}}},ctx=vm.createContext({window:{},document,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},ResizeObserver:class{observe(){}disconnect(){}}});
+ const document={documentElement:{dataset:{}}},ctx=vm.createContext({window:{},document,AbortController,URLSearchParams,clearTimeout,setTimeout,requestAnimationFrame:fn=>fn(),BridgeI18n:{t:s=>s},ResizeObserver:class{constructor(callback){resize=callback;}observe(){}disconnect(){}}});
  for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx),ui=new Type({elements:{viewport,container,older:{},newer:{}},url:action=>'/fixture/'+action+'?scope=synthetic',renderMeta(){},renderText(){},status(){},request:(url,body,signal)=>{
   requests.push(url);return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('fixture disposed')),{once:true}));
  }});
  ui.sequence=1;ui.epoch='test';ui.before='test.oldest';ui.hasMore=true;ui.lastTop=3200;
- return {ui,viewport,requests,emit:(type,event={})=>listeners.get(type)({target:viewport,...event})};
+ return {ui,viewport,requests,resize:()=>resize(),emit:(type,event={})=>listeners.get(type)?.({target:viewport,...event})};
 }
+test('an explicit 36px upward read near the bottom disables following before resize',()=>{
+ const f=scrollFixture();
+ try{f.ui.following=true;f.ui.lastTop=9400;f.viewport.scrollTop=9364;f.emit('scroll');assert.equal(f.ui.following,false);f.viewport.scrollHeight=12000;f.resize();assert.equal(f.viewport.scrollTop,9364);}
+ finally{f.ui.dispose();}
+});
+test('opening a process summary pins its heading instead of following a resized bottom',()=>{
+ const f=scrollFixture(),group={dataset:{key:'process'},hidden:false,classList:{contains:()=>false},parentElement:null,getBoundingClientRect:()=>({top:9900-f.viewport.scrollTop,bottom:10000-f.viewport.scrollTop})};
+ const summary={closest:selector=>selector==='.chat-process-page'?group:null},target={closest:selector=>selector==='summary'?summary:null};
+ f.ui.nodes.set('process',{node:group});f.ui.following=true;f.viewport.scrollTop=9400;f.ui.lastTop=9400;
+ try{f.emit('click',{target});f.viewport.scrollHeight=14000;f.resize();assert.equal(f.ui.following,false);assert.equal(f.viewport.scrollTop,9400);}
+ finally{f.ui.dispose();}
+});
 test('upward scrolling within the first few tall messages does not load history far from the actual top',async()=>{
  const f=scrollFixture();
  try{
