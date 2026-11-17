@@ -88,10 +88,11 @@ def project_snapshot(snapshot, workspace, reply_models=None):
     config = _dict(snapshot.get('config'))
     queue_items = _dict(snapshot.get('queue')).get('items')
     works = control.get('activeWorks')
+    latest_header = next((row for row in reversed(snapshot['rows']['window']) if row['kind'] == 'turnHeader'), None)
     latest_turn = turns[-1]['status'] if turns else None
     runtime_known = (isinstance(snapshot.get('control'), dict) and isinstance(works, list) and
                      all(isinstance(work, dict) for work in works) and isinstance(queue_items, list) and
-                     (latest_turn is None or latest_turn in ('inProgress', 'completed', 'interrupted', 'failed')))
+                     (latest_header is None or latest_header.get('state') in TURN_STATES))
     active = bool(works) or bool(snapshot['pendingInteractions']) or bool(queue_items) or latest_turn == 'inProgress'
     routing = _dict(snapshot.get('inputRouting')).get('mode')
     send_modes = {'send': runtime_known and not active and routing == 'startNow',

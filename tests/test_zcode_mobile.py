@@ -52,7 +52,9 @@ class MobileContracts(unittest.TestCase):
                 (None, None, 'queued'), ({'activeWorks': None}, {'items': []}, 'completedSuccess'),
                 ({'activeWorks': []}, None, 'completedSuccess'),
                 ({'activeWorks': []}, {'items': None}, 'completedSuccess'),
-                ({'activeWorks': []}, {'items': []}, 'futureState')):
+                ({'activeWorks': []}, {'items': []}, 'futureState'),
+                ({'activeWorks': []}, {'items': []}, 'completed'),
+                ({'activeWorks': []}, {'items': []}, 'interrupted')):
             with self.subTest(control=control, queue=queue, state=state):
                 self.snapshot.update(control=control, queue=queue,
                     rows={'totalCount': 1, 'window': [{'kind': 'turnHeader', 'rowId': 1, 'turnId': 'latest', 'state': state}]})
