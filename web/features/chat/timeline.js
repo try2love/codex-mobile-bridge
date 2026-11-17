@@ -85,6 +85,7 @@ class ChatTimeline {
         entry.node.replaceWith(node);entry.node=node;restoreChatActivityState(node,reading);
       }
       entry.node.hidden=!this.rowVisible(row);
+      if(entry.node.hidden)entry.node.__cancelProcessReads?.();
     }
     syncChatMessageNodes(this.container,[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order).map(row=>this.nodes.get(row.key).node));
     this.refreshActions();
@@ -110,12 +111,12 @@ class ChatTimeline {
     if(this.sequence<0&&this.cacheKey&&recentTimelinePages.has(this.cacheKey)){
       this.apply(recentTimelinePages.get(this.cacheKey),true,false,true);
     }
-    if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey).then(page=>{
+    if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey,'conversation-recent-v1').then(page=>{
       if(page&&!this.receivedFreshPage&&this.sequence<0&&!this.abort.signal.aborted)this.apply(page,true,false,true);
     });
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
-      const page=await this.read('timeline',{limit:20});
+      const page=await this.read('conversation',{limit:20});
       if(this.abort.signal.aborted)return;
       this.apply(page,true);this.updates();
       if(this.hasMore&&page.rows.length&&page.rows.every(row=>chatActivityKind(row)))this.loadOlder(100);
@@ -131,7 +132,7 @@ class ChatTimeline {
       // of hidden tool activity may otherwise leave scrollTop stuck at zero.
       for(let attempt=0;attempt<3;attempt++){
         const generation=this.generation,before=this.before;
-        const result=await readChatHistoryBatch(cursor=>this.read('timeline',{before:cursor,limit:count}),before,{
+        const result=await readChatHistoryBatch(cursor=>this.read('conversation',{before:cursor,limit:count}),before,{
           known:new Set(this.rows.keys()),current:()=>!this.abort.signal.aborted&&generation===this.generation});
         if(this.abort.signal.aborted)return;
         if(result.cancelled)continue;
@@ -185,7 +186,7 @@ class ChatTimeline {
           old.node.__chatMessage=row;old.stamp=stamp;continue;
         }
       }
-      const node=this.renderRow(row);node.dataset.key=row.key;
+      const node=this.renderRow(row,undefined,old?.node);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});
     }
@@ -208,12 +209,20 @@ class ChatTimeline {
       recentTimelinePages.delete(this.cacheKey);
       if(rows.length)recentTimelinePages.set(this.cacheKey,JSON.parse(JSON.stringify({rows,sequence:this.sequence,epoch:this.epoch,
         before:this.epoch+'.'+rows[0].key,hasMore:this.hasMore||ordered.length>20,meta:{requests:[]},files:page.files||[]})));
-      if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'recent',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
+      if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'conversation-recent-v1',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
       while(recentTimelinePages.size>8)recentTimelinePages.delete(recentTimelinePages.keys().next().value);
     }
     if(!cached&&!history&&!this.abort.signal.aborted&&!page.meta.loadingHistory)this.onReady?.();
   }
-  renderRow(row,open){
+  renderRow(row,open,existing){
+    if(row.processCursor)return renderChatProcessPage(existing?.__chatMessage?.processCursor?existing:null,row,{
+      current:()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version,
+      signal:this.abort.signal,cacheScope:this.cacheKey,
+      readDirectory:(cursor,after,signal)=>this.request(this.url('process')+'&'+new URLSearchParams({cursor,...(after?{after}:{})}),undefined,signal),
+      readDetail:(record,offset,signal)=>this.request(this.url('detail')+'&'+new URLSearchParams({key:record.detailCursor,offset,version:record.version,projection:'conversation'}),undefined,signal),
+      renderText:(node,text)=>this.renderText(node,text,[...this.files.values()]),
+      renderAttachments:(node,attachments)=>renderChatAttachments(node,attachments,{showToolImages:this.showToolImages,url:item=>{if(!item.desktopId)return null;const source=this.url('desktop-images/'+encodeURIComponent(item.desktopId));return {preview:source,original:source};}}),
+      onFiles:files=>{for(const file of files)this.files.set(file.id,file);}});
     const activity=!!chatActivityKind(row)||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
     node.__chatMessage=row;
@@ -252,7 +261,7 @@ class ChatTimeline {
       const prior=this.details.get(row.key);if(prior?.next===null)return;
       more.disabled=true;more.textContent=timelineText('正在读取…');
       try{
-        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset:prior?.next||0,version:prior?.version||row.version});
+        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset:prior?.next||0,version:prior?.version||row.version,projection:'conversation'});
         if(this.abort.signal.aborted||!node.isConnected||this.rows.get(row.key)?.row.version!==detail.version)return;
         for(const file of detail.files||[])this.files.set(file.id,file);
         this.details.set(row.key,{version:detail.version,text:(detail.offset?prior?.text||'':'')+detail.text,next:detail.next});paint();
@@ -287,7 +296,7 @@ class ChatTimeline {
     return (async()=>{
       let text='',offset=0;
       do{
-        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset,version:row.version});
+        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset,version:row.version,projection:'conversation'});
         if(!valid()||detail.version!==row.version||detail.offset!==offset||detail.key!==row.key)throw Error(timelineText('消息内容已变化，请重新打开编辑'));
         text+=detail.text;
         if(detail.next===null)return text;
@@ -330,7 +339,7 @@ class ChatTimeline {
       if(!this.active()){await this.pause(1000);continue;}
       try{
         const generation=this.generation,windowRevision=this.windowRevision;
-        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through});
+        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through,projection:'conversation'});
         if(this.abort.signal.aborted)return;
         if(generation!==this.generation||windowRevision!==this.windowRevision){after=-1;through='';snapshot=null;continue;}
         // History may have expanded the window while this poll was in flight.

@@ -735,6 +735,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = {key: query[key][0] for key in ('environment', 'projectKey', 'path') if key in query}
                     body['refresh'] = query.get('refresh') == ['true']
                 if not write and parts[3] == 'detail':
+                    if query.get('historyMode') == ['conversation']:
+                        body['historyMode'] = 'conversation'
+                        for key in ('historyProcess', 'historyDetail', 'historyAfter', 'historyVersion'):
+                            if key in query:
+                                body[key] = query[key][0]
+                        if 'historyOffset' in query:
+                            body['historyOffset'] = max(0, int(query['historyOffset'][0]))
                     body['historyLimit'] = max(1, min(100, int(query.get('historyLimit', ['40'])[0])))
                     if query.get('historyBefore'):
                         before = query['historyBefore'][0]

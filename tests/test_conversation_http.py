@@ -29,6 +29,19 @@ class ConversationHttpTests(unittest.TestCase):
         reader.assert_called_with(test_bridge.THREAD, 'detail', cursor='epoch.item', offset=16000, version='v', projection='conversation')
         self.assertEqual(self.request('GET', target + '/conversation?host=missing', headers=headers)[0], 404)
 
+    def test_shared_client_projection_arguments_are_forwarded_only_after_authentication(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.call.return_value = {'rows': []}
+        target = '/api/desktop-sessions/claude/detail?sessionId=chat&historyMode=conversation&historyProcess=cursor&historyAfter=last'
+        self.assertEqual(self.request('GET', target)[0], 401)
+        manager.call.assert_not_called()
+        headers = self.login()
+        status = self.request('GET', target, headers=headers)[0]
+        self.assertEqual(status, 200)
+        self.assertEqual(manager.call.call_args.args[:3], ('claude', 'detail', 'chat'))
+        self.assertEqual(manager.call.call_args.args[3],
+                         {'historyMode': 'conversation', 'historyProcess': 'cursor', 'historyAfter': 'last', 'historyLimit': 40})
+
 
 if __name__ == '__main__':
     unittest.main()

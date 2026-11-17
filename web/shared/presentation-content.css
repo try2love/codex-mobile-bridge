@@ -101,6 +101,11 @@
 .chat-activity-stats{flex:none;white-space:nowrap;font-size:.9em}
 .chat-activity-items .activity-body{margin:.35em 0 .6em;padding:.55em .7em;border-radius:6px;background:var(--surface);font-size:var(--code-size);line-height:var(--code-leading)}
 .chat-activity-items .activity>summary:hover{color:var(--text)}
+.chat-process-page{background:none;border:0;padding:0}
+.chat-process-page>summary:before{display:none}
+.chat-process-items{max-height:none;overflow:visible;overscroll-behavior:auto;padding-left:1em}
+.chat-process-items .activity-body{max-height:none;overflow:visible;white-space:normal}
+.chat-process-items .activity-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 
 .chat-activity-items .activity>summary:before{vertical-align:-.1em}
 

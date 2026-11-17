@@ -80,7 +80,7 @@ test('a disposed timeline ignores both outstanding persistent history and its fr
 test('temporary pages never persist while fresh empty history replaces the old page and loading history preserves it',()=>{
  const temporary=persistentFixture();temporary.ui.apply(historyPage('temporary',{temporary:true}),true);assert.equal(temporary.writes.length,0);
  const empty=persistentFixture();empty.ui.apply(historyPage('old'),true);empty.ui.apply(historyPage(null,{connected:false}),true);
- assert.equal(empty.writes.length,2);assert.equal(empty.writes[1][0],empty.writes[0][0]);assert.equal(empty.writes[1][1],'recent');assert.equal(empty.writes[1][2].rows.length,0);
+ assert.equal(empty.writes.length,2);assert.equal(empty.writes[1][0],empty.writes[0][0]);assert.equal(empty.writes[1][1],'conversation-recent-v1');assert.equal(empty.writes[1][2].rows.length,0);
  const loading=persistentFixture();loading.ui.apply(historyPage('old'),true);loading.ui.cached=true;loading.ui.apply(historyPage(null,{loadingHistory:true,connected:false}),true);
  assert.equal(loading.writes.length,1);assert.equal(loading.ui.rows.has('old'),true);
 });

@@ -1,5 +1,7 @@
 """Allowlisted desktop integrations with durable at-most-once mutation receipts."""
 import hashlib
+import base64
+import hmac
 import logging
 import os
 import json
@@ -12,6 +14,7 @@ import secrets
 import sys
 import uuid
 import weakref
+from collections import OrderedDict
 from pathlib import Path
 from contextlib import closing, contextmanager, nullcontext, ExitStack
 from concurrent.futures import Future
@@ -26,6 +29,7 @@ from bridge.platforms.windows import session as windows_session
 from bridge.features.sessions.pins import SessionPins
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.projects import Projects
+from bridge.features.sessions.timeline import Timeline
 from bridge.features.sessions.display_metadata import DisplayMetadata, RenameCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
@@ -220,6 +224,8 @@ class DesktopSessions:
         self.interrupt_locks = {name: threading.RLock() for name in self.locks}
         self.read_lock = threading.Lock()
         self.reads = {}
+        self.history_timelines = OrderedDict()
+        self.history_cursor_secret = secrets.token_bytes(32)
         self.pending_resumes = {provider: {} for provider in self.locks}
         self.activity = {}
         self.activity_pending = set()
@@ -1440,6 +1446,113 @@ class DesktopSessions:
             pending.pop(rid, None)
         return result
 
+    def _conversation(self, provider, sid, body):
+        """Project existing native pages; retained display never grants control."""
+        allowed = {'historyMode', 'historyBefore', 'historyLimit', 'historyProcess', 'historyDetail',
+                   'historyAfter', 'historyVersion', 'historyOffset'}
+        if set(body) - allowed or body.get('historyProcess') and body.get('historyDetail'):
+            raise ValueError('历史读取参数无效')
+        self.require_enabled(provider)
+        before_value = body.get('historyBefore', '')
+        local_before = before_value if before_value.startswith('timeline.') else None
+        token = body.get('historyProcess') or body.get('historyDetail') or local_before
+        timeline = None
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
+            scope = (provider, sid, binding)
+            native_body = None
+            cursor = None
+            if token:
+                try:
+                    prefix, payload, signature, item_key = token.split('.', 3)
+                    if prefix != 'timeline' or len(token) > 32768 or not hmac.compare_digest(signature, hmac.new(self.history_cursor_secret, payload.encode(), hashlib.sha256).hexdigest()):
+                        raise ValueError()
+                    locator = json.loads(base64.urlsafe_b64decode(payload))
+                    if locator['scope'] != list(scope):
+                        raise ValueError()
+                    native_body, epoch = locator['body'], locator['epoch']
+                    cursor = epoch + '.' + item_key
+                except (ValueError, KeyError, TypeError):
+                    raise ValueError('历史游标无效') from None
+                timeline = next((value for key, value in self.history_timelines.items()
+                                 if key[:3] == scope and value.epoch == epoch), None)
+        if native_body is None:
+            native_body = {key: body[key] for key in ('historyBefore', 'historyLimit') if key in body}
+        value = self.call(provider, 'detail', sid, native_body)
+        messages = value.get('messages', [])
+        # Native adapters may expose only one loaded window. Do not invent an
+        # older source cursor or connect/resume a writer to obtain one.
+        turns = []
+        boundary = 'history'
+        for index, message in enumerate(messages):
+            if message.get('turnId') and message['turnId'] != 'history':
+                boundary = message['turnId']
+            elif message.get('role') == 'user' and message.get('interaction') != 'response':
+                boundary = 'user:' + str(message.get('id', index))
+            if not turns or turns[-1]['id'] != boundary:
+                turns.append({'id': boundary, 'messages': [], 'actionable': False,
+                              'status': message.get('turnStatus')})
+            normalized = dict(message, kind=message.get('kind') or message.get('type') or message.get('role', 'unknown'))
+            turns[-1]['messages'].append(normalized)
+            for source, target in (('turnStartedAt', 'startedAt'), ('turnCompletedAt', 'completedAt')):
+                if message.get(source) is not None:
+                    turns[-1][target] = message[source]
+        session = value.get('session') or {}
+        if turns and not turns[-1].get('status'):
+            turns[-1]['status'] = session.get('turnStatus') or ('inProgress' if session.get('status') == 'active' else 'completed')
+        before = native_body.get('historyBefore')
+        with self.read_lock:
+            if self.binding_epochs[provider] != binding:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+            # Identity changes retire old projections; normal refreshes reuse
+            # the same Timeline and native pagination boundary.
+            for key in list(self.history_timelines):
+                if key[0] == provider and key[2] != binding:
+                    del self.history_timelines[key]
+            key = (*scope, before)
+            timeline = self.history_timelines.setdefault(key, Timeline())
+            recovering = token and timeline.sequence < 0
+            timeline.update({'sequence': timeline.sequence + 1, 'turns': turns}, conversation=True)
+            fingerprint = hashlib.sha256(json.dumps([(row['key'], row['version']) for row in timeline.rows], separators=(',', ':')).encode()).hexdigest()
+            if recovering:
+                if fingerprint != locator.get('fingerprint'):
+                    timeline.details.clear()
+                    raise ValueError('过程记录已变化，请重新展开')
+                timeline.epoch = epoch
+                for row in timeline.conversation_rows:
+                    if row.get('processCursor'):
+                        row['processCursor'] = timeline.cursor(row['key'])
+            payload = base64.urlsafe_b64encode(json.dumps({'scope': scope, 'body': native_body, 'epoch': timeline.epoch, 'fingerprint': fingerprint}, separators=(',', ':')).encode()).decode()
+            signature = hmac.new(self.history_cursor_secret, payload.encode(), hashlib.sha256).hexdigest()
+            wrap = lambda raw: 'timeline.' + payload + '.' + signature + '.' + raw.partition('.')[2]
+            self.history_timelines.move_to_end(key)
+            while len(self.history_timelines) > 16:
+                self.history_timelines.popitem(last=False)
+            try:
+                if body.get('historyProcess'):
+                    result = timeline.process(cursor, after=body.get('historyAfter'))
+                    result['rows'] = [dict(row, detailCursor=wrap(row['detailCursor'])) for row in result['rows']]
+                    return result
+                if body.get('historyDetail'):
+                    result = timeline.detail(cursor, offset=body.get('historyOffset', 0), version=body.get('historyVersion'))
+                    from bridge.features.workspace.files import workspace_references
+                    result['files'] = workspace_references([{'text': result['text']}], session.get('cwd'), host_files=True)
+                    return result
+                page = timeline.page(limit=100, before=cursor if local_before else None, projection='conversation')
+                rows = [dict(row, id=row['key'], detailCursor=wrap(timeline.cursor(row['key'])),
+                             **({'processCursor': wrap(row['processCursor'])} if row.get('processCursor') else {})) for row in page['rows']]
+                native_history = value.get('history') or {}
+                history = {**native_history, 'before': wrap(page['before']) if page['hasMore'] else native_history.get('before'),
+                           'hasMore': page['hasMore'] or native_history.get('hasMore', False)}
+            finally:
+                # Keep identities and bounded previews, never a second retained
+                # transcript. Bodies are read through the normal adapter guard.
+                timeline.details.clear()
+        # Process file references and screenshots stay on the detail route.
+        from bridge.features.workspace.files import workspace_references
+        return {**value, 'messages': rows, 'turns': [], 'history': history,
+                'files': workspace_references(rows, session.get('cwd'), host_files=True)}
+
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
@@ -1448,6 +1561,8 @@ class DesktopSessions:
         if action not in ('list', 'projects', 'create', 'create-models', 'account') and (not isinstance(sid, str) or not sid or len(sid) > 512):
             raise ValueError('会话标识无效')
         body = body or {}
+        if action == 'detail' and body.get('historyMode') == 'conversation':
+            return self._conversation(provider, sid, body)
         if any(key in body for key in ('directoryProject', 'projectDirectory')):
             raise ValueError('项目目录必须通过目录选择器登记')
         if action == 'pin':

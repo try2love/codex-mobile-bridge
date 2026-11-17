@@ -230,6 +230,92 @@ function chatTaskLabel(task){
   const minutes=Math.floor(task.seconds/60),seconds=task.seconds%60;
   return minutes?t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',minutes).replace('{seconds}',seconds):t('用时 {seconds} 秒').replace('{seconds}',seconds);
 }
+// An explicit disclosure owns its reads. Native status updates only its label.
+function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText,renderAttachments,current=()=>true,signal,cacheScope='',onFiles=()=>{}}){
+  const group=existing||document.createElement('details'),t=text=>typeof BridgeI18n==='undefined'?text:BridgeI18n.t(text);
+  if(!existing){
+    group.className='chat-activity-group timeline-row chat-process-page';
+    group.append(document.createElement('summary'),document.createElement('div'));
+    group.lastChild.className='chat-activity-items chat-process-items';group.__records=new Map();group.__pages=new Map();
+  }
+  group.__chatMessage=row;group.dataset.key=row.key;group.dataset.chatTurnId=row.turnId||'';
+  const start=chatMessageDate(row.turnStartedAt),end=chatMessageDate(row.turnCompletedAt);
+  group.firstChild.textContent=chatTaskLabel({active:row.turnStatus==='inProgress',seconds:start&&end&&end>=start?Math.floor((end-start)/1000):null});
+  const valid=()=>current()&&!signal?.aborted&&group.isConnected;
+  const cache=window.BridgeChatHistoryCache,persistent=()=>cacheScope&&['completed','interrupted','failed'].includes(group.__chatMessage.turnStatus);
+  const cancel=()=>{group.__directoryController?.abort();group.__directoryController=null;for(const entry of group.__records.values()){entry.controller?.abort();entry.controller=null;}};
+  group.__cancelProcessReads=cancel;
+  const paint=()=>{
+    const nodes=[...group.__records.values()].map(entry=>entry.node);
+    if(group.__next){
+      const more=document.createElement('button');more.type='button';more.className='plain chat-process-more';more.textContent=t('继续加载过程');more.onclick=()=>load(group.__next);nodes.push(more);
+    }
+    syncChatMessageNodes(group.lastChild,nodes,false);
+  };
+  const record=metadata=>{
+    let entry=group.__records.get(metadata.key);
+    if(!entry){
+      const leaf=metadata.role==='assistant'||metadata.hasDetail===false;
+      const node=document.createElement(leaf?'section':'details'),heading=document.createElement(leaf?'div':'summary'),body=document.createElement('div');
+      node.className='activity';body.className='activity-body';node.append(heading,body);
+      entry={node,body};group.__records.set(metadata.key,entry);
+    }
+    const node=entry.node;
+    if(entry.row?.version!==metadata.version)entry.detail=null;
+    entry.row=metadata;node.dataset.key=metadata.key;node.dataset.icon=chatActivityIcon(metadata);node.__chatMessage=metadata;
+    renderChatActivityLabel(node.firstChild,metadata);
+    node.firstChild.hidden=metadata.role==='assistant';
+    const paintBody=()=>{
+      const detail=entry.detail;if(!detail)return;
+      const content=document.createElement(metadata.role==='assistant'?'div':'pre');content.className=metadata.role==='assistant'?'message-body':'activity-text';
+      if(metadata.role==='assistant'&&renderText)renderText(content,detail.text);else content.textContent=detail.text;
+      entry.body.replaceChildren(content);renderAttachments?.(entry.body,detail.attachments);
+      if(detail.text){const copy=document.createElement('button');copy.type='button';copy.className='plain activity-copy';copy.textContent=t('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>entry.detail.text,copy);entry.body.append(copy);}
+      if(detail.next!==null){const more=document.createElement('button');more.type='button';more.className='plain detail-more';more.textContent=t('继续加载正文');more.onclick=()=>loadBody();entry.body.append(more);}
+    };
+    const loadBody=async()=>{
+      if(!valid()||!group.open||!node.open||entry.controller||entry.detail?.next===null)return;
+      const controller=entry.controller=new AbortController(),target=entry.row,prior=entry.detail;
+      const offset=prior?.next||0,slot='process-detail:'+target.detailCursor+':'+target.version+':'+offset;
+      try{
+        const saved=persistent()&&await cache?.read(cacheScope,slot);
+        if(controller.signal.aborted||!valid()||!group.open||!node.open)return;
+        const detail=saved||await readDetail(target,offset,controller.signal);
+        if(controller.signal.aborted||!valid()||!group.open||!node.open||entry.row!==target)return;
+        if(detail.version!==target.version||detail.offset!==offset)throw Error(t('消息内容已变化，请重新打开编辑'));
+        onFiles(detail.files||[]);
+        entry.detail={...detail,text:(offset?prior.text:'')+detail.text,attachments:detail.attachments||prior?.attachments};paintBody();
+        if(persistent()&&!saved)cache?.write(cacheScope,slot,detail);
+      }catch(error){if(!controller.signal.aborted&&valid()&&group.open&&node.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>loadBody();entry.body.replaceChildren(retry);}}
+      finally{if(entry.controller===controller)entry.controller=null;}
+    };
+    node.ontoggle=()=>{if(node.open){if(entry.detail)paintBody();else loadBody();}else{entry.controller?.abort();entry.controller=null;}};
+    if(metadata.role==='assistant'){
+      const content=document.createElement('div');content.className='message-body';if(renderText)renderText(content,metadata.text||'');else content.textContent=metadata.text||'';entry.body.replaceChildren(content);
+      if((metadata.text||'').length>=8000){node.open=true;const more=document.createElement('button');more.type='button';more.className='plain';more.textContent=t('展开完整内容');more.onclick=()=>loadBody();entry.body.append(more);}
+    }
+    if(node.open&&metadata.role!=='assistant'){if(entry.detail)paintBody();else loadBody();}
+  };
+  const load=async after=>{
+    if(!valid()||!group.open||group.__directoryController)return;
+    const target=group.__chatMessage,controller=group.__directoryController=new AbortController();
+    const slot='process:'+target.processCursor+':'+target.version+':'+(after||'');
+    try{
+      const saved=group.__pages.get(slot)||(persistent()&&await cache?.read(cacheScope,slot));
+      if(controller.signal.aborted||!valid()||!group.open)return;
+      const page=saved||await readDirectory(target.processCursor,after,controller.signal);
+      if(controller.signal.aborted||!valid()||!group.open||group.__chatMessage.version!==target.version)return;
+      onFiles(page.files||[]);for(const metadata of page.rows||[])record(metadata);
+      group.__next=page.next;group.__loadedVersion=target.version;group.__pages.set(slot,page);paint();
+      if(persistent()&&!saved)cache?.write(cacheScope,slot,page);
+    }catch(error){if(!controller.signal.aborted&&valid()&&group.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>{retry.remove();load(after);};group.lastChild.append(retry);}}
+    finally{if(group.__directoryController===controller)group.__directoryController=null;}
+  };
+  group.ontoggle=()=>{if(group.open){if(group.__loadedVersion!==group.__chatMessage.version)load();else paint();}else cancel();};
+  if(group.__processSignal!==signal){group.__processSignal?.removeEventListener('abort',group.__abortProcessListener);group.__processSignal=signal;group.__abortProcessListener=cancel;signal?.addEventListener('abort',cancel,{once:true});}
+  if(group.open&&group.__loadedVersion!==row.version){cancel();load();}
+  return group;
+}
 function groupChatTasks(container,nodes){
   const previous=container.__chatTaskGroups||new Map(),next=new Map(),used=new Set(),result=[],tasks=chatTaskSegments(nodes,container.__chatTaskState);
   let cluster=[],current=null;
@@ -253,6 +339,7 @@ function groupChatTasks(container,nodes){
   };
   for(const node of nodes){
     const row=node.__chatMessage,task=tasks.get(node);
+    if(row?.processCursor){flush();result.push(node);current=null;continue;}
     const process=row&&(chatActivityKind(row)||row.role==='assistant'&&!task.finals.has(node))&&!row.fileSummary;
     if(!process){flush();result.push(node);current=null;continue;}
     if(current&&current!==task)flush();current=task;cluster.push(node);
