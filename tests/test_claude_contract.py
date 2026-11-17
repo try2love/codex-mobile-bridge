@@ -294,10 +294,17 @@ class DesktopActionContract(unittest.IsolatedAsyncioTestCase):
             {'requestId': 'req-1', 'toolName': 'AskUserQuestion',
              'input': {'questions': [{'id': 'q1', 'question': '请选择？'}]}}]}
         archived_state = False
+        responses = []
+        fail_response = False
         async def fake_call(kind, method, *args, **kwargs):
             nonlocal archived_state
             if method == 'getSession':
                 return pending
+            if method == 'respondToToolPermission':
+                responses.append(args)
+                if fail_response:
+                    raise BridgeUnavailable('桌面写入回执丢失')
+                return True
             if method == 'mobileArchiveState':
                 return {'session': {'sessionId': 'native-1', 'turnRunning': False,
                                     'isArchived': archived_state, 'pendingToolPermissions': []},
@@ -322,8 +329,36 @@ class DesktopActionContract(unittest.IsolatedAsyncioTestCase):
                 receipt = self.manager.call('claude', 'respond', sid, body)
                 self.assertEqual(receipt['status'], 'blocked')
 
+        for invalid in (None, {}, {'questions': None}, {'questions': {}}, {'questions': []},
+                        {'questions': [None]}, {'questions': [{}]}, {'questions': [{'question': 123}]},
+                        {'questions': [{'question': '   '}]},
+                        {'questions': [{'question': 'Valid?'}, None]}):
+            with self.subTest(native_input=invalid):
+                pending['pendingToolPermissions'][0]['input'] = invalid
+                receipt = self.manager.call('claude', 'respond', sid, {'id': str(uuid.uuid4()),
+                    'requestId': 'req-1', 'decision': 'accept', 'answers': {}})
+                self.assertEqual(receipt['status'], 'blocked')
+        self.assertEqual(responses, [])
+        decline = self.manager.call('claude', 'respond', sid, {'id': str(uuid.uuid4()),
+            'requestId': 'req-1', 'decision': 'decline'})
+        self.assertEqual(decline['status'], 'accepted')
+        self.assertEqual(responses[-1], ('req-1', 'deny'))
+        pending['pendingToolPermissions'][0]['input'] = {'questions': [
+            {'id': 'multi', 'question': 'Choose?', 'multiSelect': True},
+            {'id': 'manual', 'question': 'Explain?'}]}
+        answer_body = {'id': str(uuid.uuid4()), 'requestId': 'req-1', 'decision': 'accept',
+            'answers': {'multi': {'answers': ['A', 'B']}, 'manual': {'answers': ['Custom text']}}}
+        self.assertEqual(self.manager.call('claude', 'respond', sid, answer_body)['status'], 'accepted')
+        self.assertEqual(responses[-1][2]['answers'], {'Choose?': 'A, B', 'Explain?': 'Custom text'})
+
         archive = self.manager._archive('claude', sid, {'id': str(uuid.uuid4()), 'archived': True})
         self.assertEqual(archive['status'], 'confirmed')
+        fail_response = True
+        ambiguous = {**answer_body, 'id': str(uuid.uuid4())}
+        self.assertEqual(self.manager.call('claude', 'respond', sid, ambiguous)['status'], 'unknown')
+        sent = len(responses)
+        self.assertEqual(self.manager.call('claude', 'respond', sid, ambiguous)['status'], 'unknown')
+        self.assertEqual(len(responses), sent)
 
         # 合法 answers 应正常映射并调用原生 respondToToolPermission。
         self.assertEqual(claude_model.respond_answers(

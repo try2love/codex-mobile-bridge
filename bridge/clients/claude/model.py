@@ -58,17 +58,19 @@ def session(surface, raw):
 def respond_answers(pending_input, raw_answers, *, error_cls=ValueError):
     """校验并映射 AskUserQuestion 回答，防止 null 或非字典触发未捕获异常。"""
     # 原生请求的 input 或客户端传入的 answers 可能为 None / 非字典，提前收敛为可读业务错误。
-    updated = dict(pending_input) if isinstance(pending_input, dict) else {}
+    if not isinstance(pending_input, dict):
+        raise error_cls('原生提问格式无效，请刷新后重试或拒绝本次操作')
+    updated = dict(pending_input)
     questions = updated.get('questions')
-    if not isinstance(questions, list):
-        questions = []
+    if (not isinstance(questions, list) or not questions or any(
+            not isinstance(question, dict) or not isinstance(question.get('question'), str) or
+            not question['question'].strip() for question in questions)):
+        raise error_cls('原生提问格式无效，请刷新后重试或拒绝本次操作')
     answers = {} if raw_answers is None else raw_answers
     if not isinstance(answers, dict):
         raise error_cls('请回答每一项问题')
     mapped = {}
     for index, question in enumerate(questions):
-        if not isinstance(question, dict):
-            continue
         key = str(question.get('id') or question.get('question') or index)
         entry = answers.get(key)
         values = entry.get('answers') if isinstance(entry, dict) else None
