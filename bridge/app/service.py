@@ -4173,60 +4173,72 @@ class Bridge:
         for source in list(self.remote_bridges.values()):
             source.suspend_observation()
 
+    def _maintain_session(self, session):
+        with self.submit_lock:
+            queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
+        if queued and session.connected and session.view().get("status") == "idle":
+            for paused_key, paused in queued:
+                if paused.get('cliRelease'):
+                    self._settle_scope_queued(session, paused_key)
+            with self.submit_lock:
+                queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
+                          and row['status'] == 'queued' and not row.get('cliRelease')]
+            if queued:
+                key, entry = queued[0]
+                try:
+                    self._send_queued(session, key, entry)
+                except Exception:
+                    pass  # Unknown outcomes stay recorded and are never automatically replayed.
+        if (session.viewers > 0 or queued or session.watched) and not session.connected:
+            if session.activity_only and session.viewers == 0 and not queued:
+                if time.monotonic() >= session.retry_at:
+                    with session.condition:
+                        now = time.monotonic()
+                        session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
+                    self._attach(session, timeout=0)
+            else:
+                self._refresh_async(session)
+        elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
+            with self.lock:
+                if session.viewers != 0 or session.watched:
+                    return
+                self.live.pop(session.id, None)
+            if (session.connected or session.discovering) and session.runtime != "cli":
+                try:
+                    self.ipc.follow(session.id, session.owner, False, host=self.native_host)
+                except IPCError:
+                    pass
+
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
-            if not self.observation_enabled():
-                continue
-            if isinstance(self.store, RemoteStore):
-                current = self.hosts.hosts(cached=True).get(self.host)
-                if current and current['alias'] == self.store.alias:
-                    retry_ssh(self.store.alias, manual=False)
-            if self.accounts is not None:
-                try:
-                    self.accounts.check_ready()
-                except ValueError:
+            try:
+                if not self.observation_enabled():
                     continue
-            with self.lock:
-                sessions = list(self.live.values())
-            for session in sessions:
-                with self.submit_lock:
-                    queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
-                if queued and session.connected and session.view().get("status") == "idle":
-                    for paused_key, paused in queued:
-                        if paused.get('cliRelease'):
-                            self._settle_scope_queued(session, paused_key)
-                    with self.submit_lock:
-                        queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
-                                  and row['status'] == 'queued' and not row.get('cliRelease')]
-                    if queued:
-                        key, entry = queued[0]
-                        try:
-                            self._send_queued(session, key, entry)
-                        except Exception:
-                            pass  # Unknown outcomes stay recorded and are never automatically replayed.
-                if (session.viewers > 0 or queued or session.watched) and not session.connected:
-                    if session.activity_only and session.viewers == 0 and not queued:
-                        if time.monotonic() >= session.retry_at:
-                            with session.condition:
-                                now = time.monotonic()
-                                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
-                            self._attach(session, timeout=0)
-                    else:
-                        self._refresh_async(session)
-                elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
-                    with self.lock:
-                        if session.viewers != 0 or session.watched:
-                            continue
-                        self.live.pop(session.id, None)
-                    if (session.connected or session.discovering) and session.runtime != "cli":
-                        try:
-                            self.ipc.follow(session.id, session.owner, False, host=self.native_host)
-                        except IPCError:
-                            pass
-            recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
-                             for session in sessions)
-            delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+                if isinstance(self.store, RemoteStore):
+                    current = self.hosts.hosts(cached=True).get(self.host)
+                    if current and current['alias'] == self.store.alias:
+                        retry_ssh(self.store.alias, manual=False)
+                if self.accounts is not None:
+                    try:
+                        self.accounts.check_ready()
+                    except ValueError:
+                        continue
+                with self.lock:
+                    sessions = list(self.live.values())
+                for session in sessions:
+                    try:
+                        self._maintain_session(session)
+                    except Exception:
+                        # 单个会话维护异常（例如原会话消失导致 store.get 抛 KeyError）
+                        # 不得中断其他会话维护或杀死后台线程。
+                        logging.getLogger(__name__).exception("后台维护会话 %s 失败", session.id)
+                recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
+                                 for session in sessions)
+                delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+            except Exception:
+                # 远程主机探测等外层瞬时异常同样不应终止后台维护循环。
+                logging.getLogger(__name__).exception("后台维护循环迭代失败")
 
     def _target(self, thread_id, *, defer_cli_account=False):
         if self.released_cli.contains(thread_id):
