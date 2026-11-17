@@ -589,6 +589,30 @@ for line in sys.stdin:
             self.assertEqual(fetch.call_count, 1)
         self.assertEqual(self.reader.get_kind('models', str(self.home), provider='openai')['models'][0]['id'], 'new')
 
+    def test_null_catalog_lists_and_profiles_return_safe_empty_defaults(self):
+        # 运行时返回 data=null 或 supportedReasoningEfforts=null 时不应抛出 TypeError。
+        def null_codex(method, params):
+            if method == 'config/read':
+                return {'config': {'profile': 'empty', 'profiles': {'empty': None}}}
+            if method == 'account/read':
+                return {'account': None}
+            if method == 'model/list':
+                return {'data': None, 'nextCursor': None}
+            raise AssertionError(method)
+
+        result = self.reader.read_models(null_codex, str(self.home))
+        self.assertEqual(result['models'], [])
+        self.assertEqual(result['modelSource'], 'codex')
+
+        def null_metadata(method, params):
+            return {'data': [None, {'model': None, 'id': 'provider-fixture', 'supportedReasoningEfforts': None}]}
+
+        with patch('bridge.clients.codex.catalog.model_catalog',
+                   return_value=[{'id': 'provider-fixture', 'name': 'provider-fixture', 'efforts': []}]):
+            api_result = self.reader.read_models(self.request, str(self.home), 'bridge_api', metadata_request=null_metadata)
+        self.assertEqual([m['model'] for m in api_result['models']], ['provider-fixture'])
+        self.assertEqual(api_result['models'][0]['supportedReasoningEfforts'], [])
+
 
 class RemoteCatalogTests(unittest.TestCase):
     def test_remote_source_includes_helpers_and_keeps_provider_cache_separate(self):
