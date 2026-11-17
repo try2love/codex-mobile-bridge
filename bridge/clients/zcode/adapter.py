@@ -87,11 +87,16 @@ def project_snapshot(snapshot, workspace, reply_models=None):
     control = _dict(snapshot.get('control'))
     config = _dict(snapshot.get('config'))
     queue_items = _dict(snapshot.get('queue')).get('items')
-    active = bool(control.get('activeWorks')) or bool(snapshot['pendingInteractions'])
+    works = control.get('activeWorks')
+    latest_turn = turns[-1]['status'] if turns else None
+    runtime_known = (isinstance(snapshot.get('control'), dict) and isinstance(works, list) and
+                     all(isinstance(work, dict) for work in works) and isinstance(queue_items, list) and
+                     (latest_turn is None or latest_turn in ('inProgress', 'completed', 'interrupted', 'failed')))
+    active = bool(works) or bool(snapshot['pendingInteractions']) or bool(queue_items) or latest_turn == 'inProgress'
     routing = _dict(snapshot.get('inputRouting')).get('mode')
-    send_modes = {'send': not active and routing == 'startNow' and not queue_items,
-                  'queue': routing in ('startNow', 'enqueue', 'guide', 'choice') and not snapshot['pendingInteractions'],
-                  'steer': bool(control.get('activeWorks')) and routing in ('enqueue', 'guide') and not snapshot['pendingInteractions']}
+    send_modes = {'send': runtime_known and not active and routing == 'startNow',
+                  'queue': runtime_known and routing in ('startNow', 'enqueue', 'guide', 'choice') and not snapshot['pendingInteractions'],
+                  'steer': runtime_known and bool(works) and routing in ('enqueue', 'guide') and not snapshot['pendingInteractions']}
     error = control.get('lastError') if control.get('phase') == 'error' else None
     if isinstance(error, dict):
         text = error.get('message') or 'ZCode 原生任务执行失败'
@@ -111,7 +116,8 @@ def project_snapshot(snapshot, workspace, reply_models=None):
             item['decisions'] = [{'id': option['optionId'], 'label': option['label']}
                                  for option in (payload.get('options') or []) if option['kind'] in ('allowOnce', 'deny')]
         requests.append(item)
-    foreground = [work['foregroundExecutionId'] for work in (control.get('activeWorks') or []) if work.get('foregroundExecutionId')]
+    foreground = [work['foregroundExecutionId'] for work in (works if isinstance(works, list) else [])
+                  if isinstance(work, dict) and work.get('foregroundExecutionId')]
     native_goal = snapshot.get('goal')
     goal = ({'goalId': native_goal['targetId'], 'objective': native_goal['objective'],
              'status': {'verified': 'complete', 'verifying': 'active', 'notSatisfied': 'active',
@@ -124,12 +130,12 @@ def project_snapshot(snapshot, workspace, reply_models=None):
              if native_usage else None)
     return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': _dict(snapshot.get('meta')).get('title', ''),
-                        'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
-                        'turnStatus': 'failed' if error else 'inProgress' if active else 'completed',
+                        'status': 'active' if runtime_known and active else 'idle' if runtime_known else 'unknown', 'backend': 'desktop', 'requests': requests,
+                        'turnStatus': 'failed' if error else 'unknown' if not runtime_known else 'inProgress' if active else 'completed',
                         'model': '/'.join(filter(None, (config.get('provider'), config.get('model')))),
                         'modelDisplayName': config.get('model'), 'effort': config.get('thought'),
                         'composerCapabilities': dict(COMPOSER_CAPABILITIES),
-                        'runtimeKnown': True,
+                        'runtimeKnown': runtime_known,
                         'permissionMode': config.get('mode'),
                         'permissionLabel': ACCESS.get(config.get('mode')),
                         'collaborationMode': 'plan' if config.get('planEnabled') or config.get('mode') == 'plan' else 'default',
@@ -144,7 +150,7 @@ def project_snapshot(snapshot, workspace, reply_models=None):
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
                              'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
                              'queue': send_modes['queue'], 'steer': send_modes['steer'], 'skills': True, 'permissions': config.get('mode') in ACCESS,
-                             'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': not active and not queue_items and
+                             'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': runtime_known and not active and not queue_items and
                              _dict(_dict(snapshot.get('availability')).get('compact')).get('allowed') is True,
                              'plan': True, 'goal': True, 'goalEdit': False, 'create': True}}
 
@@ -789,6 +795,10 @@ class ZCodePrototype(ZCodeDesktop):
                 snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
             value = project_snapshot(snapshot, workspace, models)
             value['capabilities'].update(result.get('capabilities', {}))
+            if not value['session']['runtimeKnown']:
+                # Capability advertisements cannot turn an unknown snapshot into idle evidence.
+                value['capabilities'].update(send=False, queue=False, steer=False, compact=False,
+                                             sendModes=dict.fromkeys(('send', 'queue', 'steer'), False))
             if sid in self.debug_sessions:
                 # The client inventory may still describe the previous connection.
                 value['session'].update(controlScope='session', connectionState='ready')
