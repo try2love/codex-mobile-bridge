@@ -996,9 +996,12 @@ class Accounts:
             self.assert_editable()
             if sync.switch_live_api(row, request_id):
                 return self.public()
-            if self.info.current().get('id') != row['id']:
-                sync.prepare_profile_switch()
-            preflight = sync.preflight('codex')
+            if self.info.current().get('id') == row['id']:
+                return self.public()
+            sync.prepare_profile_switch()
+            shared_daemon_confirmed = value.get('sharedDaemonConfirmed') is True
+            preflight = (sync.preflight('codex', shared_daemon_confirmed=True) if shared_daemon_confirmed
+                         else sync.preflight('codex'))
             self.assert_editable()
             if self.info.current().get('id') == row['id']:
                 return self.public()
@@ -1026,6 +1029,7 @@ class Accounts:
             ledger[request_id] = row['id']
             private_json(self.root/'requests.json', ledger)
             self.state = {'phase': 'preparing', 'requestId': request_id, 'targetId': row['id'], 'error': None,
+                          'sharedDaemonConfirmed': shared_daemon_confirmed,
                           'cliSync': {'status': 'pending' if sync_cli else 'shared-config-unverified'}}
             self.phase('preparing')
             self.thread = threading.Thread(target=self._switch, args=(row, app), daemon=True)
@@ -1408,7 +1412,9 @@ class Accounts:
             if changed:
                 folder = self.prepare(row, before)
             from bridge.features.accounts.cli_sync import LocalCliSync
-            LocalCliSync(self.bridge)._codex_idle()
+            local_cli = LocalCliSync(self.bridge)
+            local_cli.prepare_shared_daemon_switch(confirmed=self.state.get('sharedDaemonConfirmed') is True)
+            local_cli._codex_idle()
             self.phase('applying')
             self.require_managed_writes()
             if self.snapshot_files() != before:

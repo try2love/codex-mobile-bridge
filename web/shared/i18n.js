@@ -563,6 +563,7 @@ const en={
 "官方账号登录请在电脑端完成。":"Sign in to official accounts on the computer.",
 "此电脑的 Codex Desktop 与 CLI 共用接入；桌面运行时切换会重启桌面应用。":"Codex Desktop and CLI share access on this computer. Switching restarts Desktop when it is running.",
 "确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。":"Confirm all tasks, including tasks not shown here, have ended and switch Codex access on this computer? Desktop restarts if running.",
+"确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换时仅在需要时正常退出空闲的共享 CLI 服务，并在桌面应用运行时重启；切换完成前请勿从其他客户端发起任务。":"Confirm all tasks, including tasks not shown here, have ended and switch shared Codex access on this computer? The idle shared CLI service may quit normally when needed, and Desktop restarts if running. Do not start tasks from other clients until the switch finishes.",
 "置顶聊天":"Pinned chats",
 "置顶":"Pin chat",
 "取消置顶":"Unpin chat",

@@ -934,9 +934,10 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能切换账号，请在桌面端操作')
                 body = self.read_json()
-                if (set(body) - {'id', 'requestId', 'confirmed', 'tasksConfirmed', 'syncLocalCli'}
+                if (set(body) - {'id', 'requestId', 'confirmed', 'tasksConfirmed', 'syncLocalCli', 'sharedDaemonConfirmed'}
                         or not {'id', 'requestId', 'confirmed', 'tasksConfirmed'} <= set(body)
-                        or 'syncLocalCli' in body and not isinstance(body['syncLocalCli'], bool)):
+                        or 'syncLocalCli' in body and not isinstance(body['syncLocalCli'], bool)
+                        or 'sharedDaemonConfirmed' in body and not isinstance(body['sharedDaemonConfirmed'], bool)):
                     raise ValueError('账号切换请求包含不支持的字段')
                 return self.output(202, account_bridge.accounts.switch(body))
             if not write and path == '/api/account':

@@ -63,6 +63,127 @@ class LocalCliSyncTests(unittest.TestCase):
                 self.sync.preflight('codex')
         self.bridge.cli_sessions.daemon_may_be_running.assert_called_once_with()
 
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_confirmed_shared_daemon_switch_checks_home_tasks_and_generation_before_graceful_stop(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(side_effect=['running', 'stopped'])
+        cli.client = Mock()
+        cli.client.connect.return_value = {'codexHome': str(self.home), 'userAgent': 'codex-tui/0.164.0'}
+        cli.close = Mock()
+        generation = ['pid', 123]
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)) as read, \
+             patch.object(self.sync, 'check_idle_daemon') as idle, \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            self.sync.prepare_shared_daemon_switch(confirmed=True)
+        idle.assert_called_once_with(cli.client, self.home)
+        self.assertEqual(read.call_count, 2)
+        self.assertTrue(all(call.kwargs == {'require_home': True} for call in read.call_args_list))
+        stop.assert_called_once_with(self.home, self.root/'codex-bin', generation, graceful_only=True)
+        cli.close.assert_called_once_with()
+        cli.daemon_status.assert_called_with()
+
+    def test_shared_daemon_switch_rejects_unconfirmed_or_unknown_state_without_stopping(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(side_effect=['running', 'unknown'])
+        with patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            with self.assertRaisesRegex(ValueError, '请确认.*共享任务'):
+                self.sync.prepare_shared_daemon_switch()
+            with self.assertRaisesRegex(ValueError, '状态未知'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_not_called()
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_switch_fails_closed_on_task_or_generation_change(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        cli.client.connect.return_value = {'codexHome': str(self.home), 'userAgent': 'codex-tui/0.164.0'}
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            with patch.object(self.sync, 'check_idle_daemon', side_effect=ValueError('有后台任务')):
+                with patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, ['pid', 123])):
+                    with self.assertRaisesRegex(ValueError, '有后台任务'):
+                        self.sync.prepare_shared_daemon_switch(confirmed=True)
+            with patch.object(self.sync, 'check_idle_daemon'), \
+                 patch('bridge.platforms.codex_daemon_env.read_daemon_environment',
+                       side_effect=[({}, ['pid', 123]), ({}, ['pid', 124])]):
+                with self.assertRaisesRegex(ValueError, '进程已变化'):
+                    self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_not_called()
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_switch_rejects_unknown_home_and_unverified_shutdown(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(side_effect=['running', 'running', 'running'])
+        cli.client = Mock()
+        cli.client.connect.return_value = {'codexHome': str(self.home), 'userAgent': 'codex-tui/0.164.0'}
+        cli.client.loaded_threads.return_value = []
+        cli.close = Mock()
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, ['pid', 123])), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            cli.client.connect.return_value = {'codexHome': str(self.root/'other'), 'userAgent': 'codex-tui/0.164.0'}
+            with self.assertRaisesRegex(ValueError, '不属于此配置'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+            cli.client.connect.return_value = {'codexHome': str(self.home), 'userAgent': 'codex-tui/0.164.0'}
+            with self.assertRaisesRegex(ValueError, '未确认退出'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_called_once()
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_switch_rejects_unverified_shutdown_protocol(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        cli.client.connect.return_value = {'codexHome': str(self.home), 'userAgent': 'unknown/0.1'}
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=False), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            with self.assertRaisesRegex(ValueError, '安全排空能力'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_not_called()
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_exit_timeout_is_not_replayed_and_keeps_original_files(self):
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        cli.client.connect.return_value = {'codexHome': str(self.home)}
+        cli.close = Mock()
+        before = self.accounts.snapshot_files()
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, ['pid', 123])), \
+             patch.object(self.sync, 'check_idle_daemon'), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully', side_effect=OSError('timeout')) as stop:
+            with self.assertRaisesRegex(OSError, 'timeout'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+            self.assertEqual(json.loads((self.accounts.root/'switch.json').read_text())['sharedDaemonStop'],
+                             {'generation': ['pid', 123]})
+            with self.assertRaisesRegex(ValueError, '不会重复发送'):
+                self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_called_once()
+        cli.close.assert_not_called()
+        self.assertEqual(self.accounts.snapshot_files(), before)
+
+    def test_running_desktop_defers_shared_daemon_shutdown_until_desktop_exit(self):
+        self.sync._codex_runtime = Mock(return_value=(True, object()))
+        self.sync._codex_idle = Mock()
+        self.sync.prepare_shared_daemon_switch = Mock()
+        self.assertTrue(self.sync.preflight('codex', shared_daemon_confirmed=True)['desktopRunning'])
+        self.sync.prepare_shared_daemon_switch.assert_not_called()
+        self.sync._codex_idle.assert_called_once_with(allow_running_daemon=True)
+
     def test_api_runtime_accepts_newer_protocol_versions_with_verified_identity(self):
         client = Mock()
         self.bridge.cli_sessions.client = client

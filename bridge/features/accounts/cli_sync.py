@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -252,6 +253,49 @@ class LocalCliSync:
         if cli.daemon_status() != 'stopped':
             raise ValueError('此配置的原生服务未确认退出，未切换账号')
 
+    def prepare_shared_daemon_switch(self, *, confirmed=False):
+        """Stop only a confirmed, idle daemon after verifying its home and generation."""
+        accounts = self._accounts()
+        if accounts.independent:
+            return
+        cli = self.bridge.cli_sessions
+        if not cli.daemon_may_be_running():
+            return
+        status = cli.daemon_status()
+        if status == 'stopped':
+            return
+        if status != 'running':
+            raise ValueError('本机 Codex CLI 后台服务状态未知，未切换账号')
+        if confirmed is not True:
+            raise ValueError('本机 Codex CLI 后台服务仍在运行，请确认结束所有共享任务后再切换')
+        if sys.platform not in ('darwin', 'linux'):
+            raise ValueError('此平台无法安全退出共享 CLI 服务，请在桌面端正常退出后重试')
+        self._codex_idle(allow_running_daemon=True)
+        from bridge.clients.codex.cli_session import _managed_cli
+        from bridge.clients.codex.daemon_network import graceful_restart_supported
+        from bridge.platforms.codex_daemon_env import read_daemon_environment, stop_daemon_gracefully
+        executable = _managed_cli(accounts.home)
+        if executable is None:
+            raise ValueError('本机 Codex CLI 原生运行组件不可用，未切换账号')
+        if not graceful_restart_supported(cli.client.connect()):
+            raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常退出后重试')
+        identity = read_daemon_environment(accounts.home, executable, (), require_home=True)[1]
+        if (accounts.state.get('sharedDaemonStop') or {}).get('generation') == identity:
+            raise ValueError('共享 CLI 服务退出结果待核对，请等待正常退出；不会重复发送退出信号')
+        self.check_idle_daemon(cli.client, accounts.home)
+        accounts.idle()
+        self._codex_idle(allow_running_daemon=True)
+        if self._codex_runtime()[0]:
+            raise ValueError('Codex Desktop 正在运行，请重新确认账号切换')
+        current = read_daemon_environment(accounts.home, executable, (), require_home=True)[1]
+        if current != identity:
+            raise ValueError('本机 Codex CLI 后台服务进程已变化，未切换账号')
+        accounts.phase(accounts.state.get('phase', 'idle'), sharedDaemonStop={'generation': identity})
+        stop_daemon_gracefully(accounts.home, executable, identity, graceful_only=True)
+        cli.close()
+        if cli.daemon_status() != 'stopped':
+            raise ValueError('本机 Codex CLI 后台服务未确认退出，未切换账号')
+
     @staticmethod
     def check_idle_daemon(client, home, *, target_platform=None):
         from bridge.features.sessions.create import check_archive_runtime
@@ -300,14 +344,14 @@ class LocalCliSync:
         check(identifiers)
 
 
-    def _codex_idle(self):
+    def _codex_idle(self, *, allow_running_daemon=False):
         cli = self.bridge.cli_sessions
         with cli.lock:
             if cli.joined or cli.attaching or cli.requests:
                 raise ValueError('请先结束或断开本机 Codex CLI 会话后再切换接入')
         if self._accounts().blockers():
             raise ValueError('有任务或待发送消息，请先处理后再切换接入')
-        if cli.daemon_may_be_running():
+        if not allow_running_daemon and cli.daemon_may_be_running():
             raise ValueError('本机 Codex CLI 后台服务仍在运行或状态未知，请先正常结束后再切换')
 
     def _claude_dir(self, row):
@@ -408,10 +452,13 @@ class LocalCliSync:
                 raise ValueError('Claude Code CLI 配置目录无法核验')
         return status
 
-    def preflight(self, provider):
+    def preflight(self, provider, *, shared_daemon_confirmed=False):
         if provider == 'codex':
             running, _ = self._codex_runtime()
-            self._codex_idle()
+            self._codex_idle(allow_running_daemon=shared_daemon_confirmed)
+            if not running and shared_daemon_confirmed:
+                self.prepare_shared_daemon_switch(confirmed=shared_daemon_confirmed)
+                self._codex_idle()
             return {'sharedWithDesktop': True, 'desktopRunning': running,
                     'needsDesktopSwitch': running}
         if provider == 'claude':

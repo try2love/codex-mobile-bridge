@@ -32,7 +32,7 @@ test('native login card survives an empty saved list without enrollment or switc
 test('web exposes saved account selection without enrollment or credential inputs',async()=>{
  const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'&&n.type!=='checkbox'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
  ui.confirm(false);await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests.length,0);
- ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','syncLocalCli','tasksConfirmed']);
+ ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','sharedDaemonConfirmed','syncLocalCli','tasksConfirmed']);
  assert.equal(ui.requests[0].tasksConfirmed,true);assert.match(ui.prompts[0],/未在网页显示/);
 });
 
@@ -50,6 +50,13 @@ test('Codex switch always requests CLI verification without an opt-in checkbox',
  assert.match(ui.text(),/Desktop 与 CLI 共用接入/);
  assert.equal(ui.all().some(n=>n.textContent==='同时应用到本机 CLI'),false);
  await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests[0].syncLocalCli,true);
+ assert.equal(ui.requests[0].sharedDaemonConfirmed,true);assert.match(ui.prompts[0],/共享 CLI 服务/);
+});
+
+test('shared daemon shutdown is included in the existing account confirmation in English',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.language();
+ await ui.panel.choose(ui.value().accounts[0]);
+ assert.match(ui.prompts[0],/shared CLI service/);assert.equal(ui.requests[0].sharedDaemonConfirmed,true);
 });
 
 
