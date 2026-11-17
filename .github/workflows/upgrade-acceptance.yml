@@ -1,0 +1,93 @@
+name: Published package upgrade acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Frozen product commit (acceptance checkout may add tools only)
+        required: true
+        default: '448859cd6f9d216a37f2ffaa4724312c2787471f'
+        type: string
+      candidate_run_id:
+        description: Successful Desktop builds run for the frozen source
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  upgrade:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            artifact: desktop-macOS-arm64
+            suffix: macOS-arm64.zip
+          - os: macos-15-intel
+            arch: x64
+            artifact: desktop-macOS-x64
+            suffix: macOS-x64.zip
+          - os: windows-latest
+            arch: x64
+            artifact: desktop-Windows-x64
+            suffix: Windows-x64-Setup.exe
+          - os: ubuntu-22.04
+            arch: x64
+            artifact: desktop-Linux-x64
+            suffix: Linux-amd64.deb
+          - os: ubuntu-22.04-arm
+            arch: arm64
+            artifact: desktop-Linux-arm64
+            suffix: Linux-arm64.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify provenance and download real stable package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          OLD_ASSET_SUFFIX: ${{ matrix.suffix }}
+        run: python scripts/prepare-upgrade-acceptance.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: .tmp/published-upgrade/candidate
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - run: npm ci
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - name: Install Linux native display dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth dbus-x11 libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0
+      - name: Real package manual upgrade and rollback
+        if: runner.os != 'Linux'
+        run: node scripts/smoke-published-upgrade.cjs
+      - name: Real Debian manual upgrade and rollback
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a node scripts/smoke-published-upgrade.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-upgrade-${{ runner.os }}-${{ matrix.arch }}
+          include-hidden-files: true
+          if-no-files-found: warn
+          path: |
+            .tmp/published-upgrade/provenance.json
+            .tmp/published-upgrade/result.json
+            .tmp/published-upgrade/*-desktop.png
+            .tmp/published-upgrade/*-browser.png
