@@ -86,6 +86,7 @@ async function main(){
       const metadata=JSON.parse(await fs.readFile(files.metadata,'utf8'));
       assert.equal(metadata.version,version);assert.equal(metadata.arch,process.arch);assert.equal(metadata.platform,process.platform);
       if(phase==='old'){
+        await fs.mkdir(path.join(data,'synthetic-codex'));
         const settings=await worker('snapshot');Object.assign(settings.preferences,{port,lan:true,localAccess:true,autoStart:false,tunnel:false,connections:[],codexHome:path.join(data,'synthetic-codex'),ipcPath:path.join(data,'fixture.sock')});
         Object.assign(settings.auth,{username:'admin',password:randomUUID(),sessionHours:0});
         await worker('save',settings);await fs.writeFile(path.join(data,'notification-watches.json'),'[]\n');
