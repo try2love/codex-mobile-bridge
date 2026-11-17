@@ -87,9 +87,17 @@ def inventory_fingerprint(rows, preferences):
                                  for value in values]
             if path in version_roots:
                 # Directory timestamps can collide during a fast side-by-side update.
-                result[str(path)].append(sorted(child.name for child in path.iterdir()))
+                # Package version roots such as WindowsApps can be stat'ed but not
+                # enumerated by a normal user; keep the metadata as change evidence.
+                try:
+                    result[str(path)].append(sorted(child.name for child in path.iterdir()))
+                except OSError:
+                    result[str(path)].append(None)
         except FileNotFoundError:
             result[str(path)] = None
+        except OSError:
+            # An unreadable installation is still change evidence; never fail the scan.
+            result[str(path)] = 'unreadable'
     return result
 
 
