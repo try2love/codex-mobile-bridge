@@ -909,6 +909,9 @@ class Catalog:
             if requirements is not None and not isinstance(requirements, dict):
                 return unavailable
             requirements = Catalog._dict(requirements)
+            if any(value is not None and not isinstance(value, dict) for value in (
+                    config.get('features'), profile.get('features'), requirements.get('featureRequirements'))):
+                return unavailable
             features = {**Catalog._dict(config.get('features')), **Catalog._dict(profile.get('features'))}
             allowed = (features.get('fast_mode') is not False and
                        Catalog._dict(requirements.get('featureRequirements')).get('fast_mode') is not False)

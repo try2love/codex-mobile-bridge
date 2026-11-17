@@ -78,6 +78,16 @@ class FastCapabilityTests(unittest.TestCase):
                         return invalid if name == method else valid[name]
                     self.assertEqual(Catalog.fast_mode(request, '/project'), {'allowed': False})
 
+    def test_invalid_optional_policy_objects_do_not_become_default_allow(self):
+        for config, requirements in (
+                ({'features': 'invalid'}, None),
+                ({'profile': 'selected', 'profiles': {'selected': {'features': ['fast_mode']}}}, None),
+                ({'profile': 'selected', 'profiles': {'selected': 'invalid'}}, None),
+                ({'profiles': []}, None), ({}, {'featureRequirements': 'invalid'})):
+            with self.subTest(config=config, requirements=requirements):
+                self.assertFalse(self.capability(config, requirements=requirements)[0]['allowed'])
+        self.assertTrue(self.capability({'features': None}, requirements={'featureRequirements': None})[0]['allowed'])
+
     def test_null_profile_and_requirement_containers_do_not_crash_catalog_capability(self):
         # 激活的 profile 或可空子对象显式为 JSON null 时，不应抛出 TypeError 导致目录返回 500。
         for config in [{}, {'profile': 'empty', 'profiles': {'empty': None}, 'features': None}]:
