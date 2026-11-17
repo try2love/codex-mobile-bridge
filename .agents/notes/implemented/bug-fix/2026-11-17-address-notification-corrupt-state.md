@@ -14,6 +14,8 @@ Status: implemented
 
 共享 `channels.read_json` 保持仅对文件不存在返回默认值的契约；账号、设置、普通消息投递与完成账本不获得这项降级，避免丢失投递证据后重复发送。
 
+[通知运行状态容错](2026-11-17-notification-worker-status-isolation.md)仅对可重建的 `notification-status.json` 使用独立 helper；不替代本篇入口事件的原始证据保留与去重要求。
+
 ## 备选方案
 
 - 共享读取函数统一吞掉解析异常：改动最少且可统一恢复，但账号和投递账本不能安全地变成空状态，故限定在入口提醒。
