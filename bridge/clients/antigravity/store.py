@@ -127,11 +127,13 @@ class AntigravityStore:
                 return [dict(row) for row in conn.execute(sql, params).fetchall()]
             finally:
                 conn.close()
-        except sqlite3.OperationalError:
+        except sqlite3.DatabaseError:
             if strict:
                 raise
             # Never combine independently copied main/WAL/SHM files. A missing
             # consistent native snapshot is unavailable, not evidence of idle.
+            # 数据库损坏（DatabaseError，如 file is not a database）在非严格列表读取时同样应降级为空，
+            # 避免列表接口返回 500 或穿透全局通知轮询；strict=True 时仍向上抛出以保持安全拦截。
             return []
 
     @staticmethod
