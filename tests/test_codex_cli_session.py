@@ -842,6 +842,9 @@ class CliSessionTests(unittest.TestCase):
         self.sessions.attach('thread-a', explicit=True)
         self.sessions.metadata['thread-a']['modelProvider'] = 'custom'
         self.fake.thread['modelProvider'] = 'custom'
+        original = self.fake.request
+        self.fake.request = lambda method, params, **kwargs: ({'config': {'model_provider': 'custom'}}
+            if method == 'config/read' else original(method, params, **kwargs))
         result = self.sessions.get_kind('thread-a', 'models')
         self.assertEqual(result['modelSource'], 'api')
         self.assertEqual(result['models'], [])

@@ -25,7 +25,7 @@ class ProgressiveLoadingTests(unittest.TestCase):
             self.assertEqual(len(older['rows']), 100)
             # A newly requested window is normalized lazily; old bodies were
             # deliberately not converted during the initial read.
-            normalize.assert_called_once_with(item_limit=140)
+            normalize.assert_called_once_with(item_limit=140, process_bodies=True)
         self.fixture.publish({'type': 'patches', 'baseRevision': 1, 'revision': 2,
                               'patches': [{'op': 'replace', 'path': ['turns', 0, 'items', 9999, 'text'], 'value': 'updated'}]})
         with session.condition:

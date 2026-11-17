@@ -112,11 +112,13 @@ class WslCodexDraftLineageTests(unittest.TestCase):
         snapshot = self.entry.capture_account_drafts('original_api')
         self.entry.complete_account_drafts(snapshot, self.switch(1))
         sid = self.rows[-2]['id']  # Archived and never live/subscribed.
-        session = SimpleNamespace(connected=False, view=lambda: {'id': sid, 'turns': [], 'connected': False})
+        view = Mock(side_effect=lambda **_kwargs: {'id': sid, 'turns': [], 'connected': False})
+        session = SimpleNamespace(connected=False, view=view)
         self.entry.session = lambda *_args, **_kwargs: session
         self.entry._management_identity = lambda *_args, **_kwargs: ''
         self.entry._view_features = lambda _session, result: result
         result = self.entry.view(sid)
+        view.assert_called_once_with(process_bodies=True)
         self.assertEqual(result['draftContinuation']['entry'], self.entry.host)
         self.assertEqual(result['draftContinuation']['previousAccountIdentities'], [snapshot['accountIdentity']])
         self.assertEqual(result['draftAccountIdentity'], result['draftContinuation']['accountIdentity'])
