@@ -32,43 +32,55 @@ for(const paired of [false,true])test('optional official service starts after th
   assert.equal(calls.filter(value=>value==='window').length,1);
 });
 
-test('loadDataDir 对损坏或非法的 bridge-location.json 稳健回退而不崩溃',t=>{
+test('loadDataDir 保留合法目录名，已存在的损坏指针明确阻断启动',async t=>{
   const scratch=path.resolve(__dirname,'..','.tmp');fs.mkdirSync(scratch,{recursive:true});
   const tmp=fs.mkdtempSync(path.join(scratch,'cmb-loc-'));
   t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
   const resources=path.join(tmp,'resources');fs.mkdirSync(resources,{recursive:true});
-  function boot({packaged=false}={}){
-    const warnings=[];
-    const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
+  function boot({packaged=false,fsOverride=fs}={}){
+    const warnings=[],dialogs=[],calls=[];let ready;
+    const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(fn){ready=fn;}}),on(){},quit(){calls.push('quit');},
       getLocale:()=>'zh-CN',getPath:()=>tmp,getVersion:()=>'2.2.1',isPackaged:packaged};
     const context=vm.createContext({__dirname:path.dirname(main),console:{warn:(...a)=>warnings.push(a),error(){}},
       process:{env:{},platform:'linux',pid:process.pid,execPath:path.join(tmp,'codex-mobile-bridge'),resourcesPath:resources},
       require(name){
-        if(name==='electron')return {app};
+        if(name==='electron')return {app,dialog:{showErrorBox(title,detail){dialogs.push(detail);}}};
+        if(name==='node:fs')return fsOverride;
         if(name==='./features/connections/qr.cjs')return {};
-        if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
+        if(name==='./shared/gateway-language.cjs')return {publishLanguage(){calls.push('language');}};
         if(name==='./login-startup.cjs')return {restoreDevelopmentEnvironment(){},createLoginStartup:()=>({hidden:()=>false})};
         if(name==='./shared/controller.cjs')return {createSnapshotWorker:()=>({close(){}}),createManagementWorker:()=>({close(){}}),workerFor:()=>({})};
         return requireMain(name);
       }});
     vm.runInContext(fs.readFileSync(main,'utf8'),context);
-    return {context,warnings};
+    return {context,warnings,dialogs,calls,ready};
   }
 
-  // 各类损坏 JSON 或非法字段类型均应安全回退默认目录
+  // 已存在的损坏指针不得选择另一套资料目录
   for(const content of ['{','null','[]','{}',JSON.stringify({dataDir:null}),JSON.stringify({dataDir:123}),JSON.stringify({dataDir:'   '})]){
     fs.writeFileSync(path.join(tmp,'bridge-location.json'),content);
-    const {context,warnings}=boot({packaged:true});
-    assert.equal(context.loadDataDir(),path.join(tmp,'gateway'));
-    assert.equal(warnings.length,1);
+    const {context,warnings,dialogs,calls,ready}=boot({packaged:true});
+    assert.throws(()=>context.loadDataDir(),/无法恢复已保存的数据目录/);
+    await ready();
+    assert.equal(warnings.length,0);
+    assert.equal(dialogs.length,1);
+    assert.match(dialogs[0],/无法恢复已保存的数据目录/);
+    assert.deepEqual(calls,['quit']);
+    assert.equal(fs.existsSync(path.join(tmp,'gateway')),false);
   }
   // 随包 bridge-data-dir.txt 为空白时同样回退默认目录
   fs.rmSync(path.join(tmp,'bridge-location.json'));
   fs.writeFileSync(path.join(resources,'bridge-data-dir.txt'),'   \n');
   assert.equal(boot({packaged:true}).context.loadDataDir(),path.join(tmp,'gateway'));
-  // 合法配置会正常读取并去除首尾空白
-  fs.writeFileSync(path.join(tmp,'bridge-location.json'),JSON.stringify({dataDir:'  /custom/data  '}));
-  assert.equal(boot({packaged:true}).context.loadDataDir(),'/custom/data');
+  // 合法路径中的尾空格属于实际目录名，绑定哨兵保持在同一目录。
+  const selected=path.join(tmp,'custom ');fs.mkdirSync(selected);
+  fs.writeFileSync(path.join(selected,'zcode-official-auth.enc'),'fixture-binding');
+  fs.writeFileSync(path.join(tmp,'bridge-location.json'),JSON.stringify({dataDir:selected}));
+  const restored=boot({packaged:true}).context.loadDataDir();
+  assert.equal(restored,selected);
+  assert.equal(fs.readFileSync(path.join(restored,'zcode-official-auth.enc'),'utf8'),'fixture-binding');
+  const unreadable=boot({packaged:true,fsOverride:{...fs,readFileSync(){throw Object.assign(Error('denied'),{code:'EACCES'});}}});
+  assert.throws(()=>unreadable.context.loadDataDir(),/无法恢复已保存的数据目录.*denied/);
 });
 
 test('saveDataDir 原子替换配置并在重命名失败时保留原配置且清理临时文件',t=>{

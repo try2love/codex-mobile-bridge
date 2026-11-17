@@ -51,14 +51,13 @@ function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),
 function readSavedDataDir(file){
   try{
     const parsed=JSON.parse(fs.readFileSync(file,'utf8'));
-    // 仅接受非空字符串路径，避免配置文件损坏或字段类型异常时拖垮后续目录拼接
-    const candidate=typeof parsed?.dataDir==='string'?parsed.dataDir.trim():'';
-    if(candidate)return candidate;
-    if(typeof console!=='undefined')console?.warn?.('数据目录配置缺少有效的 dataDir 字段，将回退默认目录：',file);
+    const candidate=parsed?.dataDir;
+    // Whitespace may be part of an existing directory name; validate without rewriting it.
+    if(typeof candidate==='string'&&candidate.trim())return candidate;
+    throw Error('缺少有效的 dataDir 字段');
   }catch(error){
-    if(error?.code!=='ENOENT'&&typeof console!=='undefined')console?.warn?.('无法读取数据目录配置，将回退默认目录：',error);
+    throw Error(`无法恢复已保存的数据目录，请检查或恢复 ${file}：${error.message}`);
   }
-  return null;
 }
 function saveDataDir(targetDir){
   const userDir=app.getPath('userData');
