@@ -85,9 +85,11 @@ class WebSocket:
     def _receive_bytes(self):
         fragments = []
         total = 0
+        ignoring = False
         while True:
             head = self._exact(2)
             opcode = head[0] & 15
+            fin = bool(head[0] & 128)
             length = head[1] & 127
             if length == 126:
                 length = struct.unpack('!H', self._exact(2))[0]
@@ -95,19 +97,40 @@ class WebSocket:
                 length = struct.unpack('!Q', self._exact(8))[0]
             if length > 64 * 1024 * 1024 or head[1] & 128:
                 raise self.unsupported('Invalid Native WebSocket frame')
+            if opcode >= 8 and (not fin or length > 125):
+                # RFC 6455 §5.5：控制帧必须带 FIN 且负载不得超过 125 字节，
+                # 防止 126+ 字节 Ping 回显 Pong 时写出畸形帧头或抛出 ValueError。
+                raise self.unsupported('Invalid Native WebSocket control frame')
             payload = self._exact(length)
             if opcode == 8:
                 raise EOFError()
             if opcode == 9:
                 self._control(10, payload)
                 continue
-            if opcode not in (0, 1):
+            if opcode == 10:
+                continue
+            if opcode == 0:
+                if ignoring:
+                    if fin:
+                        ignoring = False
+                    continue
+                if not fragments:
+                    raise self.unsupported('Unexpected Native WebSocket continuation frame')
+            elif opcode == 1:
+                if fragments or ignoring:
+                    raise self.unsupported('Interleaved Native WebSocket frame')
+            else:
+                # 非文本数据帧（如 opcode=2 二进制）：跳过直到 FIN=1 的整条分片链，
+                # 避免后续 opcode=0 续传片污染下一条文本消息的缓冲。
+                if fragments:
+                    raise self.unsupported('Interleaved Native WebSocket frame')
+                ignoring = not fin
                 continue
             fragments.append(payload)
             total += len(payload)
             if total > 64 * 1024 * 1024:
                 raise self.unsupported('Native WebSocket message is too large')
-            if head[0] & 128:
+            if fin:
                 return b''.join(fragments)
 
     def _exact(self, length):
@@ -130,6 +153,8 @@ class WebSocket:
             self.writer.flush()
 
     def _control(self, opcode, payload):
+        if len(payload) > 125:
+            raise self.unsupported('Invalid Native WebSocket control frame')
         mask = os.urandom(4)
         self._write(bytes((0x80 | opcode, 0x80 | len(payload))) + mask +
                     bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))

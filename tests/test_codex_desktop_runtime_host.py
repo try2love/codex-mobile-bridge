@@ -239,6 +239,32 @@ class TransportCapacityTests(unittest.TestCase):
         self.assertEqual([reply['error']['code'] for reply in replies], [-32700, -32600])
         transport.send.assert_called_once_with({'id': 2, 'method': 'ping'})
 
+    def test_oversized_or_fragmented_control_frames_and_binary_continuations_are_safe(self):
+        # 超过 125 字节的 Ping 与未带 FIN 的控制帧必须拒绝且不写出畸形 Pong；
+        # 非 FIN 二进制帧及其 opcode=0 续传分片必须成组丢弃，不能污染后续文本 JSON 消息。
+        for wire in (
+            b'\x89\x7e\x00\x7e' + b'A' * 126,
+            b'\x89\x7e\x01\x00' + b'A' * 256,
+            b'\x09\x02hi',
+        ):
+            transport, writer = self.websocket()
+            transport.reader = io.BytesIO(wire)
+            with self.assertRaises(RuntimeError):
+                transport._receive_bytes()
+            self.assertEqual(writer.getvalue(), b'')
+
+        transport, writer = self.websocket()
+        transport.reader = io.BytesIO(
+            b'\x02\x03BIN'           # 非 FIN 二进制首帧
+            b'\x80\x04CONT'          # 二进制续传末帧（应被整组丢弃）
+            b'\x01\x05{"ok"'         # 文本分片 1
+            b'\x89\x04ping'          # 中间穿插合法 Ping（应回 Pong 且不打断分片）
+            b'\x80\x06:true}'        # 文本分片 2
+        )
+        self.assertEqual(transport.receive(), {'ok': True})
+        pong = self.frames(writer.getvalue())
+        self.assertEqual(pong, [(0x8a, b'ping')])
+
 
 if __name__ == '__main__':
     unittest.main()
