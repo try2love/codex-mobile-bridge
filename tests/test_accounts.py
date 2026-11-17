@@ -424,6 +424,45 @@ class AccountsTests(unittest.TestCase):
         daemon.assert_not_called()
         self.app.stop.assert_not_called()
 
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_exit_receipt_survives_public_switch_retry_and_manager_reload(self):
+        row = self.api()
+        self.manager.prepare = self.prepare
+        running = [True]
+        self.app.stop.side_effect = lambda **_: running.__setitem__(0, False)
+        self.app.start.side_effect = lambda: running.__setitem__(0, True)
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        generation = (123, (1, 2), (3, 4), '/fixture/runtime')
+        with patch('bridge.features.accounts.cli_sync.LocalCliSync._codex_runtime',
+                   side_effect=lambda: (running[0], self.app)), \
+             patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'runtime'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)), \
+             patch('bridge.features.accounts.cli_sync.LocalCliSync.check_idle_daemon'), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully', side_effect=OSError('timeout')) as stop:
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            self.assertEqual(self.manager.state['phase'], 'restored')
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+            # A new public request must retain the unknown exit even though it
+            # creates a new operation state after Desktop has restarted.
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            self.assertEqual(stop.call_count, 1)
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+            self.manager = Accounts(self.bridge)
+            self.bridge.accounts = self.manager
+            self.manager.prepare = self.prepare
+            self.manager.wait_stopped = Mock()
+            self.manager.wait_ready = Mock()
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            stop.assert_called_once()
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+
     def test_disconnected_active_history_and_connected_error_do_not_block(self):
         self.bridge.live={
             'old':SimpleNamespace(view=lambda:{'status':'active','connected':False}),

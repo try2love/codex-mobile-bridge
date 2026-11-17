@@ -184,6 +184,50 @@ class LocalCliSyncTests(unittest.TestCase):
         self.sync.prepare_shared_daemon_switch.assert_not_called()
         self.sync._codex_idle.assert_called_once_with(allow_running_daemon=True)
 
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_exit_receipt_allows_a_verified_new_generation(self):
+        previous = {'generation': [123, [1, 2], [3, 4], '/fixture/runtime']}
+        private_json(self.accounts.root/'shared-daemon-stop.json', previous)
+        self.accounts = Accounts(self.bridge)
+        self.bridge.accounts = self.accounts
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(side_effect=['running', 'stopped'])
+        cli.client = Mock()
+        cli.close = Mock()
+        generation = (123, (1, 2), (3, 5), '/fixture/runtime')
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)), \
+             patch.object(self.sync, 'check_idle_daemon'), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_called_once_with(self.home, self.root/'codex-bin', generation, graceful_only=True)
+        self.assertEqual(json.loads((self.accounts.root/'shared-daemon-stop.json').read_text()),
+                         {'generation': [123, [1, 2], [3, 5], '/fixture/runtime']})
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_legacy_shared_daemon_exit_receipt_remains_durable_after_operation_state_replacement(self):
+        receipt = {'generation': ['pid', 123]}
+        private_json(self.accounts.root/'switch.json', {'phase': 'restored', 'sharedDaemonStop': receipt})
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        with patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'codex-bin'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, receipt['generation'])), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully') as stop:
+            for _ in range(2):
+                self.accounts = Accounts(self.bridge)
+                self.bridge.accounts = self.accounts
+                self.accounts.state = {'phase': 'preparing'}
+                self.accounts.phase('preparing')
+                with self.assertRaisesRegex(ValueError, '不会重复发送'):
+                    self.sync.prepare_shared_daemon_switch(confirmed=True)
+        stop.assert_not_called()
+        self.assertEqual(json.loads((self.accounts.root/'shared-daemon-stop.json').read_text()), receipt)
+
     def test_api_runtime_accepts_newer_protocol_versions_with_verified_identity(self):
         client = Mock()
         self.bridge.cli_sessions.client = client

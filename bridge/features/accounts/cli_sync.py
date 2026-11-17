@@ -280,7 +280,9 @@ class LocalCliSync:
         if not graceful_restart_supported(cli.client.connect()):
             raise ValueError('当前 CLI 版本尚未核验安全排空能力，请在电脑端正常退出后重试')
         identity = read_daemon_environment(accounts.home, executable, (), require_home=True)[1]
-        if (accounts.state.get('sharedDaemonStop') or {}).get('generation') == identity:
+        generation = json.loads(json.dumps(identity))
+        if accounts.shared_daemon_stop.get('generation') == generation:
+            private_json(accounts.root/'shared-daemon-stop.json', accounts.shared_daemon_stop)
             raise ValueError('共享 CLI 服务退出结果待核对，请等待正常退出；不会重复发送退出信号')
         self.check_idle_daemon(cli.client, accounts.home)
         accounts.idle()
@@ -290,7 +292,10 @@ class LocalCliSync:
         current = read_daemon_environment(accounts.home, executable, (), require_home=True)[1]
         if current != identity:
             raise ValueError('本机 Codex CLI 后台服务进程已变化，未切换账号')
-        accounts.phase(accounts.state.get('phase', 'idle'), sharedDaemonStop={'generation': identity})
+        receipt = {'generation': generation}
+        private_json(accounts.root/'shared-daemon-stop.json', receipt)
+        accounts.shared_daemon_stop = receipt
+        accounts.phase(accounts.state.get('phase', 'idle'), sharedDaemonStop=receipt)
         stop_daemon_gracefully(accounts.home, executable, identity, graceful_only=True)
         cli.close()
         if cli.daemon_status() != 'stopped':

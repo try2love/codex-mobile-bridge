@@ -181,6 +181,8 @@ class Accounts:
         self.api_model_retry_at = {}
         self.index = read_json(self.root/'index.json', {'accounts': [], 'activeId': None, 'desktopExecutable': ''})
         self.state = read_json(self.root/'switch.json', {'phase': 'idle'})
+        self.shared_daemon_stop = read_json(self.root/'shared-daemon-stop.json',
+                                           self.state.get('sharedDaemonStop') or {})
         if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'migrating', 'starting', 'verifying', 'restoring'):
             self.state.update(phase='interrupted', error='上次切换中断，请在桌面端恢复原接入')
             if self.state.get('operation') == 'desktopRuntime':
