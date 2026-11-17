@@ -89,6 +89,17 @@ class DesktopConversationProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'disabled'):
             DesktopSessions._conversation(manager, 'claude', 'chat', {})
 
+    def test_display_row_keys_preserve_native_edit_and_branch_action_identities(self):
+        manager, value = self.manager()
+        value['messages'] = [{'id': 'display-user', 'role': 'user', 'text': 'Question', 'editMessageId': 'native-edit-token'},
+                             {'id': 'display-answer', 'role': 'assistant', 'text': 'Answer', 'forkMessageId': 'native-fork-token'}]
+        value['capabilities'] = {'editMessage': True, 'fork': True}
+        page = DesktopSessions._conversation(manager, 'claude', 'chat', {})
+        self.assertNotEqual(page['messages'][0]['id'], 'native-edit-token')
+        self.assertEqual(page['messages'][0]['editMessageId'], 'native-edit-token')
+        self.assertEqual(page['messages'][1]['forkMessageId'], 'native-fork-token')
+        self.assertEqual(page['capabilities'], {'editMessage': True, 'fork': True})
+
 
 if __name__ == '__main__':
     unittest.main()
