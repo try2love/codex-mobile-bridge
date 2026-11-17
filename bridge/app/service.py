@@ -137,6 +137,7 @@ class LiveSession:
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
         self.tool_image_cache = image_cache if image_cache is not None else TOOL_IMAGE_CACHE
+        self.timeline.image_cache = self.tool_image_cache
         self.tool_images = {}
         self.tool_images_sequence = -1
 

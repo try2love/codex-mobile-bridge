@@ -18,7 +18,8 @@ def encoded(value):
 
 
 class Timeline:
-    def __init__(self):
+    def __init__(self, image_cache=None):
+        self.image_cache = image_cache
         self.epoch = uuid.uuid4().hex
         self.sequence = -1
         self.rows = []
@@ -93,7 +94,7 @@ class Timeline:
                                for a in (message.get('attachments') or [])[:20]]
                 version = hashlib.sha256(encoded([text, turn.get('model'), turn.get('effort'), attachments, message.get('fileSummary'), message.get('activityFiles'),
                                                  view['sequence'] if message.get('_detailSource') else None])).hexdigest()[:24]
-                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName', 'activityFiles') if k in message}
+                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName', 'activityFiles', 'forkMessageId', 'editMessageId') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),
@@ -132,15 +133,16 @@ class Timeline:
                 details[key] = text
         old_keys = [row['key'] for row in self.rows]
         new_keys = [row['key'] for row in rows]
-        conversation_keys, seen_process = [], set()
+        conversation_keys, seen_process, boundary = [], set(), 'start'
         for row in rows:
             if process_row(row):
-                key = 'process-' + hashlib.sha256(str(row['turnId']).encode()).hexdigest()[:24]
+                key = process_key(row, boundary)
                 if key in seen_process:
                     continue
                 seen_process.add(key)
             else:
                 key = row['key']
+                boundary = key
             conversation_keys.append(key)
         old_conversation = [row['key'] for row in self.conversation_rows]
         retained = [key for key in conversation_keys if key in set(old_conversation)]
@@ -158,12 +160,13 @@ class Timeline:
         self.rows, self.details = rows, details
         self.detail_sources = detail_sources
         self.positions = {row['key']: i for i, row in enumerate(rows)}
-        self.conversation_rows, self.process_groups = [], {}
+        self.conversation_rows, self.process_groups, boundary = [], {}, 'start'
         for row in rows:
             if not process_row(row):
                 self.conversation_rows.append(row)
+                boundary = row['key']
                 continue
-            key = 'process-' + hashlib.sha256(str(row['turnId']).encode()).hexdigest()[:24]
+            key = process_key(row, boundary)
             if key not in self.process_groups:
                 summary = {k: row[k] for k in ('turnId', 'turnStatus', 'turnStartedAt', 'turnCompletedAt', 'order') if k in row}
                 summary.update(key=key, role='activity', kind='processPage', text='', title='执行过程', processCursor=self.cursor(key))
@@ -251,8 +254,9 @@ class Timeline:
         row = self.rows[position]
         if row['key'] in self.detail_sources:
             from .model import normalize_state
-            value = normalize_state({'turns': [{'items': self.detail_sources.pop(row['key'])}]})['turns'][0]['messages'][0]
+            value = normalize_state({'turns': [{'items': self.detail_sources[row['key']]}]}, image_cache=self.image_cache)['turns'][0]['messages'][0]
             self.details[row['key']] = value.get('text', '') + ('\n\n' + value['output'] if value.get('output') else '')
+            self.detail_sources.pop(row['key'])
             if value.get('attachments'):
                 row['attachments'] = value['attachments']
         text = self.details[row['key']]
@@ -276,7 +280,8 @@ class Timeline:
         selected, size = [], 0
         for row in rows[start:start + max(1, min(100, limit))]:
             entry = {field: row[field] for field in ('key', 'version', 'role', 'kind', 'title', 'toolName', 'status', 'turnId', 'turnStatus', 'timestamp', 'interaction') if field in row}
-            entry.update(text='', detailCursor=self.cursor(row['key']))
+            entry.update(text=row.get('text', '')[:TEXT_PREVIEW] if row['role'] == 'assistant' else '', detailCursor=self.cursor(row['key']))
+            entry['hasDetail'] = bool(self.details.get(row['key']) or row['key'] in self.detail_sources or row.get('attachments'))
             cost = len(encoded(entry))
             if selected and size + cost > PAGE_BYTES:
                 break
@@ -292,3 +297,7 @@ def process_row(row):
     return (row.get('role') in ('activity', 'reasoning') or row.get('kind') == 'reasoning'
             or row.get('role') == 'user' and row.get('interaction') == 'response'
             or row.get('role') == 'assistant' and row.get('phase') == 'commentary')
+
+
+def process_key(row, boundary):
+    return 'process-' + hashlib.sha256(encoded([row.get('turnId'), boundary])).hexdigest()[:24]

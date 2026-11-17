@@ -81,6 +81,33 @@ class ConversationProjectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             right.process(cursor)
 
+    def test_supplement_splits_process_ranges_without_moving_later_activity_before_it(self):
+        timeline = Timeline()
+        rows = [{'id': 'input', 'role': 'user', 'kind': 'userMessage', 'text': 'input'},
+                {'id': 'first', 'role': 'activity', 'kind': 'commandExecution', 'text': 'one'},
+                {'id': 'supplement', 'role': 'user', 'kind': 'steeringUserMessage', 'text': 'extra'},
+                {'id': 'second', 'role': 'activity', 'kind': 'commandExecution', 'text': 'two'},
+                {'id': 'explanation', 'role': 'assistant', 'kind': 'agentMessage', 'phase': 'commentary', 'text': 'Working on the second part'}]
+        timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': rows}]}, conversation=True)
+        visible = timeline.page(projection='conversation')['rows']
+        self.assertEqual([row.get('text') for row in visible], ['input', '', 'extra', ''])
+        self.assertNotEqual(visible[1]['key'], visible[3]['key'])
+        directory = timeline.process(visible[3]['processCursor'])
+        self.assertEqual(directory['rows'][1]['text'], 'Working on the second part')
+
+    def test_lazy_tool_images_use_the_timeline_session_cache(self):
+        cache = Mock()
+        cache.extract.return_value = ('sanitized result', [{'type': 'toolImage', 'desktopId': 'scoped-image'}])
+        value = normalize_state({'turns': [{'turnId': 'turn', 'items': [
+            {'id': 'image', 'type': 'mcpToolCall', 'tool': 'screenshot', 'result': 'private-image'}]}]}, process_bodies=False)
+        timeline = Timeline(image_cache=cache)
+        timeline.update({**value, 'sequence': 1}, conversation=True)
+        row = timeline.rows[0]
+        cache.extract.assert_not_called()
+        detail = timeline.detail(timeline.cursor(row['key']), version=row['version'])
+        cache.extract.assert_called_once_with('private-image')
+        self.assertEqual(detail['attachments'][0]['desktopId'], 'scoped-image')
+
 
 if __name__ == '__main__':
     unittest.main()
