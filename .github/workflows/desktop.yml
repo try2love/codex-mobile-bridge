@@ -14,6 +14,9 @@ on:
       candidate_run_id:
         type: string
         default: ''
+      acceptance_target_os:
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       source_ref:
@@ -28,6 +31,11 @@ on:
         description: Successful Desktop builds run ID (acceptance only)
         type: string
         default: ''
+      acceptance_target_os:
+        description: Acceptance platforms (ignored by ordinary builds)
+        type: choice
+        options: [all, Windows]
+        default: all
   push:
     # Main receives source updates without building Apps; use manual or release builds.
     branches: [feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
@@ -42,6 +50,7 @@ jobs:
     with:
       source_ref: ${{ inputs.source_ref }}
       candidate_run_id: ${{ inputs.candidate_run_id }}
+      target_os: ${{ inputs.acceptance_target_os }}
   package:
     if: inputs.acceptance_only != true
     strategy:

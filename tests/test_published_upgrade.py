@@ -3,6 +3,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -41,3 +45,23 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
 
     def test_unbuilt_product_changes_are_rejected(self):
         self.rejected('differs from product', changed='bridge/app/service.py\n')
+
+    def test_acceptance_platform_selector_preserves_all_or_selects_windows_only(self):
+        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text()
+        code = textwrap.dedent(workflow.split("python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            output = Path(folder)/'matrix'
+            for target, count in [('all', 5), ('Windows', 1), ('unrecognized', 0)]:
+                with self.subTest(target=target):
+                    output.unlink(missing_ok=True)
+                    result = subprocess.run([sys.executable, '-B', '-'], input=code, text=True, capture_output=True,
+                        env={**os.environ, 'TARGET_OS': target, 'GITHUB_OUTPUT': str(output)})
+                    if not count:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(output.exists())
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    rows = json.loads(output.read_text().removeprefix('matrix='))['include']
+                    self.assertEqual(len(rows), count)
+                    self.assertEqual({row['artifact'] for row in rows}, {'desktop-Windows-x64'} if count == 1 else
+                        {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Windows-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})

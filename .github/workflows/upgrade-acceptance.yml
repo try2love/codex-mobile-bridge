@@ -8,6 +8,9 @@ on:
       candidate_run_id:
         required: true
         type: string
+      target_os:
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       source_ref:
@@ -18,36 +21,47 @@ on:
         description: Successful Desktop builds run for the frozen source
         required: true
         type: string
+      target_os:
+        description: Acceptance platforms
+        type: choice
+        options: [all, Windows]
+        default: all
 permissions:
   contents: read
   actions: read
 jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          TARGET_OS: ${{ inputs.target_os }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          target = os.environ['TARGET_OS']
+          if target not in ('all', 'Windows'):
+              raise SystemExit('Unsupported acceptance platform')
+          rows = [
+              {'os': 'macos-15', 'arch': 'arm64', 'artifact': 'desktop-macOS-arm64', 'suffix': 'macOS-arm64.zip'},
+              {'os': 'macos-15-intel', 'arch': 'x64', 'artifact': 'desktop-macOS-x64', 'suffix': 'macOS-x64.zip'},
+              {'os': 'windows-latest', 'arch': 'x64', 'artifact': 'desktop-Windows-x64', 'suffix': 'Windows-x64-Setup.exe'},
+              {'os': 'ubuntu-22.04', 'arch': 'x64', 'artifact': 'desktop-Linux-x64', 'suffix': 'Linux-amd64.deb'},
+              {'os': 'ubuntu-22.04-arm', 'arch': 'arm64', 'artifact': 'desktop-Linux-arm64', 'suffix': 'Linux-arm64.deb'},
+          ]
+          if target == 'Windows':
+              rows = [row for row in rows if row['os'] == 'windows-latest']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': rows}) + '\n')
+          PY
   upgrade:
+    needs: select
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            arch: arm64
-            artifact: desktop-macOS-arm64
-            suffix: macOS-arm64.zip
-          - os: macos-15-intel
-            arch: x64
-            artifact: desktop-macOS-x64
-            suffix: macOS-x64.zip
-          - os: windows-latest
-            arch: x64
-            artifact: desktop-Windows-x64
-            suffix: Windows-x64-Setup.exe
-          - os: ubuntu-22.04
-            arch: x64
-            artifact: desktop-Linux-x64
-            suffix: Linux-amd64.deb
-          - os: ubuntu-22.04-arm
-            arch: arm64
-            artifact: desktop-Linux-arm64
-            suffix: Linux-arm64.deb
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -38,6 +38,17 @@ async function install(archive,target,work,phase){
     execFileSync('sudo',['apt-get','install','-y','--allow-downgrades',archive],{timeout:180000,stdio:'inherit'});
   }
 }
+async function stopOwnedGui(child,timeout=15000){
+  if(child.exitCode!==null||child.signalCode!==null)return;
+  await new Promise((resolve,reject)=>{
+    const finish=error=>{clearTimeout(timer);child.removeListener('exit',onExit);error?reject(error):resolve();};
+    const onExit=()=>finish();
+    const timer=setTimeout(()=>finish(Error('owned GUI exit timed out')),timeout);
+    // Subscribe before signaling: a successful kill request is not an exit.
+    child.once('exit',onExit);
+    try{child.kill();}catch(error){finish(error);}
+  });
+}
 async function inspectDesktop(executable,data,version,work,phase){
   const debug=await freePort(),env={...process.env,CMB_DATA_DIR:data};
   for(const key of ['ELECTRON_RUN_AS_NODE','CMB_PYTHON','PYTHONHOME','PYTHONPATH'])delete env[key];
@@ -45,7 +56,7 @@ async function inspectDesktop(executable,data,version,work,phase){
   let socket,errors='';child.stderr.on('data',b=>errors+=b);let spawnError;child.on('error',error=>spawnError=error);
   try{
     const page=await until(async()=>{
-      if(spawnError)throw spawnError;if(child.exitCode!==null)throw Error('GUI exited: '+errors);
+      if(spawnError)throw spawnError;if(child.exitCode!==null||child.signalCode!==null)throw Error('GUI exited: '+errors);
       const response=await fetch(`http://127.0.0.1:${debug}/json/list`,{signal:AbortSignal.timeout(2000)});
       return (await response.json()).find(row=>row.type==='page'&&row.url.endsWith('/desktop/index.html'));
     },'packaged GUI');
@@ -60,7 +71,8 @@ async function inspectDesktop(executable,data,version,work,phase){
     assert.equal(state.version,version);assert.equal(path.resolve(state.dataDir),data);
     const screenshot=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(work,phase+'-desktop.png'),Buffer.from(screenshot.data,'base64'));
   }finally{
-    socket?.close();if(child.exitCode===null){child.kill();await until(()=>child.exitCode!==null,'owned GUI exit',15000);}
+    socket?.close();await stopOwnedGui(child);
+    console.log(`${phase} GUI exited: code=${child.exitCode} signal=${child.signalCode}`);
   }
 }
 async function main(){
@@ -127,5 +139,5 @@ async function main(){
   }catch(error){await fs.writeFile(path.join(work,'result.json'),JSON.stringify({ok:false,results,error:error.message},null,2)+'\n');throw error;}
   finally{if(worker)await worker('stop').catch(error=>console.error('Owned gateway cleanup: '+error.message));}
 }
-module.exports={packageName,paths};
+module.exports={packageName,paths,stopOwnedGui};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
