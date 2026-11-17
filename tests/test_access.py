@@ -40,6 +40,22 @@ class AccessTests(unittest.TestCase):
         self.value = self.desktop.snapshot()
         self.value['preferences'].update(codexHome=str(self.directory))
 
+    def test_snapshot_survives_zero_filled_rebuildable_state_files(self):
+        # Power loss leaves size-correct but zero-filled JSON.
+        entries = self.desktop.preferences()['connections']
+        names = ['address-notifications.json', 'security-notifications.json',
+                 'cloudflare-status.json', 'network-status.json',
+                 'notification-status.json']
+        names += ['ssh-status-' + entry['id'] + '.json' for entry in entries]
+        for name in names:
+            (self.directory/name).write_bytes(b'\0' * 327)
+        value = self.desktop.snapshot()
+        self.assertEqual(value['addressNotificationStatus'], {})
+        self.assertEqual(value['securityNotificationStatus'], {})
+        self.assertEqual(value['externalStatus'], {})
+        self.assertIn('runtime', value)
+        self.assertTrue(value['urls'])
+
     def tearDown(self):
         self.temp.cleanup()
 

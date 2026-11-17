@@ -173,7 +173,7 @@ class Desktop:
         selected = interfaces.selected_interfaces(preferences.get('lanInterfaces'))
         network_status = {}
         if runtime['running']:
-            value = read_json(self.data_dir/'network-status.json', {})
+            value = read_status_json(self.data_dir/'network-status.json', {})
             if (value.get('pid') == runtime.get('pid') and
                     value.get('instanceId') == runtime.get('instanceId') and
                     value.get('mode') == ('off' if not preferences['lan'] else
@@ -190,7 +190,7 @@ class Desktop:
         hosts = ['127.0.0.1', 'localhost'] + static_addresses if preferences['lan'] else ['127.0.0.1', 'localhost']
         if not preferences['localAccess']:
             hosts = [host for host in hosts if host not in ('127.0.0.1', 'localhost')]
-        quick = read_json(self.data_dir/'cloudflare-status.json', {})
+        quick = read_status_json(self.data_dir/'cloudflare-status.json', {})
         if not runtime['running'] or quick.get('pid') != runtime.get('pid'):
             quick = {}
         quick_url = ''
@@ -204,7 +204,7 @@ class Desktop:
         urls = [url if url == quick_url else url+'/' for url in access.phone_urls(preferences, hosts, quick_url)]
         external = {}
         for entry in preferences['connections']:
-            status = read_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
+            status = read_status_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
             if runtime['running'] and status.get('pid') == runtime.get('pid'):
                 external[entry['id']] = status
         executable = preferences['cloudflared']
@@ -217,8 +217,8 @@ class Desktop:
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken']), **visible_webhook(notifications)},
                 'watches': self.notification_watches({'action': 'list'}, preferences=preferences)['watches'],
                 'notificationUrls': notification_urls,
-                'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
-                'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
+                'securityNotificationStatus': read_status_json(self.data_dir/'security-notifications.json', {}),
+                'addressNotificationStatus': read_status_json(self.data_dir/'address-notifications.json', {}),
                 'notificationStatus': read_status_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
                 'networkInterfaces': rows, 'networkStatus': network_status,
