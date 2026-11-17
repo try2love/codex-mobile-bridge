@@ -68,16 +68,11 @@ function saveDataDir(targetDir){
   const temporary=`${file}.${process.pid||'tmp'}.tmp`;
   try{
     fs.writeFileSync(temporary,payload,{mode:0o600});
-    if(typeof fs.renameSync==='function'&&typeof fs.existsSync==='function'&&fs.existsSync(temporary)){
-      fs.renameSync(temporary,file);
-      return;
-    }
+    fs.renameSync(temporary,file);
   }catch(error){
     try{fs.unlinkSync?.(temporary);}catch{}
     throw error;
   }
-  // 兼容仅桩化 mkdirSync/writeFileSync 而未实现 renameSync 的单元测试替身
-  fs.writeFileSync(file,payload,{mode:0o600});
 }
 function loadDataDir(){
   handoff=currentHandoff();

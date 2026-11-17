@@ -108,9 +108,19 @@ test('saveDataDir 原子替换配置并在重命名失败时保留原配置且�
   assert.deepEqual(JSON.parse(fs.readFileSync(target,'utf8')),{dataDir:'/data/first'});
   assert.deepEqual(fs.readdirSync(tmp),['bridge-location.json']);
 
+  const original=fs.readFileSync(target);
   const broken=boot({...fs,renameSync(){throw Error('Simulated EACCES on rename');}});
   assert.throws(()=>broken.saveDataDir('/data/second'),/Simulated EACCES/);
-  assert.deepEqual(JSON.parse(fs.readFileSync(target,'utf8')),{dataDir:'/data/first'});
+  assert.deepEqual(fs.readFileSync(target),original);
+  assert.deepEqual(fs.readdirSync(tmp),['bridge-location.json']);
+  const writes=[];
+  const missing=boot({...fs,writeFileSync(file,...args){
+    writes.push(file);assert.notEqual(file,target);
+    fs.writeFileSync(file,...args);fs.unlinkSync(file);
+  }});
+  assert.throws(()=>missing.saveDataDir('/data/third'),{code:'ENOENT'});
+  assert.equal(writes.length,1);
+  assert.deepEqual(fs.readFileSync(target),original);
   assert.deepEqual(fs.readdirSync(tmp),['bridge-location.json']);
 });
 
