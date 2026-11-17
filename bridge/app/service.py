@@ -4758,10 +4758,9 @@ class Bridge:
             cwd = authoritative_view.get('cwd')
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
-            media_items = [{'type': 'ImageView', 'path': attachment['path']}
+            media_items = [{'type': 'ImageView', 'path': path}
                            for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if mode == 'detail' else result['rows'])
-                           for attachment in row.get('attachments', [])
-                           if attachment.get('type') == 'localImage' and attachment.get('path')]
+                           for path in projection.image_views.get(row['key'], [])]
         # Resolve links in the delivered page, plus runtime ImageView evidence
         # retained separately from the paged message text.
         if mode != 'detail':

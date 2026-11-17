@@ -23,6 +23,7 @@ class Timeline:
         self.epoch = uuid.uuid4().hex
         self.sequence = -1
         self.rows = []
+        self.image_views = {}
         self.order_origin = 0
         self.details = {}
         self.detail_sources = {}
@@ -157,6 +158,16 @@ class Timeline:
         for index, row in enumerate(rows):
             row['order'] = self.order_origin + index
         self.sequence = view['sequence']
+        # Keep native image evidence separate from response attachments, whose
+        # private paths are removed by the authenticated presentation layer.
+        self.image_views = {row['key']: [a['path'] for a in row.get('attachments', [])
+                                       if a.get('type') == 'localImage' and a.get('path')]
+                            for row in rows if row.get('kind') in ('ImageView', 'imageView')}
+        for key, sources in detail_sources.items():
+            paths = [item['path'] for item in sources
+                     if item.get('type') in ('ImageView', 'imageView') and item.get('path')]
+            if paths:
+                self.image_views[key] = paths
         self.rows, self.details = rows, details
         self.detail_sources = detail_sources
         self.positions = {row['key']: i for i, row in enumerate(rows)}
