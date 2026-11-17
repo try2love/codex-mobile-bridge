@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.1：** [正式版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex APP 原生连接；新增 Antigravity、聊天内交互图表并改善长会话与模型缓存。
+> **v2.2.2-preview.1：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.1) · [更新说明](RELEASE_NOTES.md)。长会话按需加载、过程折叠与缓存，Antigravity 原生指令、思考强度和停止控制，以及多客户端稳定性修复。稳定版仍为 [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)。
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
@@ -932,6 +932,8 @@ python3 -B -m unittest discover -s tests -v
 ## 致谢
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)、[#178](https://github.com/try2love/codex-mobile-bridge/pull/178)、[#179](https://github.com/try2love/codex-mobile-bridge/pull/179)、[#180](https://github.com/try2love/codex-mobile-bridge/pull/180) 和 [#189–#198](RELEASE_NOTES.md) 中贡献 Antigravity 原生指令、模型强度、停止、分屏及多客户端稳定性修复。
 
 感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) 与 [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169) 中贡献聊天内交互图表和 Codex 协议兼容，以及 [@windowmmk](https://github.com/windowmmk) 在 [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171) 中修复大型日志中的原生端口发现。
 
