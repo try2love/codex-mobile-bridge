@@ -183,6 +183,10 @@ class OfficialManagerTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(temp.cleanup)
         self.manager = DesktopSessions(Path(temp.name))
+        # This protocol fixture supplies its own installation and process observations.
+        inventory = patch.object(self.manager, '_refresh_installation_inventory', return_value=False)
+        inventory.start()
+        self.addCleanup(inventory.stop)
         self.addCleanup(self.manager.close)
         self.manager.adapters['zcode'] = Mock()
         self.manager.locks['zcode'] = threading.RLock()

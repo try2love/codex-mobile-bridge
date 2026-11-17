@@ -170,8 +170,8 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                 return {'binding': binding, 'subscriptionId': 'lease'}
             if request['action'] == 'detail':
                 return {'snapshot': {'sessionId': 'sess_ok', 'revision': 1, 'seq': 0, 'logEpoch': 'a',
-                                     'rows': {'window': [], 'totalCount': 0}, 'control': {},
-                                     'inputRouting': {'mode': 'startNow'}, 'pendingInteractions': []}}
+                                     'rows': {'window': [], 'totalCount': 0}, 'control': {'activeWorks': []},
+                                     'queue': {'items': []}, 'inputRouting': {'mode': 'startNow'}, 'pendingInteractions': []}}
             raise AssertionError(request['action'])
         with patch.object(adapter, '_window_app', return_value=None), patch.object(adapter, '_live_process', return_value=process), \
                 patch('bridge.clients.zcode.transport.request_native', side_effect=native):
