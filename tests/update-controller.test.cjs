@@ -25,7 +25,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
       if(name==='./features/updates/mac-handoff.cjs')return {...requireMain(name),relaunchMacUpdate(){}};
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
-      if(name==='node:fs')return fixtureFiles?fs:{mkdirSync(){},writeFileSync(){},openSync:()=>0,closeSync(){},
+      if(name==='node:fs')return fixtureFiles?fs:{mkdirSync(){},writeFileSync(){},renameSync(){},openSync:()=>0,closeSync(){},
         readFileSync(file){
           if(file===path.join(path.dirname(main),'features/updates/update-public-key.pem'))return fs.readFileSync(file);
           if(ready==='missing'||now<readyAt)throw Error('ENOENT');
