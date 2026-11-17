@@ -65,6 +65,37 @@ class FastCapabilityTests(unittest.TestCase):
         self.assertEqual(self.capability(profile)[0]['provider'], 'custom')
         self.assertNotIn('PRIVATE', str(result))
 
+    def test_unknown_config_or_policy_response_cannot_enable_fast_mode(self):
+        valid = {'config/read': {'config': {}},
+                 'account/read': {'account': {'type': 'chatgpt'}, 'requiresOpenaiAuth': True},
+                 'configRequirements/read': {'requirements': None}}
+        for method, invalids in (
+                ('config/read', (None, [], {}, {'config': None}, {'config': []})),
+                ('configRequirements/read', (None, [], {}, {'requirements': []}, {'requirements': 'unknown'}))):
+            for invalid in invalids:
+                with self.subTest(method=method, invalid=invalid):
+                    def request(name, params):
+                        return invalid if name == method else valid[name]
+                    self.assertEqual(Catalog.fast_mode(request, '/project'), {'allowed': False})
+
+    def test_null_profile_and_requirement_containers_do_not_crash_catalog_capability(self):
+        # 激活的 profile 或可空子对象显式为 JSON null 时，不应抛出 TypeError 导致目录返回 500。
+        for config in [{}, {'profile': 'empty', 'profiles': {'empty': None}, 'features': None}]:
+            with self.subTest(config=config):
+                calls = []
+                def request(method, params):
+                    calls.append((method, params))
+                    if method == 'config/read':
+                        return {'config': config}
+                    if method == 'account/read':
+                        return {'account': {'type': 'chatgpt', 'email': 'private'}, 'requiresOpenaiAuth': True}
+                    return {'requirements': None}
+                result = Catalog.fast_mode(request, '/project')
+                self.assertTrue(result['allowed'])
+                self.assertEqual([m for m, _ in calls], ['config/read', 'account/read', 'configRequirements/read'])
+        self.assertIsNone(Catalog.fast_tier(None))
+        self.assertIsNone(Catalog.fast_tier({'serviceTiers': [None, {'id': 'standard', 'name': None}]}))
+
     def test_route_capabilities_are_not_inferred_from_a_similarly_named_model(self):
         reader = Catalog('/unused', 'unused')
         models = [
