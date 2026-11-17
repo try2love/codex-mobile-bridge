@@ -38,8 +38,9 @@ def session(surface, raw):
             continue
         rid = item.get('requestId', item.get('id'))
         if isinstance(rid, str):
+            raw_input = item.get('input')
             requests.append({'id': rid, 'tool': item.get('toolName', '工具'),
-                             'input': item.get('input', {}),
+                             'input': raw_input if isinstance(raw_input, dict) else {},
                              'needsInput': item.get('toolName') == 'AskUserQuestion'})
     folders = [value for value in raw.get('userSelectedFolders') or [] if isinstance(value, str)]
     return {'id': gateway_id(surface, native), 'nativeId': native, 'backend': surface, 'mode': surface,
@@ -52,6 +53,30 @@ def session(surface, raw):
             'archived': bool(raw.get('isArchived') or lifecycle == 'archived'),
             'status': 'active' if active else 'idle', 'runtimeKnown': runtime_known, 'error': bool(raw.get('error')),
             'requests': requests}
+
+
+def respond_answers(pending_input, raw_answers, *, error_cls=ValueError):
+    """校验并映射 AskUserQuestion 回答，防止 null 或非字典触发未捕获异常。"""
+    # 原生请求的 input 或客户端传入的 answers 可能为 None / 非字典，提前收敛为可读业务错误。
+    updated = dict(pending_input) if isinstance(pending_input, dict) else {}
+    questions = updated.get('questions')
+    if not isinstance(questions, list):
+        questions = []
+    answers = {} if raw_answers is None else raw_answers
+    if not isinstance(answers, dict):
+        raise error_cls('请回答每一项问题')
+    mapped = {}
+    for index, question in enumerate(questions):
+        if not isinstance(question, dict):
+            continue
+        key = str(question.get('id') or question.get('question') or index)
+        entry = answers.get(key)
+        values = entry.get('answers') if isinstance(entry, dict) else None
+        if not isinstance(values, list) or not values or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise error_cls('请回答每一项问题')
+        mapped[question.get('question') or key] = ', '.join(values)
+    updated['answers'] = mapped
+    return updated
 
 
 def turns(value):
