@@ -34,7 +34,7 @@ def main():
     changed = subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines()
     allowed = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
                '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
-               'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
+               'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py', 'tests/test_runtime_refresh.py',
                'tests/browser/chat-time.browser.js', 'tests/browser/send-feedback.spec.cjs',
                '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
     if set(changed) - allowed:

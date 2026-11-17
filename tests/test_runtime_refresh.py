@@ -197,6 +197,8 @@ class RuntimeRefreshTests(unittest.TestCase):
             self.assertEqual(find.call_count, 3)
             self.assertTrue(old.is_file())
             new.write_bytes(b'replaced runtime')
+            # A rewrite resets mtime; keep the new version newer than the old candidate.
+            os.utime(new, ns=(latest+1_000_000_000, latest+1_000_000_000))
             self.assertEqual(root.stat(), before)
             self.assertEqual(reader.executable, new)
             self.assertEqual(reader.executable, new)
