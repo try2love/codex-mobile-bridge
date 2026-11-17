@@ -520,6 +520,13 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(connect.call_count, 2)
             self.assertFalse((self.directory/'scratch').exists())
 
+        # 数据库文件头或页面损坏时，被动列表/子任务查询应安全回退为空，但 strict 空闲核验仍必须报错阻止盲目发送。
+        (self.root/'conversation_summaries.db').write_bytes(b'corrupted bytes not sqlite')
+        self.assertEqual(adapter.store.list_sessions(), [])
+        self.assertEqual(adapter.store.list_tasks(self.root, CID), [])
+        with self.assertRaises(sqlite3.DatabaseError):
+            adapter.store.is_native_busy(self.root, CID)
+
     def test_creation_sends_only_after_exact_project_binding(self):
         adapter = Antigravity(self.directory, home=self.home)
         project = Path(self.temp.name)/'My Project'
