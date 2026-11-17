@@ -16,7 +16,7 @@ from bridge.resources import project_root
 
 from bridge.features.auth.auth import Auth, password_record, session_hours, session_file_lock
 from bridge.app.lifecycle import read_record, request_stop, request_pairing
-from bridge.features.notifications.channels import Notifications, read_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
+from bridge.features.notifications.channels import Notifications, read_json, read_status_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.clients.codex.remote import AppHosts
 import bridge.features.network.access as access
@@ -219,7 +219,7 @@ class Desktop:
                 'notificationUrls': notification_urls,
                 'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
                 'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
-                'notificationStatus': read_json(self.data_dir/'notification-status.json', {}),
+                'notificationStatus': read_status_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
                 'networkInterfaces': rows, 'networkStatus': network_status,
                 'networkAdaptation': {**adaptation_settings(self.data_dir),
