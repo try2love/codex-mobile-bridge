@@ -6,9 +6,9 @@ async function runSharedComposerLoadingChecks({keepOpen=false}={}){
   const root=document.createElement('div');root.className='app desktop-mode';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:100';document.body.append(root);
   const select=document.createElement('select');let requests=0;
   const view=new DesktopSessionsView({root,select,notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async()=>{requests++;throw Error('Unexpected fixture request');}});
-  const frame=()=>new Promise(requestAnimationFrame),controls=()=>[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.attachButton,view.mode,view.workMode,view.input,view.send];
+  const frame=()=>new Promise(requestAnimationFrame),controls=()=>[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.attachButton,view.toolbar.submitControl.root,view.input,view.send];
   const visible=control=>!control.hidden&&getComputedStyle(control).display!=='none'&&control.getBoundingClientRect().width>0;
-  const fit=label=>{const rect=view.form.getBoundingClientRect();check(rect.width>0&&rect.left>=-1&&rect.right<=innerWidth+1,label+' composer fits viewport');check(view.mode.getBoundingClientRect().width>=65,label+' send mode keeps its full grid column');check(view.workMode.getBoundingClientRect().width>=65,label+' work mode keeps its full grid column');check(view.send.getBoundingClientRect().right<=rect.right+1,label+' send button fits');};
+  const fit=label=>{const rect=view.form.getBoundingClientRect();check(rect.width>0&&rect.left>=-1&&rect.right<=innerWidth+1,label+' composer fits viewport');check(view.toolbar.submitControl.root.getBoundingClientRect().width>=50,label+' merged send control keeps its clickable width');check(view.form.contains(view.workMode)&&view.toolbar.sources.contains(view.workMode),label+' original work mode remains connected for commands and drafts');check(view.send.getBoundingClientRect().right<=rect.right+1,label+' send button fits');};
   try{
     view.container.hidden=false;
     for(const provider of ['claude','deepseek','zcode','antigravity']){
@@ -27,7 +27,7 @@ async function runSharedComposerLoadingChecks({keepOpen=false}={}){
     }
     check(requests===0,'All transitions make zero client or model requests');
     return {checks:checks.length,width:innerWidth,language:BridgeI18n.language(),requests};
-  }finally{clearTimeout(view.timer);if(!keepOpen)root.remove();else window.__sharedComposerPreview={view,cleanup:()=>root.remove()};}
+  }finally{clearTimeout(view.timer);if(!keepOpen){view.toolbar?.dispose();root.remove();}else window.__sharedComposerPreview={view,cleanup:()=>root.remove()};}
 }
 
 // Incremental review checks: real Codex markup and the two mixed-capability
@@ -43,10 +43,10 @@ async function runComposerReviewRegressionChecks({keepOpen=false,nativeDetails=n
   try{
     for(const hidden of [false,true]){
       attachment.hidden=hidden;await frame();
-      const send=mode.getBoundingClientRect(),work=workMode.getBoundingClientRect(),bounds=form.getBoundingClientRect();
-      check(getComputedStyle(mode).gridColumnStart==='2'&&getComputedStyle(workMode).gridColumnStart==='3','Codex selects retain distinct grid columns with attachment hidden='+hidden);
-      check(Math.abs(send.top-work.top)<1&&send.right<=work.left+1,'Codex selects do not overlap or wrap with attachment hidden='+hidden);
-      check(send.width>=65&&work.width>=65,'Codex selects keep full column width with attachment hidden='+hidden);
+      const send=form.querySelector('.composer-submit').getBoundingClientRect(),bounds=form.getBoundingClientRect();
+      check(mode.closest('.toolbar-sources')?.hidden===true,'Codex original send mode remains connected behind the merged control with attachment hidden='+hidden);
+      check(workMode.closest('.toolbar-sources')?.hidden===true,'Codex work mode is controlled through More with attachment hidden='+hidden);
+      check(send.width>=50&&form.querySelector('.toolbar-more').getBoundingClientRect().width>0,'Codex send mode and More remain accessible with attachment hidden='+hidden);
       check(bounds.left>=-1&&bounds.right<=innerWidth+1&&form.querySelector('#send').getBoundingClientRect().right<=bounds.right+1,'Codex send row fits viewport with attachment hidden='+hidden);
     }
     const shared=document.createElement('div');shared.className='app desktop-mode';shared.hidden=true;root.append(shared);
@@ -59,5 +59,5 @@ async function runComposerReviewRegressionChecks({keepOpen=false,nativeDetails=n
     if(nativeDetails)for(const [index,detail] of nativeDetails.entries()){view.sid=detail.session.id;view.applyDetail(detail);check(view.send.disabled===(index!==0)&&view.attachButton.disabled===(index!==0),'actual manager native detail controls send and attachments '+index);check(view.attachButton.dataset.capabilityState===(index===0?'supported':'unsupported'),'actual manager native detail retains reference capability '+index);}
     check(requests===0,'Incremental checks make zero client or model requests');
     return {checks:checks.length,width:innerWidth,language:BridgeI18n.language(),requests};
-  }finally{if(view)clearTimeout(view.timer);if(keepOpen)window.__composerReviewPreview={cleanup:()=>{root.remove();marker.replaceWith(original);}};else{root.remove();marker.replaceWith(original);}}
+  }finally{if(view){clearTimeout(view.timer);view.toolbar?.dispose();}if(keepOpen)window.__composerReviewPreview={cleanup:()=>{root.remove();marker.replaceWith(original);}};else{root.remove();marker.replaceWith(original);}}
 }

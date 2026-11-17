@@ -755,7 +755,7 @@ test('native saved and connected composer keeps production control geometry and 
     view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);await view.choose('zcode');await view.open(session.id);clearTimeout(view.timer);
     view.input.value='保留这份尚未发送的草稿';view.attachments.rows.push({id:'fixture-upload',name:'notes.txt',size:20,status:'ready'});view.attachments.render();view.messages.scrollTop=120;view.rememberReading();
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    const items=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
+    const items=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.toolbar.moreButton,view.attachButton,view.send];
     const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden};});
     globalThis.__composerLayout={root,view,live,measure,first:view.messageList.firstElementChild,scroll:view.messages.scrollTop};
     return {rects:measure(),disabled:[view.modelButton,view.skillsButton,view.permissionsButton,view.workMode,view.send].every(n=>n.disabled),text:view.modelName.textContent,modelLabelWidth:view.modelName.clientWidth,scroll:view.messages.scrollTop};
@@ -902,11 +902,11 @@ test('Antigravity shared chat preserves source identity and composer geometry wh
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-list.png')});
  await page.locator('#agy-chat .ds-surface').selectOption('cli');await expect(page.locator('#agy-chat .ds-session-row')).toHaveCount(1);await page.locator('#agy-chat .ds-session-row').click();
  await expect(page.locator('#agy-chat .ds-title')).toHaveText('测试失败排查');
- const before=await page.evaluate(()=>{const v=__agyChat.view;clearTimeout(v.timer);v.input.value='请继续检查';v.input.oninput();const controls=[v.modelButton,v.skillsButton,v.permissionsButton,v.contextButton,v.composerToggle,v.attachButton,v.mode,v.workMode,v.send];__agyChat.controls=controls;return controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};});});
- expect(before.every(row=>!row.hidden&&row.width>10)).toBe(true);expect(before[1].disabled).toBe(true);expect(before[7].disabled).toBe(true);expect(before[8].disabled).toBe(false);
+ const before=await page.evaluate(()=>{const v=__agyChat.view;clearTimeout(v.timer);v.input.value='请继续检查';v.input.oninput();const controls=[v.modelButton,v.skillsButton,v.permissionsButton,v.contextButton,v.toolbar.moreButton,v.attachButton,v.toolbar.submitControl.root,v.send];__agyChat.controls=controls;return controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};});});
+ expect(before.every(row=>!row.hidden&&row.width>10)).toBe(true);expect(before[1].disabled).toBe(true);expect(before[7].disabled).toBe(false);
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-connected.png')});
  const after=await page.evaluate(()=>{const f=__agyChat,v=f.view;v.clientStates=[{...f.client,connected:false}];v.applyDetail({session:{...f.sessions[1],readOnly:true,status:'idle',connectionState:'detached'},capabilities:{...f.caps,send:false,models:false,permissions:false,attachments:false},messages:f.messages});return {controls:f.controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};}),draft:v.input.value,overflow:v.form.scrollWidth>v.form.clientWidth+1};});
- expect(after.draft).toBe('请继续检查');expect(after.overflow).toBe(false);expect(after.controls.every(row=>!row.hidden)).toBe(true);expect(after.controls[8].disabled).toBe(true);
+ expect(after.draft).toBe('请继续检查');expect(after.overflow).toBe(false);expect(after.controls.every(row=>!row.hidden)).toBe(true);expect(after.controls[7].disabled).toBe(true);
  for(let i=0;i<before.length;i++)for(const key of ['left','top','width','height'])expect(Math.abs(before[i][key]-after.controls[i][key]),i+' '+key).toBeLessThanOrEqual(1);
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-offline.png')});
  await page.evaluate(async()=>{const f=__agyChat;f.view.clientStates=[f.client];f.view.applyDetail({session:{...f.sessions[1],status:'idle',connectionState:'ready'},capabilities:f.caps,messages:f.messages});f.setCatalog('empty');await f.view.models();});

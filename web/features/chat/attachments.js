@@ -30,9 +30,18 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   attachments.append(label);node.append(attachments);
 }
 class ChatAttachments {
-  constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canUpload=()=>true}){
+  constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canReference=()=>true,menuChoices=()=>[],canUpload=()=>true,anchor=()=>button}){
     Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail,canUpload});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
-    button.onclick=()=>{if(!this.key||this.locked)return;const key=this.key,valid=action=>(...args)=>{if(this.key===key&&!this.locked)action(...args);};if(chooseReference&&window.BridgeFileActions)window.BridgeFileActions.attach(button,this.canUpload()?valid(source=>{if(source&&window.BridgeUploadSource&&!window.BridgeUploadSource(source,input.accept))return;input.click();}):null,valid(chooseReference));else input.click();};input.onchange=()=>{this.add([...input.files]);input.value='';};
+    button.onclick=()=>{
+      if(!this.key||this.locked)return;
+      const key=this.key,valid=action=>(...args)=>{if(this.key===key&&!this.locked)action(...args);};
+      if(window.BridgeFileActions&&(chooseReference||menuChoices().length)){
+        const upload=this.canUpload()?valid(source=>{if(source&&window.BridgeUploadSource&&!window.BridgeUploadSource(source,input.accept))return;input.click();}):null;
+        const reference=chooseReference&&canReference()?valid(chooseReference):null;
+        const choices=menuChoices().map(choice=>({...choice,action:valid(choice.action)}));
+        window.BridgeFileActions.attach(anchor(),upload,reference,choices);
+      }else if(this.canUpload())input.click();
+    };input.onchange=()=>{this.add([...input.files]);input.value='';};
     paste?.addEventListener('paste',event=>{
       const files=[...event.clipboardData?.files||[]];
       if(files.length){event.preventDefault();this.add(files);}
@@ -141,8 +150,8 @@ class ChatAttachments {
       const status=row.reference?t('电脑项目引用'):row.status==='ready'?t('已上传'):row.status==='failed'?t(row.error):t('正在上传…');
       info.append(node('small',(row.kind==='directory'?t('文件夹'):row.size/1024/1024>=1?(row.size/1024/1024).toFixed(1)+' MB':Math.ceil(row.size/1024)+' KB')+' · '+status,row.status==='failed'?'error':''));card.append(info);
       if(row.status==='failed'){
-        const retry=node('button',t('重试'),'plain');retry.type='button';retry.disabled=this.locked;
-        retry.onclick=()=>{row.status='pending';this.uploadPending(this.key,this.rows);};card.append(retry);
+        const retry=node('button',t('重试'),'plain');retry.type='button';retry.disabled=this.locked||!this.canUpload();
+        retry.onclick=()=>{if(this.locked||!this.canUpload())return;row.status='pending';this.uploadPending(this.key,this.rows);};card.append(retry);
       }
       const remove=node('button','×','attachment-remove');remove.type='button';remove.disabled=this.locked;remove.setAttribute('aria-label',t('移除附件')+' '+row.name);
       remove.onclick=()=>{this.rows.splice(this.rows.indexOf(row),1);this.error='';this.save(this.key,this.rows);this.render();};card.append(remove);this.root.append(card);

@@ -15,7 +15,7 @@ async function runImageComposerWorkbenchTests(callbackSource,keepOpen=false){
   const scope={gateway:'image-fixture',provider,account:'original-account',host:'local',session:sid};
   const quotes=new ComposerQuotes({messages,input,container:form,scope:()=>scope,onChange(){},onPrompt(){},canQuote:()=>provider!=='deepseek'});quotes.restore([{text:'existing quote',provider}]);
   const panel=new ChatAttachments({root:list,button,input:fileInput,upload:async(key,id,file)=>({id,name:file.name,size:file.size,image:'image/png'}),onChange(){}});const attachmentKey=provider==='codex'?'local|'+sid:JSON.stringify([provider,sid]);sessionStorage.removeItem('attachments:'+attachmentKey);panel.open(attachmentKey);
-  const clientNavigation={provider},desktopSessions={provider:provider==='codex'?'codex':provider,sid,quotes,attachments:panel,state:{capabilities:{attachments:true}},container:root,conversation:chat,canMutate:()=>true,collapseComposer(){}};
+  const clientNavigation={provider},desktopSessions={provider:provider==='codex'?'codex':provider,sid,quotes,attachments:panel,state:{capabilities:{attachments:true}},container:root,conversation:chat,canMutate:()=>true,toolbar:{setCollapsed(){}}};
   const codexQuotes=quotes,attachments=panel,currentId=sid,currentHost='local',state={},sending=false;
   const $=id=>({app:root,chat}[id]),isCodexClient=value=>value==='codex',chatKey=(id,host)=>host+'|'+id,currentAccess=()=>({canSend:true}),t=value=>value;
   const workbench=new Workbench({chat,request:async()=>({kind:'image',mime:'image/png',data,name:'workspace.png',size:120}),csrf:()=>'',notify(){},onUnauthorized(){}});workbench.provider=provider;desktopSessions.workbench=workbench;workbench.open(sid,'local');

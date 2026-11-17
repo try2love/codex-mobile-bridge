@@ -42,6 +42,7 @@
     "files": [
       "desktop/**",
       "web/shared/i18n.js",
+      "web/shared/composer-icons.js",
       "web/shared/dialog-dismiss.js",
       "web/shared/creation-model-picker.js",
       "web/features/accounts/account.js",

@@ -7,7 +7,7 @@ const scope=(session,account='one')=>({gateway:'gateway',provider:'codex',accoun
 
 test('durable drafts survive a new document and isolate chat, host, provider, gateway and account',()=>{
   const local=storage(),first=new ComposerDrafts(local);
-  first.save(scope('A'),{text:'unsent',selectionStart:3,selectionEnd:3,sendMode:'queue',workMode:'plan',skills:['s']});
+  first.save(scope('A'),{text:'unsent',selectionStart:3,selectionEnd:3,workMode:'plan',skills:['s']});
   const next=new ComposerDrafts(local);
   assert.equal(next.load(scope('A')).text,'unsent');
   assert.equal(next.load(scope('A')).selectionStart,3);
@@ -70,8 +70,8 @@ test('failed durable write leaves temporary draft available for migration later'
 
 test('explicit account continuation copies only draft content within the same complete scope',()=>{
   const drafts=new ComposerDrafts(storage()),previous=scope('original'),next={...previous,account:'two'};
-  drafts.save(previous,{text:'unsent',selectionStart:2,selectionEnd:5,sendMode:'queue',workMode:'plan',skills:['old-skill'],quotes:[{text:'quoted',source:'original reply'}]});
-  const saved=drafts.continueAccount(previous,next);assert.equal(saved.text,'unsent');assert.equal(saved.selectionStart,2);assert.equal(saved.selectionEnd,5);assert.equal(saved.quotes[0].text,'quoted');assert.equal(saved.sendMode,'send');assert.equal(saved.workMode,'default');assert.deepEqual(saved.skills,[]);
+  drafts.save(previous,{text:'unsent',selectionStart:2,selectionEnd:5,workMode:'plan',skills:['old-skill'],quotes:[{text:'quoted',source:'original reply'}]});
+  const saved=drafts.continueAccount(previous,next);assert.equal(saved.text,'unsent');assert.equal(saved.selectionStart,2);assert.equal(saved.selectionEnd,5);assert.equal(saved.quotes[0].text,'quoted');assert.equal(saved.workMode,'default');assert.deepEqual(saved.skills,[]);
   assert.equal(drafts.load(previous).text,'unsent');assert.equal(drafts.pending(next),null);
   for(const different of [{gateway:'other'},{host:'other'},{provider:'claude'},{session:'other'}])assert.equal(drafts.continueAccount(previous,{...next,...different}),null);
 });

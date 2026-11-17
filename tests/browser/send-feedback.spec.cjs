@@ -5,6 +5,33 @@ test.beforeEach(async({context,request,baseURL})=>{
  await context.route('**/*',route=>new URL(route.request().url()).origin===baseURL?route.continue():route.abort());
  expect(await(await request.get('/__fixture_health')).json()).toEqual({fixture:'cmb-browser-regression'});
 });
+test('merged controls send queue and steer through the real submit handler and stop without clearing a draft',async({page})=>{
+ await page.goto('/?case=success');await expect(page.locator('#bootstrap-status')).toBeHidden();await page.waitForFunction(()=>typeof DesktopSessionsView==='function');
+ await page.evaluate(async()=>{
+  const root=document.createElement('div');root.id='merged-live';root.className='app';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
+  const fixture=window.mergedLive={writes:[],status:'active'};
+  const detail=()=>({connected:true,session:{id:'merged-test',title:'合并按钮验证',backend:'code',status:fixture.status,capabilities:{send:true,queue:true,steer:true,stop:true,attachments:true,projectReferences:true}},messages:[]});
+  const view=fixture.view=new DesktopSessionsView({root,select:document.createElement('select'),notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{
+   if(body){fixture.writes.push({url,body});if(url.includes('/stop'))fixture.status='idle';return {status:url.includes('/send')&&body.mode==='queue'?'queued':'accepted'};}
+   if(url.includes('/detail'))return detail();if(url.includes('/workspace'))return {entries:[],total:0,project:'/fixture'};return {sessions:[detail().session]};
+  }});await view.choose('claude');await view.open('merged-test');clearTimeout(view.timer);
+ });
+ const root=page.locator('#merged-live .ds-composer'),input=root.locator('textarea'),send=root.locator('button[type=submit]'),caret=root.locator('.composer-submit-caret');
+ await expect(root.locator('.composer-submit-stop')).toBeVisible();await expect(caret).toBeHidden();
+ await input.fill('完成后执行');await expect(send).toContainText('排队');await send.click();await expect.poll(()=>page.evaluate(()=>mergedLive.writes.length)).toBe(1);expect(await page.evaluate(()=>mergedLive.writes[0].body.mode)).toBe('queue');await expect(input).toHaveValue('');
+ await input.fill('补充当前任务');await caret.click();await root.locator('[data-send-mode=steer]').click();expect(await page.evaluate(()=>mergedLive.writes.length)).toBe(1);await send.click();await expect.poll(()=>page.evaluate(()=>mergedLive.writes.length)).toBe(2);expect(await page.evaluate(()=>mergedLive.writes[1].body.mode)).toBe('steer');await expect(input).toHaveValue('');
+ await input.fill('停止后继续保留');await caret.click();await root.locator('.composer-submit-menu-stop').click();await expect.poll(()=>page.evaluate(()=>mergedLive.writes.length)).toBe(3);expect(await page.evaluate(()=>mergedLive.writes[2].url)).toContain('/stop');await expect(input).toHaveValue('停止后继续保留');await expect(caret).toBeHidden();await expect(send).toContainText('发送');
+ await send.click();await expect.poll(()=>page.evaluate(()=>mergedLive.writes.length)).toBe(4);expect(await page.evaluate(()=>mergedLive.writes[3].body.mode)).toBe('send');
+ expect(await page.evaluate(()=>mergedLive.view.toolbar.preferences.value.followUpMode)).toBe('steer');
+ const refreshes=await page.evaluate(async()=>{const v=mergedLive.view,t=v.toolbar,c=t.submitControl;let toolbar=0,submit=0;const oldT=t.sync.bind(t),oldC=c.sync.bind(c);t.sync=()=>{toolbar++;return oldT()};c.sync=()=>{submit++;return oldC()};await new Promise(r=>setTimeout(r,0));toolbar=0;submit=0;v.updateComposer();await new Promise(r=>setTimeout(r,0));return {toolbar,submit};});
+ expect(refreshes).toEqual({toolbar:1,submit:1});
+ await page.evaluate(()=>{const v=mergedLive.view;mergedLive.status='active';v.state.status='active';v.input.value='';v.attachments.rows=[{id:'reference-test',reference:{path:'README.md'},name:'README.md'}];v.updateComposer();});await expect(caret).toBeVisible();await expect(root.locator('.composer-submit-stop')).toBeHidden();
+ await page.evaluate(()=>{const v=mergedLive.view;v.attachments.rows=[];v.quotes.quotes=[{text:'只有引用',source:'assistant'}];v.quotes.render();v.updateComposer();});await expect(caret).toBeVisible();
+ await page.evaluate(()=>{const v=mergedLive.view;v.quotes.quotes=[];v.quotes.render();v.updateComposer();});await expect(caret).toBeHidden();await expect(root.locator('.composer-submit-stop')).toBeVisible();
+ await page.evaluate(()=>{const v=mergedLive.view;v.input.value='操作期间保留的草稿';v.busy=true;v.updateComposer();});await expect(send).toBeDisabled();await expect(send).not.toContainText('正在发送');await expect(caret).toBeDisabled();
+ await page.evaluate(()=>{const v=mergedLive.view;v.busy=false;v.state.capabilities.sendModes={send:false,queue:false,steer:true};v.mode.value='send';v.updateComposer();});await expect(send).toContainText('补充任务');await expect(send).toBeEnabled();await caret.click();await expect(root.locator('[data-send-mode=queue]')).toBeDisabled();await expect(root.locator('[data-send-mode=steer]')).toBeEnabled();
+ expect(await page.evaluate(()=>mergedLive.view.mode.options[0].disabled&&mergedLive.view.mode.options[1].disabled)).toBe(true);
+});
 for(const [provider,backend] of [['claude','code'],['claude','cowork'],['deepseek','desktop']])test(`${provider} ${backend} has immediate, scoped send feedback`,async({page},testInfo)=>{
  await page.goto('/?case=success');await expect(page.locator('#bootstrap-status')).toBeHidden();await page.waitForFunction(()=>typeof DesktopSessionsView==='function');
  await page.evaluate(async({provider,backend})=>{
@@ -60,7 +87,7 @@ for(const [provider,backend] of [['claude','code'],['claude','cowork'],['deepsee
  await page.keyboard.press('Escape');await expect(page.locator('#image-preview-dialog')).toBeHidden();
  await page.evaluate(()=>{const v=sendFeedbackFixture.view;document.documentElement.dataset.showProcess='true';v.applyDetail({connected:true,session:v.state,messages:[{id:'context',role:'activity',kind:'context',title:'上下文',text:'项目说明与自动注入内容'}]});});
  const context=page.locator('#send-feedback-root .activity');await expect(context.locator('pre')).toBeHidden();await context.locator('summary').click();await expect(context.locator('pre')).toBeVisible();
- await page.evaluate(()=>{const v=sendFeedbackFixture.view;v.collapseComposer(true);v.workbench.request=async()=>({name:'photo.png',path:'images/photo.png',absolutePath:'/fixture/images/photo.png',size:4,kind:'file'});BridgeFileActions.menu(v.workbench,v.workbench.current,{name:'photo.png',path:'images/photo.png',kind:'file'});});
+ await page.evaluate(()=>{const v=sendFeedbackFixture.view;v.workbench.request=async()=>({name:'photo.png',path:'images/photo.png',absolutePath:'/fixture/images/photo.png',size:4,kind:'file'});BridgeFileActions.menu(v.workbench,v.workbench.current,{name:'photo.png',path:'images/photo.png',kind:'file'});});
  await page.getByRole('button',{name:'引用到消息',exact:true}).click();await expect(input).toBeVisible();await expect(input).toHaveValue('下一条草稿');await expect(page.locator('#send-feedback-root .attachment-chip')).toContainText('photo.png');
  expect(await page.evaluate(()=>sendFeedbackFixture.writes.length)).toBe(2);
  await page.screenshot({path:testInfo.outputPath(`${provider}-${backend}-project-reference.png`)});

@@ -8,7 +8,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from bridge.resources import project_root
 
-STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-8"),
+STATIC = {"/composer-toolbar-editor.js": ("features/chat/composer-toolbar-editor.js", "text/javascript; charset=utf-8"),
+"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-8"),
 "/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8"),
           "/layout.js": ("layouts/viewport.js", "text/javascript; charset=utf-8"),
           "/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"),

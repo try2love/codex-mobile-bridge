@@ -6,7 +6,7 @@ function fixture(provider='codex',host='local'){
  const identity=()=>JSON.stringify(scope),nodes={app:{hidden:false,classList:{contains:()=>true}},chat:{hidden:false}},requests=[],uploads=[],registered=new WeakSet();let callback;
  const quotes={available:()=>true,identity},input={value:'existing text',selectionStart:2,selectionEnd:4},existing={id:'existing',name:'old.png',size:5,status:'ready'},quoteRows=[{text:'existing quote'}];quotes.quotes=quoteRows;
  const view={provider:provider==='codex'?'codex':provider,sid:scope.session,quotes,container:{hidden:false},conversation:{hidden:false},state:{capabilities:{attachments:true}},canMutate:()=>true,input};
- const workspace={current:{id:scope.session,host:scope.host,provider,active:'file:workspace.png'},select(id){this.current.active=id;}};view.workbench=workspace;view.collapseComposer=value=>view.collapsed=value;
+ const workspace={current:{id:scope.session,host:scope.host,provider,active:'file:workspace.png'},select(id){this.current.active=id;}};view.workbench=workspace;view.toolbar={setCollapsed:value=>view.collapsed=value};
  const window={BridgeImageViewer:{configureComposer:value=>callback=value,isRegisteredSource:value=>registered.has(value)}};
  let counter=0,response=()=>({ok:true,headers:new Headers(),blob:async()=>new Blob(['image'],{type:'image/png'})});
  const context=vm.createContext({window,location:new URL('https://gateway.test/'),URL,Blob,File,Headers,$:id=>nodes[id],t:text=>text,clientNavigation:{provider},desktopSessions:view,codexQuotes:quotes,currentId:sid,currentHost:host,sending:false,state:{},currentAccess:()=>({canSend:true}),workbench:workspace,isCodexClient:value=>value==='codex'||value.startsWith('wsl:'),chatKey:(id,host)=>host+'|'+id,uuid:()=>String(++counter),fetch:async(url,options)=>{requests.push({url,options});return response();}});
@@ -36,7 +36,7 @@ test('current-session file and desktop image grants work for local, SSH and WSL 
  const agyImg=`/api/desktop-sessions/antigravity/images/${'f'.repeat(64)}?sessionId=native-chat`;
  assert.equal(agy.api.canReuse({url:agyImg}),true);
  assert.equal(agy.api.canReuse({url:agyImg+'&variant=original'}),false);
- assert.equal(await agy.api.add({url:agyImg,name:'history.png'},agy.api.scope()),true);
+ assert.equal(await agy.api.add({url:agyImg,name:'history.png'},agy.api.scope()),true);assert.equal(agy.view.collapsed,false);
 });
 
 test('callback rejects cross-session, cross-host, cross-provider, arbitrary and redirected URLs before adding',async()=>{
