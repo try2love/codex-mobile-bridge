@@ -87,17 +87,19 @@ def inventory_fingerprint(rows, preferences):
                                  for value in values]
             if path in version_roots:
                 # Directory timestamps can collide during a fast side-by-side update.
+                # A protected package root may expose stat metadata but deny enumeration.
                 try:
                     children = sorted(child.name for child in path.iterdir())
                 except OSError:
-                    # Windows Store roots such as Program Files/WindowsApps may
-                    # expose stat metadata while denying directory enumeration.
-                    # Keep a stable unavailable marker; Windows package
-                    # registration remains the authoritative update signal.
+                    # Keep unavailable directory membership as change evidence;
+                    # package registration remains authoritative for Store updates.
                     children = None
                 result[str(path)].append(children)
         except FileNotFoundError:
             result[str(path)] = None
+        except OSError:
+            # An unreadable installation is still change evidence; never fail the scan.
+            result[str(path)] = 'unreadable'
     return result
 
 
