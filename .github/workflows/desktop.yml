@@ -8,15 +8,42 @@ on:
       source_ref:
         type: string
         default: ''
+      acceptance_only:
+        type: boolean
+        default: false
+      candidate_run_id:
+        type: string
+        default: ''
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact product source commit (empty uses this workflow run SHA)
+        type: string
+        default: ''
+      acceptance_only:
+        description: Validate an existing build against real v2.2.1 packages without rebuilding
+        type: boolean
+        default: false
+      candidate_run_id:
+        description: Successful Desktop builds run ID (acceptance only)
+        type: string
+        default: ''
   push:
     # Main receives source updates without building Apps; use manual or release builds.
     branches: [feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
     paths: ['desktop/**', 'desktop.py', 'bridge/**', 'web/**', 'run.py', 'scripts/**', 'tests/**', 'package*.json', 'requirements-desktop.txt', '.github/workflows/desktop.yml']
 permissions:
   contents: read
+  actions: read
 jobs:
+  published-upgrade:
+    if: inputs.acceptance_only == true
+    uses: ./.github/workflows/upgrade-acceptance.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      candidate_run_id: ${{ inputs.candidate_run_id }}
   package:
+    if: inputs.acceptance_only != true
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -113,6 +140,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
+    if: inputs.acceptance_only != true
     strategy:
       fail-fast: false
       matrix:
@@ -129,7 +157,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'

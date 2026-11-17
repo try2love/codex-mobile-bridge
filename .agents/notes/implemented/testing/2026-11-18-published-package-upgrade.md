@@ -8,7 +8,7 @@ Status: implemented
 
 ## 决策
 
-手动 `upgrade-acceptance.yml` 从真实 v2.2.1 Release 下载对应平台包并校验发布的 SHA256SUMS，从指定成功 Desktop builds run 下载候选包。候选 run 的源提交固定为 `448859cd6f9d216a37f2ffaa4724312c2787471f`；验收 checkout 与它的差异只允许本验收脚本、测试、笔记和工作流（含 Python 3.9 的 Ubuntu runner 修正），另允许 iOS 主 App 的 `BridgeReleaseVersion` 单字段修正，并逐字段校验其余 plist 不变。iOS plist 不参与桌面构建，因此不重编冻结桌面产品；移动包必须使用包含该字段修正的提交。候选包实际安装后还须通过包内版本、平台、架构和真实 GUI 版本核验，不能只相信下载文件名。
+手动 `desktop.yml` 的 `acceptance_only` 模式调用可复用 `upgrade-acceptance.yml`，不要求把新工作流合入 main。普通构建模式保持默认，checkout 采用本次 run 的不可变 SHA；显式 `source_ref` 优先。验收从真实 v2.2.1 Release 下载对应平台包并校验发布的 SHA256SUMS，从指定成功 Desktop builds run 下载候选包。`source_ref` 必须是完整 40 位提交、包含已审基线 `bf69297f`，且版本为 `2.2.2-preview.1`；候选 run 的 head SHA 必须与它相同。验收 checkout 与产品源码之间只允许验收脚本、工作流、测试及本笔记差异，不能夹带未构建产品修正。候选包实际安装后还须通过包内版本、平台、架构和真实 GUI 版本核验，不能只相信下载文件名。最终产品提交由发布负责人明确冻结，新增验收流程无需再次编译 App。
 
 脚本只接受 GitHub hosted runner，拒绝本机和 self-hosted。macOS 在任务目录替换同一路径的 App，Windows 使用真实 NSIS 同一目标目录静默覆盖，Linux 在临时托管 runner 上通过 apt 安装真实 Debian 包并允许回滚降级。三阶段均使用同一隔离 `CMB_DATA_DIR` 和浏览器持久目录，不读取日常用户配置，不连接真实 Agent，不发送聊天。旧运行时创建合成配置和真实配对 cookie；真实浏览器在产品 `ComposerDrafts` 中写入合成未发送草稿，候选及回滚均验证配置原字节、原配对信任、浏览器原 cookie、草稿文本与选择位置。每阶段记录真实 GUI 和网页截图，关闭的仅是本任务启动的 GUI 与隔离网关。
 

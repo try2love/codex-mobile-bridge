@@ -1,11 +1,18 @@
 name: Published package upgrade acceptance
 on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      candidate_run_id:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       source_ref:
         description: Frozen product commit (acceptance checkout may add tools only)
         required: true
-        default: '448859cd6f9d216a37f2ffaa4724312c2787471f'
         type: string
       candidate_run_id:
         description: Successful Desktop builds run for the frozen source
@@ -45,6 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:

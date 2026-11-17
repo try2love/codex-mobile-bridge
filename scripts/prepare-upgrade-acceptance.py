@@ -4,11 +4,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
+import re
 import subprocess
 import urllib.request
 
-SOURCE = '448859cd6f9d216a37f2ffaa4724312c2787471f'
+BASE = 'bf69297fd21776991d1faed419f9ab1b89bce671'
 
 
 def api(route):
@@ -20,27 +20,24 @@ def api(route):
 
 
 def main():
-    if os.environ['SOURCE_REF'] != SOURCE:
-        raise SystemExit('Product source must stay frozen at ' + SOURCE)
+    source = os.environ['SOURCE_REF']
+    if not re.fullmatch(r'[0-9a-f]{40}', source):
+        raise SystemExit('Product source must be an exact 40-character commit SHA')
+    subprocess.run(['git', 'merge-base', '--is-ancestor', BASE, source], check=True)
+    product = json.loads(subprocess.check_output(['git', 'show', source + ':package.json']))
+    if product['version'] != '2.2.2-preview.1':
+        raise SystemExit('Unexpected frozen product version')
     run = api('/actions/runs/' + str(int(os.environ['CANDIDATE_RUN_ID'])))
-    if (run['head_sha'] != SOURCE or run['path'] != '.github/workflows/desktop.yml'
+    if (run['head_sha'] != source or run['path'] != '.github/workflows/desktop.yml'
             or run['status'] != 'completed' or run['conclusion'] != 'success'):
         raise SystemExit('Candidate must be a successful Desktop builds run of the frozen product commit')
-    changed = subprocess.check_output(['git', 'diff', '--name-only', SOURCE, 'HEAD'], text=True).splitlines()
+    changed = subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines()
     allowed = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
-               '.github/workflows/upgrade-acceptance.yml', '.github/workflows/tests.yml',
-               'tests/published-upgrade.test.cjs',
-               'mobile/ios/BridgePreview/Info.plist',
+               '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
+               'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
                '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
     if set(changed) - allowed:
         raise SystemExit('Workflow checkout differs from product beyond acceptance-only files: ' + repr(changed))
-    # The iOS-only release identity correction is excluded from desktop builds.
-    ios = 'mobile/ios/BridgePreview/Info.plist'
-    previous = plistlib.loads(subprocess.check_output(['git', 'show', SOURCE + ':' + ios]))
-    current = plistlib.loads(Path(ios).read_bytes())
-    previous['BridgeReleaseVersion'] = '2.2.2-preview.1'
-    if current != previous:
-        raise SystemExit('Unexpected additional iOS metadata changes')
     release = api('/releases/tags/v2.2.1')
     if release['draft'] or release['prerelease']:
         raise SystemExit('Expected the real stable v2.2.1 release')
@@ -60,7 +57,7 @@ def main():
         actual = hashlib.file_digest(stream, 'sha256').hexdigest()
     if actual != checksums[name]:
         raise SystemExit('Old release checksum mismatch')
-    (work / 'provenance.json').write_text(json.dumps({'source': SOURCE, 'candidateRun': run['html_url'],
+    (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
         'oldRelease': release['html_url'], 'oldAsset': name, 'oldSha256': actual,
         'acceptanceOnlyChanges': changed, 'mode': 'manual-install-upgrade-and-rollback'}, indent=2) + '\n')
     print('Verified real v2.2.1 asset and frozen candidate run provenance')
