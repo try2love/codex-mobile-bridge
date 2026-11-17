@@ -911,7 +911,10 @@ class Claude:
             # Transcript request counters describe the last prompt, not the
             # current context after compaction/replacement. Keep them separate
             # when Desktop cannot provide its current context summary.
-            row['lastPromptContextUsage'] = context_fields(raw)['contextUsage']
+            # 与下文 model.transcript(raw) 一致，先经 model.rows(raw) 拆包响应：
+            # 若跳过拆包，{'messages': [...]} 等容器字典会被当成键名遍历导致读数静默丢失，
+            # 而 None 会直接抛出 TypeError（HTTP 500），而非适配器统一的“不支持的数据结构”错误。
+            row['lastPromptContextUsage'] = context_fields(model.rows(raw))['contextUsage']
             capabilities = self.session_capabilities(kind)
             capabilities['compact'] = (capabilities['compact'] and row['runtimeKnown'] and
                                        row['status'] == 'idle' and not row['requests'] and not row['archived'])
