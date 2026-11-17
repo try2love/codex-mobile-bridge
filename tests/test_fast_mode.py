@@ -65,9 +65,22 @@ class FastCapabilityTests(unittest.TestCase):
         self.assertEqual(self.capability(profile)[0]['provider'], 'custom')
         self.assertNotIn('PRIVATE', str(result))
 
+    def test_unknown_config_or_policy_response_cannot_enable_fast_mode(self):
+        valid = {'config/read': {'config': {}},
+                 'account/read': {'account': {'type': 'chatgpt'}, 'requiresOpenaiAuth': True},
+                 'configRequirements/read': {'requirements': None}}
+        for method, invalids in (
+                ('config/read', (None, [], {}, {'config': None}, {'config': []})),
+                ('configRequirements/read', (None, [], {}, {'requirements': []}, {'requirements': 'unknown'}))):
+            for invalid in invalids:
+                with self.subTest(method=method, invalid=invalid):
+                    def request(name, params):
+                        return invalid if name == method else valid[name]
+                    self.assertEqual(Catalog.fast_mode(request, '/project'), {'allowed': False})
+
     def test_null_profile_and_requirement_containers_do_not_crash_catalog_capability(self):
         # 激活的 profile 或可空子对象显式为 JSON null 时，不应抛出 TypeError 导致目录返回 500。
-        for config in [None, {'profile': 'empty', 'profiles': {'empty': None}, 'features': None}]:
+        for config in [{}, {'profile': 'empty', 'profiles': {'empty': None}, 'features': None}]:
             with self.subTest(config=config):
                 calls = []
                 def request(method, params):

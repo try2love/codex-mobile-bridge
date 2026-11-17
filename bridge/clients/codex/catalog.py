@@ -878,7 +878,10 @@ class Catalog:
         # Return capability metadata only; credentials/config contents stay in the runtime.
         unavailable = {'allowed': False}
         try:
-            config = Catalog._dict(Catalog._dict(request('config/read', {'includeLayers': False, 'cwd': cwd})).get('config'))
+            response = request('config/read', {'includeLayers': False, 'cwd': cwd})
+            if not isinstance(response, dict) or not isinstance(response.get('config'), dict):
+                return unavailable
+            config = response['config']
             # 空的 [profiles.xxx] 配置在反序列化后可能为 None，需与 read_models 一样归一化为空字典，
             # 否则 {**config, **profile} 会抛出未被 CatalogError 捕获的 TypeError（HTTP 500）。
             profile = Catalog._dict(Catalog._dict(config.get('profiles')).get(config.get('profile')))
@@ -892,7 +895,13 @@ class Catalog:
                 auth = Catalog._dict(request('account/read', {'refreshToken': False}))
                 if Catalog._dict(auth.get('account')).get('type') != 'chatgpt' or auth.get('requiresOpenaiAuth') is not True:
                     return unavailable
-            requirements = Catalog._dict(Catalog._dict(request('configRequirements/read', {})).get('requirements'))
+            response = request('configRequirements/read', {})
+            if not isinstance(response, dict) or 'requirements' not in response:
+                return unavailable
+            requirements = response['requirements']
+            if requirements is not None and not isinstance(requirements, dict):
+                return unavailable
+            requirements = Catalog._dict(requirements)
             features = {**Catalog._dict(config.get('features')), **Catalog._dict(profile.get('features'))}
             allowed = (features.get('fast_mode') is not False and
                        Catalog._dict(requirements.get('featureRequirements')).get('fast_mode') is not False)
