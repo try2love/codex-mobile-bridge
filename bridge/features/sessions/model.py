@@ -153,7 +153,7 @@ def user_display_text(text):
     return text[boundary:].strip("\r\n")
 
 
-def normalize_item(item, *, image_cache=None):
+def normalize_item(item, *, image_cache=None, include_body=True):
     kind = item.get("type", "unknown")
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
     if item.get("timestamp") is not None:
@@ -162,6 +162,14 @@ def normalize_item(item, *, image_cache=None):
             row['_timestampSource'] = item['_timestampSource']
     if item.get('_syntheticId'):
         row['_syntheticId'] = True
+    if not include_body and kind not in ('userMessage', 'steeringUserMessage', 'agentMessage', 'assistantMessage', 'error', 'planImplementation'):
+        titles = {'reasoning': '思考摘要', 'commandExecution': '执行命令', 'fileChange': '文件变更',
+                  'FileChange': '文件变更', 'ImageView': '图片预览', 'imageView': '图片预览'}
+        tool = item.get('tool') or item.get('toolName')
+        row.update(role='activity', title=titles.get(kind) or tool or kind, text='', _detailSource=[item])
+        if tool:
+            row['toolName'] = (str(item['server']) + '.' + tool if item.get('server') else tool)[:160]
+        return row
     if kind in ("userMessage", "steeringUserMessage"):
         if kind == "steeringUserMessage":
             item = {**item, "content": item.get("input", [])}
@@ -321,7 +329,7 @@ def merge_saved_message_times(view, saved):
             rows[0]['_timestampSource'] = prior[0].get('_timestampSource', 'saved-native-message')
 
 
-def normalize_state(state, connected=True, *, image_cache=None, item_limit=None):
+def normalize_state(state, connected=True, *, image_cache=None, item_limit=None, process_bodies=True):
     turns = ordered_turns(state)
     # Select bodies before normalization (tool results can contain megabytes).
     # The original state remains intact for revisions, approvals and commands.
@@ -372,11 +380,16 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
             if kind in ('function_call', 'custom_tool_call'):
                 message = {'id': item.get('call_id', item.get('id')), 'kind': 'storedToolEvent',
                            'role': 'activity', 'title': item.get('name') or '工具调用',
-                           'text': str(item.get('arguments', item.get('input', '')))}
+                           'text': str(item.get('arguments', item.get('input', ''))) if process_bodies else ''}
+                if not process_bodies:
+                    message['_detailSource'] = [item]
                 if isinstance(item.get('name'), str) and item['name']:
                     message['toolName'] = item['name'][:160]
                 calls[message['id']] = message
             elif kind in ('function_call_output', 'custom_tool_call_output') and item.get('call_id') in calls:
+                if not process_bodies:
+                    calls[item['call_id']]['_detailSource'].append(item)
+                    continue
                 extract = image_cache.extract if image_cache is not None else extract_tool_images
                 output, images = extract(item.get('output', ''))
                 calls[item['call_id']]['output'] = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
@@ -386,7 +399,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
                     calls[item['call_id']].pop('attachments', None)
                 continue
             else:
-                message = normalize_item(item, image_cache=image_cache)
+                message = normalize_item(item, image_cache=image_cache, include_body=process_bodies)
             first_user = (item.get('id') == turn['_firstUserItemId']
                           if '_firstUserItemId' in turn else id(item) == first_user_id)
             if message['role'] == 'user' and message.get('timestamp') is None and first_user and started_at is not None:

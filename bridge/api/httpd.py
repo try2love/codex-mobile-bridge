@@ -65,7 +65,7 @@ def _prepared_static(data, content_type, use_gzip):
 from bridge.features.sessions.cli_release import CliConnections
 from bridge.app.lifecycle import private_json
 
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|conversation|process|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
 DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
@@ -1390,15 +1390,21 @@ class Handler(BaseHTTPRequestHandler):
             if not write:
                 if action == 'permissions':
                     return self.output(200, bridge.linux_permission_options(thread_id))
-                if action == 'timeline':
-                    return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0]))
+                if action in ('timeline', 'conversation'):
+                    return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0],
+                                                               **({'projection': 'conversation'} if action == 'conversation' else {})))
+                if action == 'process':
+                    return self.output(200, bridge.timeline_read(thread_id, 'process', cursor=query.get('cursor', [''])[0],
+                                                               after=query.get('after', [None])[0], limit=int(query.get('limit', ['20'])[0])))
                 if action == 'detail':
                     return self.output(200, bridge.timeline_read(thread_id, 'detail', cursor=query.get('key', [''])[0],
-                                                               offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0]))
+                                                               offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0],
+                                                               **({'projection': 'conversation'} if query.get('projection') == ['conversation'] else {})))
                 if action == 'changes':
                     return self.changes(bridge, thread_id, int(query.get('after', ['-1'])[0]),
                                         query.get('epoch', [''])[0], query.get('start', [''])[0],
-                                        query.get('paged', [''])[0] == '1', query.get('through', [None])[0])
+                                        query.get('paged', [''])[0] == '1', query.get('through', [None])[0],
+                                        projection='conversation' if query.get('projection') == ['conversation'] else None)
                 if action is None:
                     return self.output(200, bridge.view(thread_id, background=True))
                 if action == "catalog":
@@ -1629,7 +1635,7 @@ class Handler(BaseHTTPRequestHandler):
                 session.viewers -= 1
                 session.touched = time.monotonic()
 
-    def changes(self, bridge, thread_id, after, epoch, start, paged=False, through=None):
+    def changes(self, bridge, thread_id, after, epoch, start, paged=False, through=None, projection=None):
         session = bridge.session(thread_id, background=True)
         with session.condition:
             session.viewers += 1
@@ -1638,6 +1644,7 @@ class Handler(BaseHTTPRequestHandler):
                 session.condition.wait_for(lambda: session.sequence != after or epoch != session.timeline.epoch or bridge.closed.is_set(), timeout=12)
             if self.authorized():
                 self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start,
+                                                            **({'projection': projection} if projection else {}),
                                                             **({'paged': True, 'through': through} if paged else {})))
         finally:
             with session.condition:

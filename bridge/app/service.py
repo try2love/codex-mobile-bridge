@@ -145,7 +145,7 @@ class LiveSession:
         self.timeline_source = None
         self.condition.notify_all()
 
-    def timeline_view(self):
+    def timeline_view(self, conversation=False):
         # Presentation only. Actions still call view() against current state.
         with self.condition:
             source = self.state if self.connected else self.history_state or self.state
@@ -172,9 +172,11 @@ class LiveSession:
                         after += int(found)
                 if found:
                     self.timeline_limit = max(self.timeline_limit, after)
-            if self.timeline_source is None or self.timeline_source_limit != self.timeline_limit:
-                self.timeline_source = self.view(item_limit=self.timeline_limit)
-                self.timeline_source_limit = self.timeline_limit
+            source_limit = (self.timeline_limit, conversation)
+            if self.timeline_source is None or self.timeline_source_limit != source_limit:
+                self.timeline_source = self.view(item_limit=None if conversation else self.timeline_limit,
+                                                 process_bodies=not conversation)
+                self.timeline_source_limit = source_limit
             return dict(self.timeline_source)
 
     def set_history(self, state):
@@ -196,11 +198,11 @@ class LiveSession:
         requests = pending_requests(self.state or {})
         return self.question_skips.project(self.id, requests) if self.question_skips else requests
 
-    def view(self, *, item_limit=None):
+    def view(self, *, item_limit=None, process_bodies=True):
         with self.condition:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
-                                     image_cache=self.tool_image_cache, item_limit=item_limit)
+                                     image_cache=self.tool_image_cache, item_limit=item_limit, process_bodies=process_bodies)
             if self.question_skips:
                 result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
@@ -4692,11 +4694,15 @@ class Bridge:
 
     def timeline_read(self, thread_id, mode='page', **options):
         session = self.session(thread_id, background=True)
+        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        if mode == 'detail':
+            options.pop('projection', None)
         goal_available = self._refresh_session_goal(session)
         # Expand saved history only when the reader reaches its loaded edge.
         if mode == 'page' and options.get('before'):
             with session.condition:
-                position = session.timeline.position(options['before'])
+                position = (session.timeline.conversation_positions.get(options['before'].partition('.')[2])
+                            if conversation else session.timeline.position(options['before']))
                 near_edge = position is not None and position < options.get('limit', 20)
                 expand = near_edge and not session.timeline.window_more and session.saved_view and not session.saved_view['historyComplete']
                 if near_edge:
@@ -4710,15 +4716,17 @@ class Bridge:
         with session.condition:
             session.access = self._access(session.origin, session)
             projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view())
+            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view(conversation))
             authoritative_view['access'] = dict(session.access)
-            projection.update(authoritative_view, limit=session.timeline_limit)
+            projection.update(authoritative_view, limit=session.timeline_limit, conversation=conversation)
             # Goals/access may change independently of the history revision.
             projection.meta.update(goal=authoritative_view.get('goal'), access=authoritative_view['access'])
             # Annotate the full projection, not only the returned page. Otherwise
             # older pages briefly render raw localImage paths after an upgrade.
             self._annotate_upload_attachments(session, projection.rows)
             self._merge_submission_attachments(session, projection.rows)
+            if mode == 'process':
+                return {**projection.process(**options), 'files': []}
             if mode == 'detail':
                 result = projection.detail(**options)
                 file_items = [{'type': 'agentMessage', 'text': projection.details[result['key']]}]
@@ -4738,7 +4746,7 @@ class Bridge:
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
             media_items = [{'type': 'ImageView', 'path': attachment['path']}
-                           for turn in authoritative_view['turns'] for row in turn['messages']
+                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if mode == 'detail' else result['rows'])
                            for attachment in row.get('attachments', [])
                            if attachment.get('type') == 'localImage' and attachment.get('path')]
         # Resolve links in the delivered page, plus runtime ImageView evidence
