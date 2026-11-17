@@ -59,6 +59,29 @@ class WebAssetTests(unittest.TestCase):
         with patch.dict(assets.STATIC, {'/icon.png': ('icon.png', 'image/png')}):
             self.assertEqual(assets.served_asset_bytes(self.web, '/icon.png'), payload)
 
+    def test_theme_icon_attributes_and_both_manifests_use_content_versions(self):
+        routes = {'/': ('index.html', 'text/html; charset=utf-8')}
+        for name, data in [('icon-ui.png', b'light'), ('icon-ui-dark.png', b'dark')]:
+            (self.web / name).write_bytes(data)
+            routes['/' + name] = (name, 'image/png')
+        for name, icon in [('manifest.webmanifest', '/icon-ui.png'),
+                           ('manifest-dark.webmanifest', '/icon-ui-dark.png')]:
+            (self.web / name).write_text(json.dumps({'icons': [{'src': icon}]}))
+            routes['/' + name] = (name, 'application/manifest+json')
+        (self.web / 'index.html').write_bytes(
+            b'<img src="/icon-ui.png" data-icon-light="/icon-ui.png" data-icon-dark="/icon-ui-dark.png">'
+            b'<link rel="manifest" data-icon-light="/manifest.webmanifest" data-icon-dark="/manifest-dark.webmanifest">')
+        with patch.dict(assets.STATIC, routes):
+            html = assets.served_asset_bytes(self.web, '/').decode()
+            for route in routes:
+                if route != '/':
+                    self.assertIn(route + '?v=' + assets.current_version(self.web, route), html)
+            dark = json.loads(assets.served_asset_bytes(self.web, '/manifest-dark.webmanifest'))
+            self.assertEqual(dark['icons'][0]['src'], '/icon-ui-dark.png?v=' +
+                             assets.current_version(self.web, '/icon-ui-dark.png'))
+            (self.web / 'icon-ui-dark.png').write_bytes(b'dark-updated')
+            self.assertNotEqual(html, assets.served_asset_bytes(self.web, '/').decode())
+
     def test_parent_version_tracks_served_dependency_bytes_and_rollback(self):
         (self.web / 'app.js').write_bytes(b'const icon = "/icon.png";')
         icon = self.web / 'icon.png'
