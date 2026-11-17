@@ -12,7 +12,7 @@ from pathlib import Path
 import bridge.clients.claude.model as model
 from bridge.clients.claude.context import context_fields
 from bridge.clients.claude.setup import inspect_installation, console_source, developer_mode_enabled, native_action, running_app, claude_data_home, background_running_app
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.file_mentions import file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
 from bridge.clients.claude.mailbox import FileDesktop, MAX_REQUEST, CONNECTOR_REVISION, workspace_trust_rejection
@@ -1040,22 +1040,15 @@ class Claude:
         elif action == 'respond':
             pending = next((p for p in row['requests'] if p['id'] == body.get('requestId')), None)
             if not pending:
-                raise ValueError('请求已处理或过期')
+                # 尚未发出任何桌面写入 IPC；使用 ResumePreflightBlocked 避免账本残留 unknown 阻塞归档。
+                raise ResumePreflightBlocked('请求已处理或过期')
             decision = {'accept': 'once', 'decline': 'deny'}.get(body.get('decision'))
             if decision is None:
-                raise ValueError('请选择本次允许或拒绝')
+                raise ResumePreflightBlocked('请选择本次允许或拒绝')
             args = [pending['id'], decision]
             if pending['needsInput'] and decision == 'once':
-                answers = body.get('answers', {})
-                questions = pending['input'].get('questions', [])
-                mapped = {}
-                for i, question in enumerate(questions):
-                    key = str(question.get('id') or question.get('question') or i)
-                    value = answers.get(key, {}).get('answers')
-                    if not isinstance(value, list) or not value or any(not isinstance(v, str) or not v.strip() for v in value):
-                        raise ValueError('请回答每一项问题')
-                    mapped[question.get('question') or key] = ', '.join(value)
-                args.append({**pending['input'], 'answers': mapped})
+                args.append(model.respond_answers(pending.get('input'), body.get('answers'),
+                                                  error_cls=ResumePreflightBlocked))
             result = await self.desktop.call(kind, 'respondToToolPermission', *args)
         else:
             raise ValueError('不支持的 Claude 操作')
