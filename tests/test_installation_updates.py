@@ -201,6 +201,65 @@ class InstallationHandoffTests(InstallationFixtures):
         rows['antigravity']['installations']['cli']['executable'] = str(self.file('antigravity-cli/new/agy'))
         return rows
 
+    def test_legacy_missing_store_gui_recovers_same_registered_installation(self):
+        old = self.root/'WindowsApps/OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe'
+        current = self.file('WindowsApps/OpenAI.Codex_1.2.4.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe')
+        self.file(str(current.parent.relative_to(self.root))+'/resources/app.asar')
+        family = 'OpenAI.Codex_2p2nqsd0c76g0'
+        row = {**self.previous['codex'], 'executable': str(current),
+               'packageFamilyName': family, 'applicationUserModelId': family+'!App'}
+        self.manager.config['discovered']['codex'] = row
+        self.accounts.index = {'desktopExecutable': str(old)}
+        self.accounts.home = self.root/'profile'
+        self.manager.bridge.for_host = lambda host: self.manager.bridge
+        self.live = {str(current)}
+        from bridge.clients.lifecycle import inspect_clients
+        before = self.manager._descriptor('codex')
+        self.assertFalse(before['installed'])
+        self.assertNotIn('codex', inspect_clients([before]))
+        with patch('bridge.app.desktop.Desktop.preferences', return_value={}), \
+             patch('bridge.clients.manager.sys.platform', 'win32'):
+            preferences = DesktopSessions._discovery_preferences(self.manager)
+        self.assertEqual(preferences['desktopInstallation'], {'executable': str(old),
+            'packageFamilyName': family, 'applicationUserModelId': family+'!App'})
+        # Exercise the real registered-candidate selection with the recovered identity.
+        with patch.object(windows, 'registered_candidates', side_effect=lambda provider, _: [row] if provider == 'codex' else []):
+            migrated = discover_clients(preferences, platform='win32', home=self.root, env={}, windows_inventory={})
+        self.assertEqual(migrated['codex']['replacesExecutable'], str(old))
+        self.manager._discovery_preferences.return_value = preferences
+        self.discovery.return_value = migrated
+        self.manager.scan(scan_wsl=False)
+        self.assertEqual(self.accounts.index['desktopExecutable'], str(current))
+        self.assertEqual(self.manager._codex_executable(self.accounts), str(current))
+        with patch('bridge.clients.lifecycle.process_inventory', self.processes):
+            self.assertTrue(inspect_clients([self.manager._descriptor('codex')])['codex']['running'])
+        self.accounts.save.assert_called_once()
+        self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_legacy_store_recovery_preserves_manual_existing_and_unrelated_paths(self):
+        family = 'OpenAI.Codex_2p2nqsd0c76g0'
+        current = self.file('WindowsApps/OpenAI.Codex_1.2.4.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe')
+        self.file(str(current.parent.relative_to(self.root))+'/resources/app.asar')
+        self.manager.config['discovered']['codex'] = {**self.previous['codex'], 'executable': str(current),
+            'packageFamilyName': family, 'applicationUserModelId': family+'!App'}
+        old = self.root/'WindowsApps/OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe'
+        for path, source, exists in ((old, 'manual', False), (old, None, True),
+                (self.root/'WindowsApps/OpenAI.Codex_1.2.3.0_x64__otherpublisher/app/ChatGPT.exe', None, False),
+                (self.root/'WindowsApps/Other.Codex_1.2.3.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe', None, False),
+                (self.root/'WindowsApps/OpenAI.Codex_1.2.3.0_arm64__2p2nqsd0c76g0/app/ChatGPT.exe', None, False),
+                (self.root/'WindowsApps/OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0/app/Codex.exe', None, False),
+                (self.root/'OtherApps/OpenAI.Codex_1.2.3.0_x64__2p2nqsd0c76g0/app/ChatGPT.exe', None, False),
+                (self.root/'cmb-tools/codex-cli/codex.exe', None, False)):
+            with self.subTest(path=path, source=source, exists=exists):
+                self.accounts.index = {'desktopExecutable': str(path)}
+                if source: self.accounts.index['desktopExecutableSource'] = source
+                if exists: self.file(str(path.relative_to(self.root)))
+                with patch('bridge.app.desktop.Desktop.preferences', return_value={}), \
+                     patch('bridge.clients.manager.sys.platform', 'win32'):
+                    preferences = DesktopSessions._discovery_preferences(self.manager)
+                self.assertNotIn('desktopInstallation', preferences)
+                if exists: path.unlink()
+
     def test_unchanged_inventory_does_not_rediscover_or_query_processes(self):
         self.manager.scan(inventory_only=True)
         self.discovery.assert_not_called(); self.processes.assert_not_called()

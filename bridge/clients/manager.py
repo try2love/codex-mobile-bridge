@@ -1974,6 +1974,11 @@ class DesktopSessions:
                 if previous.get('executable') == index.get('desktopExecutable') and previous.get('packageFamilyName'):
                     preferences['desktopInstallation'] = {key: previous[key] for key in
                         ('executable', 'packageFamilyName', 'applicationUserModelId') if previous.get(key)}
+                elif sys.platform == 'win32' and not index.get('desktopExecutableSource') and index.get('desktopExecutable'):
+                    from bridge.platforms.windows.discovery_ext import legacy_package_application
+                    identity = legacy_package_application(index['desktopExecutable'], previous)
+                    if identity:
+                        preferences['desktopInstallation'] = identity
         return preferences
 
     def _prepare_discovered(self, provider, row):

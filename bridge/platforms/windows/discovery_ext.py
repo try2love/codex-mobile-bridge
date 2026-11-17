@@ -132,6 +132,32 @@ def _electron(path):
             (path.parent/'resources/app/package.json').is_file())
 
 
+def legacy_package_application(executable, current):
+    """Recover identity for a removed Store GUI saved before source tracking."""
+    old, new = Path(executable), Path(current.get('executable', ''))
+    family = current.get('packageFamilyName', '')
+    aumid = current.get('applicationUserModelId', '')
+    if old.exists() or not new.is_file() or not _electron(new) or not aumid.startswith(family+'!'):
+        return None
+
+    def package(path):
+        for folder in path.parents:
+            match = re.fullmatch(r'(.+)_(\d+\.\d+\.\d+\.\d+)_(x86|x64|arm|arm64|neutral)_([^_]*)_([a-z0-9]{13})', folder.name)
+            if match:
+                name, _, architecture, resource, publisher = match.groups()
+                return folder, name+'_'+publisher, architecture, resource, path.relative_to(folder)
+        return None
+
+    previous, registered = package(old), package(new)
+    if not previous or not registered:
+        return None
+    before, after = previous[0], registered[0]
+    if (previous[1:] != registered[1:] or registered[1] != family or
+            str(before.parent).casefold() != str(after.parent).casefold()):
+        return None
+    return {'executable': str(old), 'packageFamilyName': family, 'applicationUserModelId': aumid}
+
+
 def _package_entries(folder, binaries):
     """Prefer a package's visible GUI entry over adjacent launch shims/helpers."""
     try:
