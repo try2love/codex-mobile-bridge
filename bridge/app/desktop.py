@@ -299,7 +299,12 @@ class Desktop:
         if not isinstance(origins, list):
             raise FieldError('额外 HTTPS 源格式不正确', 'origins')
         origins = list(dict.fromkeys(at_field('origins', access.origin, origin) for origin in origins))
-        old_fixed = access.public_urls(old_preferences)
+        old_fixed = set()
+        for old_origin in access.public_urls(old_preferences):
+            try:
+                old_fixed.add(access.origin(old_origin))
+            except ValueError:
+                continue
         origins = [origin for origin in origins if origin not in old_fixed]
         for fixed in access.public_urls(preferences):
             if fixed not in origins:

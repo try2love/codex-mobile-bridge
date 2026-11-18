@@ -8,10 +8,14 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
+from urllib.parse import urlsplit
 
 import bridge.features.network.access as access
+from bridge.api.httpd import Handler
 from bridge.app.desktop import Desktop
 from bridge.features.notifications.channels import Notifications, write_json
 from bridge.features.network.ssh_tunnel import SSHTunnel, command
@@ -161,6 +165,82 @@ class AccessTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 self.desktop.save(value)
             self.assertEqual(self.desktop.config(), before)
+
+    def test_public_ipv6_literal_uses_the_browser_authority_in_the_saved_allowlist(self):
+        value = copy.deepcopy(self.value)
+        value['preferences'].update(lan=False, localAccess=False, connections=[{
+            'id': 'external', 'enabled': True, 'accessMode': 'external',
+            'publicUrl': 'https://[2001:0DB8:0000:0000:0000:0000:0000:0042]:8443/',
+        }])
+        state = self.desktop.save(value)
+        expected = 'https://[2001:db8::42]:8443'
+        self.assertEqual(state['urls'], [expected+'/'])
+        self.assertEqual(self.desktop.config()['origins'], [expected])
+        self.assertEqual(state['preferences']['connections'][0]['publicUrl'], expected)
+
+        # The configured URL authority, HTTP Host and browser Origin use the same
+        # canonical compressed literal; the existing exact allowlist remains intact.
+        host = urlsplit(expected).netloc
+        self.assertEqual(self.desktop.config()['origins'], ['https://'+host])
+        request = Handler.__new__(Handler)
+        request.server = SimpleNamespace(hosts={host}, secure_hosts={host}, local_access=False)
+        request.headers = Message()
+        request.headers['Host'] = host
+        request.headers['Origin'] = 'https://'+host
+        request.connection = SimpleNamespace(getsockname=lambda: ('2001:db8::10', 8787))
+        request.command, request.path = 'POST', '/api/test'
+        request.check_request(write=True)
+        request.headers.replace_header('Origin', 'https://[2001:0db8:0:0:0:0:0:42]:8443')
+        with self.assertRaisesRegex(PermissionError, '跨站'):
+            request.check_request(write=True)
+
+        # IPv4 literals use the same existing HTTPS-origin canonicalization.
+        self.assertEqual(access.origin('https://192.0.2.42:443'), 'https://192.0.2.42')
+        self.assertEqual(access.origin('https://192.0.2.42:8443'), 'https://192.0.2.42:8443')
+        self.assertEqual(access.origin('https://[2001:db8::42]:443'), 'https://[2001:db8::42]')
+        with self.assertRaises(ValueError):
+            access.origin('https://2001:db8::42')
+        with self.assertRaises(ValueError):
+            access.origin('https://[fe80::42%25eth0]')
+
+        # An older saved origin using a non-canonical spelling is replaced on
+        # save, rather than retained beside the normalized public URL.
+        config = self.desktop.config()
+        config['origins'] = ['https://[2001:0db8:0:0:0:0:0:42]:8443']
+        write_json(self.desktop.config_path, config)
+        legacy_preferences = json.loads((self.directory/'desktop.json').read_text())
+        legacy_preferences['connections'][0]['publicUrl'] = 'https://[2001:0db8:0:0:0:0:0:42]:8443/'
+        write_json(self.directory/'desktop.json', legacy_preferences)
+        value = self.desktop.snapshot()
+        self.desktop.save(value)
+        self.assertEqual(self.desktop.config()['origins'], [expected])
+
+        value['preferences']['connections'][0]['publicUrl'] = 'http://[2001:db8::42]:8443'
+        with self.assertRaises(ValueError):
+            self.desktop.save(value)
+        self.assertEqual(self.desktop.config()['origins'], [expected])
+
+    def test_startup_normalizes_legacy_ip_literal_origins_before_allowlisting(self):
+        config_path = self.directory/'config.json'
+        expanded = 'https://[2001:0DB8:0000:0000:0000:0000:0000:0042]'
+        config_path.write_text(json.dumps({'auth': {'mode': 'password'}, 'origins': [expanded]}))
+        listener, monitor = MagicMock(), MagicMock()
+        monitor.scan.side_effect = RuntimeError('stop after listener configuration')
+        argv = ['run.py', '--config', str(config_path), '--origin', expanded,
+                '--origin', 'https://192.0.2.42:443']
+        with patch.object(run.sys, 'argv', argv), patch.object(run.sys, 'stdout', MagicMock()), \
+                patch.object(run.sys, 'stderr', MagicMock()), patch.object(run, 'Bridge'), \
+                patch.object(run, 'GatewayServer', return_value=listener) as server_factory, \
+                patch.object(run, 'DynamicListenerManager'), patch.object(run, 'RuntimeNetworkMonitor', return_value=monitor), \
+                patch.object(run, 'NetworkAdaptation'), patch.object(run, 'adaptation_settings', return_value={'enabled': False}), \
+                patch.object(run, 'GatewayControl'), patch.object(run.signal, 'signal'), \
+                self.assertRaisesRegex(RuntimeError, 'stop after listener'):
+            run.main(connections=[])
+        listener_config = server_factory.call_args.kwargs.get('config') or server_factory.call_args.args[2]
+        self.assertCountEqual(listener_config['origins'], [
+            'https://[2001:db8::42]', 'https://192.0.2.42',
+            'http://127.0.0.1:8787', 'http://localhost:8787',
+        ])
 
     def test_external_probe_classifies_tls_network_redirect_and_wrong_target(self):
         preferences = {'port': 8787, 'connections': [{
