@@ -2,9 +2,11 @@
 import copy
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 from bridge.platforms.posix.force_exit import force_stop
 
@@ -193,6 +195,37 @@ class LinuxIdentityTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 Native.__new__(Native).identity(701)
 
+    def test_deleted_executable_identity_requires_explicit_opt_in(self):
+        from bridge.platforms.linux.force_exit import Native
+        fields = ['S', '12', *(['0']*17), '99']
+        stat = Mock()
+        stat.read_text.return_value = '701 (language_server) '+' '.join(fields)
+        exe = Mock()
+        exe.resolve.side_effect = FileNotFoundError()
+        root = MagicMock()
+        root.stat.return_value = SimpleNamespace(st_uid=os.getuid())
+        root.__truediv__.side_effect = lambda name: stat if name == 'stat' else exe
+        with patch('bridge.platforms.linux.force_exit.Path') as path, \
+             patch('bridge.platforms.linux.force_exit.os.readlink', return_value='/tmp/extracted/language_server (deleted)'):
+            path.return_value.__truediv__.return_value = root
+            native = Native.__new__(Native)
+            with self.assertRaises(FileNotFoundError):
+                native.identity(701)
+            identity = native.identity(701, allow_deleted=True)
+        self.assertEqual(identity['pid'], 701)
+        self.assertEqual(identity['image'], '/tmp/extracted/language_server (deleted)')
+
+    def test_open_propagates_deleted_identity_opt_in_only_when_requested(self):
+        from bridge.platforms.linux.force_exit import Native
+        native = Native.__new__(Native)
+        identity = {'pid': 701, 'image': '/tmp/extracted/language_server (deleted)'}
+        with patch('bridge.platforms.linux.force_exit.os.pidfd_open', return_value=23, create=True), \
+             patch('bridge.platforms.linux.force_exit.os.close') as close, \
+             patch.object(native, 'identity', return_value=identity) as check:
+            self.assertEqual(native.open(identity, allow_deleted=True), 23)
+        check.assert_called_once_with(701, allow_deleted=True)
+        close.assert_not_called()
+
 
 class LinuxAncestorTests(unittest.TestCase):
     def test_unreadable_ancestor_image_keeps_parent_but_target_identity_stays_strict(self):
@@ -214,6 +247,19 @@ class LinuxAncestorTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 native.ancestor(701)
 
+    def test_deleted_ancestor_image_keeps_the_existing_fail_closed_contract(self):
+        from bridge.platforms.linux.force_exit import Native
+        fields = ['S', '12', *(['0']*17), '99']
+        stat, image = Mock(), Mock()
+        stat.read_text.return_value = '701 (appimage) '+' '.join(fields)
+        image.resolve.side_effect = FileNotFoundError()
+        root = MagicMock()
+        root.__truediv__.side_effect = lambda name: stat if name == 'stat' else image
+        with patch('bridge.platforms.linux.force_exit.Path') as path:
+            path.return_value.__truediv__.return_value = root
+            with self.assertRaises(FileNotFoundError):
+                Native.__new__(Native).ancestor(701)
+
     def test_linux_protection_walk_does_not_use_partial_ancestor_data_for_targets(self):
         from bridge.platforms.posix.force_exit import force_stop
         native = Mock()
@@ -227,3 +273,27 @@ class LinuxAncestorTests(unittest.TestCase):
         native.identity.assert_called_once_with(701)
         native.open.assert_not_called()
         native.terminate.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux /proc deleted symlink fixture')
+    def test_deleted_appimage_exe_symlink_is_opt_in_and_missing_non_deleted_fails(self):
+        from bridge.platforms.linux.force_exit import Native
+        with tempfile.TemporaryDirectory() as folder:
+            proc = Path(folder)/'proc'
+            deleted_root = proc/'701'
+            deleted_root.mkdir(parents=True)
+            (deleted_root/'stat').write_text('701 (language_server) S 700 ' + ' '.join(['0'] * 17) + ' 99 0')
+            (deleted_root/'exe').symlink_to('/tmp/appimage_extracted_abc/resources/bin/language_server (deleted)')
+
+            missing_root = proc/'702'
+            missing_root.mkdir(parents=True)
+            (missing_root/'stat').write_text('702 (broken) S 1 ' + ' '.join(['0'] * 17) + ' 99 0')
+            (missing_root/'exe').symlink_to('/tmp/missing/binary')
+
+            native = Native.__new__(Native)
+            with patch('bridge.platforms.linux.force_exit.Path', side_effect=lambda value: proc if value == '/proc' else Path(value)):
+                with self.assertRaises(FileNotFoundError):
+                    native.identity(701)
+                row = native.identity(701, allow_deleted=True)
+                self.assertEqual(row['image'], '/tmp/appimage_extracted_abc/resources/bin/language_server (deleted)')
+                with self.assertRaises(FileNotFoundError):
+                    native.identity(702)

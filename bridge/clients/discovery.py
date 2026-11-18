@@ -212,12 +212,12 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
         agy_candidates.append(Path(preferences['antigravityApplication']))
     if platform == 'darwin':
         agy_candidates.extend(native.candidates(('Antigravity', 'Antigravity IDE'), roots))
-    elif platform == 'win32':
+    elif platform in ('win32', 'linux'):
         agy_candidates.extend(native.candidates('antigravity', ('Antigravity', 'Antigravity IDE'), home, env))
     suffix = '.exe' if platform == 'win32' else ''
     agy_candidates.extend((agy_home/('.gemini/bin/agy'+suffix), agy_home/('.antigravity/antigravity/bin/agy'+suffix)))
     for path in dict.fromkeys(agy_candidates):
-        found = antigravity_installation(path, platform=platform)
+        found = native.candidate(path, 'antigravity') if platform == 'linux' else antigravity_installation(path, platform=platform)
         if found:
             agy_installations.setdefault(found['surface'], {**found, 'discoveryPath': str(path)})
     history = any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces)

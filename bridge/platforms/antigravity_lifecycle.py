@@ -100,7 +100,9 @@ def stop(plan):
     elif sys.platform == 'linux':
         from bridge.platforms.linux.force_exit import Native
         binder = Native()
-        handle = binder.open(plan['processes'][pid])
+        expected = plan['processes'][pid]
+        allow_deleted = sys.platform == 'linux' and str(expected.get('image', '')).endswith(' (deleted)')
+        handle = binder.open(expected, allow_deleted=True) if allow_deleted else binder.open(expected)
         try:
             verify(plan)
             signal.pidfd_send_signal(handle, signal.SIGTERM)
