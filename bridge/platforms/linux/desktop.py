@@ -7,14 +7,24 @@ from bridge.platforms.posix.desktop import start
 from bridge.platforms.posix.desktop import terminate
 
 
-def _process_rows():
+def _process_rows(*, include_deleted=False):
     for path in Path('/proc').iterdir():
         if not path.name.isdigit():
             continue
         try:
             if path.stat().st_uid != os.getuid():
                 continue
-            executable = (path/'exe').resolve(strict=True)
+            exe_link = path/'exe'
+            try:
+                executable = exe_link.resolve(strict=True)
+            except FileNotFoundError:
+                if not include_deleted:
+                    continue
+                # 仅在调用方显式需要识别解包后解除链接的 AppImage 进程时保留 ' (deleted)' 路径
+                raw = os.readlink(exe_link)
+                if not os.path.isabs(raw) or not raw.endswith(' (deleted)'):
+                    continue
+                executable = Path(raw)
         except (OSError, RuntimeError):
             continue
         yield path, executable
