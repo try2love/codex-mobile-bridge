@@ -1089,6 +1089,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(session.desktop_stream_error)
         self.assertTrue(session.access['canSend'])
 
+    def test_v13_system_error_after_failed_response_remains_connected_to_original_owner(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        session = self.bridge.session(THREAD)
+        failed = state()
+        failed['threadRuntimeStatus'] = {'type': 'systemError'}
+        failed['turns'] = [{'turnId': 'failed-turn', 'status': 'failed',
+                            'completedAt': 1794977273000,
+                            'items': [{'id': 'error', 'type': 'agentMessage', 'text': '',
+                                       'phase': 'final_answer'}]}]
+        self.bridge._event({'method': 'thread-stream-state-changed', 'version': 13,
+            'sourceClientId': 'owner', 'params': {'hostId': 'local', 'conversationId': THREAD,
+            'change': {'type': 'snapshot', 'revision': 2, 'conversationState': failed}}})
+        self.assertTrue(session.connected)
+        self.assertIsNone(session.desktop_stream_error)
+        self.assertEqual(session.state['threadRuntimeStatus']['type'], 'systemError')
+        self.assertTrue(session.access['canSend'])
+
 
     def test_future_stream_changed_envelopes_pause_controls(self):
         self.assertTrue(self.bridge.view(THREAD)['connected'])
