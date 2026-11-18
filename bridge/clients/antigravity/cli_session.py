@@ -529,6 +529,14 @@ _EFFORT_LABEL_RE = re.compile(
 )
 
 
+def _explicit_native_model(model):
+    """提取并规范化用户显式输入的原生 MODEL_ 枚举标识。"""
+    if not isinstance(model, str):
+        return ''
+    stripped = model.strip()
+    return stripped.upper() if re.fullmatch(r'MODEL_[A-Z0-9_]+', stripped, re.IGNORECASE | re.ASCII) else ''
+
+
 def _split_model_variant(model_id, label):
     """Extract (base_id, base_name, effort) when a model label carries an effort suffix."""
     text = str(label or '').strip()
@@ -976,16 +984,17 @@ class AntigravityCli:
                         raise ValueError('所选模型不支持单独设置思考强度')
                     if row.get('nativeModel'):
                         return row['nativeModel'], row['id'], '', row.get('name') or row['id']
-        if not effort:
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
-                if not variants:
-                    continue
-                for eff, variant in variants.items():
-                    if isinstance(variant, dict) and variant.get('id') == model and variant.get('nativeModel'):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
+            if not variants:
+                continue
+            for eff, variant in variants.items():
+                if isinstance(variant, dict) and variant.get('id') == model and variant.get('nativeModel'):
+                    if not effort or effort in ('auto', eff):
                         return variant['nativeModel'], row['id'], eff, row.get('name') or row['id']
+                    raise ValueError('所选模型不支持此思考强度，请重新选择')
         return None, None, '', ''
 
 
@@ -1012,8 +1021,9 @@ class AntigravityCli:
         """Map a stored flat or grouped model into (model, effort, displayName)."""
         if not model:
             return '', '', ''
-        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
-            return model, '', model
+        explicit = _explicit_native_model(model)
+        if explicit:
+            return explicit, '', explicit
         with self._lock:
             variants = dict(self._variant_cache.get(surface, {}))
             bases = dict(self._base_cache.get(surface, {}))
@@ -1023,7 +1033,7 @@ class AntigravityCli:
             with self._lock:
                 variants = dict(self._variant_cache.get(surface, {}))
                 bases = dict(self._base_cache.get(surface, {}))
-        if not effort and model in variants:
+        if model in variants and (not effort or effort in ('auto', variants[model][1])):
             base_id, var_eff, base_name = variants[model]
             return base_id, var_eff, base_name
         if model in bases:
@@ -1036,11 +1046,23 @@ class AntigravityCli:
             if effort:
                 raise ValueError('请先选择模型后再设置思考强度')
             return None, None, '', ''
-        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+        explicit = _explicit_native_model(model)
+        if explicit:
             if effort:
                 raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
-            return model, model, '', model
-        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+            return explicit, explicit, '', explicit
+        if self.model_catalog is not None:
+            def missing(cached):
+                # Older catalogs could store a variant as an ordinary row.
+                # Let the live catalog identify the variant before rejecting auto.
+                if effort == 'auto' and any(isinstance(row, dict) and row.get('id') == model
+                        and not row.get('variants') for row in cached.get('models', [])):
+                    return True
+                return not self._resolve_from_catalog(model, effort, cached, require_effort=require_effort)[0]
+
+            catalog = self.model_catalog(surface, refresh_if=missing)
+        else:
+            catalog = self.catalog_models(surface=surface)
         self._index_catalog_display(surface, catalog)
         native_enum, canonical_model, canonical_effort, display_name = self._resolve_from_catalog(
             model, effort, catalog, require_effort=require_effort,
@@ -1071,10 +1093,11 @@ class AntigravityCli:
             if effort:
                 raise ValueError('请先选择模型后再设置思考强度')
             return None  # Preserve the original server's selected default.
-        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
+        explicit = _explicit_native_model(model)
+        if explicit:
             if effort:
                 raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
-            return model  # Explicit native enum, validated by the original service.
+            return explicit  # Explicit native enum, validated by the original service.
         native_enum, _, _, _ = self.canonicalize_model_selection(
             model, effort, surface=surface, require_effort=require_effort,
         )

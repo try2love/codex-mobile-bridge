@@ -26,7 +26,7 @@ class AntigravityModelEffortTests(unittest.TestCase):
             },
         }]}
         self.adapter = Antigravity(self.project/'gateway', home=self.project/'home',
-                                   model_catalog=lambda surface: self.catalog)
+                                   model_catalog=lambda surface, **_: self.catalog)
         self.addCleanup(self.adapter.close)
         self.sid = gateway_id('app', CID)
         row = {'id': self.sid, 'nativeId': CID, 'surfaceDirKey': 'app',
@@ -125,3 +125,25 @@ class AntigravityModelEffortTests(unittest.TestCase):
         commands, send = [payload for _, payload, _ in self.calls]
         self.assertEqual(commands['cascadeConfig']['plannerConfig']['requestedModel']['model'], 'MODEL_M_MEDIUM')
         self.assertEqual(send['cascade_config']['planner_config']['requested_model']['model'], 'MODEL_M_MEDIUM')
+
+    def test_legacy_variant_auto_effort_projects_and_sends_with_its_native_variant(self):
+        self.adapter._settings[self.sid] = {'model': 'm-high', 'effort': 'auto'}
+        detail = self.adapter.call('detail', self.sid, {})
+        self.assertEqual(detail['session']['model'], 'm')
+        self.assertEqual(detail['session']['effort'], 'high')
+        self.assertEqual(detail['session']['modelDisplayName'], 'M')
+        self.calls.clear()
+        self.adapter.call('send', self.sid, {'text': 'legacy auto'})
+        self.assert_high_on_wire(commands=False)
+
+        with self.assertRaisesRegex(ValueError, '思考强度'):
+            self.adapter.cli.canonicalize_model_selection('m-high', 'medium')
+
+    def test_manual_native_enum_normalizes_ascii_only(self):
+        self.assertEqual(
+            self.adapter.cli.canonicalize_model_selection('  model_placeholder_42  '),
+            ('MODEL_PLACEHOLDER_42', 'MODEL_PLACEHOLDER_42', '', 'MODEL_PLACEHOLDER_42'),
+        )
+        for value in ('MODEL_ſ', 'MODEL_K', 'MODEL_İ'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'MODEL_'):
+                self.adapter.cli.canonicalize_model_selection(value)
