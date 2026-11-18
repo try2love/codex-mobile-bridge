@@ -456,7 +456,8 @@ class DesktopSessions:
         if 'antigravity' not in self.adapters:
             from bridge.clients.antigravity.adapter import Antigravity
             self.adapters.defer('antigravity', lambda: Antigravity(directory, home=home,
-                model_catalog=lambda surface, *, refresh=False: self._desktop_model_directory('antigravity', surface, refresh=refresh)))
+                model_catalog=lambda surface, *, refresh_if=None: self._desktop_model_directory(
+                    'antigravity', surface, refresh_if=refresh_if)))
         if 'antigravity' not in self.session_pins:
             self.session_pins['antigravity'] = SessionPins(directory, 'antigravity')
 
@@ -631,15 +632,16 @@ class DesktopSessions:
     def _surface_model_identity(directory_identity, surface):
         return ModelStore.key('desktop-surface-models-v1', directory_identity, surface)
 
-    def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
+    def _desktop_model_directory(self, provider, surface=None, *, refresh=False, refresh_if=None):
         if provider == 'antigravity' and surface is not None:
-            value = self._account_models(provider, refresh=refresh, surface=surface)
-            # 早期缓存条目缺少 nativeModel/variants 时，强制实时重读一次原客户端目录
-            if (not refresh and isinstance(value.get('models'), list) and value['models']
-                    and any(isinstance(row, dict) and not row.get('nativeModel') and not row.get('variants')
-                            for row in value['models'])
-                    and self._account_model_live(provider)):
-                value = self._account_models(provider, refresh=True, surface=surface)
+            def needs_refresh(cached):
+                models = cached.get('models')
+                legacy = isinstance(models, list) and any(
+                    isinstance(row, dict) and not row.get('nativeModel') and not row.get('variants')
+                    for row in models)
+                return legacy or (refresh_if is not None and refresh_if(cached))
+
+            value = self._account_models(provider, refresh=refresh, surface=surface, refresh_if=needs_refresh)
             has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
             return {**value, 'capabilities': {'models': self.adapters[provider].cli.available(surface),
                     'effort': has_effort, 'manualModels': True, 'manualEffort': False}}
@@ -983,10 +985,12 @@ class DesktopSessions:
                 stamps.append(None)
         return ModelStore.key('desktop-model-directory-v2', provider, scope, stamps)
 
-    def _account_model_live(self, provider):
+    def _account_model_live(self, provider, *, surface=None):
         if not self.native_enabled(provider):
             return False
         adapter = self.adapters[provider]
+        if provider == 'antigravity' and surface is not None:
+            return adapter.cli.available(surface)
         if provider in ('zcode', 'antigravity'):
             return adapter.status().get('connected') is True
         if provider == 'claude':
@@ -1014,18 +1018,20 @@ class DesktopSessions:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
         return value
 
-    def _account_models(self, provider, refresh=False, surface=None):
+    def _account_models(self, provider, refresh=False, surface=None, *, refresh_if=None):
         with self.read_lock:
             binding = self.binding_epochs[provider]
         identity = self._account_model_identity(provider, surface)
-        try:
-            persisted = self.model_store.read(identity)
-        except (OSError, sqlite3.DatabaseError, ValueError):
-            persisted = None
-        if persisted and not refresh:
-            if self._account_model_live(provider):
-                self._schedule_account_model_refresh(provider, identity, persisted[0], surface=surface)
-            return self._account_model_result(provider, identity, persisted, surface=surface)
+        persisted = None
+        if refresh or refresh_if is None:
+            try:
+                persisted = self.model_store.read(identity)
+            except (OSError, sqlite3.DatabaseError, ValueError):
+                pass
+            if persisted and not refresh:
+                if self._account_model_live(provider, surface=surface):
+                    self._schedule_account_model_refresh(provider, identity, persisted[0], surface=surface)
+                return self._account_model_result(provider, identity, persisted, surface=surface)
         with self.model_lock:
             lock = self.model_locks.setdefault(identity, threading.Lock())
         with lock:
@@ -1035,7 +1041,21 @@ class DesktopSessions:
                 except (OSError, sqlite3.DatabaseError, ValueError):
                     persisted = None
                 if persisted:
-                    return self._account_model_result(provider, identity, persisted, surface=surface)
+                    if refresh_if is None:
+                        return self._account_model_result(provider, identity, persisted, surface=surface)
+                    live = self._account_model_live(provider, surface=surface)
+                    if not live or not refresh_if(persisted[1]):
+                        if live:
+                            self._schedule_account_model_refresh(provider, identity, persisted[0], surface=surface)
+                        return self._account_model_result(provider, identity, persisted, surface=surface)
+                    refresh = True
+            if refresh_if is not None:
+                # Resolve a cache miss against the same account after waiting for its lock.
+                if self._account_model_identity(provider, surface) != identity:
+                    raise BridgeUnavailable('客户端账号或配置已变化，请重试')
+                with self.read_lock:
+                    if self.closed.is_set() or self.binding_epochs[provider] != binding:
+                        raise BridgeUnavailable('客户端账号或配置已变化，请重试')
             try:
                 if provider == 'claude':
                     store = self._account_store(provider)
@@ -1102,7 +1122,7 @@ class DesktopSessions:
             def due():
                 with self.model_lock:
                     self.model_timers.pop(identity, None)
-                if self.closed.is_set() or not self._account_model_live(provider):
+                if self.closed.is_set() or not self._account_model_live(provider, surface=surface):
                     return
                 try:
                     self._account_models(provider, refresh=True, surface=surface)

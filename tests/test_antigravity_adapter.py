@@ -737,6 +737,97 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(changed['cache']['state'], 'unavailable')
             self.assertTrue(changed['capabilities']['manualModels'])
 
+    def test_catalog_resolution_reads_at_most_one_live_directory(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        legacy = {'models': [{'id': 'legacy-flat', 'name': 'Legacy'}]}
+        existing = {'models': [{'id': 'existing', 'nativeModel': 'MODEL_EXISTING'}]}
+        new_model = {'id': 'new-live', 'name': 'New', 'nativeModel': 'MODEL_NEW'}
+        new = {'models': [new_model], 'userStatus': {}, 'notice': ''}
+        no_match = {**new, 'models': existing['models']}
+        flat = {'models': [{'id': 'm-high', 'nativeModel': 'MODEL_M_HIGH'}]}
+        grouped = {**new, 'models': [{'id': 'm', 'name': 'M',
+            'variants': {'high': {'id': 'm-high', 'nativeModel': 'MODEL_M_HIGH'}}}]}
+
+        for name, cached, payload, model, effort, expected in (
+                ('legacy and new model', legacy, new, 'new-live', None, ('MODEL_NEW', 'new-live', '', 'New')),
+                ('legacy and still missing', legacy, no_match, 'new-live', None, None),
+                ('legacy and refresh failure', legacy, BridgeUnavailable('refresh failed'), 'new-live', None, None),
+                ('current schema and new model', existing, new, 'new-live', None, ('MODEL_NEW', 'new-live', '', 'New')),
+                ('cold cache and missing model', None, no_match, 'new-live', None, None),
+                ('old flat catalog and auto effort', flat, grouped, 'm-high', 'auto', ('MODEL_M_HIGH', 'm', 'high', 'M'))):
+            with self.subTest(name=name), \
+                    mock.patch.object(adapter, 'account_scope', return_value='account-a'), \
+                    mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'app'), \
+                    mock.patch.object(adapter.cli, 'catalog_models') as read:
+                identity = manager._account_model_identity('antigravity', 'app')
+                manager.model_store.clear()
+                if cached is not None:
+                    manager.model_store.write(identity, cached)
+                before = manager.model_store.read(identity)
+                if isinstance(payload, Exception):
+                    read.side_effect = payload
+                else:
+                    read.return_value = payload
+                if expected is not None:
+                    self.assertEqual(adapter.cli.canonicalize_model_selection(model, effort), expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'MODEL_'):
+                        adapter.cli.canonicalize_model_selection(model, effort)
+                read.assert_called_once_with(surface='app', refresh=cached is not None)
+                after = manager.model_store.read(identity)
+                if isinstance(payload, Exception):
+                    self.assertEqual(after, before)
+                else:
+                    self.assertEqual(after[1]['models'], payload['models'])
+
+    def test_automatic_catalog_refresh_checks_the_selected_surface(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        legacy = {'models': [{'id': 'legacy-flat', 'name': 'Legacy'}]}
+        with mock.patch.object(adapter, 'account_scope', return_value='account-a'), \
+                mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'ide'), \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={
+                    'models': [{'id': 'ide', 'nativeModel': 'MODEL_IDE'}], 'userStatus': {}, 'notice': ''}) as read:
+            for surface in ('app', 'ide'):
+                manager.model_store.write(manager._account_model_identity('antigravity', surface), legacy)
+            app = manager._desktop_model_directory('antigravity', 'app')
+            self.assertFalse(app['capabilities']['models'])
+            self.assertEqual(app['models'], legacy['models'])
+            read.assert_not_called()
+            ide = manager._desktop_model_directory('antigravity', 'ide')
+            self.assertTrue(ide['capabilities']['models'])
+            self.assertEqual(ide['models'], [{'id': 'ide', 'nativeModel': 'MODEL_IDE'}])
+            read.assert_called_once_with(surface='ide', refresh=True)
+
+    def test_cache_miss_cannot_refresh_after_source_account_changes(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        with mock.patch.object(adapter, 'account_scope', side_effect=['account-a', 'account-a', 'account-b']) as account, \
+                mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'catalog_models') as native:
+            identity = manager._account_model_identity('antigravity', 'app')
+            cached = {'models': [{'id': 'old', 'nativeModel': 'MODEL_OLD'}]}
+            manager.model_store.write(identity, cached)
+            before = manager.model_store.read(identity)
+            with self.assertRaisesRegex(BridgeUnavailable, '账号或配置已变化'):
+                adapter.cli.canonicalize_model_selection('new')
+            self.assertEqual(manager.model_store.read(identity), before)
+            native.assert_not_called()
+            self.assertEqual(account.call_args_list, [mock.call('app')] * 3)
+
     def test_unknown_account_preserves_history_but_cannot_save_manual_models(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory/'desktop-sessions/settings.json'

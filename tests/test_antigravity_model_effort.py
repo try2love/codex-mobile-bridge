@@ -26,7 +26,7 @@ class AntigravityModelEffortTests(unittest.TestCase):
             },
         }]}
         self.adapter = Antigravity(self.project/'gateway', home=self.project/'home',
-                                   model_catalog=lambda surface: self.catalog)
+                                   model_catalog=lambda surface, **_: self.catalog)
         self.addCleanup(self.adapter.close)
         self.sid = gateway_id('app', CID)
         row = {'id': self.sid, 'nativeId': CID, 'surfaceDirKey': 'app',
@@ -125,7 +125,7 @@ class AntigravityModelEffortTests(unittest.TestCase):
         self.assertEqual(commands['cascadeConfig']['plannerConfig']['requestedModel']['model'], 'MODEL_M_MEDIUM')
         self.assertEqual(send['cascade_config']['planner_config']['requested_model']['model'], 'MODEL_M_MEDIUM')
 
-    def test_legacy_variant_auto_effort_explicit_case_and_refresh_fallback(self):
+    def test_legacy_variant_auto_effort_projects_and_sends_with_its_native_variant(self):
         self.adapter._settings[self.sid] = {'model': 'm-high', 'effort': 'auto'}
         detail = self.adapter.call('detail', self.sid, {})
         self.assertEqual(detail['session']['model'], 'm')
@@ -138,25 +138,11 @@ class AntigravityModelEffortTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '思考强度'):
             self.adapter.cli.canonicalize_model_selection('m-high', 'medium')
 
+    def test_manual_native_enum_normalizes_ascii_only(self):
         self.assertEqual(
-            self.adapter.cli.canonicalize_model_selection('  model_m_high  '),
-            ('MODEL_M_HIGH', 'MODEL_M_HIGH', '', 'MODEL_M_HIGH'),
+            self.adapter.cli.canonicalize_model_selection('  model_placeholder_42  '),
+            ('MODEL_PLACEHOLDER_42', 'MODEL_PLACEHOLDER_42', '', 'MODEL_PLACEHOLDER_42'),
         )
-
-        # 缓存目录缺少新模型时，允许通过支持 refresh=True 的目录回调实时重试
-        calls = []
-        fresh_catalog = {'models': [
-            *self.catalog['models'],
-            {'id': 'new-orch', 'name': 'Orchestrator', 'efforts': [], 'supportsEffort': False, 'nativeModel': 'MODEL_ORCH'},
-        ]}
-
-        def refreshable(surface, *, refresh=False):
-            calls.append((surface, refresh))
-            return fresh_catalog if refresh else self.catalog
-
-        self.adapter.cli.model_catalog = refreshable
-        self.assertEqual(
-            self.adapter.cli.canonicalize_model_selection('new-orch', require_effort=True),
-            ('MODEL_ORCH', 'new-orch', '', 'Orchestrator'),
-        )
-        self.assertEqual(calls, [('app', False), ('app', True)])
+        for value in ('MODEL_ſ', 'MODEL_K', 'MODEL_İ'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'MODEL_'):
+                self.adapter.cli.canonicalize_model_selection(value)

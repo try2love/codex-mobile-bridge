@@ -532,7 +532,7 @@ def _explicit_native_model(model):
     if not isinstance(model, str):
         return ''
     stripped = model.strip()
-    return stripped.upper() if re.fullmatch(r'MODEL_[A-Z0-9_]+', stripped, re.IGNORECASE) else ''
+    return stripped.upper() if re.fullmatch(r'MODEL_[A-Z0-9_]+', stripped, re.IGNORECASE | re.ASCII) else ''
 
 
 def _split_model_variant(model_id, label):
@@ -1049,23 +1049,22 @@ class AntigravityCli:
             if effort:
                 raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
             return explicit, explicit, '', explicit
-        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+        if self.model_catalog is not None:
+            def missing(cached):
+                # Older catalogs could store a variant as an ordinary row.
+                # Let the live catalog identify the variant before rejecting auto.
+                if effort == 'auto' and any(isinstance(row, dict) and row.get('id') == model
+                        and not row.get('variants') for row in cached.get('models', [])):
+                    return True
+                return not self._resolve_from_catalog(model, effort, cached, require_effort=require_effort)[0]
+
+            catalog = self.model_catalog(surface, refresh_if=missing)
+        else:
+            catalog = self.catalog_models(surface=surface)
         self._index_catalog_display(surface, catalog)
         native_enum, canonical_model, canonical_effort, display_name = self._resolve_from_catalog(
             model, effort, catalog, require_effort=require_effort,
         )
-        if not native_enum and self.model_catalog is not None:
-            # 缓存目录可能滞后于本地运行的 Antigravity 模型目录；仅在注入目录支持实时刷新时重读一次
-            try:
-                refreshed = self.model_catalog(surface, refresh=True)
-            except TypeError:
-                refreshed = None
-            if isinstance(refreshed, dict):
-                catalog = refreshed
-                self._index_catalog_display(surface, catalog)
-                native_enum, canonical_model, canonical_effort, display_name = self._resolve_from_catalog(
-                    model, effort, catalog, require_effort=require_effort,
-                )
         if not native_enum:
             raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
         return native_enum, canonical_model, canonical_effort, display_name
