@@ -57,7 +57,7 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
   tray.on('double-click',show);
   render();
   refresh();
-  return {refresh,observe,relabel(){rendered=undefined;render();},dispose(){disposed=true;if(timer!==undefined)clearTimer(timer);tray.destroy();}};
+  return {refresh,observe,setIcon(icon){if(!disposed)tray.setImage(icon);},relabel(){rendered=undefined;render();},dispose(){disposed=true;if(timer!==undefined)clearTimer(timer);tray.destroy();}};
 }
 
 module.exports={createTray,primaryUrl};
