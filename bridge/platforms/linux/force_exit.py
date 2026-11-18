@@ -4,6 +4,22 @@ from pathlib import Path
 import signal
 
 
+def _read_proc_image(exe_path):
+    """解析 /proc/<pid>/exe；仅在内核标注为 ' (deleted)' 的绝对路径时保留原软链目标。"""
+    try:
+        return str(exe_path.resolve(strict=True))
+    except FileNotFoundError as exc:
+        # AppImage 以 APPIMAGE_EXTRACT_AND_RUN=1 运行并清理临时解压目录时，
+        # 内核仍会将 /proc/<pid>/exe 标记为 '<路径> (deleted)'；保留该后缀以免误匹配普通磁盘路径
+        try:
+            raw = os.readlink(exe_path)
+        except (OSError, TypeError):
+            raise exc from None
+        if os.path.isabs(raw) and raw.endswith(' (deleted)'):
+            return raw
+        raise
+
+
 class Native:
     def __init__(self):
         if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
@@ -14,7 +30,7 @@ class Native:
         try:
             stat = root.stat()
             before = (root/'stat').read_text().rsplit(')', 1)[1].split()
-            image = '' if before[0] == 'Z' else str((root/'exe').resolve(strict=True))
+            image = '' if before[0] == 'Z' else _read_proc_image(root/'exe')
             after = (root/'stat').read_text().rsplit(')', 1)[1].split()
         except FileNotFoundError:
             if not root.exists():
@@ -32,8 +48,8 @@ class Native:
         root = Path('/proc')/str(pid)
         before = (root/'stat').read_text().rsplit(')', 1)[1].split()
         try:
-            image = str((root/'exe').resolve(strict=True))
-        except PermissionError:
+            image = _read_proc_image(root/'exe')
+        except (PermissionError, FileNotFoundError):
             image = ''
         after = (root/'stat').read_text().rsplit(')', 1)[1].split()
         if before[19] != after[19]:
