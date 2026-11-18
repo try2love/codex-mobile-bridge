@@ -2,6 +2,7 @@
 import copy
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -227,3 +228,25 @@ class LinuxAncestorTests(unittest.TestCase):
         native.identity.assert_called_once_with(701)
         native.open.assert_not_called()
         native.terminate.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux /proc deleted symlink fixture')
+    def test_deleted_appimage_exe_symlink_keeps_deleted_suffix_while_missing_non_deleted_fails(self):
+        from bridge.platforms.linux.force_exit import Native
+        with tempfile.TemporaryDirectory() as folder:
+            proc = Path(folder)/'proc'
+            deleted_root = proc/'701'
+            deleted_root.mkdir(parents=True)
+            (deleted_root/'stat').write_text('701 (language_server) S 700 ' + ' '.join(['0'] * 17) + ' 99 0')
+            (deleted_root/'exe').symlink_to('/tmp/appimage_extracted_abc/resources/bin/language_server (deleted)')
+
+            missing_root = proc/'702'
+            missing_root.mkdir(parents=True)
+            (missing_root/'stat').write_text('702 (broken) S 1 ' + ' '.join(['0'] * 17) + ' 99 0')
+            (missing_root/'exe').symlink_to('/tmp/missing/binary')
+
+            native = Native.__new__(Native)
+            with patch('bridge.platforms.linux.force_exit.Path', side_effect=lambda value: proc if value == '/proc' else Path(value)):
+                row = native.identity(701)
+                self.assertEqual(row['image'], '/tmp/appimage_extracted_abc/resources/bin/language_server (deleted)')
+                with self.assertRaises(FileNotFoundError):
+                    native.identity(702)

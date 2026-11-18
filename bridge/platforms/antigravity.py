@@ -1,4 +1,5 @@
 """Read-only native identity and loopback checks for Antigravity language servers."""
+import configparser
 import hashlib
 import json
 import os
@@ -9,6 +10,8 @@ import shlex
 import sys
 import subprocess
 from functools import lru_cache
+
+from bridge.platforms.electron import package_manifest
 
 
 BUNDLE_IDS = {'com.google.antigravity': 'app', 'com.google.antigravity-ide': 'ide'}
@@ -45,9 +48,11 @@ def login_processes():
                     continue
                 # A running executable can be unlinked by an updater. Its
                 # kernel symlink remains evidence of a live credential writer.
-                image = os.readlink(path/'exe').removesuffix(' (deleted)')
-                if relevant(image):
-                    result.append(int(path.name))
+                raw_image = os.readlink(path/'exe')
+                image = raw_image.removesuffix(' (deleted)')
+                pid = int(path.name)
+                if relevant(image) or _trusted_image(raw_image, pid=pid):
+                    result.append(pid)
             except FileNotFoundError:
                 try:
                     state = (path/'stat').read_text().rsplit(')', 1)[1].split()[0]
@@ -107,6 +112,96 @@ def _file_identity(path):
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
+def _desktop_entry_surface(raw, *, member=None):
+    """统一校验 AppImage SquashFS 或已挂载 FUSE 根目录中的 .desktop 元数据。"""
+    if not raw or raw.get('type') != 'Application':
+        return None
+    command = shlex.split(raw.get('exec', ''))
+    if not command or command[0] not in ('AppRun', 'antigravity', 'antigravity-ide'):
+        return None
+    version = raw.get('x-appimage-version', '')
+    if len(version) > 128 or any(ord(char) < 32 for char in version):
+        return None
+    name_cf = raw.get('name', '').casefold()
+    wm_cf = raw.get('startupwmclass', '').casefold()
+    specs = (
+        ('antigravity.desktop', ('antigravity',), 'app'),
+        ('antigravity-ide.desktop', ('antigravity ide', 'antigravity-ide'), 'ide'),
+    )
+    for desktop_name, expected_names, surface in specs:
+        if member and member != desktop_name:
+            continue
+        if name_cf in expected_names and wm_cf in (*expected_names, 'antigravity'):
+            return {'surface': surface, 'version': version}
+    return None
+
+
+def _read_mounted_desktop(mount_root, desktop_name):
+    """从已挂载的只读目录读取 .desktop，无需依赖外部 unsquashfs 二进制。"""
+    target = mount_root/desktop_name
+    try:
+        if not target.is_file() or target.is_symlink():
+            return None
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string(target.read_text(encoding='utf-8'))
+        entry = {k.lower(): v for k, v in config['Desktop Entry'].items()}
+        return _desktop_entry_surface(entry, member=desktop_name)
+    except (OSError, ValueError, KeyError, configparser.Error, UnicodeError):
+        return None
+
+
+def _unpacked_installation(path):
+    """识别普通解包桌面目录（同时兼容 resources/app/product.json 与 Electron app.asar）。"""
+    product_file = path.parent/'resources/app/product.json'
+    if product_file.is_file():
+        product = json.loads(product_file.read_text(encoding='utf-8'))
+        name = product.get('applicationName')
+        if name in ('antigravity', 'antigravity-ide') and path.stem.casefold() in ('antigravity', 'antigravity ide', 'antigravity-ide'):
+            return {'application': str(path), 'executable': str(path),
+                    'version': str(product.get('ideVersion') or ''),
+                    'surface': 'ide' if name.endswith('-ide') else 'app'}
+    archive = path.parent/'resources/app.asar'
+    if archive.is_file() and archive.resolve() == archive and path.stem.casefold() in ('antigravity', 'antigravity ide', 'antigravity-ide'):
+        manifest = package_manifest(archive)
+        name = manifest.get('name')
+        product_name = str(manifest.get('productName') or '')
+        if name in ('antigravity', 'antigravity-ide') or product_name.casefold() in ('antigravity', 'antigravity ide'):
+            surface = 'ide' if (name == 'antigravity-ide' or 'ide' in product_name.casefold()) else 'app'
+            return {'application': str(path), 'executable': str(path),
+                    'version': str(manifest.get('version') or ''),
+                    'surface': surface}
+    return None
+
+
+def _fuse_installation(appimage_path, mount_root):
+    """验证 FUSE 只读挂载目录中的 Antigravity 主程序或桌面元数据（免 unsquashfs）。"""
+    for member, payload_name in (('antigravity.desktop', 'antigravity'), ('antigravity-ide.desktop', 'antigravity-ide')):
+        exe = mount_root/payload_name
+        if exe.is_file() and os.access(exe, os.X_OK):
+            unpacked = _unpacked_installation(exe)
+            if unpacked:
+                return unpacked
+        desktop_info = _read_mounted_desktop(mount_root, member)
+        if desktop_info:
+            return {'application': str(appimage_path), 'executable': str(appimage_path), **desktop_info}
+    return None
+
+
+def _appimage_metadata(path):
+    """核验 Linux Type 2 AppImage 内置桌面元数据是否属于官方 Antigravity。"""
+    from bridge.platforms.linux import appimage
+    if not os.access(path, os.X_OK) or not appimage.is_type2(path):
+        return None
+    for member in ('antigravity.desktop', 'antigravity-ide.desktop'):
+        raw = appimage.metadata(path, member)
+        verified = _desktop_entry_surface(raw, member=member)
+        if verified:
+            return {'application': str(path), 'executable': str(path),
+                    **verified, 'packageType': 'appimage',
+                    'installationIdentity': list(appimage.file_identity(path))}
+    return None
+
+
 def installation(application, *, platform=None):
     """Inspect official bundles or the CLI installer's matching binary metadata."""
     platform, path = platform or sys.platform, Path(application).expanduser().resolve()
@@ -120,15 +215,27 @@ def installation(application, *, platform=None):
                 if row:
                     return {**row, 'surface': surface}
         elif path.is_file():
-            # Desktop distributions expose their product identity next to the
-            # executable. A same-named binary alone is not an installation.
-            product = json.loads((path.parent/'resources/app/product.json').read_text(encoding='utf-8'))
-            name = product.get('applicationName')
-            if name in ('antigravity', 'antigravity-ide') and path.stem.casefold() in ('antigravity', 'antigravity ide', 'antigravity-ide'):
-                return {'application': str(path), 'executable': str(path),
-                        'version': str(product.get('ideVersion') or ''),
-                        'surface': 'ide' if name.endswith('-ide') else 'app'}
-    except (OSError, ValueError, TypeError, KeyError):
+            if platform == 'linux':
+                from bridge.platforms.linux import appimage
+                if os.access(path, os.X_OK) and appimage.is_type2(path):
+                    identity = appimage.file_identity(path)
+                    # 若当前已有 FUSE 挂载运行，优先直读只读挂载目录元信息，避免无 unsquashfs 时冷启动检测失败
+                    runtimes = []
+                    for payload_name in ('antigravity', 'antigravity-ide'):
+                        runtimes.extend(appimage.runtime_candidates(path, payload_name))
+                    unique_runtimes = list({(row.get('pid'), row.get('executable')): row for row in runtimes}.values())
+                    if len(unique_runtimes) == 1:
+                        runtime_exe = Path(unique_runtimes[0]['executable'])
+                        fuse_info = _fuse_installation(path, runtime_exe.parent)
+                        if fuse_info and appimage.file_identity(path) == identity:
+                            return {**fuse_info, 'application': str(path), 'executable': str(path),
+                                    'packageType': 'appimage', 'installationIdentity': list(identity)}
+                    appimage_row = _appimage_metadata(path)
+                    if appimage_row:
+                        return appimage_row
+                    return None
+            return _unpacked_installation(path)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
         return None
     return None
 
@@ -155,8 +262,138 @@ def profile_lease(path):
     return stream
 
 
-def _trusted_image(image):
-    image = Path(image).resolve()
+def _proc_env(pid):
+    """读取同用户进程环境中的 APPIMAGE 与 APPDIR 变量，失败时回退为空字典。"""
+    result = {}
+    try:
+        raw = (Path('/proc')/str(pid)/'environ').read_bytes()
+    except OSError:
+        return result
+    for entry in raw.split(b'\x00'):
+        if b'=' not in entry:
+            continue
+        key, value = entry.split(b'=', 1)
+        if key in (b'APPIMAGE', b'APPDIR'):
+            result[key.decode('ascii')] = value.decode('utf-8', 'surrogateescape')
+    return result
+
+
+def _clean_proc_path(raw):
+    text = str(raw).removesuffix(' (deleted)')
+    if not text or '..' in Path(text).parts:
+        return None
+    candidate = Path(os.path.normpath(text))
+    return candidate if candidate.is_absolute() else None
+
+
+def _parent_before(path, *markers):
+    """按路径层级定位首个标记目录（如 resources/extensions）的上级根目录。"""
+    for marker in markers:
+        if marker in path.parts:
+            idx = path.parts.index(marker)
+            if idx > 0:
+                yield path.parents[len(path.parts) - 1 - idx]
+
+
+def _trusted_appimage_runtime(image, pid):
+    """核验 Linux AppImage 解压或 FUSE 运行时派生出的 language_server 进程。"""
+    if sys.platform != 'linux' or pid is None:
+        return False
+    clean_path = _clean_proc_path(image)
+    if clean_path is None:
+        return False
+    if not (clean_path.name.startswith('language_server')
+            and ('resources' in clean_path.parts or 'extensions' in clean_path.parts)):
+        return False
+
+    env = _proc_env(pid)
+    appimage_path = None
+    if 'APPIMAGE' in env:
+        try:
+            appimage_path = Path(env['APPIMAGE']).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return False
+    appdir_path = None
+    if 'APPDIR' in env:
+        appdir_path = _clean_proc_path(env['APPDIR'])
+        if appdir_path is None or not clean_path.is_relative_to(appdir_path):
+            return False
+
+    # 确定解包根目录：language_server 位于 <root>/resources/... 或 APPDIR 内
+    payload_root = appdir_path or next(_parent_before(clean_path, 'resources', 'extensions'), None)
+    if payload_root is None:
+        return False
+
+    # 1. APPIMAGE_EXTRACT_AND_RUN=1 模式：沿同用户父进程链追溯，确保解包进程链直达已签章核验的 AppImage 宿主
+    seen = {int(pid)}
+    try:
+        cursor_root = Path('/proc')/str(pid)
+        if cursor_root.stat().st_uid != os.getuid():
+            return False
+        parent = int((cursor_root/'stat').read_text().rsplit(')', 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        parent = 0
+    for _ in range(16):
+        if parent <= 1 or parent in seen:
+            break
+        seen.add(parent)
+        anc_root = Path('/proc')/str(parent)
+        try:
+            if anc_root.stat().st_uid != os.getuid():
+                break
+            fields = (anc_root/'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] == 'Z':
+                break
+            anc_raw = os.readlink(anc_root/'exe')
+            anc_path = _clean_proc_path(anc_raw)
+            if anc_path is None:
+                break
+            if not anc_raw.endswith(' (deleted)'):
+                resolved = anc_path.resolve(strict=True)
+                if (appimage_path is None or resolved == appimage_path) and _appimage_metadata(resolved):
+                    return True
+            # 中间父进程必须留在同一解包根目录内，防止跨进程树伪造来源
+            if not anc_path.is_relative_to(payload_root):
+                break
+            parent = int(fields[1])
+        except (OSError, RuntimeError, ValueError, IndexError):
+            break
+
+    # 2. FUSE 挂载模式：核验 APPDIR 为同用户只读 FUSE 挂载，且存在绑定该 AppImage 与 pipe 的真实运行时
+    if appimage_path is not None and appdir_path is not None:
+        from bridge.platforms.linux import appimage
+        try:
+            if appdir_path in appimage._mounts():
+                # 优先直接校验已挂载只读目录中的资源/桌面元信息，缺 unsquashfs 时同样可用
+                info = _fuse_installation(appimage_path, appdir_path) or _appimage_metadata(appimage_path)
+                if info:
+                    payload_name = 'antigravity-ide' if info['surface'] == 'ide' else 'antigravity'
+                    runtimes = appimage.runtime_candidates(appimage_path, payload_name)
+                    if any(Path(row['executable']).is_relative_to(appdir_path) for row in runtimes):
+                        return True
+        except (OSError, ValueError):
+            return False
+    return False
+
+
+def _unpacked_root_verified(image):
+    """解压目录未精确命名为 antigravity 时，核验其安装根目录确实存在 Antigravity 主程序与资源。"""
+    for root in _parent_before(image, 'resources', 'extensions'):
+        for name in ('antigravity', 'Antigravity', 'antigravity-ide', 'Antigravity IDE'):
+            candidate = root/name
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK) and _unpacked_installation(candidate) is not None:
+                    return True
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+    return False
+
+
+def _trusted_directory_image(image):
+    raw = str(image)
+    if raw.endswith(' (deleted)'):
+        return False
+    image = Path(raw).resolve()
     if image.name.casefold() in ('agy', 'agy.exe'):
         return installation(image) is not None
     if not image.name.startswith('language_server'):
@@ -172,7 +409,13 @@ def _trusted_image(image):
         return info.get('CFBundleIdentifier') in BUNDLE_IDS
     # Packaged native servers only; never accept a process name or PATH alias.
     parts = {part.casefold() for part in image.parts}
-    return ('antigravity' in parts or 'antigravity-ide' in parts) and ('resources' in parts or 'extensions' in parts)
+    if ('antigravity' in parts or 'antigravity-ide' in parts) and ('resources' in parts or 'extensions' in parts):
+        return True
+    return _unpacked_root_verified(image)
+
+
+def _trusted_image(image, *, pid=None):
+    return _trusted_directory_image(image) or _trusted_appimage_runtime(image, pid)
 
 
 def _identity(pid):
@@ -206,9 +449,10 @@ def _candidates():
                 yield pid, shlex.split(commands([pid]).get(pid, ''))
     elif sys.platform == 'linux':
         from bridge.platforms.linux.desktop import _process_rows
-        for path, image in _process_rows():
-            if _trusted_image(image):
-                yield int(path.name), (path/'cmdline').read_bytes().decode().rstrip('\0').split('\0')
+        for path, image in _process_rows(include_deleted=True):
+            pid = int(path.name)
+            if _trusted_image(image, pid=pid):
+                yield pid, (path/'cmdline').read_bytes().decode('utf-8', 'replace').rstrip('\0').split('\0')
 
 
 def _flag(args, name):
@@ -286,14 +530,14 @@ def endpoint(surface, home):
             before = _identity(pid)
         except (OSError, ValueError):
             continue
-        if not _trusted_image(before['image']):
+        if not _trusted_image(before['image'], pid=before['pid']):
             continue
         token = _flag(args, '--csrf_token')
         if not token or not re.fullmatch(r'[A-Za-z0-9_-]{16,256}', token):
             continue
         # Read only the matching product's log. A log port alone is never
         # sufficient: the listener must belong to this exact process generation.
-        if Path(before['image']).name.casefold() in ('agy', 'agy.exe'):
+        if Path(before['image'].removesuffix(' (deleted)')).name.casefold() in ('agy', 'agy.exe'):
             # The official IDE launches agy --hub with app_data_dir=antigravity.
             # Its hub port serves the UI; use its separately logged native LS
             # HTTP listener and the existing LanguageServerService protocol.
@@ -324,6 +568,6 @@ def endpoint(surface, home):
 def verify_endpoint(value):
     before = value['identity']
     port = int(value['address'].rsplit(':', 1)[1])
-    if (_identity(before['pid']) != before or not _trusted_image(before['image']) or
+    if (_identity(before['pid']) != before or not _trusted_image(before['image'], pid=before['pid']) or
             not _listener(before['pid'], port, before['image'])):
         raise ValueError('Antigravity 原生服务进程已变化，请重新连接')
