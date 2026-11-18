@@ -372,12 +372,14 @@ class Antigravity:
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
 
     def _send_prompt_or_items(self, cid, prompt, *, model, surface, effort=None, items=None,
-                              turn_generation=None, before_send=None):
+                              turn_generation=None, before_send=None, expected_identity=None):
         selection = {'effort': effort} if effort else {}
         if turn_generation is not None:
             selection['turn_generation'] = turn_generation
         if before_send is not None:
             selection['before_send'] = before_send
+        if expected_identity is not None:
+            selection['expected_identity'] = expected_identity
         if items is not None:
             return self.cli.send_user_message(cid, prompt, model=model, surface=surface, items=items, **selection)
         return self.cli.send_user_message(cid, prompt, model=model, surface=surface, **selection)
@@ -433,8 +435,11 @@ class Antigravity:
                 prompt, plugins=plugins, default_command=None,
                 surface=surface, cid=None, model=model, effort=effort, cwd=cwd,
             )
-            cid = self.cli.start_cascade(surface=surface, model=model, effort=effort, cwd=cwd)
-            self._send_prompt_or_items(cid, prompt, model=model, effort=effort, surface=surface, items=items)
+            cid, expected_identity = self.cli.start_cascade(
+                surface=surface, model=model, effort=effort, cwd=cwd,
+            )
+            self._send_prompt_or_items(cid, prompt, model=model, effort=effort, surface=surface, items=items,
+                                       expected_identity=expected_identity)
             key = gateway_id(surface, cid)
             if model:
                 try:
