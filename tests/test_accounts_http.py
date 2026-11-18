@@ -45,6 +45,14 @@ class AccountsHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST','/api/accounts/switch',{**value,'apiKey':'forbidden'},headers)[0],400)
         self.assertEqual(self.request('POST','/api/accounts/switch',value,headers)[0],202)
         manager.switch.assert_called_once_with(value)
+        manager.switch.reset_mock()
+        confirmed = {**value, 'sharedDaemonConfirmed': True}
+        self.assertEqual(self.request('POST','/api/accounts/switch',confirmed,headers)[0],202)
+        manager.switch.assert_called_once_with(confirmed)
+        manager.switch.reset_mock()
+        self.assertEqual(self.request('POST','/api/accounts/switch',
+            {**value, 'sharedDaemonConfirmed': 'true'},headers)[0],400)
+        manager.switch.assert_not_called()
 
     def test_ssh_retry_requires_auth_csrf_and_registered_host(self):
         self.manager()

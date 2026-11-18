@@ -61,6 +61,46 @@ def windows_installations():
         return {}
 
 
+def package_registration_fingerprint(families):
+    """Read only the current user's requested package families, without a scan.
+
+    An empty package list means a successful native query found no registration.
+    Native failures propagate so they cannot be mistaken for an uninstall.
+    """
+    families = set(families)
+    if any(not isinstance(family, str) or not re.fullmatch(r'[A-Za-z0-9._-]+', family)
+           for family in families):
+        raise ValueError('Invalid package family name')
+    if not families:
+        return {}
+    if os.name != 'nt':
+        raise OSError('Package registration requires Windows')
+    import ctypes
+    query = ctypes.WinDLL('kernel32', use_last_error=True).GetPackagesByPackageFamily
+    query.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_wchar_p),
+                      ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p]
+    query.restype = ctypes.c_long
+    result = {}
+    for family in sorted(families):
+        count, length = ctypes.c_uint32(), ctypes.c_uint32()
+        status = query(family, ctypes.byref(count), None, ctypes.byref(length), None)
+        if status not in (0, 122):  # ERROR_SUCCESS / ERROR_INSUFFICIENT_BUFFER
+            raise ctypes.WinError(status)
+        if status == 0 and count.value == 0:
+            result[family] = []
+            continue
+        for attempt in range(2):
+            names = (ctypes.c_wchar_p * count.value)()
+            buffer = ctypes.create_unicode_buffer(length.value)
+            status = query(family, ctypes.byref(count), names, ctypes.byref(length), buffer)
+            if status == 0:
+                result[family] = sorted(names[:count.value])
+                break
+            if status != 122 or attempt:
+                raise ctypes.WinError(status)
+    return result
+
+
 def _rows(inventory, key):
     value = inventory.get(key, [])
     if isinstance(value, dict):
@@ -92,6 +132,32 @@ def _electron(path):
             (path.parent/'resources/app/package.json').is_file())
 
 
+def legacy_package_application(executable, current):
+    """Recover identity for a removed Store GUI saved before source tracking."""
+    old, new = Path(executable), Path(current.get('executable', ''))
+    family = current.get('packageFamilyName', '')
+    aumid = current.get('applicationUserModelId', '')
+    if old.exists() or not new.is_file() or not _electron(new) or not aumid.startswith(family+'!'):
+        return None
+
+    def package(path):
+        for folder in path.parents:
+            match = re.fullmatch(r'(.+)_(\d+\.\d+\.\d+\.\d+)_(x86|x64|arm|arm64|neutral)_([^_]*)_([a-z0-9]{13})', folder.name)
+            if match:
+                name, _, architecture, resource, publisher = match.groups()
+                return folder, name+'_'+publisher, architecture, resource, path.relative_to(folder)
+        return None
+
+    previous, registered = package(old), package(new)
+    if not previous or not registered:
+        return None
+    before, after = previous[0], registered[0]
+    if (previous[1:] != registered[1:] or registered[1] != family or
+            str(before.parent).casefold() != str(after.parent).casefold()):
+        return None
+    return {'executable': str(old), 'packageFamilyName': family, 'applicationUserModelId': aumid}
+
+
 def _package_entries(folder, binaries):
     """Prefer a package's visible GUI entry over adjacent launch shims/helpers."""
     try:
@@ -114,10 +180,6 @@ def _package_entries(folder, binaries):
                 yield candidate, app.get('Id', '')
     except (OSError, ValueError, ET.ParseError):
         return
-
-
-def _package_executables(folder, binaries):
-    return (path for path, _ in _package_entries(folder, binaries))
 
 
 def application_user_model_id(executable):
@@ -258,8 +320,12 @@ def registered_candidates(provider, inventory):
         folder = _path(row.get('InstallLocation'))
         if folder:
             metadata = {'packageFamilyName': row['PackageFamilyName']} if isinstance(row.get('PackageFamilyName'), str) else {}
-            for path in _package_executables(folder, binaries):
-                yield {'executable': str(path), **metadata}
+            for path, identifier in _package_entries(folder, binaries):
+                entry = {'executable': str(path), **metadata}
+                family = metadata.get('packageFamilyName', '')
+                if re.fullmatch(r'[A-Za-z0-9._-]+', family) and re.fullmatch(r'[A-Za-z0-9._-]+', identifier):
+                    entry['applicationUserModelId'] = family+'!'+identifier
+                yield entry
             # Current Codex Store packages also contain a small Codex.exe shim;
             # ChatGPT.exe is the Electron GUI identified by the package manifest.
             package_binaries = ('ChatGPT.exe', 'Codex.exe') if provider == 'codex' else binaries

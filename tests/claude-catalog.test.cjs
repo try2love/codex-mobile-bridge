@@ -7,7 +7,7 @@ let sent;
 const surface=kind=>({
   getAll:async()=>[{sessionId:kind,model:'historical-model'}],
   getSession:async id=>({sessionId:id,title:kind,oauthToken:'DO_NOT_EXPORT'}),
-  getTranscript:async()=>[{type:'assistant',message:{role:'assistant',content:'visible',model:'historical-model',oauthToken:'DO_NOT_EXPORT'}}],
+  getTranscript:async()=>[{type:'assistant',message:{role:'assistant',content:'visible',stop_reason:'end_turn',model:'historical-model',oauthToken:'DO_NOT_EXPORT'}}],
   getSupportedCommands:async()=>[{name:'review',description:'Review this project'}],
   setModel(){},setEffort(){},setPermissionMode(){},start(){},
   sendMessage(...args){sent=args;assert.equal(args[2],undefined);assert.equal(args[3],undefined);assert.equal(args[4],undefined);assert.equal(args[6],undefined);},
@@ -31,6 +31,7 @@ const source=fs.readFileSync('bridge/clients/claude/connector.js','utf8').replac
   assert.equal(listing.result.code[0].sessionId,'code');assert.equal(listing.result.cowork[0].sessionId,'cowork');
   const detail=await invoke('cowork','mobileDetail',['native']);
   assert.equal(detail.result.session.sessionId,'native');assert.equal(detail.result.transcript[0].message.content,'visible');
+  assert.equal(detail.result.transcript[0].message.stop_reason,'end_turn');
   assert.ok(!JSON.stringify(detail).includes('DO_NOT_EXPORT'));
   const code=await invoke('code','mobileCatalog',['code']);
   assert.equal(code.error,undefined);

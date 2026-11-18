@@ -646,28 +646,24 @@ class RemoteClaudeCli:
                 with owned.condition:
                     pending = owned.pending.get(rid)
                 if not pending:
-                    raise ValueError('请求已处理或过期')
+                    raise ResumePreflightBlocked('请求已处理或过期')
                 decision = {'accept': 'allow', 'decline': 'deny'}.get(body.get('decision'))
                 if not decision:
-                    raise ValueError('请选择本次允许或拒绝')
+                    raise ResumePreflightBlocked('请选择本次允许或拒绝')
                 response = {'behavior': decision}
                 if decision == 'allow':
-                    updated = dict(pending['request'].get('input', {}))
+                    raw_input = pending['request'].get('input')
                     if pending['request'].get('tool_name') == 'AskUserQuestion':
-                        answers = {}
-                        for index, question in enumerate(updated.get('questions') or []):
-                            key = str(question.get('id') or question.get('question') or index)
-                            values = ((body.get('answers') or {}).get(key) or {}).get('answers') or []
-                            if not values or not all(isinstance(value, str) for value in values):
-                                raise ValueError('请回答每一项问题')
-                            answers[question['question']] = ', '.join(values)
-                        updated['answers'] = answers
+                        updated = model.respond_answers(raw_input, body.get('answers'),
+                                                        error_cls=ResumePreflightBlocked)
+                    else:
+                        updated = dict(raw_input) if isinstance(raw_input, dict) else {}
                     response['updatedInput'] = updated
                 else:
                     response['message'] = '用户拒绝了本次操作'
                 with owned.condition:
                     if owned.pending.pop(rid, None) is not pending:
-                        raise ValueError('请求已处理或过期')
+                        raise ResumePreflightBlocked('请求已处理或过期')
                 owned.write({'type': 'control_response', 'response': {'subtype': 'success',
                              'request_id': rid, 'response': response}})
             else:

@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.2.1:** [Stable release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [Release notes](RELEASE_NOTES.md). Updating is recommended for native connections to the latest Codex App. Adds Antigravity and interactive charts, with improvements to long chats and model caching.
+> **v2.2.2-preview.1:** [Preview download](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.1) · [Release notes](RELEASE_NOTES.md). On-demand long-chat loading, folding and caching; native Antigravity commands, thinking effort and stopping; client reliability fixes. [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) remains stable.
 
 **Android installation:** The new **Bridge** app installs alongside the old v2.2.0 app and cannot replace it in place. Install Bridge, add your computers and verify the connections first. Preserve any drafts you need from the old app before uninstalling it; old bindings and drafts do not migrate automatically. Users of the separate v2.2.1-preview.1 **Bridge Preview** app can upgrade in place and retain that preview app’s connections and drafts.
 
@@ -650,6 +650,8 @@ Report the OS, App/runtime version, branch/commit and redacted reproduction step
 Thanks to the [LINUX DO](https://linux.do/) community and its members for their support.
 
 Thanks to [@qybgh (Luoran Yau)](https://github.com/qybgh) for contributing mobile Plan and Goal support, attachment previews and UI improvements in [PR #8](https://github.com/try2love/codex-mobile-bridge/pull/8). Version 1.3.1 builds on that contribution with Goal controls, notification preferences and interaction refinements.
+
+Thanks to [@windowmmk](https://github.com/windowmmk) for native Antigravity commands, model/effort selection, stopping, split views and client reliability fixes in [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173), [#178](https://github.com/try2love/codex-mobile-bridge/pull/178), [#179](https://github.com/try2love/codex-mobile-bridge/pull/179), [#180](https://github.com/try2love/codex-mobile-bridge/pull/180) and [#189–#198](RELEASE_NOTES.md).
 
 Thanks to [@heiqiu47](https://github.com/heiqiu47) for interactive charts and Codex compatibility in [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) and [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169), and [@windowmmk](https://github.com/windowmmk) for large-log port discovery in [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171).
 

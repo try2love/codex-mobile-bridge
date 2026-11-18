@@ -75,3 +75,52 @@
 .appearance-actions .primary{width:auto;min-width:92px}
 
 .chat-detail-execution{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.chat-detail-execution #copy-session-link{flex:none}
+
+/* Shared chat body only; header and composer retain their existing styles. */
+.chat-activity-group{margin:0 0 var(--message-gap);color:var(--muted);font-size:var(--message-size);line-height:var(--message-leading)}
+.chat-activity-group>summary{display:flex;align-items:center;gap:.45em;cursor:pointer;list-style:none;padding:.35em 0;overflow-wrap:anywhere}
+.chat-activity-group>summary::-webkit-details-marker,.chat-activity-items .activity>summary::-webkit-details-marker{display:none}
+.chat-activity-group>summary:before,.chat-activity-items .activity>summary:before{content:'';display:inline-block;width:1em;height:1em;flex:none;background:currentColor;mask:center/contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=command]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m6 8 4 4-4 4m7 0h5M3 4h18v16H3z' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=file]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M15 3l6 6M3 21l5-1L21 7a2 2 0 0 0-4-4L4 16z' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=read]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 3h9l5 5v13H5zM14 3v6h5M8 13h8m-8 4h6' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=search]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='10' cy='10' r='6' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='m15 15 6 6' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=browser]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 4h18v16H3zM3 9h18M6 6.5h1m2 0h1' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=computer]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 3h18v13H3zm9 13v5m-5 0h10M8 7v6l2-2 2 3 2-1-2-3h3z' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=task]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 5h12M9 12h12M9 19h12M3 5l1 1 2-2m-3 8 1 1 2-2m-3 8 1 1 2-2' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+:is(.chat-activity-group,.chat-activity-items .activity)[data-icon=reasoning]>summary:before{mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M8 15a7 7 0 1 1 8 0v3H8zm0 3h8m-7 3h6' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E")}
+.chat-activity-group>summary:after{content:'';width:.4em;height:.4em;flex:none;border-right:1.5px solid;border-bottom:1.5px solid;transform:rotate(45deg);margin:-.2em .3em 0}
+.chat-activity-group[open]>summary:after{transform:rotate(225deg);margin-top:.2em}
+.chat-activity-label{min-width:0}
+.chat-activity-group>summary:hover{color:var(--text)}
+.chat-activity-items{padding:0 .4em 0 0;margin:0;max-height:min(16em,360px);overflow:auto;overscroll-behavior:contain;overflow-anchor:none;scrollbar-width:thin}
+.chat-activity-items .activity{border:0;background:none;padding:0;margin:.1em 0;border-radius:0;font-size:inherit;color:inherit}
+.chat-activity-items .activity>summary{display:flex;align-items:center;gap:.45em;padding:.25em 0;list-style:none;font-size:inherit;color:inherit;white-space:nowrap;overflow:hidden}
+.chat-activity-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-activity-file{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:.16em}
+.chat-activity-stats{flex:none;white-space:nowrap;font-size:.9em}
+.chat-activity-items .activity-body{margin:.35em 0 .6em;padding:.55em .7em;border-radius:6px;background:var(--surface);font-size:var(--code-size);line-height:var(--code-leading)}
+.chat-activity-items .activity>summary:hover{color:var(--text)}
+.chat-process-page{background:none;border:0;padding:0}
+.chat-process-page>summary:before{display:none}
+.chat-process-items{max-height:none;overflow:visible;overscroll-behavior:auto;padding-left:1em}
+.chat-process-items .activity-body{max-height:none;overflow:visible;white-space:normal}
+.chat-process-items .activity-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+
+.chat-activity-items .activity>summary:before{vertical-align:-.1em}
+
+.ds-history-newer{position:sticky;bottom:.5em;display:block;margin:.5em 0 .5em auto;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:.45em .8em}
+
+.chat-activity-turn>summary:before{display:none}
+.chat-activity-turn>summary:after{transform:rotate(-45deg);margin:.1em .3em 0}
+.chat-activity-turn[open]>summary:after{transform:rotate(45deg);margin-top:-.2em}
+.chat-task-items{padding-top:.65em;min-width:0}
+.chat-task-items>.message{color:var(--text)}
+.chat-task-items>.message>.who,.chat-task-items>.message>.message-actions{display:none}
+
+.chat-activity-turn[data-state=active]>summary{display:none}
+.chat-activity-turn[data-state=active]>.chat-task-items{padding-top:0}
+
+@keyframes chat-activity-breathe{0%,100%{opacity:.55}50%{opacity:1}}
+.chat-activity-tools[data-running=true]>summary,.chat-task-items>.activity[data-running=true]>summary{animation:chat-activity-breathe 2s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){.chat-activity-tools[data-running=true]>summary,.chat-task-items>.activity[data-running=true]>summary{animation:none}}

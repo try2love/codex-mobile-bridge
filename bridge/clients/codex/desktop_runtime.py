@@ -87,6 +87,10 @@ class DesktopRuntimeBusy(ValueError):
     """Another verified lifecycle operation still owns this runtime lock."""
 
 
+class DesktopRuntimeOutdated(ValueError):
+    """Valid shared settings refer to a replaced App or gateway launcher."""
+
+
 @contextmanager
 def exclusive_lock(home, name, *, timeout=0):
     if sys.platform == 'win32':
@@ -261,11 +265,11 @@ def launch_environment(home, application):
     if value is None:
         return {}
     if value['application'] != os.path.normcase(str(Path(application).resolve())):
-        raise ValueError('Codex 程序已变化，请重新初始化共享接入')
+        raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
     if sys.platform == 'win32':
         launcher = Path(value['launcher'])
         if not launcher.is_file() or launcher.resolve() != Path(sys.executable).resolve():
-            raise ValueError('网关程序已变化，请重新初始化 Codex 原生连接')
+            raise DesktopRuntimeOutdated('网关程序已变化，请重新初始化 Codex 原生连接')
         return {'CODEX_CLI_PATH': str(launcher), 'CMB_CODEX_DESKTOP_CONFIGURATION': str(directory(home) / 'settings.json'),
                 'CODEX_APP_SERVER_WS_URL': '', 'CODEX_APP_SERVER_FORCE_CLI': '0'}
     launcher = directory(home) / 'codex-cli'

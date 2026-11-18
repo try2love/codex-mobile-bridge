@@ -1,5 +1,7 @@
 """Allowlisted desktop integrations with durable at-most-once mutation receipts."""
 import hashlib
+import base64
+import hmac
 import logging
 import os
 import json
@@ -12,8 +14,9 @@ import secrets
 import sys
 import uuid
 import weakref
+from collections import OrderedDict
 from pathlib import Path
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext, ExitStack
 from concurrent.futures import Future
 
 from bridge.clients.claude.accounts import ClaudeLoginDatabaseUnavailable
@@ -26,6 +29,7 @@ from bridge.platforms.windows import session as windows_session
 from bridge.features.sessions.pins import SessionPins
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.projects import Projects
+from bridge.features.sessions.timeline import Timeline
 from bridge.features.sessions.display_metadata import DisplayMetadata, RenameCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
@@ -43,7 +47,7 @@ LIFECYCLE_GATE_WAIT = 2
 
 
 @contextmanager
-def _closing_gate(gate):
+def _closing_gate(gate, *, opening=False):
     # Do not let a close command wait behind a stalled reconnect until the
     # phone times out, then unexpectedly quit later. This limits queueing only;
     # fresh task verification and normal native shutdown keep their own budgets.
@@ -52,7 +56,8 @@ def _closing_gate(gate):
         logging.getLogger(__name__).warning(
             'Client lifecycle provider=codex stage=operation-wait outcome=busy elapsed_ms=%.1f',
             (time.monotonic() - started) * 1000)
-        raise ValueError('有 Codex 操作正在进行，尚未执行关闭，请稍后重试')
+        raise ValueError('有 Codex 操作正在进行，尚未执行启动，请稍后重试' if opening else
+                         '有 Codex 操作正在进行，尚未执行关闭，请稍后重试')
     try:
         yield
     finally:
@@ -216,8 +221,11 @@ class DesktopSessions:
         self._configure_zcode()
         self._configure_antigravity()
         self.locks = {name: threading.RLock() for name in ('codex', 'zcode', 'antigravity', *self.adapters)}
+        self.interrupt_locks = {name: threading.RLock() for name in self.locks}
         self.read_lock = threading.Lock()
         self.reads = {}
+        self.history_timelines = OrderedDict()
+        self.history_cursor_secret = secrets.token_bytes(32)
         self.pending_resumes = {provider: {} for provider in self.locks}
         self.activity = {}
         self.activity_pending = set()
@@ -334,14 +342,14 @@ class DesktopSessions:
             if self._zcode_official_status().get('connected'):
                 raise ValueError('ZCode 客户端仍有活动连接，请先停用后重试')
             try:
-                path = path.resolve(strict=True)
-                found = installation(path)
+                resolved = path.resolve(strict=True)
+                found = installation(resolved)
             except (ValueError, OSError) as exc:
                 raise ValueError('所选路径不是可用的 ZCode 客户端应用') from exc
             if not found:
                 raise ValueError('所选路径不是可用的 ZCode 客户端应用')
             row = {**found, 'id': 'zcode', 'name': 'ZCode', 'installed': True,
-                   'application': str(path), 'dataDirectory': str(Path.home()/'.zcode/v2')}
+                   'application': str(resolved), 'dataDirectory': str(Path.home()/'.zcode/v2')}
             updated = {**self.config, 'zcodeApplication': str(path),
                        'discovered': {**self.config.get('discovered', {}), 'zcode': row},
                        'enabled': {**self.config.get('enabled', {}), 'zcode': False}}
@@ -373,7 +381,7 @@ class DesktopSessions:
             found = installation(path)
             if not found:
                 raise ValueError('所选路径不是可核验的 Antigravity App、IDE 或官方 agy 程序')
-            self.config.setdefault('antigravityApplications', {})[found['surface']] = found['application']
+            self.config.setdefault('antigravityApplications', {})[found['surface']] = str(path)
             # One default provider, with its native App/IDE/CLI installations;
             # selecting a program does not create or relocate a user profile.
             self.config.setdefault('enabled', {})['antigravity'] = False
@@ -468,10 +476,22 @@ class DesktopSessions:
         return self.receipt_dbs[path]
 
     @contextmanager
-    def _changing(self, provider, rebind=True):
+    def _changing(self, provider, rebind=True, *, interrupt=False):
         # Keep progress reads available during writes, but never join a read from
         # an earlier account/connector generation. Safety checks bypass _read.
-        with self.locks[provider]:
+        with ExitStack() as stack:
+            if not interrupt:
+                stack.enter_context(self.locks[provider])
+            gate = self.interrupt_locks[provider]
+            if rebind or interrupt:
+                stack.enter_context(gate)
+            else:
+                # A new write waits for an existing stop, but an in-flight send
+                # must not hold the gate needed to cancel that native request.
+                with gate:
+                    pass
+            if self.closed.is_set():
+                raise BridgeUnavailable('客户端连接已关闭')
             if rebind and provider == 'zcode' and self.adapters.get(provider) is not None:
                 self.adapters[provider].release_window()
             if rebind:
@@ -614,8 +634,9 @@ class DesktopSessions:
     def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
         if provider == 'antigravity' and surface is not None:
             value = self._account_models(provider, refresh=refresh, surface=surface)
+            has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
             return {**value, 'capabilities': {'models': self.adapters[provider].cli.available(surface),
-                    'effort': False, 'manualModels': True, 'manualEffort': False}}
+                    'effort': has_effort, 'manualModels': True, 'manualEffort': False}}
         value = self._account_models(provider, refresh=refresh)
         if provider != 'claude' or surface is None:
             return value
@@ -808,7 +829,8 @@ class DesktopSessions:
                 value['capabilities'] = {'models': False, 'effort': False}
                 value['notice'] = '桌面客户端未连接'
             elif provider == 'antigravity':
-                value['capabilities'] = {'models': True, 'effort': False, 'manualModels': True, 'manualEffort': False}
+                has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
+                value['capabilities'] = {'models': True, 'effort': has_effort, 'manualModels': True, 'manualEffort': False}
             elif native_claude:
                 native = self.adapters[provider].session_capabilities(surface)
                 value['capabilities'] = {key: native[key] for key in ('models', 'effort', 'manualModels', 'manualEffort')}
@@ -1316,8 +1338,10 @@ class DesktopSessions:
                     'capabilities': {'models': True, 'effort': True, 'manualModels': True, 'manualEffort': True},
                     'notice': '此环境尚无可复用模型目录，可手动填写；不会为读取目录启动 CLI 会话。'}
         value = self._desktop_model_directory(provider, environment['surface'], refresh=refresh)
+        has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
         capabilities = {'models': value.get('capabilities', {}).get('models') is True if provider == 'antigravity' else True,
-                        'effort': provider != 'antigravity', 'manualModels': True,
+                        'effort': (value.get('capabilities', {}).get('models') is True and has_effort) if provider == 'antigravity' else True,
+                        'manualModels': True,
                         'manualEffort': provider != 'antigravity'}
         return {**value, 'capabilities': capabilities}
 
@@ -1422,6 +1446,113 @@ class DesktopSessions:
             pending.pop(rid, None)
         return result
 
+    def _conversation(self, provider, sid, body):
+        """Project existing native pages; retained display never grants control."""
+        allowed = {'historyMode', 'historyBefore', 'historyLimit', 'historyProcess', 'historyDetail',
+                   'historyAfter', 'historyVersion', 'historyOffset'}
+        if set(body) - allowed or body.get('historyProcess') and body.get('historyDetail'):
+            raise ValueError('历史读取参数无效')
+        self.require_enabled(provider)
+        before_value = body.get('historyBefore', '')
+        local_before = before_value if before_value.startswith('timeline.') else None
+        token = body.get('historyProcess') or body.get('historyDetail') or local_before
+        timeline = None
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
+            scope = (provider, sid, binding)
+            native_body = None
+            cursor = None
+            if token:
+                try:
+                    prefix, payload, signature, item_key = token.split('.', 3)
+                    if prefix != 'timeline' or len(token) > 32768 or not hmac.compare_digest(signature, hmac.new(self.history_cursor_secret, payload.encode(), hashlib.sha256).hexdigest()):
+                        raise ValueError()
+                    locator = json.loads(base64.urlsafe_b64decode(payload))
+                    if locator['scope'] != list(scope):
+                        raise ValueError()
+                    native_body, epoch = locator['body'], locator['epoch']
+                    cursor = epoch + '.' + item_key
+                except (ValueError, KeyError, TypeError):
+                    raise ValueError('历史游标无效') from None
+                timeline = next((value for key, value in self.history_timelines.items()
+                                 if key[:3] == scope and value.epoch == epoch), None)
+        if native_body is None:
+            native_body = {key: body[key] for key in ('historyBefore', 'historyLimit') if key in body}
+        value = self.call(provider, 'detail', sid, native_body)
+        messages = value.get('messages', [])
+        # Native adapters may expose only one loaded window. Do not invent an
+        # older source cursor or connect/resume a writer to obtain one.
+        turns = []
+        boundary = 'history'
+        for index, message in enumerate(messages):
+            if message.get('turnId') and message['turnId'] != 'history':
+                boundary = message['turnId']
+            elif message.get('role') == 'user' and message.get('interaction') != 'response':
+                boundary = 'user:' + str(message.get('id', index))
+            if not turns or turns[-1]['id'] != boundary:
+                turns.append({'id': boundary, 'messages': [], 'actionable': False,
+                              'status': message.get('turnStatus')})
+            normalized = dict(message, kind=message.get('kind') or message.get('type') or message.get('role', 'unknown'))
+            turns[-1]['messages'].append(normalized)
+            for source, target in (('turnStartedAt', 'startedAt'), ('turnCompletedAt', 'completedAt')):
+                if message.get(source) is not None:
+                    turns[-1][target] = message[source]
+        session = value.get('session') or {}
+        if turns and not turns[-1].get('status'):
+            turns[-1]['status'] = session.get('turnStatus') or ('inProgress' if session.get('status') == 'active' else 'completed')
+        before = native_body.get('historyBefore')
+        with self.read_lock:
+            if self.binding_epochs[provider] != binding:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+            # Identity changes retire old projections; normal refreshes reuse
+            # the same Timeline and native pagination boundary.
+            for key in list(self.history_timelines):
+                if key[0] == provider and key[2] != binding:
+                    del self.history_timelines[key]
+            key = (*scope, before)
+            timeline = self.history_timelines.setdefault(key, Timeline())
+            recovering = token and timeline.sequence < 0
+            timeline.update({'sequence': timeline.sequence + 1, 'turns': turns}, conversation=True)
+            fingerprint = hashlib.sha256(json.dumps([(row['key'], row['version']) for row in timeline.rows], separators=(',', ':')).encode()).hexdigest()
+            if recovering:
+                if fingerprint != locator.get('fingerprint'):
+                    timeline.details.clear()
+                    raise ValueError('过程记录已变化，请重新展开')
+                timeline.epoch = epoch
+                for row in timeline.conversation_rows:
+                    if row.get('processCursor'):
+                        row['processCursor'] = timeline.cursor(row['key'])
+            payload = base64.urlsafe_b64encode(json.dumps({'scope': scope, 'body': native_body, 'epoch': timeline.epoch, 'fingerprint': fingerprint}, separators=(',', ':')).encode()).decode()
+            signature = hmac.new(self.history_cursor_secret, payload.encode(), hashlib.sha256).hexdigest()
+            wrap = lambda raw: 'timeline.' + payload + '.' + signature + '.' + raw.partition('.')[2]
+            self.history_timelines.move_to_end(key)
+            while len(self.history_timelines) > 16:
+                self.history_timelines.popitem(last=False)
+            try:
+                if body.get('historyProcess'):
+                    result = timeline.process(cursor, after=body.get('historyAfter'))
+                    result['rows'] = [dict(row, detailCursor=wrap(row['detailCursor'])) for row in result['rows']]
+                    return result
+                if body.get('historyDetail'):
+                    result = timeline.detail(cursor, offset=body.get('historyOffset', 0), version=body.get('historyVersion'))
+                    from bridge.features.workspace.files import workspace_references
+                    result['files'] = workspace_references([{'text': result['text']}], session.get('cwd'), host_files=True)
+                    return result
+                page = timeline.page(limit=100, before=cursor if local_before else None, projection='conversation')
+                rows = [dict(row, id=row['key'], detailCursor=wrap(timeline.cursor(row['key'])),
+                             **({'processCursor': wrap(row['processCursor'])} if row.get('processCursor') else {})) for row in page['rows']]
+                native_history = value.get('history') or {}
+                history = {**native_history, 'before': wrap(page['before']) if page['hasMore'] else native_history.get('before'),
+                           'hasMore': page['hasMore'] or native_history.get('hasMore', False)}
+            finally:
+                # Keep identities and bounded previews, never a second retained
+                # transcript. Bodies are read through the normal adapter guard.
+                timeline.details.clear()
+        # Process file references and screenshots stay on the detail route.
+        from bridge.features.workspace.files import workspace_references
+        return {**value, 'messages': rows, 'turns': [], 'history': history,
+                'files': workspace_references(rows, session.get('cwd'), host_files=True)}
+
     def call(self, provider, action, sid=None, body=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
@@ -1430,6 +1561,8 @@ class DesktopSessions:
         if action not in ('list', 'projects', 'create', 'create-models', 'account') and (not isinstance(sid, str) or not sid or len(sid) > 512):
             raise ValueError('会话标识无效')
         body = body or {}
+        if action == 'detail' and body.get('historyMode') == 'conversation':
+            return self._conversation(provider, sid, body)
         if any(key in body for key in ('directoryProject', 'projectDirectory')):
             raise ValueError('项目目录必须通过目录选择器登记')
         if action == 'pin':
@@ -1437,6 +1570,8 @@ class DesktopSessions:
             if set(body) not in ({'pinned'}, {'pinned', 'clientId', 'revision'}):
                 raise ValueError('聊天置顶设置无效')
             return self.session_pins[provider].set(sid, body['pinned'], body.get('clientId'), body.get('revision'))
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
         adapter = self.adapters[provider]
         if action == 'archive':
             return self._archive(provider, sid, body)
@@ -1548,7 +1683,10 @@ class DesktopSessions:
         fingerprint = hashlib.sha256(json.dumps([provider, action, sid, creation_intent(body) if action == 'create' else body], sort_keys=True).encode()).hexdigest()
         # Normal chat writes keep progress reads available; account/lifecycle
         # operations additionally invalidate the connector binding.
-        with self._changing(provider, rebind=False):
+        interrupt = action == 'stop' and getattr(type(adapter), 'concurrent_stop', False) is True
+        with self._changing(provider, rebind=False, interrupt=interrupt):
+            if interrupt and (adapter is not self.adapters[provider] or binding != self.binding_epochs[provider]):
+                raise BridgeUnavailable('客户端接入已变化，停止尚未提交，请刷新后重试')
             if self.config.get('enabled', {}).get(provider) is False and not (provider == 'claude' and self._wsl_claude_enabled()):
                 raise ValueError('此应用已关闭，请在应用管理中开启')
             native_claude_model_write = (provider == 'claude' and action == 'settings' and
@@ -1829,7 +1967,18 @@ class DesktopSessions:
             if self.config.get(key):
                 preferences[key] = self.config[key]
         if self.bridge:
-            preferences['desktopExecutable'] = self.bridge.accounts.index.get('desktopExecutable')
+            index = self.bridge.accounts.index
+            if index.get('desktopExecutableSource') != 'scan':
+                preferences['desktopExecutable'] = index.get('desktopExecutable')
+                previous = self.config.get('discovered', {}).get('codex', {})
+                if previous.get('executable') == index.get('desktopExecutable') and previous.get('packageFamilyName'):
+                    preferences['desktopInstallation'] = {key: previous[key] for key in
+                        ('executable', 'packageFamilyName', 'applicationUserModelId') if previous.get(key)}
+                elif sys.platform == 'win32' and not index.get('desktopExecutableSource') and index.get('desktopExecutable'):
+                    from bridge.platforms.windows.discovery_ext import legacy_package_application
+                    identity = legacy_package_application(index['desktopExecutable'], previous)
+                    if identity:
+                        preferences['desktopInstallation'] = identity
         return preferences
 
     def _prepare_discovered(self, provider, row):
@@ -1874,7 +2023,8 @@ class DesktopSessions:
             return scan_profile(self)
         # Discovery only: neither a GUI refresh nor a manual rescan launches apps.
         # Keep the old setup argument for callers from older desktop packages.
-        from bridge.clients.discovery import discover_clients, inventory_current, inventory_preferences, DISCOVERY_REVISION
+        from bridge.clients.discovery import (discover_clients, inventory_current, inventory_preferences,
+                                              inventory_fingerprint, inventory_registration, DISCOVERY_REVISION)
         with self.client_lock:
             preferences = self._discovery_preferences()
             custom_claude = bool(self.instances and self.instances.metadata('claude'))
@@ -1883,13 +2033,42 @@ class DesktopSessions:
             if sys.platform == 'win32' and (scan_wsl and not inventory_only or inventory_only and not self.wsl_inventory_scanned):
                 self._scan_wsl_inventory()
             if inventory_only and inventory_current(self.config, preferences):
-                return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
-            discovered = discover_clients(preferences)
+                previous = self.config.get('discovered', {})
+                if not any(row.get('pendingInstallation') for row in previous.values()):
+                    return {**self.clients(refresh=True), 'errors': self.wsl_inventory_errors}
+                discovered = {provider: dict(row.get('pendingInstallation') or row) for provider, row in previous.items()}
+            else:
+                discovered = discover_clients(preferences)
+            previous_discovered = self.config.get('discovered', {})
+            discovered = self._retain_running_installations(discovered, preferences)
             if custom_claude and not self.config.get('claudeHome'):
                 discovered['claude']['dataDirectoryExplicit'] = False
+            fingerprint = inventory_fingerprint(discovered, preferences)
+            registration = inventory_registration(discovered)
+            if self.bridge:
+                accounts = self.bridge.accounts
+                codex = discovered.get('codex', {})
+                selected = accounts.index.get('desktopExecutable')
+                replacement = codex.get('replacesExecutable')
+                same_installation = bool(selected and selected == preferences.get('desktopExecutable') == replacement)
+                if accounts.index.get('desktopExecutableSource') == 'scan' or same_installation:
+                    with _closing_gate(accounts.lock, opening=True):
+                        selected = accounts.index.get('desktopExecutable')
+                        same_installation = bool(selected and selected == preferences.get('desktopExecutable') == replacement)
+                        if accounts.index.get('desktopExecutableSource') == 'scan' or same_installation:
+                            executable = codex.get('executable')
+                            if executable and executable != selected:
+                                accounts.index['desktopExecutable'] = executable
+                                accounts.save()
             self.config['discovered'] = discovered
             self.config['discoveryRevision'] = DISCOVERY_REVISION
             self.config['discoveryPreferences'] = inventory_preferences(preferences)
+            self.config['discoveryFingerprint'] = fingerprint
+            self.config['discoveryPackages'] = registration
+            reader = getattr(self.bridge, 'catalog_reader', None)
+            if reader is not None:
+                reader.follow_runtime(previous_discovered.get('codex', {}).get('runtime'),
+                                      discovered.get('codex', {}).get('runtime'))
             with self.read_lock:
                 self._configure_zcode()
                 self._configure_antigravity()
@@ -1898,6 +2077,9 @@ class DesktopSessions:
                 if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
                     continue  # Discovery cannot replace an explicit plugin binding.
                 row = discovered[provider]
+                if inventory_only and ({key: value for key, value in row.items() if key != 'pendingInstallation'} ==
+                                       {key: value for key, value in previous_discovered.get(provider, {}).items() if key != 'pendingInstallation'}):
+                    continue
                 if not row['installed']:
                     outcomes[provider] = {'setupStatus': 'not-installed', 'reason': '尚未安装此客户端'}
                     continue
@@ -1910,6 +2092,54 @@ class DesktopSessions:
             self.client_cache = None
             probe_dsh = not inventory_only and discovered['deepseek']['installed'] and not self.config.get('deepseekManualBinding')
             return {**self.clients(refresh=True, probe='deepseek' if probe_dsh else None), 'errors': self.wsl_inventory_errors}
+
+    def _retain_running_installations(self, discovered, preferences):
+        """An updater's new path must not hide a still-running previous image."""
+        from bridge.clients.desktop_app import process_inventory
+        from bridge.clients.discovery import inventory_fingerprint
+        previous = self.config.get('discovered', {})
+        changed, result = {}, dict(discovered)
+        for provider, old in previous.items():
+            fresh = discovered.get(provider, {})
+            if not fresh.get('installed') and (old.get('installed') or old.get('installationWatchPaths')):
+                # Preserve known entry points through an updater's remove/install gap.
+                watch = set(inventory_fingerprint({provider: old}, {}))
+                parents = {str(parent) for native in [old, *old.get('installations', {}).values()]
+                           if native.get('executable') for parent in Path(native['executable']).parents}
+                watch.update(set(self.config.get('discoveryFingerprint', {})) & parents)
+                fresh = {**fresh, 'installationWatchPaths': sorted(watch)}
+                if old.get('packageFamilyName'):
+                    fresh['packageFamilyName'] = old['packageFamilyName']
+                result[provider] = fresh
+            old_paths = {row['executable'] for row in [old, *old.get('installations', {}).values()] if row.get('executable')}
+            new_paths = {row['executable'] for row in [fresh, *fresh.get('installations', {}).values()] if row.get('executable')}
+            if old_paths - new_paths:
+                changed[provider] = old_paths - new_paths
+                if fresh and old.get('dataDirectory') and not preferences.get(provider+'Home'):
+                    # A different GUI installation does not select a new account profile.
+                    result[provider] = {**fresh, 'dataDirectory': old['dataDirectory']}
+                    if 'dataDirectoryExplicit' in old:
+                        result[provider]['dataDirectoryExplicit'] = old['dataDirectoryExplicit']
+        if not changed:
+            return result
+        states = process_inventory({path for paths in changed.values() for path in paths})
+        for provider, paths in changed.items():
+            if any(states[Path(path)]['pids'] for path in paths):
+                old = {key: value for key, value in previous[provider].items() if key != 'pendingInstallation'}
+                candidate = result.get(provider) or {'id': provider, 'installed': False, 'executable': '',
+                                                    'dataDirectory': old.get('dataDirectory', '')}
+                result[provider] = {**old, 'pendingInstallation': dict(candidate)}
+        return result
+
+    def _refresh_installation_inventory(self):
+        if self.instance is not None or not self.config.get('discovered'):
+            return False
+        from bridge.clients.discovery import inventory_current
+        if (not inventory_current(self.config, self._discovery_preferences()) or
+                any(row.get('pendingInstallation') for row in self.config['discovered'].values())):
+            self.scan(scan_wsl=False, inventory_only=True)
+            return True
+        return False
 
     def start_enabled(self):
         """Start selected clients only after the gateway service has started."""
@@ -1980,6 +2210,10 @@ class DesktopSessions:
             from bridge.clients.zcode.connections import selected_mode
             from bridge.clients.zcode.installation import installation
             app = installation(config.get('application', ''))
+            previous = self.config.get('discovered', {}).get(provider, {})
+            if not app and previous.get('pendingInstallation'):
+                return {**previous, 'officialRemote': selected_mode(self.config) == 'official-remote',
+                        'pipeSupported': False, 'debugFallbackPort': None}
             return {'id': provider, 'installed': bool(app), 'compatibilitySupported': False,
                     'officialRemote': selected_mode(self.config) == 'official-remote',
                     'pipeSupported': bool(self.zcode_pipe and self.zcode_pipe.supported(inventory=inventory)),
@@ -1998,8 +2232,9 @@ class DesktopSessions:
             from bridge.clients.desktop_app import DesktopApp
             accounts = self.bridge.for_host('local').accounts
             executable = self._codex_executable(accounts)
+            retained = bool(row.get('pendingInstallation') and executable == row.get('executable'))
             row.update(id='codex', executable=executable, dataDirectory=str(accounts.home),
-                       installed=bool(executable and Path(executable).is_file()))
+                       installed=bool(executable and (Path(executable).is_file() or retained)))
         if provider in ('claude', 'deepseek') and getattr(self, 'instances', None) is not None:
             row['excludeProfiles'] = [value['home'] for value in self.instances.metadata(provider)]
             if self.instances.error:
@@ -2776,7 +3011,7 @@ class DesktopSessions:
                     self.client_refresh_retry_at = 0
             return result
 
-    def clients_status(self):
+    def clients_status(self, *, refresh=False):
         """Return display status without waiting for startup or native inspection."""
         if self.closed.is_set():
             raise BridgeUnavailable('客户端连接已关闭')
@@ -2786,7 +3021,7 @@ class DesktopSessions:
                 cached = self.client_cache
                 pending = cached and any(row.get('connectionState') in ('starting', 'connecting')
                                          for row in cached[1]['clients'])
-                if cached and time.monotonic() - cached[0] < (1 if pending else 15):
+                if not refresh and cached and time.monotonic() - cached[0] < (1 if pending else 15):
                     with self.client_snapshot_lock:
                         if not self.client_refreshing and not self.client_refresh_error:
                             return {**_copy_read(cached[1]), 'pending': False}
@@ -2806,7 +3041,8 @@ class DesktopSessions:
     def _refresh_clients_status(self):
         try:
             if not self.closed.is_set():
-                self.clients(refresh=True)
+                if not self._refresh_installation_inventory():
+                    self.clients(refresh=True)
         except Exception:
             with self.client_snapshot_lock:
                 self.client_refresh_error = True
@@ -2975,6 +3211,8 @@ class DesktopSessions:
         quit_desktop = value.get('quitDesktop', provider not in ('zcode', 'antigravity'))
         if provider == 'antigravity':
             with self.client_lock, self._changing(provider):
+                if enabled:
+                    self._refresh_installation_inventory()
                 if not enabled and quit_desktop:
                     raise ValueError('请在电脑端退出 Antigravity；此处仅停用手机访问')
                 adapter = self.adapters['antigravity']
@@ -2998,11 +3236,18 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         from bridge.clients.lifecycle import inspect_client, launch_client
         accounts = self.bridge.accounts if provider == 'codex' and self.bridge else None
-        if provider == 'codex' and not enabled:
+        if provider == 'codex' and (not enabled or not startup):
             self.runtime_preparation_cancel.set()
-        account_gate = (_closing_gate(accounts.gate) if accounts and not enabled and quit_desktop
+        explicit_codex = accounts is not None and not startup
+        client_gate = _closing_gate(self.client_lock, opening=enabled) if explicit_codex else self.client_lock
+        provider_gate = _closing_gate(self.locks[provider], opening=enabled) if explicit_codex else nullcontext()
+        account_gate = (_closing_gate(accounts.gate, opening=enabled) if explicit_codex
                         else accounts.gate if accounts else nullcontext())
-        with self.client_lock, self._changing(provider, rebind='connectionMode' not in value), account_gate, accounts.lock if accounts else nullcontext():
+        account_lock = (_closing_gate(accounts.lock, opening=enabled) if explicit_codex
+                        else accounts.lock if accounts else nullcontext())
+        with client_gate, provider_gate, self._changing(provider, rebind='connectionMode' not in value), account_gate, account_lock:
+            if enabled:
+                self._refresh_installation_inventory()
             if provider == 'zcode' and 'connectionMode' in value:
                 self._select_zcode_connection(value['connectionMode'])
             if not enabled and not quit_desktop:
@@ -3084,11 +3329,17 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
-                elif (provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
+                elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
                       and getattr(self.bridge, 'host', 'local') == 'local'):
                     self._prepare_codex_runtime(descriptor)
                 else:
-                    result = launch_client(descriptor)
+                    launch_gate = nullcontext()
+                    if provider == 'codex' and sys.platform in ('darwin', 'win32'):
+                        from bridge.clients.codex.desktop_runtime import initialization_lock
+                        launch_gate = initialization_lock(descriptor['dataDirectory'])
+                    with launch_gate:
+                        result = launch_client(descriptor, **({'allow_unprepared_codex': True}
+                            if provider == 'codex' and not startup else {}))
                     if provider == 'zcode' and not startup and not result.get('launched'):
                         adapter = self.adapters[provider]
                         if getattr(adapter, 'sid', None) and adapter.status().get('retryable'):
@@ -3412,7 +3663,7 @@ class DesktopSessions:
             return self.call('antigravity', 'catalog', sid, {'section': 'models', 'refresh': value.get('refresh') is True})
         fields = {'settings': {'model', 'modelCatalogIdentity'}, 'access': {'mode'}}.get(operation)
         required = {'action', 'operation', 'surface', 'sessionId', 'id', *(fields or ())}
-        optional = {'manualModel'} if operation == 'settings' else set()
+        optional = {'manualModel', 'effort'} if operation == 'settings' else set()
         if fields is None or not required <= set(value) or set(value) - required - optional:
             raise ValueError('Antigravity 配置请求无效')
         return self.call('antigravity', operation, sid, {key: value[key] for key in ('id', *fields, *optional) if key in value})
@@ -3495,6 +3746,8 @@ class DesktopSessions:
                 return self.connect_claude(restart=action == 'restart-claude')
             return self.clients(refresh=True)
         if action == 'clients':
+            if self.gateway_running:
+                return self.clients_status(refresh=value.get('refresh') is True)
             return self.clients(refresh=value.get('refresh') is True)
         if action == 'zcode-official':
             if (set(value) != {'action', 'enabled'} or type(value['enabled']) is not bool or
@@ -3622,6 +3875,8 @@ class DesktopSessions:
             self.terminals.close()
         for lock in self.locks.values():
             lock.acquire()
+        for lock in self.interrupt_locks.values():
+            lock.acquire()
         try:
             claude = self.adapters.get('claude')
             if claude is not None:
@@ -3636,6 +3891,8 @@ class DesktopSessions:
                     db.close()
                 self.db.close()
         finally:
+            for lock in reversed(list(self.interrupt_locks.values())):
+                lock.release()
             for lock in self.locks.values():
                 lock.release()
 

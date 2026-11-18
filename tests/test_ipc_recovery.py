@@ -6,7 +6,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bridge.clients.codex.ipc import DesktopIPC, IPCError
 import test_bridge
@@ -399,6 +399,58 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         self.assertFalse(session.connected)
         self.assertTrue(session.view()['rebuildRecommended'])
+
+
+
+class MaintenanceMetadataTests(unittest.TestCase):
+    def test_transient_metadata_failure_does_not_kill_passive_recovery(self):
+        from bridge.app.service import Bridge, LiveSession
+        from bridge.clients.codex.remote import RemoteUnavailable
+        bridge = Bridge.__new__(Bridge)
+        bridge.host = 'local'
+        bridge.accounts = None
+        bridge.closed = Mock()
+        bridge.closed.is_set.return_value = False
+        bridge.lock = threading.RLock()
+        bridge.submit_lock = threading.RLock()
+        bridge.submissions = {}
+        bridge.ipc = Mock(client_id='fixture-router')
+        bridge.released_cli = Mock()
+        bridge.released_cli.contains.return_value = False
+        bridge._access = Mock(return_value={})
+        first, sibling = LiveSession('first'), LiveSession('sibling')
+        for session in (first, sibling):
+            session.watched = True
+            session.activity_only = True
+        bridge.live = {'first': first, 'sibling': sibling}
+        bridge.store = Mock()
+        bridge.store.attached_parent.return_value = None
+        calls = []
+        def metadata(identifier):
+            calls.append(identifier)
+            if calls == ['first']:
+                raise RemoteUnavailable('SSH temporarily unavailable')
+            return {'origin': 'cli', 'cwd': '/original', 'model_provider': 'original-provider'}
+        bridge.store.get.side_effect = metadata
+        rounds = []
+        def wait(delay):
+            rounds.append(delay)
+            if len(rounds) == 2:
+                self.assertEqual(first.error, 'SSH temporarily unavailable')
+                self.assertFalse(first.origin_verified)
+                for session in (first, sibling):
+                    session.retry_at = 0
+            return len(rounds) == 3
+        bridge.closed.wait.side_effect = wait
+        # Exercise the real maintenance loop and origin read, including the
+        # second pass after a transport failure; never activate a native CLI.
+        bridge._maintain()
+        self.assertEqual(calls, ['first', 'sibling', 'first'])
+        self.assertTrue(first.origin_verified)
+        self.assertEqual(first.saved_provider, 'original-provider')
+        self.assertEqual(first.saved_cwd, '/original')
+        bridge.ipc.request.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

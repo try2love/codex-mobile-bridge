@@ -181,6 +181,8 @@ class Accounts:
         self.api_model_retry_at = {}
         self.index = read_json(self.root/'index.json', {'accounts': [], 'activeId': None, 'desktopExecutable': ''})
         self.state = read_json(self.root/'switch.json', {'phase': 'idle'})
+        self.shared_daemon_stop = read_json(self.root/'shared-daemon-stop.json',
+                                           self.state.get('sharedDaemonStop') or {})
         if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'migrating', 'starting', 'verifying', 'restoring'):
             self.state.update(phase='interrupted', error='上次切换中断，请在桌面端恢复原接入')
             if self.state.get('operation') == 'desktopRuntime':
@@ -219,7 +221,7 @@ class Accounts:
             home = self.directory(identifier)
             catalog = self.saved_model_catalogs.get(identifier)
             if catalog is None:
-                catalog = Catalog(home, self.runtime,
+                catalog = Catalog(home, executable_getter=lambda: self.runtime,
                     observation_enabled=lambda: getattr(self.bridge, 'observation_enabled', lambda: True)())
                 self.saved_model_catalogs[identifier] = catalog
             return catalog
@@ -883,6 +885,7 @@ class Accounts:
             self.assert_editable()
             if action == 'scanDesktop':
                 self.index['desktopExecutable'] = DesktopApp.scan(self.runtime, self.home)
+                self.index['desktopExecutableSource'] = 'scan'
             elif action == 'configure':
                 executable = value.get('desktopExecutable')
                 if not isinstance(executable, str) or not Path(executable).is_absolute():
@@ -890,6 +893,7 @@ class Accounts:
                 app = DesktopApp(executable, self.home)
                 app.validate(self.runtime)
                 self.index['desktopExecutable'] = str(app.executable)
+                self.index['desktopExecutableSource'] = 'manual'
             elif action in ('rename', 'delete'):
                 row = self.row(value.get('id'))
                 if action == 'rename':
@@ -1001,9 +1005,12 @@ class Accounts:
             self.assert_editable()
             if sync.switch_live_api(row, request_id):
                 return self.public()
-            if self.info.current().get('id') != row['id']:
-                sync.prepare_profile_switch()
-            preflight = sync.preflight('codex')
+            if self.info.current().get('id') == row['id']:
+                return self.public()
+            sync.prepare_profile_switch()
+            shared_daemon_confirmed = value.get('sharedDaemonConfirmed') is True
+            preflight = (sync.preflight('codex', shared_daemon_confirmed=True) if shared_daemon_confirmed
+                         else sync.preflight('codex'))
             self.assert_editable()
             if self.info.current().get('id') == row['id']:
                 return self.public()
@@ -1031,6 +1038,7 @@ class Accounts:
             ledger[request_id] = row['id']
             private_json(self.root/'requests.json', ledger)
             self.state = {'phase': 'preparing', 'requestId': request_id, 'targetId': row['id'], 'error': None,
+                          'sharedDaemonConfirmed': shared_daemon_confirmed,
                           'cliSync': {'status': 'pending' if sync_cli else 'shared-config-unverified'}}
             self.phase('preparing')
             self.thread = threading.Thread(target=self._switch, args=(row, app), daemon=True)
@@ -1413,7 +1421,9 @@ class Accounts:
             if changed:
                 folder = self.prepare(row, before)
             from bridge.features.accounts.cli_sync import LocalCliSync
-            LocalCliSync(self.bridge)._codex_idle()
+            local_cli = LocalCliSync(self.bridge)
+            local_cli.prepare_shared_daemon_switch(confirmed=self.state.get('sharedDaemonConfirmed') is True)
+            local_cli._codex_idle()
             self.phase('applying')
             self.require_managed_writes()
             if self.snapshot_files() != before:

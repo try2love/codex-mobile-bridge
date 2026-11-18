@@ -21,7 +21,7 @@ APP_NAMES = {'codex': ('Codex', 'ChatGPT'), 'claude': ('Claude', 'Claude Desktop
 def inventory_preferences(preferences):
     """Installation inputs only; never persist credentials with the inventory."""
     return deepcopy({key: value for key, value in preferences.items()
-                     if value and (key.endswith(('Home', 'Application', 'Applications', 'Executable')) or key == 'desktopExecutable')})
+                     if value and (key.endswith(('Home', 'Application', 'Applications', 'Executable')) or key == 'desktopInstallation')})
 
 
 def inventory_current(config, preferences):
@@ -35,9 +35,62 @@ def inventory_current(config, preferences):
             return False
         for native in [row, *row.get('installations', {}).values()]:
             executable = native.get('executable')
-            if native.get('installed', True) and executable and not Path(executable).is_file():
+            if native.get('installed', True) and executable and not Path(executable).is_file() and not row.get('pendingInstallation'):
                 return False
-    return True
+    return (config.get('discoveryFingerprint', {}) == inventory_fingerprint(rows, preferences) and
+            config.get('discoveryPackages', {}) == inventory_registration(rows))
+
+
+def inventory_registration(rows):
+    if sys.platform != 'win32':
+        return {}
+    families = {native['packageFamilyName'] for row in rows.values()
+                for native in (row, row.get('pendingInstallation') or {}) if native.get('packageFamilyName')}
+    return native_discovery('win32').package_registration_fingerprint(families)
+
+
+def inventory_fingerprint(rows, preferences):
+    """Cheap installation change evidence, never task or process evidence."""
+    paths, version_roots = set(), set()
+    for row in rows.values():
+        paths.update(Path(value) for value in row.get('installationWatchPaths', []))
+        pending = row.get('pendingInstallation') or {}
+        for native in [row, *row.get('installations', {}).values(), pending, *pending.get('installations', {}).values()]:
+            for key in ('application', 'executable', 'runtime', 'discoveryPath', 'discoveryFile'):
+                value = native.get(key)
+                if not value:
+                    continue
+                path = Path(value).expanduser()
+                paths.add(path)
+                if path.suffix == '.app':
+                    paths.add(path/'Contents/Info.plist')
+                if key == 'executable':
+                    paths.update((path.parent/'resources/app.asar', path.parent/'agy.version.json'))
+                    for parent in path.parents:
+                        if parent.suffix == '.app':
+                            paths.add(parent/'Contents/Info.plist')
+                        if (parent.name.startswith('app-') or
+                                (parent/'AppxManifest.xml').is_file()):
+                            paths.add(parent.parent)
+                            version_roots.add(parent.parent)
+                            paths.add(parent/'AppxManifest.xml')
+    for key, value in inventory_preferences(preferences).items():
+        if key.endswith(('Application', 'Executable')) and isinstance(value, str):
+            paths.add(Path(value).expanduser())
+        elif key.endswith('Applications') and isinstance(value, dict):
+            paths.update(Path(item).expanduser() for item in value.values() if isinstance(item, str))
+    result = {}
+    for path in sorted(paths):
+        try:
+            values = path.lstat(), path.stat()
+            result[str(path)] = [[value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns]
+                                 for value in values]
+            if path in version_roots:
+                # Directory timestamps can collide during a fast side-by-side update.
+                result[str(path)].append(sorted(child.name for child in path.iterdir()))
+        except FileNotFoundError:
+            result[str(path)] = None
+    return result
 
 
 def _path(value, home):
@@ -104,11 +157,25 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
                 path = Path(row['executable'])
                 candidates.append(path)
                 metadata.setdefault(path, {}).update({key: value for key, value in row.items() if key != 'executable'})
+            selected = preferences.get('desktopInstallation', {}) if provider == 'codex' else {}
+            if explicit and selected.get('executable') == str(explicit) and selected.get('packageFamilyName'):
+                matches = [path for path, info in metadata.items()
+                           if info.get('packageFamilyName') == selected['packageFamilyName']
+                           and info.get('applicationUserModelId') and
+                           (not selected.get('applicationUserModelId') or
+                            info['applicationUserModelId'] == selected['applicationUserModelId'])]
+                if len(matches) == 1:
+                    candidates.insert(0, matches[0])
             candidates += list(native.candidates(provider, APP_NAMES[provider], home, env))
         elif platform == 'linux':
-            candidates += list(native.candidates(provider, APP_NAMES[provider], home, env))
-        found = next(({**row, **metadata.get(path, {})} for path in dict.fromkeys(candidates)
+            candidates += list(native.candidates(provider, APP_NAMES[provider], home, env, metadata=metadata))
+        found = next(({**row, **metadata.get(path, {}), 'discoveryPath': str(path)} for path in dict.fromkeys(candidates)
                       if (row := _candidate(path, provider, platform))), {})
+        if explicit and found and found.get('executable') != str(explicit):
+            bundle = next((path for path in (explicit, *explicit.parents) if path.suffix == '.app'), None)
+            if ((platform == 'darwin' and bundle and found.get('application') == str(bundle)) or
+                    (platform == 'win32' and candidates[0] != explicit and found.get('executable') == str(candidates[0]))):
+                found['replacesExecutable'] = str(explicit)
         if provider == 'zcode' and not found:
             continue
         if provider == 'claude':
@@ -142,7 +209,7 @@ def discover_clients(preferences=None, *, platform=None, home=None, env=None, ap
     for path in dict.fromkeys(agy_candidates):
         found = antigravity_installation(path, platform=platform)
         if found:
-            agy_installations.setdefault(found['surface'], found)
+            agy_installations.setdefault(found['surface'], {**found, 'discoveryPath': str(path)})
     history = any((s/'conversation_summaries.db').is_file() or (s/'brain').is_dir() for s in agy_surfaces)
     if history or agy_installations:
         selected = next(iter(agy_installations.values()), {})

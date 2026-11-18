@@ -59,7 +59,12 @@ for(const [provider,backend] of [['claude','code'],['claude','cowork'],['deepsee
  await page.screenshot({path:testInfo.outputPath(`${provider}-${backend}-history-image.png`)});
  await page.keyboard.press('Escape');await expect(page.locator('#image-preview-dialog')).toBeHidden();
  await page.evaluate(()=>{const v=sendFeedbackFixture.view;document.documentElement.dataset.showProcess='true';v.applyDetail({connected:true,session:v.state,messages:[{id:'context',role:'activity',kind:'context',title:'上下文',text:'项目说明与自动注入内容'}]});});
- const context=page.locator('#send-feedback-root .activity');await expect(context.locator('pre')).toBeHidden();await context.locator('summary').click();await expect(context.locator('pre')).toBeVisible();
+ const context=page.locator('#send-feedback-root .activity');await expect(context.locator('pre')).toBeHidden();
+ // Completed native work has task and tool disclosures above each item.
+ await page.locator('#send-feedback-root .chat-activity-turn > summary').click();
+ await page.locator('#send-feedback-root .chat-activity-tools > summary').click();
+ await expect(context.locator('summary')).toBeVisible();await context.locator('summary').click();await expect(context.locator('pre')).toBeVisible();
+ await page.screenshot({path:testInfo.outputPath(`${provider}-${backend}-context-expanded.png`)});
  await page.evaluate(()=>{const v=sendFeedbackFixture.view;v.collapseComposer(true);v.workbench.request=async()=>({name:'photo.png',path:'images/photo.png',absolutePath:'/fixture/images/photo.png',size:4,kind:'file'});BridgeFileActions.menu(v.workbench,v.workbench.current,{name:'photo.png',path:'images/photo.png',kind:'file'});});
  await page.getByRole('button',{name:'引用到消息',exact:true}).click();await expect(input).toBeVisible();await expect(input).toHaveValue('下一条草稿');await expect(page.locator('#send-feedback-root .attachment-chip')).toContainText('photo.png');
  expect(await page.evaluate(()=>sendFeedbackFixture.writes.length)).toBe(2);

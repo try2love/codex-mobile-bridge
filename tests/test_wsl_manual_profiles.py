@@ -156,14 +156,22 @@ class ManualWslProfiles(unittest.TestCase):
                 before = registry.path.read_bytes()
                 temporary = registry.path.with_suffix('.tmp')
                 temporary.write_bytes(b'owned existing temporary file')
-                with self.assertRaises(FileExistsError):
+                # Stale fixed-name files no longer block private_json. Inject
+                # the actual atomic replacement failure and keep the contract.
+                original_replace = Path.replace
+                def fail_registry_replace(source, destination):
+                    if Path(destination) == registry.path:
+                        raise OSError('fixture atomic replacement denied')
+                    return original_replace(source, destination)
+                with patch.object(Path, 'replace', fail_registry_replace), self.assertRaises(OSError):
                     registry.save_wsl('Ubuntu-24.04', 'alice', self.home, 'Private')
                 self.assertEqual(registry.entries, [old]); self.assertFalse(registry.candidates)
                 self.assertFalse(old['enabled'])
                 self.assertEqual(registry.path.read_bytes(), before)
                 self.assertEqual(temporary.read_bytes(), b'owned existing temporary file')
-                temporary.unlink()
                 identifier = registry.save_wsl('Ubuntu-24.04', 'alice', self.home, 'Private')
+                self.assertEqual(temporary.read_bytes(), b'owned existing temporary file')
+                temporary.unlink()
                 self.assertEqual(registry.entries[-1]['id'], identifier)
                 self.assertEqual(registry.entries[0], old)
 

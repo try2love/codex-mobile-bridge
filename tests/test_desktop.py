@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import bridge.features.network.interfaces as network_interfaces
 from bridge.app.desktop import Desktop
+from bridge.clients.codex.catalog import Catalog
 from bridge.features.auth.auth import Auth, LoginRejected
 from bridge.features.notifications.channels import settings
 
@@ -32,6 +33,29 @@ class AddressTests(unittest.TestCase):
 
 
 class DesktopTests(unittest.TestCase):
+    def test_local_services_keep_automatic_runtime_source_and_windows_cache_preference(self):
+        old, discovered = self.directory/'old-runtime', self.directory/'discovered-runtime'
+        old.touch(); discovered.touch()
+        for platform, automatic, explicit, expected in (
+            ('posix', old, '', discovered), ('nt', old, '', old),
+            ('nt', None, '', discovered), ('posix', old, str(old), old)):
+            with self.subTest(platform=platform, automatic=automatic, explicit=explicit):
+                desktop = Desktop(self.directory)
+                preferences = {'codexHome': str(self.directory), 'codexBin': explicit, 'ipcPath': ''}
+                def bridge(home, directory, **options):
+                    return SimpleNamespace(catalog_reader=Catalog(home, options['codex_bin']))
+                with patch.object(desktop, 'preferences', return_value=preferences), \
+                        patch('bridge.app.desktop.os', SimpleNamespace(name=platform)), \
+                        patch('bridge.clients.discovery.inventory_current', return_value=False), \
+                        patch('bridge.clients.discovery.discover_clients', return_value={'codex': {'runtime': str(discovered)}}), \
+                        patch.object(Catalog, 'find_runtime', return_value=automatic), \
+                        patch('bridge.app.service.Bridge', side_effect=bridge) as construct, \
+                        patch('bridge.clients.manager.DesktopSessions'):
+                    result, _ = desktop.local_services()
+                    self.assertEqual(construct.call_args.kwargs['codex_bin'], explicit or None)
+                    self.assertEqual(result.catalog_reader.executable, expected)
+                    self.assertEqual(result.catalog_reader._automatic_runtime, not explicit)
+
     def test_watch_display_reads_only_metadata_used_by_current_rows(self):
         with patch.object(self.desktop,'preferences',side_effect=AssertionError('no watches')), \
                 patch('bridge.app.desktop.AppHosts',side_effect=AssertionError('unused remote hosts')), \

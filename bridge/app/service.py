@@ -137,6 +137,7 @@ class LiveSession:
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
         self.tool_image_cache = image_cache if image_cache is not None else TOOL_IMAGE_CACHE
+        self.timeline.image_cache = self.tool_image_cache
         self.tool_images = {}
         self.tool_images_sequence = -1
 
@@ -145,7 +146,7 @@ class LiveSession:
         self.timeline_source = None
         self.condition.notify_all()
 
-    def timeline_view(self):
+    def timeline_view(self, conversation=False):
         # Presentation only. Actions still call view() against current state.
         with self.condition:
             source = self.state if self.connected else self.history_state or self.state
@@ -172,9 +173,11 @@ class LiveSession:
                         after += int(found)
                 if found:
                     self.timeline_limit = max(self.timeline_limit, after)
-            if self.timeline_source is None or self.timeline_source_limit != self.timeline_limit:
-                self.timeline_source = self.view(item_limit=self.timeline_limit)
-                self.timeline_source_limit = self.timeline_limit
+            source_limit = (self.timeline_limit, conversation)
+            if self.timeline_source is None or self.timeline_source_limit != source_limit:
+                self.timeline_source = self.view(item_limit=None if conversation else self.timeline_limit,
+                                                 process_bodies=not conversation)
+                self.timeline_source_limit = source_limit
             return dict(self.timeline_source)
 
     def set_history(self, state):
@@ -196,11 +199,11 @@ class LiveSession:
         requests = pending_requests(self.state or {})
         return self.question_skips.project(self.id, requests) if self.question_skips else requests
 
-    def view(self, *, item_limit=None):
+    def view(self, *, item_limit=None, process_bodies=True):
         with self.condition:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
-                                     image_cache=self.tool_image_cache, item_limit=item_limit)
+                                     image_cache=self.tool_image_cache, item_limit=item_limit, process_bodies=process_bodies)
             if self.question_skips:
                 result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
@@ -3674,7 +3677,15 @@ class Bridge:
                         session.error = str(exc)
                         session.changed()
                     return
-            self._load_session_origin(session)
+            try:
+                self._load_session_origin(session)
+            except (OSError, ValueError, KeyError, RemoteUnavailable, StoreUnavailable) as exc:
+                # Metadata can fail after the transport preflight succeeds.
+                # Keep passive maintenance alive and retry on its usual budget.
+                with session.condition:
+                    session.error = str(exc)
+                    session.changed()
+                return
             if self.host.startswith('codex:') and session.origin == 'desktop':
                 with session.condition:
                     session.error = '此独立入口只接入原 VS Code / CLI 会话；桌面会话请使用默认入口。'
@@ -4162,60 +4173,72 @@ class Bridge:
         for source in list(self.remote_bridges.values()):
             source.suspend_observation()
 
+    def _maintain_session(self, session):
+        with self.submit_lock:
+            queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
+        if queued and session.connected and session.view().get("status") == "idle":
+            for paused_key, paused in queued:
+                if paused.get('cliRelease'):
+                    self._settle_scope_queued(session, paused_key)
+            with self.submit_lock:
+                queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
+                          and row['status'] == 'queued' and not row.get('cliRelease')]
+            if queued:
+                key, entry = queued[0]
+                try:
+                    self._send_queued(session, key, entry)
+                except Exception:
+                    pass  # Unknown outcomes stay recorded and are never automatically replayed.
+        if (session.viewers > 0 or queued or session.watched) and not session.connected:
+            if session.activity_only and session.viewers == 0 and not queued:
+                if time.monotonic() >= session.retry_at:
+                    with session.condition:
+                        now = time.monotonic()
+                        session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
+                    self._attach(session, timeout=0)
+            else:
+                self._refresh_async(session)
+        elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
+            with self.lock:
+                if session.viewers != 0 or session.watched:
+                    return
+                self.live.pop(session.id, None)
+            if (session.connected or session.discovering) and session.runtime != "cli":
+                try:
+                    self.ipc.follow(session.id, session.owner, False, host=self.native_host)
+                except IPCError:
+                    pass
+
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
-            if not self.observation_enabled():
-                continue
-            if isinstance(self.store, RemoteStore):
-                current = self.hosts.hosts(cached=True).get(self.host)
-                if current and current['alias'] == self.store.alias:
-                    retry_ssh(self.store.alias, manual=False)
-            if self.accounts is not None:
-                try:
-                    self.accounts.check_ready()
-                except ValueError:
+            try:
+                if not self.observation_enabled():
                     continue
-            with self.lock:
-                sessions = list(self.live.values())
-            for session in sessions:
-                with self.submit_lock:
-                    queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
-                if queued and session.connected and session.view().get("status") == "idle":
-                    for paused_key, paused in queued:
-                        if paused.get('cliRelease'):
-                            self._settle_scope_queued(session, paused_key)
-                    with self.submit_lock:
-                        queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
-                                  and row['status'] == 'queued' and not row.get('cliRelease')]
-                    if queued:
-                        key, entry = queued[0]
-                        try:
-                            self._send_queued(session, key, entry)
-                        except Exception:
-                            pass  # Unknown outcomes stay recorded and are never automatically replayed.
-                if (session.viewers > 0 or queued or session.watched) and not session.connected:
-                    if session.activity_only and session.viewers == 0 and not queued:
-                        if time.monotonic() >= session.retry_at:
-                            with session.condition:
-                                now = time.monotonic()
-                                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
-                            self._attach(session, timeout=0)
-                    else:
-                        self._refresh_async(session)
-                elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
-                    with self.lock:
-                        if session.viewers != 0 or session.watched:
-                            continue
-                        self.live.pop(session.id, None)
-                    if (session.connected or session.discovering) and session.runtime != "cli":
-                        try:
-                            self.ipc.follow(session.id, session.owner, False, host=self.native_host)
-                        except IPCError:
-                            pass
-            recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
-                             for session in sessions)
-            delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+                if isinstance(self.store, RemoteStore):
+                    current = self.hosts.hosts(cached=True).get(self.host)
+                    if current and current['alias'] == self.store.alias:
+                        retry_ssh(self.store.alias, manual=False)
+                if self.accounts is not None:
+                    try:
+                        self.accounts.check_ready()
+                    except ValueError:
+                        continue
+                with self.lock:
+                    sessions = list(self.live.values())
+                for session in sessions:
+                    try:
+                        self._maintain_session(session)
+                    except Exception:
+                        # 单个会话维护异常（例如原会话消失导致 store.get 抛 KeyError）
+                        # 不得中断其他会话维护或杀死后台线程。
+                        logging.getLogger(__name__).exception("后台维护会话 %s 失败", session.id)
+                recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
+                                 for session in sessions)
+                delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+            except Exception:
+                # 远程主机探测等外层瞬时异常同样不应终止后台维护循环。
+                logging.getLogger(__name__).exception("后台维护循环迭代失败")
 
     def _target(self, thread_id, *, defer_cli_account=False):
         if self.released_cli.contains(thread_id):
@@ -4684,11 +4707,15 @@ class Bridge:
 
     def timeline_read(self, thread_id, mode='page', **options):
         session = self.session(thread_id, background=True)
+        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        if mode == 'detail':
+            options.pop('projection', None)
         goal_available = self._refresh_session_goal(session)
         # Expand saved history only when the reader reaches its loaded edge.
         if mode == 'page' and options.get('before'):
             with session.condition:
-                position = session.timeline.position(options['before'])
+                position = (session.timeline.conversation_positions.get(options['before'].partition('.')[2])
+                            if conversation else session.timeline.position(options['before']))
                 near_edge = position is not None and position < options.get('limit', 20)
                 expand = near_edge and not session.timeline.window_more and session.saved_view and not session.saved_view['historyComplete']
                 if near_edge:
@@ -4702,15 +4729,17 @@ class Bridge:
         with session.condition:
             session.access = self._access(session.origin, session)
             projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view())
+            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view(conversation))
             authoritative_view['access'] = dict(session.access)
-            projection.update(authoritative_view, limit=session.timeline_limit)
+            projection.update(authoritative_view, limit=session.timeline_limit, conversation=conversation)
             # Goals/access may change independently of the history revision.
             projection.meta.update(goal=authoritative_view.get('goal'), access=authoritative_view['access'])
             # Annotate the full projection, not only the returned page. Otherwise
             # older pages briefly render raw localImage paths after an upgrade.
             self._annotate_upload_attachments(session, projection.rows)
             self._merge_submission_attachments(session, projection.rows)
+            if mode == 'process':
+                return {**projection.process(**options), 'files': []}
             if mode == 'detail':
                 result = projection.detail(**options)
                 file_items = [{'type': 'agentMessage', 'text': projection.details[result['key']]}]
@@ -4729,10 +4758,9 @@ class Bridge:
             cwd = authoritative_view.get('cwd')
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
-            media_items = [{'type': 'ImageView', 'path': attachment['path']}
-                           for turn in authoritative_view['turns'] for row in turn['messages']
-                           for attachment in row.get('attachments', [])
-                           if attachment.get('type') == 'localImage' and attachment.get('path')]
+            media_items = [{'type': 'ImageView', 'path': path}
+                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if mode == 'detail' else result['rows'])
+                           for path in projection.image_views.get(row['key'], [])]
         # Resolve links in the delivered page, plus runtime ImageView evidence
         # retained separately from the paged message text.
         if mode != 'detail':

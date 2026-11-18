@@ -19,39 +19,367 @@ function renderChatMessageTime(container,value,now=new Date()){
 function chatFollowsLatest(viewport){
   return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
 }
+function chatShouldSlideHistory(count,following){
+  return following&&count>240&&document.getSelection?.()?.isCollapsed!==false;
+}
 function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
-  for(const node of container.children){
-    if(node.hidden||node.dataset.key===undefined||!accept(node))continue;
+  const candidates=[];
+  const visit=node=>{
+    if(node.hidden||node.dataset.key===undefined||!accept(node))return;
+    if(node.classList.contains('chat-activity-turn')&&node.open&&node.firstChild.getBoundingClientRect().bottom<=top){
+      for(const child of node.lastChild.children)visit(child);
+    }else candidates.push(node);
+  };
+  for(const node of container.children)visit(node);
+  for(const node of candidates){
     const rect=node.getBoundingClientRect();
-    anchor={key:node.dataset.key,offset:rect.top-top};
+    anchor={key:node.dataset.key,offset:rect.top-top,group:node.classList.contains('chat-activity-turn')?'turn':node.classList.contains('chat-activity-tools')?'tools':null};
     if(rect.bottom>top)break;
   }
   return anchor;
 }
 function restoreChatScrollAnchor(viewport,node,anchor){
   if(!node||node.hidden||!anchor)return false;
+  if(anchor.group)node=node.closest('.chat-activity-'+anchor.group)||node;
+  for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.classList?.contains('chat-activity-group')&&!parent.open)node=parent;
   viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-anchor.offset;
   return true;
 }
 function captureChatActivityState(node){
   const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
   if(!details)return null;
-  const body=details.querySelector('.activity-body');
-  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0};
+  const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
+  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0,children:details.classList?.contains('chat-activity-group')?[...details.querySelectorAll('details.activity,details.chat-activity-group')].map(node=>[node,captureChatActivityState(node)]):[]};
 }
 function restoreChatActivityState(node,state){
   if(!state)return;
   const details=node.tagName==='DETAILS'?node:node.querySelector('details.activity');
   if(!details)return;
   details.open=state.open;
-  const body=details.querySelector('.activity-body');
+  if(state.open)details.__loadActivityBody?.();
+  const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
+  for(const [child,reading] of state.children||[])restoreChatActivityState(child,reading);
+}
+// Desktop adapters already delivered bounded native pages. Reuse that text
+// only when the reader opens the activity; do not build hidden output bodies.
+function deferChatActivityBody(details,body,text){
+  details.__loadActivityBody=()=>{if(body.textContent!==text)body.textContent=text;};
+  details.addEventListener('toggle',()=>{if(details.open)details.__loadActivityBody();});
+}
+function renderChatFileSummary(content,row,onFile){
+  const translate=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source),heading=content.children[0];
+      content.classList.add('edited-files-card');
+      heading.replaceChildren();
+      const label=document.createElement('span');label.className='edited-files-label';label.textContent=translate('已编辑 {count} 个文件').replace('{count}',row.fileSummary.count);
+      const stats=document.createElement('span');stats.className='edited-files-stats';
+      const added=document.createElement('span');added.className='edited-files-added';added.textContent='+'+row.fileSummary.added;
+      const removed=document.createElement('span');removed.className='edited-files-removed';removed.textContent='−'+row.fileSummary.removed;
+      stats.append(added,removed);heading.append(label);
+      if(row.fileSummary.basis==='recorded'){
+        const basis=document.createElement('small');basis.className='edited-files-basis';basis.textContent=translate('累计修改');heading.append(basis);
+      }
+      heading.append(stats);
+      const list=document.createElement('ul');list.className='edited-files-list';
+      for(const file of row.fileSummary.files){
+        const item=document.createElement('li'),path=document.createElement(onFile?'button':'span'),counts=document.createElement('span');
+        if(onFile){path.type='button';path.onclick=()=>onFile(file.path);}
+        path.textContent=file.path;path.className='edited-files-path';counts.textContent='+'+file.added+' −'+file.removed;counts.className='edited-files-stats';item.append(path,counts);list.append(item);
+        if(onFile)path.classList.add('plain');
+      }
+      content.append(list);
+}
+// Classification is presentation-only: a user supplement stays a user message.
+function chatActivityKind(row){
+  if(row.fileSummary||row.role==='fileChanges')return '';
+  if(row.role==='user')return row.interaction==='response'?'tool':'';
+  if(row.role==='reasoning'||row.kind==='reasoning')return 'reasoning';
+  return row.role==='activity'?'tool':'';
+}
+function chatActivityIcon(row){
+  if(chatActivityKind(row)==='reasoning')return 'reasoning';
+  if(row.kind==='commandExecution')return 'command';
+  if(['fileChange','FileChange'].includes(row.kind)||row.kind==='code'&&['write','edit'].includes(row.changeType))return 'file';
+  if(['ImageView','imageView'].includes(row.kind))return 'read';
+  const tool=row.toolName||row.tool;
+  if(['Bash','bash'].includes(tool))return 'command';
+  if(['Write','Edit','MultiEdit'].includes(tool))return 'file';
+  if(tool==='Read')return 'read';
+  if(['Grep','Glob','WebSearch'].includes(tool))return 'search';
+  if(tool==='WebFetch')return 'browser';
+  if(['cua_repl.js','mcp__cua_repl__js'].includes(tool))return 'computer';
+  if(row.kind==='todo/write'||['TaskCreate','TaskUpdate','TodoWrite'].includes(tool))return 'task';
+  return 'tool';
+}
+function chatActivityLabel(row){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(row.interaction==='response')return t('已回答问题');
+  const text=(row.text||'').split('\n')[0];
+  if(row.activityFiles?.length)return t('已编辑')+' '+row.activityFiles.map(file=>file.path).join('、');
+  if(row.kind==='commandExecution'&&text)return t('已运行')+' '+text;
+  if(['fileChange','FileChange'].includes(row.kind)&&text)return t('已编辑')+' '+text;
+  return t(row.title||(row.kind==='reasoning'||row.role==='reasoning'?'思考摘要':'执行过程'));
+}
+function renderChatActivityLabel(heading,row){
+  heading.replaceChildren();
+  const label=document.createElement('span');label.className='chat-activity-text';
+  label.textContent=chatActivityLabel(row);label.title=label.textContent;
+  if(row.activityFiles?.length){
+    label.replaceChildren(typeof BridgeI18n==='undefined'?'已编辑 ':BridgeI18n.t('已编辑')+' ');
+    for(const [index,file] of row.activityFiles.entries()){
+      if(index)label.append('、');
+      const path=document.createElement('span');path.className='chat-activity-file';path.textContent=file.path;label.append(path);
+    }
+    const stats=document.createElement('span');stats.className='chat-activity-stats';
+    stats.textContent='+'+row.activityFiles.reduce((sum,file)=>sum+file.added,0)+' −'+row.activityFiles.reduce((sum,file)=>sum+file.removed,0);
+    heading.append(label,stats);
+  }else heading.append(label);
+}
+// One history gesture seeks ordinary conversation, not a page of folded tools.
+// Native pages stay bounded; collect before rendering once, preserving a manual
+// continuation after four pages or a transport failure.
+async function readChatHistoryBatch(read,before,{known=new Set(),current=()=>true}={}){
+  const pages=[],seen=new Set();let cursor=before;
+  for(let count=0;count<4;count++){
+    let page;
+    try{page=await read(cursor);}catch(error){return current()?{pages,error}:{pages:[],cancelled:true};}
+    if(!current())return {pages:[],cancelled:true};
+    if(page.reset||pages.length&&page.epoch!==pages[0].epoch)return {pages:[],reset:page};
+    if(page.hasMore&&(!page.rows.length||page.before===cursor||seen.has(page.before)))return {pages,stalled:true};
+    pages.push(page);seen.add(page.before);
+    if(!page.hasMore||page.rows.some(row=>!known.has(row.key??row.id)&&!chatActivityKind(row)))break;
+    cursor=page.before;
+  }
+  return {pages};
+}
+function syncChatActivityPage(group){
+  const body=group.lastChild,rows=group.__rows;
+  let start=rows.findIndex(node=>node.dataset.key===group.__firstKey);
+  if(start<0||!group.open&&!group.__readPage)start=Math.max(0,rows.length-20);
+  else{
+    // A native reorder can move an already displayed row before the page
+    // anchor. Keep it in the page so its detail and reading state survive.
+    const visible=new Set([...body.children].map(node=>node.dataset.key));
+    const first=rows.findIndex(node=>visible.has(node.dataset.key));
+    if(first>=0)start=Math.min(start,first);
+  }
+  const shown=rows.slice(start),top=body.scrollTop;
+  if(!group.__older){
+    const older=document.createElement('button');older.type='button';older.className='plain chat-activity-older';
+    older.onclick=()=>{
+      const rows=group.__rows,index=rows.findIndex(node=>node.dataset.key===group.__firstKey),anchor=rows[index],offset=anchor?.getBoundingClientRect().top;
+      group.__readPage=true;group.__firstKey=rows[Math.max(0,index-20)].dataset.key;syncChatActivityPage(group);
+      if(anchor&&offset!==undefined)body.scrollTop+=anchor.getBoundingClientRect().top-offset;
+    };
+    group.__older=older;
+  }
+  group.__older.textContent=typeof BridgeI18n==='undefined'?'加载更早过程':BridgeI18n.t('加载更早过程');
+  group.__older.hidden=start===0;
+  group.__firstKey=shown[0].dataset.key;group.dataset.key=group.__firstKey;
+  syncChatMessageNodes(body,[group.__older,...shown],false);body.scrollTop=top;
+}
+// Task boundaries come from native turn IDs when available. Older adapters
+// without them use ordinary user messages; response envelopes are never a task.
+function chatTaskSegments(nodes,state={}){
+  const tasks=new Map();let current='history';
+  for(const node of nodes){
+    const row=node.__chatMessage;if(!row)continue;
+    // Legacy saved history uses a placeholder, not a native task boundary.
+    if(row.turnId&&row.turnId!=='history')current='turn:'+row.turnId;
+    else if(row.role==='user'&&row.interaction!=='response')current='user:'+node.dataset.key;
+    let task=tasks.get(current);if(!task){task={nodes:[],finals:new Set()};tasks.set(current,task);}
+    task.nodes.push(node);
+  }
+  const latest=[...tasks.values()].at(-1),byNode=new Map();
+  for(const task of tasks.values()){
+    const rows=task.nodes.map(node=>node.__chatMessage),status=[...rows].reverse().find(row=>row.turnStatus)?.turnStatus;
+    task.active=status?status==='inProgress':task===latest&&state.status==='active';
+    // Native asynchronous questions may also carry final_answer before the
+    // same task resumes. Only its latest final is the task result.
+    const final=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase==='final_answer');
+    if(final)task.finals.add(final);
+    if(!task.active&&!task.finals.size){
+      const last=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase!=='commentary');
+      if(last)task.finals.add(last);
+    }
+    // Only native message/turn clocks; no wall-clock estimate for old history.
+    const first=rows.find(row=>row.role==='user'&&row.interaction!=='response');
+    const start=rows.find(row=>row.turnStartedAt)?.turnStartedAt??first?.timestamp;
+    const end=rows.find(row=>row.turnCompletedAt)?.turnCompletedAt??[...task.finals].at(-1)?.__chatMessage.timestamp;
+    const a=chatMessageDate(start),b=chatMessageDate(end);
+    task.seconds=!task.active&&a&&b&&b>=a?Math.floor((b-a)/1000):null;
+    const last=task.nodes.at(-1);
+    for(const node of task.nodes){
+      const row=node.__chatMessage;
+      if(chatActivityKind(row)){
+        node.dataset.icon=chatActivityIcon(row);
+        if(node.firstElementChild?.classList?.contains('activity'))node.firstElementChild.dataset.icon=node.dataset.icon;
+      }
+      node.__chatRunning=task.active&&node===last&&!!chatActivityKind(row)&&!['completed','failed','interrupted','accepted'].includes(row.status);
+      node.dataset.running=String(node.__chatRunning);byNode.set(node,task);
+    }
+  }
+  return byNode;
+}
+function chatTaskLabel(task){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(task.active)return t('正在处理');
+  if(task.seconds===null)return t('执行过程');
+  const minutes=Math.floor(task.seconds/60),seconds=task.seconds%60;
+  return minutes?t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',minutes).replace('{seconds}',seconds):t('用时 {seconds} 秒').replace('{seconds}',seconds);
+}
+// An explicit disclosure owns its reads. Native status updates only its label.
+function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText,renderAttachments,current=()=>true,signal,onFiles=()=>{}}){
+  const group=existing||document.createElement('details'),t=text=>typeof BridgeI18n==='undefined'?text:BridgeI18n.t(text);
+  if(!existing){
+    group.className='chat-activity-group timeline-row chat-process-page';
+    group.append(document.createElement('summary'),document.createElement('div'));
+    group.lastChild.className='chat-activity-items chat-process-items';group.__records=new Map();group.__pages=new Map();
+  }
+  group.__chatMessage=row;group.dataset.key=row.key;group.dataset.chatTurnId=row.turnId||'';
+  const start=chatMessageDate(row.turnStartedAt),end=chatMessageDate(row.turnCompletedAt);
+  group.firstChild.textContent=chatTaskLabel({active:row.turnStatus==='inProgress',seconds:start&&end&&end>=start?Math.floor((end-start)/1000):null});
+  const valid=()=>current()&&!signal?.aborted&&group.isConnected;
+  const cancel=()=>{group.__directoryController?.abort();group.__directoryController=null;for(const entry of group.__records.values()){entry.controller?.abort();entry.controller=null;}};
+  group.__cancelProcessReads=cancel;
+  const paint=()=>{
+    const nodes=[...group.__records.values()].map(entry=>entry.node);
+    if(group.__next){
+      const more=document.createElement('button');more.type='button';more.className='plain chat-process-more';more.textContent=t('继续加载过程');more.onclick=()=>load(group.__next);nodes.push(more);
+    }
+    syncChatMessageNodes(group.lastChild,nodes,false);
+  };
+  const record=metadata=>{
+    let entry=group.__records.get(metadata.key);
+    if(!entry){
+      const leaf=metadata.role==='assistant'||metadata.hasDetail===false;
+      const node=document.createElement(leaf?'section':'details'),heading=document.createElement(leaf?'div':'summary'),body=document.createElement('div');
+      node.className='activity';body.className='activity-body';node.append(heading,body);
+      entry={node,body};group.__records.set(metadata.key,entry);
+    }
+    const node=entry.node;
+    if(entry.row?.version!==metadata.version)entry.detail=null;
+    entry.row=metadata;node.dataset.key=metadata.key;node.dataset.icon=chatActivityIcon(metadata);node.__chatMessage=metadata;
+    renderChatActivityLabel(node.firstChild,metadata);
+    node.firstChild.hidden=metadata.role==='assistant';
+    const paintBody=()=>{
+      const detail=entry.detail;if(!detail)return;
+      const content=document.createElement(metadata.role==='assistant'?'div':'pre');content.className=metadata.role==='assistant'?'message-body':'activity-text';
+      if(metadata.role==='assistant'&&renderText)renderText(content,detail.text);else content.textContent=detail.text;
+      entry.body.replaceChildren(content);renderAttachments?.(entry.body,detail.attachments);
+      if(detail.text){const copy=document.createElement('button');copy.type='button';copy.className='plain activity-copy';copy.textContent=t('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>entry.detail.text,copy);entry.body.append(copy);}
+      if(detail.next!==null){const more=document.createElement('button');more.type='button';more.className='plain detail-more';more.textContent=t('继续加载正文');more.onclick=()=>loadBody();entry.body.append(more);}
+    };
+    const loadBody=async()=>{
+      if(!valid()||!group.open||!node.open||entry.controller||entry.detail?.next===null)return;
+      const controller=entry.controller=new AbortController(),target=entry.row,prior=entry.detail;
+      const offset=prior?.next||0;
+      try{
+        if(controller.signal.aborted||!valid()||!group.open||!node.open)return;
+        const detail=await readDetail(target,offset,controller.signal);
+        if(controller.signal.aborted||!valid()||!group.open||!node.open||entry.row!==target)return;
+        if(detail.version!==target.version||detail.offset!==offset)throw Error(t('消息内容已变化，请重新打开编辑'));
+        onFiles(detail.files||[]);
+        entry.detail={...detail,text:(offset?prior.text:'')+detail.text,attachments:detail.attachments||prior?.attachments};paintBody();
+      }catch(error){if(!controller.signal.aborted&&valid()&&group.open&&node.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>loadBody();entry.body.replaceChildren(retry);}}
+      finally{if(entry.controller===controller)entry.controller=null;}
+    };
+    node.ontoggle=()=>{if(node.open){if(entry.detail)paintBody();else loadBody();}else{entry.controller?.abort();entry.controller=null;}};
+    if(metadata.role==='assistant'){
+      const content=document.createElement('div');content.className='message-body';if(renderText)renderText(content,metadata.text||'');else content.textContent=metadata.text||'';entry.body.replaceChildren(content);
+      if((metadata.text||'').length>=8000){node.open=true;const more=document.createElement('button');more.type='button';more.className='plain';more.textContent=t('展开完整内容');more.onclick=()=>loadBody();entry.body.append(more);}
+    }
+    if(node.open&&metadata.role!=='assistant'){if(entry.detail)paintBody();else loadBody();}
+  };
+  const load=async after=>{
+    if(!valid()||!group.open||group.__directoryController)return;
+    const target=group.__chatMessage,controller=group.__directoryController=new AbortController();
+    const slot='process:'+target.processCursor+':'+target.version+':'+(after||'');
+    try{
+      const saved=group.__pages.get(slot);
+      if(controller.signal.aborted||!valid()||!group.open)return;
+      const page=saved||await readDirectory(target.processCursor,after,controller.signal);
+      if(controller.signal.aborted||!valid()||!group.open||group.__chatMessage.version!==target.version)return;
+      onFiles(page.files||[]);for(const metadata of page.rows||[])record(metadata);
+      group.__next=page.next;group.__loadedVersion=target.version;group.__pages.set(slot,page);paint();
+    }catch(error){if(!controller.signal.aborted&&valid()&&group.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>{retry.remove();load(after);};group.lastChild.append(retry);}}
+    finally{if(group.__directoryController===controller)group.__directoryController=null;}
+  };
+  group.ontoggle=()=>{if(group.open){if(group.__loadedVersion!==group.__chatMessage.version)load();else paint();}else cancel();};
+  if(group.__processSignal!==signal){group.__processSignal?.removeEventListener('abort',group.__abortProcessListener);group.__processSignal=signal;group.__abortProcessListener=cancel;signal?.addEventListener('abort',cancel,{once:true});}
+  if(group.open&&group.__loadedVersion!==row.version){cancel();load();}
+  return group;
+}
+function groupChatTasks(container,nodes){
+  const previous=container.__chatTaskGroups||new Map(),next=new Map(),used=new Set(),result=[],tasks=chatTaskSegments(nodes,container.__chatTaskState);
+  let cluster=[],current=null;
+  const flush=()=>{
+    if(!cluster.length)return;
+    const key=cluster[0].dataset.key;
+    let group=previous.get(key)||[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys.has(node.dataset.key)));
+    if(!group){
+      group=document.createElement('details');group.className='chat-activity-group chat-activity-turn';
+      const summary=document.createElement('summary'),body=document.createElement('div');body.className='chat-task-items';group.append(summary,body);group.open=current.active;
+    }else if(group.__active&&!current.active)group.open=false;
+    // Active tasks have no outer toggle; cached collapsed state must not hide them.
+    if(current.active)group.open=true;
+    group.dataset.state=current.active?'active':'complete';
+    group.__active=current.active;group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
+    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
+    const label=chatTaskLabel(current);if(group.firstChild.textContent!==label)group.firstChild.textContent=label;
+    // Keep the independently scrollable tool batches inside the task disclosure.
+    syncChatMessageNodes(group.lastChild,groupChatActivities(group.lastChild,cluster),false);
+    used.add(group);next.set(key,group);result.push(group);cluster=[];
+  };
+  for(const node of nodes){
+    const row=node.__chatMessage,task=tasks.get(node);
+    if(row?.processCursor){flush();result.push(node);current=null;continue;}
+    const process=row&&(chatActivityKind(row)||row.role==='assistant'&&!task.finals.has(node))&&!row.fileSummary;
+    if(!process){flush();result.push(node);current=null;continue;}
+    if(current&&current!==task)flush();current=task;cluster.push(node);
+  }
+  flush();container.__chatTaskGroups=next;return result;
+}
+// Consecutive tools and reasoning share the second disclosure level. Each
+// native tool still owns its original third-level detail and lazy body.
+function groupChatActivities(container,nodes){
+  const previous=container.__chatActivityGroups||new Map(),next=new Map(),used=new Set(),result=[];
+  let cluster=[];
+  const flush=()=>{
+    if(!cluster.length)return;
+    const key=cluster[0].dataset.key;
+    let group=previous.get(key);
+    if(!group)group=[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys?.has(node.dataset.key)));
+    if(!group){
+      group=document.createElement('details');group.className='chat-activity-group chat-activity-tools';
+      const summary=document.createElement('summary'),label=document.createElement('span'),body=document.createElement('div');
+      label.className='chat-activity-label';body.className='chat-activity-items';summary.append(label);group.append(summary,body);
+    }
+    used.add(group);next.set(key,group);group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
+    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
+    const icons=cluster.map(node=>node.dataset.icon),files=icons.includes('file'),commands=icons.includes('command');
+    const reasoningOnly=cluster.every(node=>node.dataset.chatActivity==='reasoning');
+    const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':reasoningOnly?'思考摘要':'执行了操作';
+    const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
+    group.dataset.running=String(cluster.some(node=>node.__chatRunning));
+    group.dataset.icon=files?'file':commands?'command':icons.every(icon=>icon===icons[0])?icons[0]:'tool';
+    if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
+    group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
+  };
+  for(const node of nodes){
+    if(['tool','reasoning'].includes(node.dataset?.chatActivity)){
+      if(cluster.length&&node.dataset.chatTurnId&&cluster[0].dataset.chatTurnId&&node.dataset.chatTurnId!==cluster[0].dataset.chatTurnId)flush();
+      cluster.push(node);
+    }else{flush();result.push(node);}
+  }
+  flush();container.__chatActivityGroups=next;return result;
 }
 // Stable row keys are local to this conversation container. Do not detach
 // unchanged rows: even reattaching the same node resets nested scroll areas.
-function syncChatMessageNodes(container,nodes){
+function syncChatMessageNodes(container,nodes,group=true){
+  if(group)nodes=groupChatTasks(container,nodes);
   const previous=new Map([...container.children].filter(node=>node.dataset.key!==undefined).map(node=>[node.dataset.key,node]));
   const reading=new Map(),wanted=new Set(nodes);
   for(const node of nodes){

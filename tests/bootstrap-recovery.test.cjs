@@ -311,6 +311,7 @@ test('optional math, terminal and file failures cannot prevent the list from sta
 test('lazy components share in-flight work, preserve order and reuse successful downloads after failure',async()=>{
   const ui=fixture({features:[{url:'/xterm.css',group:'terminal'},{url:'/xterm.js',group:'terminal'},{url:'/fit.js',group:'terminal'}]});
   const one=ui.window.BridgeFeatures.load('terminal'),two=ui.window.BridgeFeatures.load('terminal');
+  assert.deepEqual(ui.preloads.filter(node=>node.rel==='preload').map(node=>node.href),['/xterm.js','/fit.js']);
   assert.equal(ui.optionalRequests.length,1);ui.finish(ui.optionalRequests[0]);await ui.flush();
   assert.equal(ui.optionalRequests[1].src,'/xterm.js');ui.finish(ui.optionalRequests[1]);await ui.flush();
   assert.equal(ui.optionalRequests[2].src,'/fit.js');ui.finish(ui.optionalRequests[2],true);

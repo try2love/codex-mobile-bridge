@@ -64,8 +64,10 @@ class DesktopConnectionsPanel {
     }catch(error){if(revision!==this.statusRevision)return;this.statusError=error.message;this.scanMessage=error.message;this.scanError=true;this.renderScan();this.renderDetails();}
   }
   applyClientSnapshot(value){
-    ClientLifecycle.reconcile(this.operationFailures,this.managementClients(value.clients));
-    this.clients=value.clients;this.instanceError=value.instanceError||'';
+    this.clientsPending=value.pending===true;this.clientsError=value.refreshError||'';
+    const clients=(this.clientsPending||this.clientsError)&&!value.clients.length&&this.clients?.length?this.clients:value.clients;
+    if(!this.clientsPending&&!this.clientsError)ClientLifecycle.reconcile(this.operationFailures,this.managementClients(clients));
+    this.clients=clients;this.instanceError=value.instanceError||'';
     this.inventoryAvailable=value.inventoryAvailable??this.inventoryAvailable;
     this.gatewayRunning=value.gatewayRunning??this.gatewayRunning;this.windowsSession=value.windowsSession??this.windowsSession;
   }
@@ -79,7 +81,7 @@ class DesktopConnectionsPanel {
     const revision=this.clientsRevision;
     const pending=(async()=>{
       try{const value=await ClientLifecycle.request(()=>this.api.desktopSessions({action:'clients',refresh}),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision!==this.clientsRevision)return;this.applyClientSnapshot(value);this.renderClients();this.renderScan();}
-      catch(error){if(revision!==this.clientsRevision)return;this.scanMessage=error.message;this.scanError=true;this.renderScan();}
+      catch(error){if(revision!==this.clientsRevision)return;this.clientsPending=false;this.clientsError=error.message;this.renderScan();}
     })();
     this.clientsLoading=pending;try{await pending;}finally{if(this.clientsLoading===pending)this.clientsLoading=null;this.renderClients();}
   }
@@ -98,17 +100,17 @@ class DesktopConnectionsPanel {
   }
   syncPolling(){
     const visible=!document.hidden&&!document.getElementById('clients-page').hidden;
-    const interval=visible?(this.managementClients().some(client=>this.connection(client).waiting)?2000:15000):0;
+    const interval=visible?(this.clientsPending||this.managementClients().some(client=>this.connection(client).waiting)?2000:15000):0;
     if(interval===(this.pollInterval||0))return;
     clearInterval(this.pollTimer);this.pollInterval=interval;
     if(interval)this.pollTimer=setInterval(()=>this.pollClients(),interval);
   }
   pollClients(fast=false){
-    if(document.hidden||document.getElementById('clients-page').hidden||this.hasUncertain()||(fast&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
+    if(document.hidden||document.getElementById('clients-page').hidden||(this.hasUncertain()&&!this.clientsPending)||(fast&&!this.clientsPending&&!this.managementClients().some(client=>this.connection(client).waiting)))return;
     return this.refreshClients();
   }
   async scan(manual=false){
-    if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
+    if(this.scanning||this.busy||this.choosingClient)return;this.scanning=true;this.clientsRevision++;this.statusRevision++;this.clientsError='';this.scanMessage='正在扫描本机客户端…';this.scanError=false;this.renderScan();
     let gotSnapshot=false;
     try{const value=await this.api.desktopSessions({action:'scan',setup:false,inventoryOnly:!manual});if(value.clients){this.applyClientSnapshot(value);gotSnapshot=true;}this.scanError=!!value.errors?.length;this.scanMessage=this.scanError?value.errors.map(row=>row.distribution+'：'+BridgeI18n.t(row.error)).join('\n'):'扫描完成；各客户端的接入状态如下。';}
     catch(error){this.scanMessage=error.message;this.scanError=true;if(manual)this.feedback(error.message,true);}
@@ -160,7 +162,7 @@ class DesktopConnectionsPanel {
     }catch(error){release();this.feedback(error.message,true);}
   }
   renderScan(){
-    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有客户端，或通过“添加客户端”配置新的客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError);}
+    const node=document.getElementById('client-scan-status');if(node){node.textContent=BridgeI18n.t(this.instanceError||this.clientsError||this.scanMessage||(this.visibleClients().some(client=>client.id==='claude')?'选择需要接入的应用。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。':'选择已有客户端，或通过“添加客户端”配置新的客户端。'))+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));node.classList.toggle('error',!!this.scanError||!!this.instanceError||!!this.clientsError);}
     const button=document.getElementById('refresh-clients');if(button){button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient;button.dataset.i18n=this.scanning?'正在扫描…':'重新扫描';button.textContent=BridgeI18n.t(button.dataset.i18n);}
     this.root.querySelectorAll('[data-desktop-action]').forEach(button=>button.disabled=!!this.scanning||!!this.busy||!!this.choosingClient||(button.dataset.desktopAction!=='scan'&&this.hasUncertain()));
   }
@@ -414,10 +416,14 @@ class DesktopConnectionsPanel {
     const status=node('p'),reason=node('p',undefined,'hint'),saved=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');saved.setAttribute('role','status');
     const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
     const actions=node('div',undefined,'actions'),buttons={};
-    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
+    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['browser-login','使用系统浏览器登录'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
       const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
     }
-    refresh.type='button';section.append(heading,help,guide,status,reason,label,saved,actions);article.insertBefore(section,before);
+    const receiptRow=node('div'),receiptLabel=node('label'),receipt=node('input'),submitReceipt=node('button','提交授权回执');
+    receipt.type='url';receipt.autocomplete='off';receipt.spellcheck=false;receipt.maxLength=16384;receipt.placeholder=BridgeI18n.t('粘贴浏览器完成授权后的完整回调地址');
+    receiptLabel.append(node('span','授权回执'),receipt);submitReceipt.type='button';submitReceipt.dataset.officialAction='login-receipt';buttons['login-receipt']=submitReceipt;
+    receiptRow.append(node('p','通常会自动完成登录；未返回时，可在这里粘贴完整回调地址。','account-muted'),receiptLabel,submitReceipt);
+    refresh.type='button';section.append(heading,help,guide,status,reason,label,saved,actions,receiptRow);article.insertBefore(section,before);
     let busy=false,pendingAction='',loadedLink='',error='',guidePending=true;
     const panel=this.zcodeOfficial={value:null};
     const render=()=>{
@@ -425,10 +431,13 @@ class DesktopConnectionsPanel {
       if(value&&guidePending){guide.open=!value.configured;guidePending=false;}
       status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
         BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
-      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…','browser-login':'正在打开官方登录…','login-receipt':'正在提交授权回执…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
       saved.textContent=BridgeI18n.t(edited?'连接配置已修改，尚未保存。':loadedLink?'连接配置已保存。登录失效时需要重新验证。':'请保存此电脑的官方远控链接，再完成官方登录。');label.dataset.dirty=String(edited);
       link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
       buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
+      buttons['browser-login'].disabled=buttons.login.disabled;
+      receiptRow.hidden=!value?.browserLoginPending;if(receiptRow.hidden)receipt.value='';receipt.disabled=busy;
+      submitReceipt.disabled=busy||unavailable||edited||!value?.browserLoginPending||!receipt.value.trim();
       buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!value?.configured;
     };
     const perform=async action=>{
@@ -438,14 +447,15 @@ class DesktopConnectionsPanel {
       if(action==='forget'&&!window.confirm(BridgeI18n.t('清除网关保存的官方登录并断开官方远控？已保存的链接、ZCode 原 App 的账号和任务会保留。')))return;
       const edited=link.value!==loadedLink;busy=true;pendingAction=action;error='';this.busy=true;render();this.renderClients();this.renderScan();
       try{
-        const value=await this.api.desktopSessions({action:'zcode-official-'+action,...(['save','login','connect'].includes(action)?{link:link.value.trim()}:{})});
+        const value=await this.api.desktopSessions({action:'zcode-official-'+action,...(['save','login','browser-login','connect'].includes(action)?{link:link.value.trim()}:{}),...(action==='login-receipt'?{receipt:receipt.value.trim()}:{})});
+        if(action==='login-receipt')receipt.value='';
         panel.value=value;if(!edited||['save','forget'].includes(action))link.value=value.link||'';loadedLink=value.link||'';
       }catch(failure){error=failure.message;this.feedback(error,true);panel.value=null;if(action!=='state')try{panel.value=await this.api.desktopSessions({action:'zcode-official-state'});}catch(_){}}
       finally{busy=false;this.busy=false;render();this.renderClients();this.renderScan();}
-      if(!['state','login'].includes(action))await this.refreshClients(true);
+      if(!['state','login','browser-login','login-receipt'].includes(action))await this.refreshClients(true);
     };
     for(const [action,button] of Object.entries(buttons))button.onclick=()=>perform(action);
-    refresh.onclick=panel.refresh=()=>perform('state');link.oninput=render;render();
+    refresh.onclick=panel.refresh=()=>perform('state');link.oninput=receipt.oninput=render;render();
   }
   resumeAccounts(){
     if(!document.hidden&&!document.getElementById('clients-page').hidden)

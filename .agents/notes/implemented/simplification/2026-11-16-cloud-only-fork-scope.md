@@ -8,11 +8,13 @@ Status: implemented
 
 ## Decision
 
-以 `try2love/codex-mobile-bridge/main` 的 `1004e5ae`（v2.2.1）为当前基线，只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
+当前基线为 `try2love/codex-mobile-bridge` 的发布标签 `v2.2.2-preview.1`（`1561a0c8`），包含上游 `main` 的 `v2.2.1`（`1004e5ae`）。本分支只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
 
 通用 WebSocket、通知 JSON 存储、直连推送、旧共享中继、模型选择与非云测试直接恢复上游。删除开发热刷新命令、主进程和 preload 扩展、源码监听器、页面钩子、样式及测试。混合文件从上游实现重新叠加最小云接入，不保留顺手修复或通用重构。云专用 Range 校验移至 `relay/http_framing.py`，`relay/protocol.py`、`relay/server.py` 和 `shared_relay.py` 整文件跟随上游。
 
 桌面入口在上游脚本顺序中加载云面板，保留上游共享模型选择脚本。云浏览器测试由独立的 `cloud-panel.config.cjs` 复用上游合成夹具和浏览器设置；通用 Playwright 配置直接采用上游。
+
+退出云网页时，`web/shell/app.js` 的 `showLogin` 先触发上游的聊天历史缓存清理，再根据 `BridgeCloudWeb` 返回可选择电脑的云账号首页。聊天时间线尚未加载时，`BridgeChatHistoryCache.forget()` 负责清理。
 
 上游 HTTP 处理器可能在未消费请求体时返回错误。云 Web 和 Noise/P2P 转发仅对带正文的本地 HTTP 请求发送 `Connection: close`，避免残留正文污染后续请求；空正文请求保留上游连接复用。关闭的是内部回环 HTTP 连接，云登录、Noise/中继会话及响应确认不重建，不增加未知写入重放。通用 HTTP 的错误处理继续采用上游。
 
@@ -33,6 +35,16 @@ Status: implemented
 - 在通用 HTTP 输出中恢复关闭连接可避免旧云回归失败，但会再次偏离非云主线。改为云内部请求声明关闭连接，代价仅是带正文的回环请求不复用该 TCP 连接。
 
 ## Testing
+
+### v2.2.2-preview.1 合并
+
+逐文件比较上游标签与本分支，216 个仅由上游修改的文件与标签内容一致。双方均有改动的 15 个文件中，只有 `web/shell/app.js` 需要手动合并。相对上游，该文件的唯一差异是云网页返回账号首页的判断。
+
+云网页登录、退出和按电脑隔离存储的浏览器回归覆盖 Chromium 与 WebKit 的宽屏和窄屏，四组全部通过。`npm run test:desktop` 有 1,771 项通过、1 项跳过。`scripts/test-backend.py --source-only` 有 4,349 项通过、47 项跳过。本机 Local 网关重启后继续使用原账号和设备绑定，实际服务返回的聊天、应用入口和云网页脚本与本次合并源码一致。
+
+笔记格式和归档校验通过。笔记树校验将上游媒体播放笔记里的 Markdown 示例“本机路径”当作文件链接，在上游标签和合并树中产生同一条告警。
+
+### v2.2.1 范围清理
 
 19 个重点非云文件的 Git blob 与上游一致，包含通用存储、直连推送、旧共享中继、模型选择测试和通用浏览器配置。`bridge/api/httpd.py` 除两个云资源适配方法外，完整 AST 与上游一致；运行时客户端与平台代码、原生移动壳没有新增差异。开发热刷新源码及其专属测试已删除。
 

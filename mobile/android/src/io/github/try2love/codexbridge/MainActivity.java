@@ -14,6 +14,7 @@ import java.util.concurrent.*;
 
 public final class MainActivity extends Activity implements SharedPreferences.OnSharedPreferenceChangeListener {
  private GatewayMenu gatewayPopup;
+ private final ExecutorService displayStorage=Executors.newSingleThreadExecutor();
  private int channelTicket; private long lastProbeMs; private String lastProbeNetwork="";
  private android.net.ConnectivityManager.NetworkCallback channelNetwork;
  private final Runnable routeChanged=()->{if(this.resumed){if(this.web!=null)checkChannels(this.web.getUrl(),false,"network");else checkComputers();}};
@@ -686,6 +687,25 @@ public final class MainActivity extends Activity implements SharedPreferences.On
      if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)&&value!=null&&value.length()<100){try{JSONObject colors=new JSONObject(value);String top=colors.getString("top"),bottom=colors.getString("bottom");if(top.matches("#[0-9a-fA-F]{6}")&&bottom.matches("#[0-9a-fA-F]{6}")){systemBars.update(android.graphics.Color.parseColor(top),android.graphics.Color.parseColor(bottom));result.confirm("saved");return true;}}catch(Exception ignored){}}
      result.cancel();return true;
     }
+    if(prompt.equals("codexbridge-display:"+clipboardToken)){
+     if(view!=web||!resumed||!view.hasWindowFocus()||!GatewayURL.sameOrigin(url,pageOrigin)||!GatewayURL.sameOrigin(view.getUrl(),pageOrigin)||value==null){result.cancel();return true;}
+     final String address=origin,document=pageOrigin;final int screen=generation;
+     final JSONObject command;try{command=new JSONObject(value);if(!command.getString("id").matches("[0-9]+"))throw new JSONException("id");}catch(Exception invalid){result.cancel();return true;}
+     result.confirm("queued");
+     displayStorage.execute(()->{
+      Object reply=JSONObject.NULL;boolean ok=false;
+      try{
+       JSONObject record=GatewayChannels.record(prefs,address);String id=record==null?"":record.optString("deviceId");
+       DeviceBinding.Credential credential=id.isEmpty()?null:DeviceBinding.load(MainActivity.this,GatewayChannels.vault(id));
+       if(credential!=null){reply=DisplayStorage.execute(new java.io.File(getNoBackupFilesDir(),"display-cache"),id+"\0"+credential.token,command);ok=true;}
+      }catch(Exception unavailable){}
+      final Object response=reply;final boolean success=ok;
+      runOnUiThread(()->{if(view==web&&screen==generation&&resumed&&GatewayURL.sameOrigin(view.getUrl(),document))try{
+       JSONObject envelope=new JSONObject().put("id",command.getString("id")).put("ok",success).put("value",response);
+       view.evaluateJavascript("window.BridgeMobileStorage?.receive("+JSONObject.quote(clipboardToken)+","+envelope.toString()+")",null);
+      }catch(Exception ignored){}});
+     });return true;
+    }
     if(prompt.equals("codexbridge-uu:"+clipboardToken)){
      if(view==web&&view.hasWindowFocus()&&GatewayURL.sameOrigin(url,pageOrigin)&&GatewayURL.sameOrigin(view.getUrl(),pageOrigin)&&
        ("read".equals(value)||"retry".equals(value))){
@@ -831,7 +851,7 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  Dialog panel(String title,LinearLayout content){
   resetExitGesture();
   Dialog dialog=new Dialog(ui.context);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-  LinearLayout body=column();body.setBackground(background(0xfff5f5f3,22));body.setPadding(dp(18),dp(12),dp(18),dp(12));
+  LinearLayout body=column();body.setBackground(background(pageColor(),22));body.setPadding(dp(18),dp(12),dp(18),dp(12));
   LinearLayout heading=new LinearLayout(ui.context);heading.setGravity(Gravity.CENTER_VERTICAL);TextView name=text(title,23);name.setTypeface(null,android.graphics.Typeface.BOLD);heading.addView(name,new LinearLayout.LayoutParams(0,-2,1));Button done=button(L("完成"),dialog::dismiss);heading.addView(done);body.addView(heading);
   ScrollView scroll=new ScrollView(ui.context);content.setPadding(0,dp(20),0,dp(16));scroll.addView(content);body.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
   dialog.setContentView(body);dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(getResources().getDisplayMetrics().widthPixels-dp(24),getResources().getDisplayMetrics().heightPixels-dp(100));return dialog;
@@ -1028,5 +1048,5 @@ public final class MainActivity extends Activity implements SharedPreferences.On
  void resetExitGesture(){homeBackAt=0;if(exitToast!=null){exitToast.cancel();exitToast=null;}}
  @Override public void onBackPressed(){handleBack();}
  void handleBack(){if(gatewayPopup!=null){dismissGatewayMenu();return;}if(entryProgress!=null&&web==null){home();return;}if(web==null){long now=SystemClock.elapsedRealtime();if(homeBackAt!=0&&now-homeBackAt<=2000){resetExitGesture();finishAndRemoveTask();}else{homeBackAt=now;if(exitToast!=null)exitToast.cancel();exitToast=Toast.makeText(this,L("再按一次返回退出 App"),Toast.LENGTH_SHORT);exitToast.show();}return;}resetExitGesture();if(!GatewayURL.sameOrigin(web.getUrl(),pageOrigin)){home();return;}final int ticket=generation;web.evaluateJavascript("(()=>{const dialog=document.querySelector('dialog[open]');if(dialog){if(dialog.dispatchEvent(new Event('cancel',{cancelable:true})))dialog.close();return true;}if(typeof window.BridgeNavigation?.back==='function')return window.BridgeNavigation.back();if(window.BridgeWorkbench?.back())return true;if(document.getElementById('app')?.classList.contains('chat-open')){document.getElementById('back')?.click();return true;}return false;})()",result->{if(ticket==generation&&!"true".equals(result))home();});}
- @Override public void onDestroy(){prefs.unregisterOnSharedPreferenceChangeListener(this);if(settingsPage!=null)settingsPage.dismiss();if(downloadTask!=null&&(updateSession==null||downloadTask.state!=ArtifactDownload.State.COMPLETE))downloadTask.cancel();downloads.shutdownNow();clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
+ @Override public void onDestroy(){prefs.unregisterOnSharedPreferenceChangeListener(this);if(settingsPage!=null)settingsPage.dismiss();if(downloadTask!=null&&(updateSession==null||downloadTask.state!=ArtifactDownload.State.COMPLETE))downloadTask.cancel();downloads.shutdownNow();displayStorage.shutdown();clear();probes.shutdownNow();worker.shutdownNow();if(monitor!=null)getApplicationContext().unbindService(monitor);super.onDestroy();}
 }

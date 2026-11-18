@@ -13,6 +13,101 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_file_activity_preserves_complete_native_paths_and_counts_without_copying_patches(self):
+        from bridge.features.sessions.model import normalize_item
+        paths = ['/repo/' + 'long-directory/' * 20 + 'file-' + str(i) + '.py' for i in range(65)]
+        changes = {path: {'type': 'update', 'unified_diff': '@@ -1 +1,2 @@\n-old\n+new\n+extra'} for path in paths}
+        changes[paths[-1]] = {'type': 'add', 'content': '++ heading\n-- text\n'}
+        for kind in ('fileChange', 'FileChange'):
+            with self.subTest(kind=kind):
+                message = normalize_item({'id': 'patch', 'type': kind, 'status': 'completed', 'changes': changes})
+                expected = [{'path': path, 'added': 2, 'removed': 0 if path == paths[-1] else 1} for path in paths]
+                self.assertEqual(message['activityFiles'], expected)
+                self.assertIn('@@ -1 +1,2 @@\n-old\n+new\n+extra', message['text'])
+                timeline = Timeline()
+                timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]})
+                row = timeline.page()['rows'][0]
+                self.assertEqual(row['role'], 'activity')
+                self.assertEqual(row['activityFiles'], expected)
+                self.assertNotIn('diff', json.dumps(row['activityFiles']))
+                self.assertNotIn('fileSummary', row)
+                self.assertEqual(len(row['text']), 180)
+                self.assertTrue(row['truncated'])
+
+    def test_file_activity_does_not_claim_unconfirmed_or_failed_changes(self):
+        from bridge.features.sessions.model import normalize_item
+        for status in ('inProgress', 'failed', 'declined'):
+            with self.subTest(status=status):
+                message = normalize_item({'type': 'fileChange', 'status': status,
+                                          'changes': [{'path': 'a.py', 'diff': '+proposed'}]})
+                self.assertEqual(message['activityFiles'], [])
+                self.assertEqual(message['text'], '')
+
+    def test_file_activity_metadata_updates_version_and_incremental_rows(self):
+        message = {'id': 'patch', 'kind': 'fileChange', 'role': 'activity', 'text': 'unchanged preview',
+                   'activityFiles': [{'path': 'a.py', 'added': 1, 'removed': 0}]}
+        source = {'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]}
+        timeline = Timeline()
+        timeline.update(source)
+        before = timeline.page()
+        original = before['rows'][0]
+        message['activityFiles'] = [{'path': 'renamed.py', 'added': 2, 'removed': 1}]
+        source['sequence'] = 2
+        timeline.update(source)
+        updated = timeline.changes(1, before['epoch'], before['before'])['rows'][0]
+        self.assertEqual(updated['key'], original['key'])
+        self.assertNotEqual(updated['version'], original['version'])
+        self.assertEqual(updated['activityFiles'], message['activityFiles'])
+        self.assertEqual(updated['text'], original['text'])
+
+    def test_tool_identity_is_short_metadata_without_repeating_body(self):
+        state = {'turns': [{'turnId': 'turn', 'items': [
+            {'id': 'computer', 'type': 'mcpToolCall', 'server': 'cua_repl', 'tool': 'js', 'arguments': {'code': 'native body'}},
+            {'id': 'long', 'type': 'dynamicToolCall', 'toolName': 'x' * 200}]}]}
+        value = normalize_state(state)
+        value['sequence'] = 1
+        timeline = Timeline()
+        timeline.update(value)
+        rows = timeline.page()['rows']
+        self.assertEqual(rows[0]['toolName'], 'cua_repl.js')
+        self.assertEqual(len(rows[1]['toolName']), 160)
+        self.assertNotIn('native body', rows[0]['toolName'])
+
+    def test_recent_page_keeps_native_start_clock_when_input_is_not_loaded(self):
+        value = view(30)
+        value['turns'][0]['startedAt'] = 1700000000000
+        timeline = Timeline()
+        timeline.update(value)
+        page = timeline.page(1)
+        self.assertEqual(page['rows'][0].get('turnStartedAt'), 1700000000000)
+        del value['turns'][0]['startedAt']
+        value['sequence'] += 1
+        timeline.update(value)
+        self.assertNotIn('turnStartedAt', timeline.page(1)['rows'][0])
+
+    def test_native_answers_are_presentational_interactions_not_steered_tasks(self):
+        from bridge.features.sessions.model import normalize_item
+        reply = '<send_user_message_question_reply>' + json.dumps([{
+            'questionItemId': '["request_user_input_async","question",0]',
+            'question': '是否继续？', 'answer': '继续'}]) + '</send_user_message_question_reply>'
+        for kind, status, expected in [('userMessage', None, True),
+                                       ('steeringUserMessage', 'accepted', True),
+                                       ('steeringUserMessage', 'pending', False),
+                                       ('steeringUserMessage', 'rejected', False)]:
+            row = normalize_item({'id': 'answer', 'type': kind, 'status': status,
+                                  'input': [{'type': 'text', 'text': reply}],
+                                  'content': [{'type': 'text', 'text': reply}]})
+            self.assertEqual(row['role'], 'user')
+            self.assertEqual(row['kind'], kind)
+            self.assertEqual(row.get('interaction') == 'response', expected)
+            timeline = Timeline()
+            timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [row]}]})
+            self.assertEqual(timeline.page()['rows'][0].get('interaction') == 'response', expected)
+        for text in ['继续，同时增加一个检查', '<send_user_message_question_reply>[{"answer":"继续"}]</send_user_message_question_reply>']:
+            row = normalize_item({'id': 'supplement', 'type': 'steeringUserMessage', 'status': 'accepted',
+                                  'input': [{'type': 'text', 'text': text}]})
+            self.assertNotIn('interaction', row)
+
     def test_native_completed_turn_file_summary_survives_history_and_updates(self):
         state = {'turns': [{'turnId': 'patch-turn', 'status': 'inProgress', 'items': [
             {'type': 'fileChange', 'id': 'patch', 'status': 'completed', 'changes': {
@@ -350,6 +445,28 @@ class TimelineTests(unittest.TestCase):
             timeline.update(view(320, sequence))
         self.assertTrue(timeline.changes(1, first['epoch'], first['before'])['reset'])
         self.assertEqual(len(timeline.versions), 16)
+
+    def test_paged_changes_keep_the_history_window_when_delta_or_revision_expires(self):
+        timeline = Timeline()
+        timeline.update(view(320, 1))
+        first = timeline.page()
+        for sequence in range(2, 25):
+            timeline.update(view(620, sequence))
+        cursor = None
+        received = []
+        while True:
+            result = timeline.changes(1, first['epoch'], first['before'], paged=True, through=cursor)
+            self.assertNotIn('reset', result)
+            self.assertLessEqual(len(result['rows']), 100)
+            self.assertLessEqual(len(json.dumps(result['rows']).encode()), PAGE_BYTES)
+            received.extend(row['key'] for row in result['rows'])
+            cursor = result.get('next')
+            if not cursor:
+                break
+        self.assertEqual(received, [row['key'] for row in timeline.rows[300:]])
+        self.assertEqual(len(received), len(set(received)))
+        timeline.update(view(5, 26))
+        self.assertTrue(timeline.changes(1, first['epoch'], first['before'], paged=True)['reset'])
 
     def test_saved_call_and_result_are_one_record(self):
         state = {'turns': [{'turnId': 'turn', 'items': [

@@ -104,7 +104,7 @@ class ManualPluginTests(unittest.TestCase):
         with tarfile.open(result['tarPath']) as archive:
             self.assertEqual(set(archive.getnames()), {'package/'+name for name in package_files()})
             manifest = json.load(archive.extractfile('package/package.json'))
-            self.assertEqual(manifest['engines']['dsh'], '0.2.1-rc.2')
+            self.assertEqual(manifest['engines']['dsh'], '*')
         with self.assertRaises(FileExistsError): export_package(str(self.root))
 
     def modern(self, version='0.2.0', revision=11):
@@ -129,8 +129,13 @@ class ManualPluginTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, '运行版本'): adapter.call('send')
         self.assertEqual(self.calls.count('send'), before)
 
-    def test_unknown_protocol_and_release_family_rejected_before_traffic(self):
-        for version, revision in [('0.3.0', 11), ('0.2.0', 10), ('0.2.0', 12)]:
+    def test_new_release_with_same_wire_contract_remains_compatible(self):
+        for version in ('0.3.0', '1.0.0', '1.1.0-rc.1+fixture'):
+            self.modern(version)
+            self.assertTrue(ManualDeepSeek(self.directory/'binding.json').call('status')['connected'])
+
+    def test_unknown_protocol_and_malformed_release_rejected_before_traffic(self):
+        for version, revision in [('invalid', 11), ('0.2.0', 10), ('0.2.0', 12)]:
             self.modern(version, revision)
             with self.assertRaisesRegex(ValueError, '不兼容'): ManualDeepSeek(self.directory/'binding.json')
         self.assertEqual(self.calls, [])

@@ -220,6 +220,17 @@ class RemoteStore:
         return self.call('discovery_diagnostics', {'thread_id': thread_id})
 
 
+def _catalog_source():
+    source = source_text('clients/codex/catalog.py').replace(
+        'from bridge.features.accounts.models import model_catalog', '').replace(
+        'from bridge.clients.codex.configuration import magpie_managed', '')
+    # SSH helpers rediscover their explicit runtime on every request. Local
+    # Windows installation inventory is neither available nor needed there.
+    start = source.index('    def _windows_runtime_stamp(self):\n')
+    end = source.index('    def invalidate_models(self):\n', start)
+    return source[:start] + '    def _windows_runtime_stamp(self):\n        return None\n\n' + source[end:]
+
+
 class RemoteCatalog:
     def __init__(self, alias):
         self.alias = alias
@@ -251,9 +262,7 @@ class RemoteCatalog:
         source = source_text('features/auth/tls.py') + '\n'
         source += source_text('features/accounts/models.py').replace('from bridge.features.auth.tls import client_context', '') + '\n'
         source += source_text('clients/codex/configuration.py') + '\n'
-        source += source_text('clients/codex/catalog.py').replace(
-            'from bridge.features.accounts.models import model_catalog', '').replace(
-            'from bridge.clients.codex.configuration import magpie_managed', '')
+        source += _catalog_source()
         source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
         source += 'runtime=Catalog.find_ssh_runtime(home) or str(Path.home()/".local/bin/codex")\n'
         source += 'reader=Catalog(home, runtime, allow_background_refresh=False, auth_status_only=True)\n'
@@ -390,9 +399,7 @@ class RemoteCliModels:
         source += source_text('features/accounts/models.py').replace(
             'from bridge.features.auth.tls import client_context', '') + '\n'
         source += source_text('clients/codex/configuration.py') + '\n'
-        source += source_text('clients/codex/catalog.py').replace(
-            'from bridge.features.accounts.models import model_catalog', '').replace(
-            'from bridge.clients.codex.configuration import magpie_managed', '') + '\n'
+        source += _catalog_source() + '\n'
         source += source_text('platforms/linux/codex_daemon_env.py') + '\n'
         source += '_linux_read_process_environment = read_process_environment\n'
         source += source_text('platforms/macos/force_exit.py') + '\n'

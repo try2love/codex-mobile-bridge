@@ -56,9 +56,17 @@
         var nodes = Array.from(document.querySelectorAll('[data-bridge-feature]')).filter(function (node) { return node.dataset.bridgeFeature === name; });
         var scripts = nodes.filter(function (node) { return node.tagName === 'SCRIPT'; });
         var styles = nodes.filter(function (node) { return node.tagName === 'LINK'; });
+        // Fetch dependencies concurrently, but retain ordered execution and
+        // stop at a failed dependency. Slow links otherwise pay an RTT per file.
+        var downloads = scripts.map(function (node) {
+          var link = document.createElement('link');link.rel = 'preload';link.as = 'script';
+          link.href = node.getAttribute('data-bridge-src');link.fetchPriority = backgroundGroups.get(name) ? 'low' : 'auto';
+          document.head.appendChild(link);return link;
+        });
         var task = Promise.all(styles.map(function (node) { return resource(node, backgroundGroups.get(name)); })).then(function () {
           return scripts.reduce(function (previous, node) { return previous.then(function () { return resource(node, backgroundGroups.get(name)); }); }, Promise.resolve());
         });
+        task.then(function () { downloads.forEach(function (node) { node.remove(); }); }, function () { downloads.forEach(function (node) { node.remove(); }); });
         groups.set(name, task);
         task.catch(function () { groups.delete(name); });
       }

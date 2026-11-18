@@ -10,6 +10,26 @@ ISO = '2026-11-09T09:24:00Z'
 
 
 class NativeMessageTimes(unittest.TestCase):
+    def test_turn_completion_clocks_survive_bounded_pages_and_metadata_only_delta(self):
+        state = {'turns': [{'turnId': 'turn', 'status': 'completed', 'turnStartedAtMs': STAMP, 'items': [
+            {'id': 'user', 'type': 'userMessage', 'content': [{'type': 'input_text', 'text': 'hi'}]},
+            {'id': 'reply', 'type': 'agentMessage', 'text': 'answer'}]}]}
+        timeline = Timeline()
+        timeline.update({**normalize_state(state, item_limit=1), 'sequence': 1})
+        before = timeline.page(limit=1)
+        self.assertNotIn('turnCompletedAt', before['rows'][0])
+        state['turns'][0]['turnCompletedAtMs'] = STAMP + 125000
+        normalized = normalize_state(state, item_limit=1)
+        self.assertEqual(normalized['turns'][0]['completedAt'], STAMP + 125000)
+        timeline.update({**normalized, 'sequence': 2})
+        updated = timeline.changes(1, before['epoch'], before['before'])['rows'][0]
+        self.assertEqual(updated['turnStartedAt'], STAMP)
+        self.assertEqual(updated['turnCompletedAt'], STAMP + 125000)
+        self.assertEqual(updated['version'], before['rows'][0]['version'])
+        del state['turns'][0]['turnCompletedAtMs']
+        state['turns'][0]['completedAt'] = '2026-11-09T09:26:05Z'
+        self.assertEqual(normalize_state(state)['turns'][0]['completedAt'], '2026-11-09T09:26:05Z')
+
     def test_normalized_subagent_messages_inherit_only_first_user_native_turn_time(self):
         state = {'turns': [{'turnId': 'turn', 'turnStartedAtMs': STAMP, 'items': [
             {'id': 'user', 'type': 'userMessage', 'content': [{'type': 'input_text', 'text': 'hi'}]},

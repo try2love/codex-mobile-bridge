@@ -133,10 +133,16 @@ def request_stop(data_dir, timeout=15):
 
 
 def private_json(path, value):
-    temporary = path.with_suffix('.tmp')
-    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as stream:
-        json.dump(value, stream)
-    temporary.replace(path)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def request_pairing(data_dir, payload, timeout=5):

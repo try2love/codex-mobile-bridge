@@ -1279,6 +1279,30 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { guard frame.isMainFrame else { completionHandler(false); return }; let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: MobileStrings.text("确认"), style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         guard webView===web else{completionHandler(nil);return}
+        if prompt == "codexbridge-display:" + clipboardToken {
+            guard connectionError == nil, UIApplication.shared.applicationState == .active, frame.isMainFrame,
+                  let source = frame.request.url, GatewayURL.same(source, documentAddress),
+                  let current = webView.url, GatewayURL.same(current, documentAddress),
+                  let value = defaultText, let data = value.data(using: .utf8),
+                  let command = try? JSONSerialization.jsonObject(with: data) as? [String:Any],
+                  let requestID = command["id"] as? String, requestID.range(of: "^[0-9]+$", options: .regularExpression) != nil,
+                  let identity = gatewayIdentity(origin) else { completionHandler(nil); return }
+            let address = documentAddress, screen = generation, token = clipboardToken
+            completionHandler("queued")
+            DisplayStorage.queue.async {
+                var result: Any = NSNull(); var ok = false
+                if let credential = DeviceBinding.load(GatewayChannels.vault(identity)) {
+                    do { result = try DisplayStorage.execute(binding: identity + "\0" + credential.token, command: command); ok = true } catch {}
+                }
+                let response: [String:Any] = ["id":requestID,"ok":ok,"value":result]
+                guard let encoded = try? JSONSerialization.data(withJSONObject: response), let json = String(data: encoded, encoding: .utf8) else { return }
+                DispatchQueue.main.async { [weak self, weak webView] in
+                    guard let self, let webView, webView === self.web, screen == self.generation, token == self.clipboardToken,
+                          UIApplication.shared.applicationState == .active, let current = webView.url, GatewayURL.same(current,address) else { return }
+                    webView.evaluateJavaScript("window.BridgeMobileStorage?.receive('" + token + "'," + json + ")")
+                }
+            }; return
+        }
         if prompt == "codexbridge-upload-source:" + clipboardToken {
             guard webView === web, connectionError == nil, UIApplication.shared.applicationState == .active,
                   frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),

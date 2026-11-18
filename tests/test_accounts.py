@@ -124,6 +124,16 @@ class AccountsTests(unittest.TestCase):
         self.assertFalse(self.manager.monitor.preferences['globalResetSignal'])
         self.assertFalse((self.manager.root/'reset-dynamic.json').exists())
 
+    def test_saved_account_catalog_follows_parent_runtime_without_recreating_its_cache(self):
+        reader = self.manager.saved_model_catalog('a'*32)
+        cached = {'models': ['fixture']}
+        reader.kind_caches['models']['cached'] = cached
+        updated = self.root/'updated/codex.exe'
+        self.bridge.catalog_reader.executable = updated
+        self.assertEqual(reader.executable, updated)
+        self.assertIs(self.manager.saved_model_catalog('a'*32), reader)
+        self.assertIs(reader.kind_caches['models']['cached'], cached)
+
     def api(self, **changes):
         return self.manager.add_api({'name':'Test API','baseUrl':'https://fixture.invalid/v1',
                                     'apiKey':'secret-fixture','model':'test-model', **changes})['accounts'][-1]
@@ -149,6 +159,9 @@ class AccountsTests(unittest.TestCase):
         scan.assert_called_once_with()
         self.assertEqual(result['desktopExecutable'], str(gui.resolve()))
         self.assertEqual(json.loads((self.manager.root/'index.json').read_text())['desktopExecutable'], str(gui.resolve()))
+        self.assertEqual(self.manager.index['desktopExecutableSource'], 'scan')
+        self.manager.control({'action': 'configure', 'desktopExecutable': str(gui.resolve())})
+        self.assertEqual(self.manager.index['desktopExecutableSource'], 'manual')
         self.assertEqual(self.manager.snapshot_files(), self.original)
 
     def prepare(self, row, before):
@@ -399,6 +412,69 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot_files(), self.original)
         self.assertEqual(self.manager.state['phase'], 'restored')
 
+    def test_confirmed_shared_daemon_is_handled_after_desktop_exit_before_account_write(self):
+        row = self.api()
+        self.manager.prepare = self.prepare
+        def prepare_shared(*, confirmed=False):
+            self.assertTrue(confirmed)
+            self.app.stop.assert_called_once()
+            self.manager.wait_stopped.assert_called_once()
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+        with patch('bridge.features.accounts.cli_sync.LocalCliSync.prepare_shared_daemon_switch',
+                   side_effect=prepare_shared) as daemon, \
+             patch('bridge.features.accounts.cli_sync.LocalCliSync.verify', return_value={'status': 'verified'}):
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+        daemon.assert_called_once_with(confirmed=True)
+        self.assertEqual(self.manager.state['phase'], 'complete')
+
+    def test_current_account_selection_does_not_stop_shared_daemon_or_desktop(self):
+        row = self.api()
+        self.manager.info.current = Mock(return_value={'id': row['id']})
+        with patch('bridge.features.accounts.cli_sync.LocalCliSync.prepare_shared_daemon_switch') as daemon:
+            self.switch(row, sharedDaemonConfirmed=True)
+        daemon.assert_not_called()
+        self.app.stop.assert_not_called()
+
+    @patch('bridge.features.accounts.cli_sync.sys', SimpleNamespace(platform='darwin'))
+    def test_shared_daemon_exit_receipt_survives_public_switch_retry_and_manager_reload(self):
+        row = self.api()
+        self.manager.prepare = self.prepare
+        running = [True]
+        self.app.stop.side_effect = lambda **_: running.__setitem__(0, False)
+        self.app.start.side_effect = lambda: running.__setitem__(0, True)
+        cli = self.bridge.cli_sessions
+        cli.daemon_may_be_running.return_value = True
+        cli.daemon_status = Mock(return_value='running')
+        cli.client = Mock()
+        generation = (123, (1, 2), (3, 4), '/fixture/runtime')
+        with patch('bridge.features.accounts.cli_sync.LocalCliSync._codex_runtime',
+                   side_effect=lambda: (running[0], self.app)), \
+             patch('bridge.clients.codex.cli_session._managed_cli', return_value=self.root/'runtime'), \
+             patch('bridge.clients.codex.daemon_network.graceful_restart_supported', return_value=True), \
+             patch('bridge.platforms.codex_daemon_env.read_daemon_environment', return_value=({}, generation)), \
+             patch('bridge.features.accounts.cli_sync.LocalCliSync.check_idle_daemon'), \
+             patch('bridge.platforms.codex_daemon_env.stop_daemon_gracefully', side_effect=OSError('timeout')) as stop:
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            self.assertEqual(self.manager.state['phase'], 'restored')
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+            # A new public request must retain the unknown exit even though it
+            # creates a new operation state after Desktop has restarted.
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            self.assertEqual(stop.call_count, 1)
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+            self.manager = Accounts(self.bridge)
+            self.bridge.accounts = self.manager
+            self.manager.prepare = self.prepare
+            self.manager.wait_stopped = Mock()
+            self.manager.wait_ready = Mock()
+            self.switch(row, sharedDaemonConfirmed=True)
+            wait_for_account_worker(self)
+            stop.assert_called_once()
+            self.assertEqual(self.manager.snapshot_files(), self.original)
+
     def test_disconnected_active_history_and_connected_error_do_not_block(self):
         self.bridge.live={
             'old':SimpleNamespace(view=lambda:{'status':'active','connected':False}),
@@ -509,6 +585,22 @@ class AccountsTests(unittest.TestCase):
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_windows_scan_prefers_current_installation_over_surviving_old_runtime_bundle(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            root = Path(folder)
+            old, current = root/'old/ChatGPT.exe', root/'current/ChatGPT.exe'
+            for path in (old, current):
+                path.parent.mkdir(); path.write_bytes(b'MZ-desktop'); path.chmod(0o700)
+            runtime = old.parent/'resources/codex.exe'
+            runtime.parent.mkdir(); runtime.write_bytes(b'MZ-runtime')
+            with patch('bridge.clients.desktop_app.sys.platform', 'win32'), \
+                    patch('bridge.clients.discovery.discover_clients', return_value={
+                        'codex': {'installed': True, 'executable': str(current)}}), \
+                    patch('bridge.clients.desktop_app.subprocess.Popen') as start:
+                self.assertEqual(DesktopApp.scan(runtime, root), str(current.resolve()))
+            start.assert_not_called()
+            self.assertTrue(old.is_file())
+
     def test_windows_native_scan_still_rejects_runtime_as_desktop(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             runtime = Path(folder)/'bin/version/codex.exe'
