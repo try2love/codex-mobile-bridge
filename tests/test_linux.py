@@ -34,6 +34,12 @@ class LinuxTests(unittest.TestCase):
                 linux_desktop.inventory({}, lambda image: state if image == expected else None)
                 self.assertEqual(state, {'pids': [123], 'commands': {123: 'desktop --profile fixture'}})
                 self.assertEqual(linux_desktop.processes(lambda image: image == expected), [123])
+                marked = {int(process.name): str(image) for process, image in
+                          linux_desktop._process_rows(preserve_deleted_marker=True)}
+                self.assertEqual(marked, {
+                    123: str(expected)+' (deleted)',
+                    124: str(root/'other-version'/'desktop')+' (deleted)',
+                })
                 self.assertNotIn(processes[2]/'exe', [call.args[0] for call in readlink.call_args_list])
 
     @unittest.skipUnless(os.name == 'posix', 'synthetic /proc symlinks')

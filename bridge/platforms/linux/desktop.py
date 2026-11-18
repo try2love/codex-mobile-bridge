@@ -7,7 +7,7 @@ from bridge.platforms.posix.desktop import start
 from bridge.platforms.posix.desktop import terminate
 
 
-def _process_rows(*, include_deleted=False):
+def _process_rows(*, preserve_deleted_marker=False):
     for path in Path('/proc').iterdir():
         if not path.name.isdigit():
             continue
@@ -15,16 +15,16 @@ def _process_rows(*, include_deleted=False):
             if path.stat().st_uid != os.getuid():
                 continue
             exe_link = path/'exe'
-            try:
-                executable = exe_link.resolve(strict=True)
-            except FileNotFoundError:
-                if not include_deleted:
-                    continue
-                # 仅在调用方显式需要识别解包后解除链接的 AppImage 进程时保留 ' (deleted)' 路径
-                raw = os.readlink(exe_link)
-                if not os.path.isabs(raw) or not raw.endswith(' (deleted)'):
-                    continue
+            raw = os.readlink(exe_link)
+            deleted = raw.endswith(' (deleted)')
+            if deleted and preserve_deleted_marker:
+                # Keep the kernel marker only for Antigravity's AppImage verifier.
                 executable = Path(raw)
+            else:
+                # Keep the shared inventory's historical absolute image path.
+                executable = Path(raw.removesuffix(' (deleted)'))
+            if not executable.is_absolute():
+                continue
         except (OSError, RuntimeError):
             continue
         yield path, executable

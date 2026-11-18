@@ -557,7 +557,7 @@ def _candidates():
                 yield pid, shlex.split(commands([pid]).get(pid, ''))
     elif sys.platform == 'linux':
         from bridge.platforms.linux.desktop import _process_rows
-        for path, image in _process_rows(include_deleted=True):
+        for path, image in _process_rows(preserve_deleted_marker=True):
             pid = int(path.name)
             if _trusted_image(image, pid=pid):
                 yield pid, (path/'cmdline').read_bytes().decode('utf-8', 'replace').rstrip('\0').split('\0')

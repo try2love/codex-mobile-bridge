@@ -366,8 +366,15 @@ class AntigravityDiscoveryTests(unittest.TestCase):
                     'zombie': False}), \
                 mock.patch('bridge.platforms.antigravity.Path.home', return_value=self.home), \
                 mock.patch.object(native, '_listener', side_effect=lambda pid, port, _img: pid == 12 and port == 45678):
-            # 默认 _process_rows() 不含 (deleted) 进程，保持对其他客户端扫描契约不变
-            self.assertEqual([int(p.name) for p, _ in linux_desktop._process_rows() if int(p.name) in (11, 12, 13)], [])
+            # Shared inventory keeps the historical absolute image path but strips
+            # the kernel marker; only Antigravity's verifier receives that marker.
+            default_images = {int(p.name): str(image) for p, image in linux_desktop._process_rows()
+                              if int(p.name) in (11, 12, 13)}
+            self.assertEqual(default_images, {
+                11: f'{extract_dir}/antigravity',
+                12: f'{extract_dir}/resources/bin/language_server',
+                13: '/tmp/evil_extract/resources/bin/language_server',
+            })
             self.assertTrue(native._trusted_image(f'{extract_dir}/resources/bin/language_server (deleted)', pid=12))
             self.assertFalse(native._trusted_image('/tmp/evil_extract/resources/bin/language_server (deleted)', pid=13))
             self.assertEqual([pid for pid, _ in native._candidates()], [12])
