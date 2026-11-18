@@ -25,7 +25,13 @@ LOOPBACK_PLATFORMS = ('darwin', 'win32')
 def project_files(root, paths):
     if not isinstance(paths, list) or len(paths) > 10:
         raise ValueError('每条消息最多 10 个项目文件')
-    workspace, result, total = Workspace(root), [], 0
+    if not paths:
+        return []
+    try:
+        workspace = Workspace(root)
+    except (OSError, ValueError) as error:
+        raise ResumePreflightBlocked('ZCode 原项目目录不可用，请重新选择有效项目') from error
+    result, total = [], 0
     if str(workspace.root) != str(root):
         raise ValueError('项目目录已变化，请重新接入')
     if len(set(paths)) != len(paths):
@@ -50,7 +56,15 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _project_available(workspace):
+    try:
+        return bool(workspace) and Path(workspace).is_absolute() and Path(workspace).is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def project_snapshot(snapshot, workspace, reply_models=None):
+    project_available = _project_available(workspace)
     messages = []
     # 未知的 turnHeader.state 不能直接下标索引（KeyError 会被 HTTP 层误判为 404），
     # 也不应伪造 completed/failed，以免误触发完成或异常通知。
@@ -129,7 +143,7 @@ def project_snapshot(snapshot, workspace, reply_models=None):
               'measurement': 'native', 'model': config.get('model'),
               **{key: native_usage[key] for key in ('autoCompactThresholdTokens', 'cache') if key in native_usage}}
              if native_usage else None)
-    return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
+    value = {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
                         'cwd': workspace, 'title': _dict(snapshot.get('meta')).get('title', ''),
                         'status': 'active' if runtime_known and active else 'idle' if runtime_known else 'unknown', 'backend': 'desktop', 'requests': requests,
                         'turnStatus': 'failed' if error else 'unknown' if not runtime_known else 'inProgress' if active else 'completed',
@@ -150,10 +164,14 @@ def project_snapshot(snapshot, workspace, reply_models=None):
             'capabilities': {'send': any(send_modes.values()), 'sendModes': send_modes,
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
                              'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
+                             'projectReferences': project_available,
                              'queue': send_modes['queue'], 'steer': send_modes['steer'], 'skills': True, 'permissions': config.get('mode') in ACCESS,
                              'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': runtime_known and not active and not queue_items and
                              _dict(_dict(snapshot.get('availability')).get('compact')).get('allowed') is True,
                              'plan': True, 'goal': True, 'goalEdit': False, 'create': True}}
+    if not project_available:
+        value['notice'] = '原项目目录已不可用；文字会话仍可继续，项目文件、终端和 Git 暂不可用。'
+    return value
 
 
 def detached_session(row, workspace):
@@ -710,10 +728,10 @@ class ZCodePrototype(ZCodeDesktop):
                 raise ValueError('最多选择 8 个有效 Skill')
             if body.get('mode', 'send') not in ('send', 'queue', 'steer'):
                 raise ValueError('发送方式无效')
-            body['files'] = project_files(workspace, body.pop('projectFiles', []))
+            project_paths = body.pop('projectFiles', [])
             references = body.pop('resolvedReferences', [])
             paths = [str(Path(item['path']).relative_to(workspace)) for item in references]
-            body['files'].extend(project_files(workspace, paths))
+            body['files'] = project_files(workspace, project_paths + paths)
             for item in body.pop('resolvedImages', []):
                 header, data = item['url'].split(',', 1)
                 body['files'].append({'name': item['name'], 'mime': header[5:].split(';')[0], 'data': data})
@@ -796,6 +814,8 @@ class ZCodePrototype(ZCodeDesktop):
                 snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
             value = project_snapshot(snapshot, workspace, models)
             value['capabilities'].update(result.get('capabilities', {}))
+            if not _project_available(workspace):
+                value['capabilities']['projectReferences'] = False
             if not value['session']['runtimeKnown']:
                 # Capability advertisements cannot turn an unknown snapshot into idle evidence.
                 value['capabilities'].update(send=False, queue=False, steer=False, compact=False,

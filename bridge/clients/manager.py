@@ -3626,6 +3626,13 @@ class DesktopSessions:
                 self.workspace_roots[(provider, sid)] = (time.monotonic(), row, epoch)
         from bridge.features.workspace.workspace import Workspace
         root = row.get('cwd')
+        if provider == 'zcode' and root and not Path(root).is_dir():
+            if host_files:
+                # Keep the stale session cwd out of host navigation. Its saved
+                # native record is a safe, read-only starting point instead.
+                root = None
+            else:
+                raise BridgeUnavailable('ZCode 原会话项目目录已失效，请重新选择有效项目')
         if provider == 'claude' and str(row.get('host', '')).startswith('wsl-claude:'):
             return WslClaudeWorkspace(self, sid, row)
         history_path = None

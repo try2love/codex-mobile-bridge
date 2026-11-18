@@ -65,6 +65,35 @@ test('native API editors share Codex fold placement and fetch models before savi
     if(provider==='deepseek')assert.equal(calls[1].models,undefined);else assert.equal(calls[1].models.join(','),'first,second');
   }
 });
+test('ZCode API model discovery adds every upstream model in one click and preserves existing IDs',async()=>{
+ const ui=fixture({provider:'zcode',desktop:true});
+ const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}]}};
+ ui.panel.accept(value);ui.panel.addApiButton.onclick();ui.panel.editName.input.value='Fixture';
+ ui.panel.editUrl.input.value='https://fixture.invalid/v1';ui.panel.editKey.input.value='fixture-key';
+ ui.panel.editModels.input.value='existing-model\nmodel-two';
+ ui.setHandler(async request=>request.action==='models-draft'?{models:['model-one','model-two','model-one',' model-three ']}:value);
+ await ui.panel.apiEditor.fetchModels.onclick();
+ assert.equal(ui.panel.editModels.input.value,'existing-model\nmodel-two');
+ assert.equal(typeof ui.panel.apiEditor.addAllModels.onclick,'function');
+ await ui.panel.apiEditor.addAllModels.onclick();
+ assert.equal(ui.panel.editModels.input.value,'existing-model\nmodel-two\nmodel-one\nmodel-three');
+ assert.equal(ui.panel.apiEditor.modelFeedback.textContent,'已将全部可用模型添加到配置。');
+ assert.equal(ui.calls.filter(call=>call.action==='models-draft').length,1);
+ await ui.panel.saveEditor();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.find(call=>call.action==='save-api').models)),
+   ['existing-model','model-two','model-one','model-three']);
+});
+test('bulk model addition stays within the native 200-model limit',async()=>{
+ const ui=fixture({provider:'zcode',desktop:true});
+ const value={...snapshot([]),capabilities:{addApi:true,quota:false,apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}]}};
+ ui.panel.accept(value);ui.panel.addApiButton.onclick();ui.panel.editName.input.value='Fixture';
+ ui.panel.editUrl.input.value='https://fixture.invalid/v1';ui.panel.editKey.input.value='fixture-key';
+ ui.panel.editModels.input.value=Array.from({length:200},(_,index)=>`model-${index}`).join('\n');
+ ui.setHandler(async request=>request.action==='models-draft'?{models:['extra-model']}:value);
+ await ui.panel.apiEditor.fetchModels.onclick();
+ assert.equal(ui.panel.apiEditor.addAllModels.disabled,true);
+ assert.match(ui.panel.apiEditor.addAllModels.title,/200/);
+});
 test('draft model responses cannot refill canceled or replaced native API editors',async()=>{
   const ui=fixture({provider:'zcode',desktop:true});ui.panel.accept({...snapshot([]),capabilities:{apiFormats:[{value:'openai-responses',label:'OpenAI Responses'}],quota:false}});ui.panel.openEditor({kind:'api',api:{}});
   ui.panel.editUrl.input.value='https://first.invalid';ui.panel.editKey.input.value='fixture-key';
