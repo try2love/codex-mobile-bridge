@@ -124,3 +124,39 @@ class AntigravityModelEffortTests(unittest.TestCase):
         commands, send = [payload for _, payload, _ in self.calls]
         self.assertEqual(commands['cascadeConfig']['plannerConfig']['requestedModel']['model'], 'MODEL_M_MEDIUM')
         self.assertEqual(send['cascade_config']['planner_config']['requested_model']['model'], 'MODEL_M_MEDIUM')
+
+    def test_legacy_variant_auto_effort_explicit_case_and_refresh_fallback(self):
+        self.adapter._settings[self.sid] = {'model': 'm-high', 'effort': 'auto'}
+        detail = self.adapter.call('detail', self.sid, {})
+        self.assertEqual(detail['session']['model'], 'm')
+        self.assertEqual(detail['session']['effort'], 'high')
+        self.assertEqual(detail['session']['modelDisplayName'], 'M')
+        self.calls.clear()
+        self.adapter.call('send', self.sid, {'text': 'legacy auto'})
+        self.assert_high_on_wire(commands=False)
+
+        with self.assertRaisesRegex(ValueError, '思考强度'):
+            self.adapter.cli.canonicalize_model_selection('m-high', 'medium')
+
+        self.assertEqual(
+            self.adapter.cli.canonicalize_model_selection('  model_m_high  '),
+            ('MODEL_M_HIGH', 'MODEL_M_HIGH', '', 'MODEL_M_HIGH'),
+        )
+
+        # 缓存目录缺少新模型时，允许通过支持 refresh=True 的目录回调实时重试
+        calls = []
+        fresh_catalog = {'models': [
+            *self.catalog['models'],
+            {'id': 'new-orch', 'name': 'Orchestrator', 'efforts': [], 'supportsEffort': False, 'nativeModel': 'MODEL_ORCH'},
+        ]}
+
+        def refreshable(surface, *, refresh=False):
+            calls.append((surface, refresh))
+            return fresh_catalog if refresh else self.catalog
+
+        self.adapter.cli.model_catalog = refreshable
+        self.assertEqual(
+            self.adapter.cli.canonicalize_model_selection('new-orch', require_effort=True),
+            ('MODEL_ORCH', 'new-orch', '', 'Orchestrator'),
+        )
+        self.assertEqual(calls, [('app', False), ('app', True)])
