@@ -33,10 +33,11 @@ class AntigravityModelEffortTests(unittest.TestCase):
                'surfaceRoot': str(self.project), 'cwd': str(self.project), 'status': 'idle'}
         self.calls = []
 
-        def rpc(method, payload=None, *, surface='app'):
+        def rpc(method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
             self.calls.append((method, payload, surface))
             if method == 'StartCascade':
-                return {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [self.project.as_uri()]}}
+                reply = {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [self.project.as_uri()]}}
+                return reply, {'pid': 123}
             if method == 'GetSlashCommands':
                 return {'commands': [{'info': {'name': name, 'type': kind}} for name, kind in (
                     ('plan', 'SLASH_COMMAND_TYPE_SYSTEM'), ('goal', 'SLASH_COMMAND_TYPE_SYSTEM'),

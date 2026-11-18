@@ -4,6 +4,7 @@ import re
 import math
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 import threading
 import subprocess
 import time
@@ -13,6 +14,7 @@ import urllib.request
 from bridge.clients.errors import BridgeUnavailable
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
+from .store import SURFACE_DIRS, local_file_path
 
 _CONFIRM_INTERACTION_LABELS = {
     'openBrowserUrl': '开启网页确认',
@@ -578,7 +580,7 @@ class AntigravityCli:
         except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
-    def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None):
+    def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
         # Native cancellation must reach the LS while SendUserCascadeMessage is
@@ -603,7 +605,7 @@ class AntigravityCli:
                 if not isinstance(result, dict):
                     raise ValueError('Antigravity 原生回复无效')
                 verify_endpoint(target)
-                return result
+                return (result, target['identity']) if return_identity else result
             except (OSError, ValueError, urllib.error.URLError):
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
@@ -1150,8 +1152,96 @@ class AntigravityCli:
                 return self._stop_generation
             return self._stop_generations.get((surface, conversation_id), 0)
 
+    @staticmethod
+    def _workspace_uri_matches(value, expected_path, expected_uri):
+        if not isinstance(value, str):
+            return False
+        if value == expected_uri:
+            return True
+        try:
+            local = Path(local_file_path(value))
+            return local.is_absolute() and local.resolve() == expected_path
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    @classmethod
+    def _single_workspace_matches(cls, uris, path, uri):
+        return (isinstance(uris, list) and len(uris) == 1
+                and cls._workspace_uri_matches(uris[0], path, uri))
+
+    @classmethod
+    def _workspace_declarations_match(cls, metadata, expected_path, expected_uri, *, include_workspaces=False):
+        if not isinstance(metadata, dict):
+            return False
+        declarations = [metadata[key] for key in ('workspaceUris', 'workspace_uris') if key in metadata]
+        if include_workspaces and 'workspaces' in metadata:
+            workspaces = metadata['workspaces']
+            if not isinstance(workspaces, list) or len(workspaces) != 1 or not isinstance(workspaces[0], dict):
+                return False
+            workspace = workspaces[0]
+            workspace_uris = [[workspace[key]] for key in ('workspaceFolderAbsoluteUri', 'workspace_folder_absolute_uri')
+                              if key in workspace]
+            if not workspace_uris:
+                return False
+            declarations.extend(workspace_uris)
+        return bool(declarations) and all(
+            cls._single_workspace_matches(uris, expected_path, expected_uri) for uris in declarations
+        )
+
+    def _summary_db_workspace(self, surface_root, cascade_id, path, uri):
+        """Return True for a match, False for a contradiction, None without DB evidence."""
+        db_path = surface_root / 'conversation_summaries.db'
+        try:
+            # A linked surface or DB must not supply evidence for a different profile.
+            if db_path.resolve() != db_path or not db_path.is_file():
+                return None
+            connection = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=1.5)
+            try:
+                rows = connection.execute(
+                    'SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?',
+                    (cascade_id,),
+                ).fetchmany(2)
+            finally:
+                connection.close()
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
+            return None
+        if not rows:
+            return None
+        if len(rows) != 1 or not isinstance(rows[0][0], str):
+            return False
+        try:
+            return self._single_workspace_matches(json.loads(rows[0][0]), path, uri)
+        except (ValueError, RecursionError):
+            return False
+
+    def _verify_cascade_workspace(self, result, cascade_id, path, uri, surface, expected_identity):
+        # Explicit native project data is authoritative, including malformed or empty values.
+        environment_keys = [key for key in ('projectEnvInfo', 'project_env_info') if key in result]
+        if environment_keys:
+            return all(self._workspace_declarations_match(result[key], path, uri)
+                       for key in environment_keys)
+
+        relative = dict(SURFACE_DIRS).get(surface)
+        if relative is None:
+            return False
+        db_match = self._summary_db_workspace(self.home / relative, cascade_id, path, uri)
+        if db_match is not None:
+            return db_match
+
+        trajectory = self.call_ls_rpc('GetCascadeTrajectory', {'cascadeId': cascade_id}, surface=surface,
+                                      expected_identity=expected_identity)
+        native_trajectory = trajectory.get('trajectory')
+        metadata = native_trajectory.get('metadata') if isinstance(native_trajectory, dict) else None
+        for envelope in (trajectory, native_trajectory, metadata):
+            if isinstance(envelope, dict) and any(
+                envelope[key] != cascade_id for key in ('cascadeId', 'cascade_id', 'conversationId', 'conversation_id')
+                if key in envelope
+            ):
+                return False
+        return self._workspace_declarations_match(metadata, path, uri, include_workspaces=True)
+
     def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None,
-                          turn_generation=None, before_send=None):
+                          turn_generation=None, before_send=None, expected_identity=None):
         if turn_generation is None:
             turn_generation = self.turn_generation(conversation_id, surface=surface)
         normalized_items = list(items) if items is not None else [{'text': prompt}]
@@ -1168,7 +1258,8 @@ class AntigravityCli:
                 if before_send is not None:
                     before_send()
             # No generation lock spans HTTP: native RPC has no atomic cancel/submit token.
-            result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface)
+            identity = {'expected_identity': expected_identity} if expected_identity is not None else {}
+            result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface, **identity)
         self._invalidate_trajectories_cache(surface)
         return result
 
@@ -1181,15 +1272,15 @@ class AntigravityCli:
         selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['requested_model'] = selected
-        result = self.call_ls_rpc('StartCascade', body, surface=surface)
+        result, expected_identity = self.call_ls_rpc('StartCascade', body, surface=surface, return_identity=True)
         cid = result.get('cascadeId') or result.get('cascade_id')
-        if not isinstance(cid, str) or not cid:
+        if (not isinstance(cid, str) or not cid.strip()
+                or any(result[key] != cid for key in ('cascadeId', 'cascade_id') if key in result)):
             raise BridgeUnavailable('Antigravity 原客户端未确认新会话标识')
-        environment = result.get('projectEnvInfo') or result.get('project_env_info') or {}
-        if environment.get('workspaceUris', environment.get('workspace_uris')) != [uri]:
+        if not self._verify_cascade_workspace(result, cid, path, uri, surface, expected_identity):
             raise BridgeUnavailable('原客户端尚未确认新会话项目绑定，首条消息未发送；请在电脑检查已创建的会话')
         self._invalidate_trajectories_cache(surface)
-        return cid
+        return cid, expected_identity
 
     def stop(self, conversation_id, *, surface='app', before_stop=None):
         with self._turn_lock:
