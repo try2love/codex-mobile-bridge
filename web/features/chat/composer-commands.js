@@ -42,10 +42,11 @@ class ComposerCommands {
     },true);
   }
   query(){return /^\/([^\s/]*)$/.exec(this.input.value)?.[1]??null;}
-  close(){this.menu.hidden=true;this.rows=[];this.input.setAttribute('aria-expanded','false');this.input.removeAttribute('aria-activedescendant');}
+  close(){if(this.menu.hidden)return;this.menu.hidden=true;this.rows=[];this.input.setAttribute('aria-expanded','false');this.input.removeAttribute('aria-activedescendant');}
   refresh(){
-    const query=this.query(),scope=this.scope();
-    if(query===null||!scope||this.input.disabled||document.activeElement!==this.input||this.dismissed===this.input.value){this.close();return;}
+    const query=this.query();
+    if(query===null||this.input.disabled||document.activeElement!==this.input||this.dismissed===this.input.value){this.close();return;}
+    const scope=this.scope();if(!scope){this.close();return;}
     this.openScope=scope;
     this.rows=this.actions().filter(row=>[row.id,BridgeI18n.t(row.label)].some(value=>value.toLocaleLowerCase().includes(query.toLocaleLowerCase())));
     if(!this.rows.length){this.close();return;}

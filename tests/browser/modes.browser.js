@@ -32,7 +32,7 @@ async function runModeTests(){
     await $('composer').onsubmit({preventDefault(){}});
     check(writes[2].body.workMode==='goal'&&select.value==='default','Goal reaches send API and next message returns to ordinary mode');
     check(writes[2].body.uiLocale==='zh-CN','Goal sends retain the active UI locale');
-    renderState({...meta,status:'active',host:'remote:fixture'});$('send-mode').value='steer';$('send-mode').onchange();$('message').value='Additional context';
+    renderState({...meta,status:'active',host:'remote:fixture'});$('send-mode').value='steer';$('send-mode').dispatchEvent(new Event('change',{bubbles:true}));$('message').value='Additional context';
     await $('composer').onsubmit({preventDefault(){}});
     check(writes[3].body.workMode===null&&writes[3].body.mode==='steer','Steering never silently changes the active mode');
     const request={id:'implement-plan:test',method:'item/plan/requestImplementation',supported:true,params:{planContent:'# Fixture plan\n\nReply OK.',turnId:'test'}};

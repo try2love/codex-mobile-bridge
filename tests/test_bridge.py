@@ -1885,7 +1885,8 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=bad', headers=headers)[0], 400)
 
     def test_web_appearance_assets_are_served_with_correct_types(self):
-        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css')]:
+        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css'),
+                                   ('composer-toolbar-editor.css', 'text/css')]:
             conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
             self.addCleanup(conn.close)
             conn.request('GET', '/' + name, headers={'Origin': self.origin})
@@ -2114,7 +2115,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script (?:src|data-bridge-src)="([^"]+)"', response.read().decode())
             self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/bootstrap.js', '/host.js', '/layout.js', '/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
-                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/cli-access.js', '/wsl-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/file-actions.js', '/code-syntax.js', '/vendor/prism/source-view.min.js', '/source-view.js', '/pdf-preview.js', '/html-preview.js', '/workbench.js', '/list-sync.js', '/client-lifecycle.js', '/project-picker.js', '/desktop-sessions.js', '/client-navigation.js', '/app.js', '/presentation.js'])
+                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/composer-toolbar-editor.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/cli-access.js', '/wsl-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/file-actions.js', '/code-syntax.js', '/vendor/prism/source-view.min.js', '/source-view.js', '/pdf-preview.js', '/html-preview.js', '/workbench.js', '/list-sync.js', '/client-lifecycle.js', '/project-picker.js', '/desktop-sessions.js', '/client-navigation.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)
                 response = conn.getresponse()
