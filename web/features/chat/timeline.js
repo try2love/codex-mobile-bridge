@@ -203,7 +203,7 @@ class ChatTimeline {
       for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
       ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
     }
-    this.container.__chatTaskState=this.meta||{};
+    this.container.__chatTaskState={...this.meta,fresh:!cached&&this.meta?.connected!==false&&!this.meta?.loadingHistory};
     syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
@@ -359,7 +359,7 @@ class ChatTimeline {
           if(!through){after=snapshot;snapshot=null;}
         }
         await this.pause(through?0:200);
-      }catch(e){if(this.abort.signal.aborted)return;this.status(timelineText('重新连接中'));await this.pause(3000);}
+      }catch(e){if(this.abort.signal.aborted)return;suspendChatLiveProcess(this.container);this.status(timelineText('重新连接中'));await this.pause(3000);}
     }
   }
   pause(ms){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);this.abort.signal.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,ms);this.abort.signal.addEventListener('abort',done,{once:true});});}

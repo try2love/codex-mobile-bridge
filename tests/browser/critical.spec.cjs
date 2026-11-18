@@ -405,6 +405,17 @@ for (const [name, file, invoke] of [
   });
 }
 
+test('one native disclosure covers process fragments around a user supplement', async ({page}, testInfo) => {
+  await ready(page);await expect(page.locator('#bootstrap-status')).toBeHidden();
+  await page.route('**/__browser/process-disclosure.browser.js',route=>route.fulfill({
+    contentType:'text/javascript',body:readFileSync(path.join(__dirname,'process-disclosure.browser.js'),'utf8'),
+  }));
+  await page.addScriptTag({url:'/__browser/process-disclosure.browser.js'});
+  const result=await page.evaluate(()=>runProcessDisclosureChecks());
+  expect(result.passed).toBe(42);
+  await testInfo.attach('process-disclosure-checks',{body:JSON.stringify(result),contentType:'application/json'});
+});
+
 for (const provider of ['claude', 'deepseek']) {
   test(provider + ' project dialog and directory isolation', async ({page}) => {
     await ready(page);

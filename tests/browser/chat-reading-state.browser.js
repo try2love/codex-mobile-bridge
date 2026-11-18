@@ -37,7 +37,14 @@ async function runChatReadingStateChecks(){
     }
     try{
       const positions={thought:210,tool:330};
-      for(const id of Object.keys(positions)){const node=getNode(id);for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.matches('details.chat-activity-group'))parent.open=true;node.open=true;}
+      for(const id of Object.keys(positions)){
+        const node=getNode(id);
+        for(let parent=node.parentElement;parent;parent=parent.parentElement){
+          if(!parent.matches('details.chat-activity-group')||parent.open)continue;
+          if(parent.matches('.chat-activity-turn'))parent.firstChild.click();else parent.open=true;
+        }
+        node.open=true;
+      }
       await frame();await frame();
       for(const [id,top] of Object.entries(positions)){
         const body=getNode(id).querySelector('.activity-body');body.scrollTop=top;

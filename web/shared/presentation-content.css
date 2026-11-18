@@ -103,8 +103,10 @@
 .chat-activity-items .activity>summary:hover{color:var(--text)}
 .chat-process-page{background:none;border:0;padding:0}
 .chat-process-page>summary:before{display:none}
+.chat-process-page:not([open])>.chat-process-items{display:none}
 .chat-process-items{max-height:none;overflow:visible;overscroll-behavior:auto;padding-left:1em}
 .chat-process-items .activity-body{max-height:none;overflow:visible;white-space:normal}
+.chat-process-items>section.activity>.activity-body,.chat-process-items>section.activity .detail-more{display:block}
 .chat-process-items .activity-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 
 .chat-activity-items .activity>summary:before{vertical-align:-.1em}
@@ -119,6 +121,7 @@
 .chat-task-items>.message>.who,.chat-task-items>.message>.message-actions{display:none}
 
 .chat-activity-turn[data-state=active]>summary{display:none}
+.chat-activity-turn>summary[hidden],.chat-process-continuation:not([open]){display:none}
 .chat-activity-turn[data-state=active]>.chat-task-items{padding-top:0}
 
 @keyframes chat-activity-breathe{0%,100%{opacity:.55}50%{opacity:1}}
