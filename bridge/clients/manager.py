@@ -456,7 +456,7 @@ class DesktopSessions:
         if 'antigravity' not in self.adapters:
             from bridge.clients.antigravity.adapter import Antigravity
             self.adapters.defer('antigravity', lambda: Antigravity(directory, home=home,
-                model_catalog=lambda surface: self._desktop_model_directory('antigravity', surface)))
+                model_catalog=lambda surface, *, refresh=False: self._desktop_model_directory('antigravity', surface, refresh=refresh)))
         if 'antigravity' not in self.session_pins:
             self.session_pins['antigravity'] = SessionPins(directory, 'antigravity')
 
@@ -634,6 +634,12 @@ class DesktopSessions:
     def _desktop_model_directory(self, provider, surface=None, *, refresh=False):
         if provider == 'antigravity' and surface is not None:
             value = self._account_models(provider, refresh=refresh, surface=surface)
+            # 早期缓存条目缺少 nativeModel/variants 时，强制实时重读一次原客户端目录
+            if (not refresh and isinstance(value.get('models'), list) and value['models']
+                    and any(isinstance(row, dict) and not row.get('nativeModel') and not row.get('variants')
+                            for row in value['models'])
+                    and self._account_model_live(provider)):
+                value = self._account_models(provider, refresh=True, surface=surface)
             has_effort = any(isinstance(row, dict) and bool(row.get('efforts')) for row in value.get('models', []))
             return {**value, 'capabilities': {'models': self.adapters[provider].cli.available(surface),
                     'effort': has_effort, 'manualModels': True, 'manualEffort': False}}
