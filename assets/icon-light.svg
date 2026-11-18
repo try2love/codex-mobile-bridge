@@ -30,6 +30,7 @@
       <feDropShadow dy="18" stdDeviation="17" flood-color="#12385F" flood-opacity="0.23"/>
     </filter>
   </defs>
+  <g transform="translate(71.68 71.68) scale(0.86)">
   <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#cmb-light-tile)"/>
   <rect x="33" y="33" width="958" height="958" rx="217" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="2"/>
   <g filter="url(#cmb-light-window-shadow)">
@@ -49,5 +50,6 @@
     <path d="M549 527L598 574L549 621" stroke="#21446D" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M643 621H697" stroke="#1B9ED2" stroke-width="24" stroke-linecap="round"/>
     <rect x="608" y="766" width="70" height="9" rx="4.5" fill="#7096B7" fill-opacity="0.38"/>
+  </g>
   </g>
 </svg>
