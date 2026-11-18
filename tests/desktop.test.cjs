@@ -247,6 +247,16 @@ test('existing tunnel needs only an HTTPS address and keeps NAS upstream in the 
     assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://bridge.example.com:8443');
     assert.equal(ui.run("normalizeExternalUrl('http://bridge.example.com')"),'http://bridge.example.com');
     assert.equal(ui.run("normalizeExternalUrl('bridge.example.com/path')"),'bridge.example.com/path');
+    assert.equal(ui.run("normalizeExternalUrl('[2001:db8::42]:8443')"),'https://[2001:db8::42]:8443');
+    assert.equal(ui.run("normalizeExternalUrl('[192.0.2.42]')"),'[192.0.2.42]');
+    assert.equal(ui.run("normalizeExternalUrl('2001:db8::42')"),'https://[2001:db8::42]');
+    assert.equal(ui.run("normalizeExternalUrl('::1')"),'https://[::1]');
+    url.value='2001:0DB8:0000:0000:0000:0000:0000:0042';url.oninput();url.onblur();
+    assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://[2001:0DB8:0000:0000:0000:0000:0000:0042]');
+    url.value='[2001:db8::42]:8443';url.oninput();url.onblur();
+    assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://[2001:db8::42]:8443');
+    url.value='192.0.2.42';url.oninput();url.onblur();
+    assert.equal(ui.run('connectionDraft[0].publicUrl'),'https://192.0.2.42');
     const location=controls.find(node=>node.dataset.connectionField==='targetLocation');location.value='nas';location.onchange();
     assert.equal(ui.run('connectionDraft[0].accessMode'),'nas');
     controls=descendants(ui.nodes.get('connections'));

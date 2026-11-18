@@ -8,7 +8,7 @@ Status: implemented
 
 ## 决策
 
-自有服务器 + SSH 接入接受完整 HTTPS 地址中的有效自定义端口。同一公网 IP 的多个入口分别映射到各电脑独立的 SSH 回环端口。保存、Origin 白名单、SSH 检查和导出的部署说明沿用该地址中的端口。
+自有服务器 + SSH 接入接受完整 HTTPS 地址中的有效自定义端口。同一公网 IP 的多个入口分别映射到各电脑独立的 SSH 回环端口。保存、Origin 白名单、SSH 检查和导出的部署说明沿用该地址中的端口。IPv4 与 IPv6 都作为 IP 字面量接受；IPv6 保存为压缩的方括号 authority，Host 与 Origin 必须使用同一规范字符串。
 
 HTTPS 证书校验、精确 Origin 校验和 SSH 回环监听继续生效。省略端口时使用 443；Cloudflare 与 Tailscale 保持各自端口约束。域名入口的证书验证仍需要相应的标准验证端口，IP 入口继续使用外部提供的有效证书。
 
@@ -26,4 +26,4 @@ HTTPS 证书校验、精确 Origin 校验和 SSH 回环监听继续生效。省�
 
 ## 验证
 
-回归覆盖 IPv4、IPv6 和域名自定义端口保存、Origin 白名单、部署导出、SSH 检查指定端口与默认 443，以及非法端口保存失败。认证、精确 Origin/CSRF、TLS 错误无 HTTP 回退的规则使用相关现有回归验证。未在本轮部署真实服务器或执行手机登录、聊天收发；PR 作者描述的 Windows/macOS 连通结果属于贡献者提供的证据。
+回归覆盖 IPv4、IPv6 和域名自定义端口保存、IPv6 压缩与方括号规范化、Host/Origin 精确匹配、旧 expanded allowlist 替换、部署导出、SSH 检查指定端口与默认 443，以及非法端口保存失败。桌面输入支持带方括号的完整 IPv6 URL，也可把 bare IPv6 补成 HTTPS URL；不改公网明文、全局 IPv6 listener 或自动发布范围。认证、精确 Origin/CSRF、TLS 错误无 HTTP 回退的规则使用相关现有回归验证。未在本轮部署真实服务器或执行手机登录、聊天收发；PR 作者描述的 Windows/macOS 连通结果属于贡献者提供的证据。
