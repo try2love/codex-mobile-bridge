@@ -17,6 +17,10 @@ Status: implemented
 - **保留 `(deleted)` 保守行为与防伪造**：`bridge/platforms/linux/force_exit.py` 保留 `' (deleted)'` 后缀；`linux/desktop.py` 默认 `_process_rows()` 行为不变；`_trusted_appimage_runtime()` 在无 FUSE 模式下继续要求同用户父进程链直达在盘 `Antigravity.AppImage`。
 - **接入 Linux XDG 与启动器发现**：在 `bridge/platforms/linux/discovery.py` 新增 `antigravity` 候选（含 `/usr/share`、`~/Applications`、XDG `.desktop` 与免执行 `#!` 同级 ELF 解析），并在 `bridge/clients/discovery.py` 为 `linux` 接入桌面安装发现。
 
+无 `unsquashfs` 时的 extract-and-run 只在仍可读的临时 APPDIR 下验证 `app.asar` 身份，且原 AppImage 文件身份与同用户父链都匹配时授权。`APPIMAGE` 环境变量不能独立证明已删除的 payload 属于 Antigravity；当临时目录已完全删除、磁盘镜像又无法读取产品元数据时，继续 fail closed，尚不能宣称覆盖该完整删除场景。
+
 ## 验证
 
 - 覆盖 `test_antigravity_discovery.py`、`test_desktop_discovery.py`、`test_linux_appimage.py`、`test_antigravity_accounts.py`、`test_antigravity_account_switch.py`、`test_antigravity_adapter.py`、`test_posix_force_exit.py`、`test_client_inventory.py`、架构/边界测试与全量 Linux / ZCode / Antigravity 回归套件，并在本机无 `libfuse2` AppImage（v2.33.0）及 `.local/share/applications/antigravity.desktop` 上通过真实扫描与原生服务连接验证。
+
+本地适配复验：追加正确与伪造 APPIMAGE/APPDIR、篡改或缺失 app.asar、严格的默认 POSIX deleted-image 行为等合成回归；Antigravity/账号/force-exit 定向 75 项通过、Linux AppImage/桌面/架构定向 30 项通过，依赖边界检查通过。测试没有操作真实客户端。完整临时 APPDIR 删除且无元数据解析器时仍拒绝授权。

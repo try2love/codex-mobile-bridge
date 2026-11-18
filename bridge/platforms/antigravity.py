@@ -162,7 +162,10 @@ def _unpacked_installation(path):
                     'surface': 'ide' if name.endswith('-ide') else 'app'}
     archive = path.parent/'resources/app.asar'
     if archive.is_file() and archive.resolve() == archive and path.stem.casefold() in ('antigravity', 'antigravity ide', 'antigravity-ide'):
+        archive_identity = _file_identity(archive)
         manifest = package_manifest(archive)
+        if _file_identity(archive) != archive_identity:
+            return None
         name = manifest.get('name')
         product_name = str(manifest.get('productName') or '')
         if name in ('antigravity', 'antigravity-ide') or product_name.casefold() in ('antigravity', 'antigravity ide'):
@@ -202,6 +205,42 @@ def _appimage_metadata(path):
     return None
 
 
+def _extract_run_installation(path, image_identity):
+    """Discover an AppImage using its already-running, same-user extract-and-run payload."""
+    from bridge.platforms.linux import appimage
+    surfaces = {}
+    try:
+        roots = sorted((row for row in Path('/proc').iterdir() if row.name.isdecimal()),
+                       key=lambda row: int(row.name))
+    except OSError:
+        return None
+    for root in roots:
+        try:
+            before = (root/'stat').read_text().rsplit(')', 1)[1].split()
+            if before[0] == 'Z' or root.stat().st_uid != os.getuid():
+                continue
+            raw_image = os.readlink(root/'exe')
+            clean_path = _clean_proc_path(raw_image)
+            if not raw_image.endswith(' (deleted)') or clean_path is None:
+                continue
+            if not _trusted_appimage_runtime(raw_image, int(root.name)):
+                continue
+            unpacked = _unpacked_surface(clean_path)
+            after = (root/'stat').read_text().rsplit(')', 1)[1].split()
+            if (before[19] != after[19] or root.stat().st_uid != os.getuid() or
+                    not unpacked or appimage.file_identity(path) != image_identity):
+                continue
+            surfaces.setdefault((unpacked, before[19]), clean_path)
+        except (OSError, ValueError, TypeError, IndexError):
+            continue
+    product_surfaces = {surface for surface, _ in surfaces}
+    if len(product_surfaces) != 1:
+        return None
+    surface = next(iter(product_surfaces))
+    return {'application': str(path), 'executable': str(path), 'version': '', 'surface': surface,
+            'packageType': 'appimage', 'installationIdentity': list(image_identity)}
+
+
 def installation(application, *, platform=None):
     """Inspect official bundles or the CLI installer's matching binary metadata."""
     platform, path = platform or sys.platform, Path(application).expanduser().resolve()
@@ -221,8 +260,14 @@ def installation(application, *, platform=None):
                     identity = appimage.file_identity(path)
                     # 若当前已有 FUSE 挂载运行，优先直读只读挂载目录元信息，避免无 unsquashfs 时冷启动检测失败
                     runtimes = []
-                    for payload_name in ('antigravity', 'antigravity-ide'):
-                        runtimes.extend(appimage.runtime_candidates(path, payload_name))
+                    try:
+                        for payload_name in ('antigravity', 'antigravity-ide'):
+                            runtimes.extend(appimage.runtime_candidates(path, payload_name))
+                    except OSError:
+                        # Installation identity is still available from the
+                        # image; a missing/unreadable proc inventory must not
+                        # prevent its metadata-based installation discovery.
+                        runtimes = []
                     unique_runtimes = list({(row.get('pid'), row.get('executable')): row for row in runtimes}.values())
                     if len(unique_runtimes) == 1:
                         runtime_exe = Path(unique_runtimes[0]['executable'])
@@ -233,6 +278,9 @@ def installation(application, *, platform=None):
                     appimage_row = _appimage_metadata(path)
                     if appimage_row:
                         return appimage_row
+                    extract_row = _extract_run_installation(path, identity)
+                    if extract_row:
+                        return extract_row
                     return None
             return _unpacked_installation(path)
     except (OSError, ValueError, TypeError, KeyError, RuntimeError):
@@ -263,11 +311,21 @@ def profile_lease(path):
 
 
 def _proc_env(pid):
-    """读取同用户进程环境中的 APPIMAGE 与 APPDIR 变量，失败时回退为空字典。"""
+    """Read only bounded launcher evidence from a stable same-user process."""
     result = {}
+    root = Path('/proc')/str(pid)
     try:
-        raw = (Path('/proc')/str(pid)/'environ').read_bytes()
-    except OSError:
+        before_stat = root.stat()
+        before = (root/'stat').read_text().rsplit(')', 1)[1].split()
+        if before_stat.st_uid != os.getuid() or before[0] == 'Z':
+            return result
+        with (root/'environ').open('rb') as stream:
+            raw = stream.read(65537)
+        after = (root/'stat').read_text().rsplit(')', 1)[1].split()
+        if (len(raw) > 65536 or before[19] != after[19] or
+                root.stat().st_uid != os.getuid()):
+            return result
+    except (OSError, ValueError, IndexError):
         return result
     for entry in raw.split(b'\x00'):
         if b'=' not in entry:
@@ -306,17 +364,37 @@ def _trusted_appimage_runtime(image, pid):
             and ('resources' in clean_path.parts or 'extensions' in clean_path.parts)):
         return False
 
+    proc_root = Path('/proc')/str(pid)
+    try:
+        proc_stat = (proc_root/'stat').read_text().rsplit(')', 1)[1].split()
+        if proc_stat[0] == 'Z' or proc_root.stat().st_uid != os.getuid() or os.readlink(proc_root/'exe') != str(image):
+            return False
+    except (OSError, ValueError, IndexError):
+        return False
+    def process_unchanged():
+        try:
+            after = (proc_root/'stat').read_text().rsplit(')', 1)[1].split()
+            return (proc_stat[19] == after[19] and proc_root.stat().st_uid == os.getuid() and
+                    os.readlink(proc_root/'exe') == str(image))
+        except (OSError, ValueError, IndexError):
+            return False
     env = _proc_env(pid)
     appimage_path = None
+    image_identity = None
     if 'APPIMAGE' in env:
         try:
             appimage_path = Path(env['APPIMAGE']).resolve(strict=True)
+            from bridge.platforms.linux import appimage
+            if not appimage_path.is_file() or not os.access(appimage_path, os.X_OK) or not appimage.is_type2(appimage_path):
+                return False
+            image_identity = appimage.file_identity(appimage_path)
         except (OSError, RuntimeError):
             return False
     appdir_path = None
     if 'APPDIR' in env:
         appdir_path = _clean_proc_path(env['APPDIR'])
-        if appdir_path is None or not clean_path.is_relative_to(appdir_path):
+        if (appdir_path is None or appdir_path.is_symlink() or not appdir_path.is_dir()
+                or not clean_path.is_relative_to(appdir_path)):
             return False
 
     # 确定解包根目录：language_server 位于 <root>/resources/... 或 APPDIR 内
@@ -341,21 +419,40 @@ def _trusted_appimage_runtime(image, pid):
         try:
             if anc_root.stat().st_uid != os.getuid():
                 break
-            fields = (anc_root/'stat').read_text().rsplit(')', 1)[1].split()
-            if fields[0] == 'Z':
+            before = (anc_root/'stat').read_text().rsplit(')', 1)[1].split()
+            if before[0] == 'Z':
                 break
             anc_raw = os.readlink(anc_root/'exe')
             anc_path = _clean_proc_path(anc_raw)
             if anc_path is None:
                 break
+            def ancestor_unchanged():
+                after = (anc_root/'stat').read_text().rsplit(')', 1)[1].split()
+                return (before[19] == after[19] and anc_root.stat().st_uid == os.getuid() and
+                        os.readlink(anc_root/'exe') == anc_raw)
             if not anc_raw.endswith(' (deleted)'):
                 resolved = anc_path.resolve(strict=True)
-                if (appimage_path is None or resolved == appimage_path) and _appimage_metadata(resolved):
-                    return True
+                if appimage_path is not None and resolved == appimage_path:
+                    if _appimage_metadata(resolved):
+                        return process_unchanged() and ancestor_unchanged()
+                    # With APPIMAGE_EXTRACT_AND_RUN, the temporary tree is a
+                    # sibling product image removed during startup. Trust it
+                    # only when the executing Type 2 image is the exact
+                    # APPIMAGE file and that process tree contains its APPDIR
+                    # with a valid Antigravity app.asar manifest.
+                    if (appdir_path is not None and image_identity is not None and
+                            clean_path.is_relative_to(appdir_path) and
+                            _unpacked_surface(clean_path) is not None and
+                            appimage.file_identity(resolved) == image_identity):
+                        return process_unchanged() and ancestor_unchanged()
             # 中间父进程必须留在同一解包根目录内，防止跨进程树伪造来源
             if not anc_path.is_relative_to(payload_root):
                 break
-            parent = int(fields[1])
+            after = (anc_root/'stat').read_text().rsplit(')', 1)[1].split()
+            if (before[19] != after[19] or anc_root.stat().st_uid != os.getuid() or
+                    os.readlink(anc_root/'exe') != anc_raw):
+                break
+            parent = int(after[1])
         except (OSError, RuntimeError, ValueError, IndexError):
             break
 
@@ -369,24 +466,33 @@ def _trusted_appimage_runtime(image, pid):
                 if info:
                     payload_name = 'antigravity-ide' if info['surface'] == 'ide' else 'antigravity'
                     runtimes = appimage.runtime_candidates(appimage_path, payload_name)
-                    if any(Path(row['executable']).is_relative_to(appdir_path) for row in runtimes):
+                    if (any(Path(row['executable']).is_relative_to(appdir_path) for row in runtimes) and
+                            appimage.file_identity(appimage_path) == image_identity and process_unchanged()):
                         return True
         except (OSError, ValueError):
             return False
     return False
 
 
-def _unpacked_root_verified(image):
-    """解压目录未精确命名为 antigravity 时，核验其安装根目录确实存在 Antigravity 主程序与资源。"""
+def _unpacked_surface(image):
+    """Return one app.asar-verified unpacked product surface for a runtime path."""
+    surfaces = set()
     for root in _parent_before(image, 'resources', 'extensions'):
         for name in ('antigravity', 'Antigravity', 'antigravity-ide', 'Antigravity IDE'):
             candidate = root/name
             try:
-                if candidate.is_file() and os.access(candidate, os.X_OK) and _unpacked_installation(candidate) is not None:
-                    return True
+                info = (_unpacked_installation(candidate) if candidate.is_file() and
+                        not candidate.is_symlink() and os.access(candidate, os.X_OK) else None)
+                if info and Path(info['executable']).resolve(strict=True).is_relative_to(root.resolve(strict=True)):
+                    surfaces.add(info['surface'])
             except (OSError, ValueError, TypeError, KeyError):
                 continue
-    return False
+    return next(iter(surfaces)) if len(surfaces) == 1 else None
+
+
+def _unpacked_root_verified(image):
+    """Verify an unpacked installation without requiring a conventional root directory name."""
+    return _unpacked_surface(image) is not None
 
 
 def _trusted_directory_image(image):
@@ -426,7 +532,9 @@ def _identity(pid):
         from bridge.platforms.macos.force_exit import Native
     else:
         from bridge.platforms.linux.force_exit import Native
-    row = Native().identity(pid)
+    native = Native()
+    row = (native.identity(pid, allow_deleted=True) if sys.platform == 'linux'
+           else native.identity(pid))
     if row['uid'] != os.getuid() or row['zombie']:
         raise PermissionError('Antigravity 进程用户不匹配')
     return row
