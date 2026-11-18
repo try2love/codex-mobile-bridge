@@ -65,6 +65,54 @@ class ZCodePrototypeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             project_files(self.project, ['file.md', 'file.md'])
 
+    def test_removed_project_does_not_block_plain_text_or_advertise_project_references(self):
+        transport = Mock(return_value={'status': 'accepted', 'result': {'delivery': 'startNow'}})
+        manager = self.manager(transport)
+        self.project.rmdir()
+        body = {'id': str(uuid.uuid4()), 'text': 'continue without local project files'}
+        result = manager.call('zcode', 'send', 'sess_test', body)
+        self.assertEqual(result['status'], 'accepted')
+        transport.assert_called_once()
+        self.assertEqual(transport.call_args.args[0]['body']['files'], [])
+
+        snapshot = {'sessionId': 'sess_test', 'revision': 1, 'seq': 1, 'logEpoch': 'epoch',
+                    'control': {'canStop': False, 'activeWorks': []}, 'rows': {'totalCount': 0, 'window': []},
+                    'pendingInteractions': [], 'queue': {'items': []}, 'inputRouting': {'mode': 'startNow'}}
+        capabilities = project_snapshot(snapshot, str(self.project))['capabilities']
+        self.assertTrue(capabilities['send'])
+        self.assertFalse(capabilities['projectReferences'])
+        self.assertTrue(capabilities['attachments'])
+        detail = project_snapshot(snapshot, str(self.project))
+        self.assertIn('原项目目录已不可用', detail['notice'])
+        with self.assertRaisesRegex(ValueError, '原项目目录不可用'):
+            project_files(self.project, ['missing.md'])
+
+        upload = self.root/'upload.bin'; upload.write_bytes(b'uploaded outside the old project')
+        uploaded = manager.call('zcode', 'send', 'sess_test', {
+            'id': str(uuid.uuid4()), 'text': 'include upload',
+            'resolvedFiles': [{'id': 'fixture-upload', 'path': str(upload), 'name': upload.name}]})
+        self.assertEqual(uploaded['status'], 'accepted')
+        self.assertEqual(transport.call_count, 2)
+        self.assertEqual(transport.call_args.args[0]['body']['files'][0]['name'], upload.name)
+
+    def test_removed_zcode_project_has_explicit_workspace_unavailable_state(self):
+        manager = self.manager(Mock())
+        adapter = Mock()
+        manager.adapters['zcode'] = adapter
+        adapter.call.return_value = {'sessions': [{'id': 'sess_test', 'cwd': str(self.project)}]}
+        self.project.rmdir()
+        from bridge.clients.errors import BridgeUnavailable
+        with self.assertRaisesRegex(BridgeUnavailable, '项目目录'):
+            manager.workspace_bridge('zcode', 'sess_test')
+
+        history = self.root/'native-history'; history.mkdir()
+        (history/'tasks-index.sqlite').touch()
+        adapter.record_path.return_value = str(history/'tasks-index.sqlite')
+        bridge = manager.workspace_bridge('zcode', 'sess_test', host_files=True)
+        self.assertIsNone(bridge.root)
+        self.assertEqual(bridge.history_path, str(history/'tasks-index.sqlite'))
+        self.assertEqual(bridge.workspace('sess_test', 'list', {'scope': 'host'})['path'], history.as_posix())
+
     def test_wrong_session_and_unbound_write_are_not_dispatched(self):
         transport = Mock()
         adapter = ZCodePrototype(self.root, self.config, transport)
