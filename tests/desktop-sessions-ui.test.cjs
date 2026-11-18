@@ -87,17 +87,21 @@ test('fresh empty desktop history replaces persisted content and account changes
  await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
 });
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
-test('shared process stays unread until opened and loads only the selected body',async()=>{
+test('live process reads only its bounded directory, then folds before any requested body read',async()=>{
  const ui=await opened(),view=ui.view,reads=[];
  ui.setHandler(async(url,body,signal)=>{const query=new URL(url,'http://fixture').searchParams;reads.push({query,signal});if(query.has('historyProcess'))return {rows:[{key:'note',version:'v',role:'assistant',kind:'agentMessage',phase:'commentary',text:'Progress explanation',detailCursor:'note-body'},{key:'tool',version:'v',role:'activity',kind:'commandExecution',title:'Run command',text:'',hasDetail:true,detailCursor:'tool-body'},{key:'empty',version:'v',role:'activity',title:'Completed action',text:'',hasDetail:false}],next:null};return {key:'tool',version:'v',text:'Command and output',offset:0,next:null};});
  const message={id:'process',key:'process',version:'v',role:'activity',kind:'processPage',processCursor:'process-cursor',turnId:'t',turnStatus:'inProgress'};
  view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:[message],requests:[]});
- const group=view.messageList.querySelector('.chat-process-page');assert.ok(group);assert.equal(group.open,false);assert.equal(reads.length,0);
- group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,1);assert.equal(reads[0].query.get('historyProcess'),'process-cursor');assert.match(group.textContent,/Progress explanation/);
+ const group=view.messageList.querySelector('.chat-process-page');assert.ok(group);assert.equal(group.open,true);
+ await new Promise(setImmediate);assert.equal(reads.length,1);assert.equal(reads[0].query.get('historyProcess'),'process-cursor');assert.equal(reads[0].query.get('historyAfter'),'latest');assert.match(group.textContent,/Progress explanation/);
+ const completed={...message,turnStatus:'completed'};
+ view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[completed],requests:[]});assert.equal(group.open,false);
+ const click=()=>group.firstChild.onclick({preventDefault(){}});
+ click();assert.equal(group.open,true);
  const tool=group.__records.get('tool').node;assert.equal(tool.open,false);assert.equal(group.__records.get('empty').node.tagName,'SECTION');
  tool.open=true;tool.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2);assert.equal(reads[1].query.get('historyDetail'),'tool-body');assert.match(tool.textContent,/Command and output/);assert.ok(tool.querySelector('.activity-copy'));
- group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2,'same directory and body reuse loaded content');
- view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[{...message,turnStatus:'completed',version:'v2'}],requests:[]});assert.equal(group.open,true,'completion preserves explicit reader intent');
+ click();click();await new Promise(setImmediate);assert.equal(reads.length,2,'same directory and body reuse loaded content');
+ view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[{...completed,version:'v2'}],requests:[]});assert.equal(group.open,true,'completed refresh preserves explicit reader intent');
 });
 test('closing process cancels directory reads and ignores late results',async()=>{
  const ui=await opened(),view=ui.view;let finish,signal;
@@ -729,7 +733,7 @@ test('Claude request-size limit stays in attachment help and rejects oversized i
  const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},maxRequestBytes:10*1024*1024,messages:[]}));await ui.view.open('a');assert.ok(!ui.view.composerBody.querySelector('.ds-attachment-hint'));assert.match(ui.view.attachButton.title,/10 MiB/);ui.view.attachments.add([{name:'large.png',type:'image/png',size:8*1024*1024}]);assert.equal(ui.calls.some(c=>c.upload),false);assert.match(ui.view.attachments.error,/10 MiB/);
 });
 test('history updates retain expanded activities and honor visibility settings',async()=>{
- const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].open=true;ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
+ const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].firstChild.onclick({preventDefault(){}});ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{

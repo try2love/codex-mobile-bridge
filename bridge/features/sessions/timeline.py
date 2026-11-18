@@ -186,7 +186,9 @@ class Timeline:
             self.process_groups[key].append(row)
         for row in self.conversation_rows:
             if row.get('processCursor'):
-                row['version'] = hashlib.sha256(encoded([(r['key'], r['version']) for r in self.process_groups[row['key']]])).hexdigest()[:24]
+                entries = [(r['key'], r['version'], r.get('status'), r.get('title'), r.get('toolName'))
+                           for r in self.process_groups[row['key']]]
+                row['version'] = hashlib.sha256(encoded(entries)).hexdigest()[:24]
         self.conversation_positions = {row['key']: i for i, row in enumerate(self.conversation_rows)}
         self.meta = {k: v for k, v in view.items() if k != 'turns'}
         self.meta['latestUserTurnId'] = next((t['id'] for t in reversed(view['turns'])
@@ -282,14 +284,19 @@ class Timeline:
         if epoch != self.epoch or key not in self.process_groups:
             raise ValueError('过程记录已变化，请重新展开')
         rows = self.process_groups[key]
+        # The live preview needs the recent end, including under the byte cap.
+        # Historical reads keep their ordinary forward cursors.
+        latest = after == 'latest'
         start = 0
-        if after:
+        if after and not latest:
             keys = [row['key'] for row in rows]
             if after not in keys:
                 raise ValueError('过程记录已变化，请重新展开')
             start = keys.index(after) + 1
+        limit = max(1, min(100, limit))
+        candidates = reversed(rows[-limit:]) if latest else rows[start:start + limit]
         selected, size = [], 0
-        for row in rows[start:start + max(1, min(100, limit))]:
+        for row in candidates:
             entry = {field: row[field] for field in ('key', 'version', 'role', 'kind', 'title', 'toolName', 'status', 'turnId', 'turnStatus', 'timestamp', 'interaction') if field in row}
             entry.update(text=row.get('text', '')[:TEXT_PREVIEW] if row['role'] == 'assistant' else '', detailCursor=self.cursor(row['key']))
             entry['hasDetail'] = bool(self.details.get(row['key']) or row['key'] in self.detail_sources or row.get('attachments'))
@@ -298,6 +305,9 @@ class Timeline:
                 break
             selected.append(entry)
             size += cost
+        if latest:
+            return {'epoch': self.epoch, 'sequence': self.sequence, 'rows': selected[::-1],
+                    'next': None, 'hasEarlier': len(selected) < len(rows)}
         return {'epoch': self.epoch, 'sequence': self.sequence, 'rows': selected,
                 'next': selected[-1]['key'] if selected and start + len(selected) < len(rows) else None}
 

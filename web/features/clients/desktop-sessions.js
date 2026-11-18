@@ -444,7 +444,7 @@ class DesktopSessionsView {
       attempt.delay=Math.min(12000,attempt.delay*2);
     }
   }
-  staleDetail(){this.freshDetail=false;this.renderRequests([]);this.requestStamp='';this.updateComposer();}
+  staleDetail(){this.freshDetail=false;suspendChatLiveProcess(this.messageList);this.renderRequests([]);this.requestStamp='';this.updateComposer();}
   showReadFailure(error){
     this.staleDetail();
     this.detailFailure=error.message;
@@ -640,7 +640,7 @@ class DesktopSessionsView {
       if(!this.historyNewer){this.historyNewer=this.button('有新内容 ↓',()=>{const latest=this.deferredHistory;if(!latest)return;this.reading={following:true,top:this.messages.scrollTop};this.applyHistory(latest);});this.historyNewer.classList.add('ds-history-newer');}
       nodes.push(this.historyNewer);
     }
-    this.messageList.__chatTaskState=this.state||{};
+    this.messageList.__chatTaskState={...this.state,fresh:this.freshDetail};
     syncChatMessageNodes(this.messageList,nodes);this.restoreReading();
   }
   async fullMessage(message){

@@ -59,9 +59,9 @@ async function runActivityGroupBrowserChecks(){
       check(body.scrollTop===120&&reasonBody.scrollTop===90&&groupBody.scrollTop===35,provider+' reasoning, tool detail and batch body scroll independently');
       rows=[...rows,final,fileSummary];apply(rows);await frame();await frame();
       const elapsedLabel=BridgeI18n.t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}','2').replace('{seconds}','5');
-      check(!task.open&&!afterSupplement.open&&task.dataset.state==='complete'&&getComputedStyle(task.firstChild).display!=='none'&&task.firstChild.textContent===elapsedLabel&&afterSupplement.firstChild.textContent===elapsedLabel,provider+' completion collapses both task fragments once and shows the native 125-second duration');
+      check(!task.open&&!afterSupplement.open&&task.dataset.state==='complete'&&getComputedStyle(task.firstChild).display!=='none'&&task.firstChild.textContent===elapsedLabel&&afterSupplement.firstChild.hidden,provider+' completion collapses both task fragments once and shows one native 125-second duration');
       check(runningTools.dataset.running==='false'&&getComputedStyle(runningTools.firstChild).animationName==='none',provider+' terminal task stops the running summary animation');
-      task.firstChild.click();afterSupplement.firstChild.click();await frame();await frame();
+      task.firstChild.click();await frame();await frame();
       check(getNode('cmd1').closest('.chat-activity-tools')===tools&&tools.open,provider+' opening the completed task preserves its manually opened tool batch');
       runningTools.firstChild.click();await frame();await frame();
       const fileHeading=getNode('file1').querySelector('summary'),filePath=fileHeading.querySelector('.chat-activity-file'),fileStats=fileHeading.querySelector('.chat-activity-stats');

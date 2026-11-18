@@ -72,6 +72,25 @@ class ConversationProjectionTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_', json.dumps(delta))
         self.assertEqual(sum(row.get('kind') == 'steeringUserMessage' for row in timeline.conversation_rows), 1)
 
+    def test_live_process_directory_returns_latest_entries_in_transcript_order_within_caps(self):
+        timeline = Timeline()
+        messages = [{'id': 'input', 'role': 'user', 'kind': 'userMessage', 'text': 'input'}]
+        messages += [{'id': f'progress-{i}', 'role': 'assistant', 'kind': 'agentMessage',
+                      'phase': 'commentary', 'text': f'Progress {i}: ' + 'x' * 10000}
+                     for i in range(45)]
+        timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'status': 'inProgress', 'messages': messages}]},
+                        conversation=True)
+        cursor = timeline.conversation_rows[1]['processCursor']
+        latest = timeline.process(cursor, after='latest')
+        self.assertTrue(latest['hasEarlier'])
+        self.assertIsNone(latest['next'])
+        self.assertLessEqual(len(latest['rows']), 20)
+        self.assertLessEqual(len(json.dumps(latest).encode()), PAGE_BYTES)
+        self.assertTrue(latest['rows'][-1]['text'].startswith('Progress 44:'))
+        order = [int(row['text'].split(':')[0].split()[-1]) for row in latest['rows']]
+        self.assertEqual(order, list(range(45 - len(order), 45)))
+        self.assertTrue(timeline.process(cursor)['rows'][0]['text'].startswith('Progress 0:'))
+
     def test_foreign_process_cursor_cannot_read_another_timeline(self):
         value, _ = self.source(1)
         left, right = Timeline(), Timeline()
