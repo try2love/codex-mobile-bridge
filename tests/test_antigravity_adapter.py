@@ -547,6 +547,50 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(result['status'], 'accepted')
             send.assert_called_once_with(CID, 'first', model=None, surface='app')
 
+    def test_creation_verifies_workspace_via_db_or_trajectory_when_project_env_info_omitted(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        project = Path(self.temp.name)/'My Project 2'
+        project.mkdir()
+        uri = project.resolve().as_uri()
+        request = {'directoryProject': {'surface': 'app', 'cwd': str(project)}, 'text': 'first'}
+
+        # 1. StartCascade 返回无 projectEnvInfo，但本地 conversation_summaries.db 已记录同目录绑定时可安全续发
+        db_row = list(self.row)
+        db_row[0] = CID
+        db_row[5] = json.dumps([uri])
+        _create_surface_db(self.home/'.gemini/antigravity', [tuple(db_row)])
+        with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={'cascadeId': CID}) as rpc, \
+                mock.patch.object(adapter.cli, 'send_user_message') as send:
+            result = adapter.call('create', body=request)
+            self.assertEqual(result['status'], 'accepted')
+            self.assertEqual(rpc.call_count, 1)
+            send.assert_called_once_with(CID, 'first', model=None, surface='app')
+
+        # 2. 本地 DB 尚未落盘时，回退只读查询 GetCascadeTrajectory.trajectory.metadata 核验绑定；不匹配仍阻断
+        other_cid = '22222222-3333-4444-8555-666666666666'
+        def traj_rpc(method, payload=None, *, surface='app'):
+            if method == 'StartCascade':
+                return {'cascadeId': other_cid}
+            if method == 'GetCascadeTrajectory':
+                return {'trajectory': {'metadata': {'workspaces': [{'workspaceFolderAbsoluteUri': uri}]}}}
+            return {}
+
+        with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=traj_rpc), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send:
+            result = adapter.call('create', body=request)
+            self.assertEqual(result['status'], 'accepted')
+            send.assert_called_once_with(other_cid, 'first', model=None, surface='app')
+
+        wrong_traj = lambda method, payload=None, *, surface='app': (
+            {'cascadeId': other_cid} if method == 'StartCascade'
+            else {'trajectory': {'metadata': {'workspaceUris': ['file:///wrong-dir']}}}
+        )
+        with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=wrong_traj), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send:
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('create', body=request)
+            send.assert_not_called()
+
     def test_model_catalog_is_native_only_and_surface_specific(self):
         adapter = self.adapter()
         status = {'cascadeModelConfigData': {'clientModelConfigs': [

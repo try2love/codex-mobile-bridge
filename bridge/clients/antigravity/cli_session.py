@@ -4,6 +4,7 @@ import re
 import math
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 import threading
 import subprocess
 import time
@@ -13,6 +14,7 @@ import urllib.request
 from bridge.clients.errors import BridgeUnavailable
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
+from .store import SURFACE_DIRS, local_file_path
 
 _CONFIRM_INTERACTION_LABELS = {
     'openBrowserUrl': '开启网页确认',
@@ -1172,6 +1174,83 @@ class AntigravityCli:
         self._invalidate_trajectories_cache(surface)
         return result
 
+    def _surface_root(self, surface):
+        rel = dict(SURFACE_DIRS).get(surface)
+        return (self.home / rel) if rel else None
+
+    @staticmethod
+    def _matches_workspace_uris(uris, expected_path, expected_uri):
+        if not isinstance(uris, list) or len(uris) != 1:
+            return False
+        raw = str(uris[0] or '').strip()
+        if raw == expected_uri:
+            return True
+        local = local_file_path(raw)
+        if not local:
+            return False
+        try:
+            return Path(local).resolve() == expected_path
+        except OSError:
+            return False
+
+    def _summary_db_has_workspace(self, surface_root, cid, expected_path, expected_uri):
+        db_path = surface_root / 'conversation_summaries.db'
+        if not db_path.is_file():
+            return False
+        try:
+            conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.5)
+            try:
+                row = conn.execute(
+                    'SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?',
+                    (cid,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            return False
+        if not row or not isinstance(row[0], str):
+            return False
+        try:
+            uris = json.loads(row[0])
+        except ValueError:
+            return False
+        return self._matches_workspace_uris(uris, expected_path, expected_uri)
+
+    @staticmethod
+    def _meta_workspace_uris(meta):
+        if not isinstance(meta, dict):
+            return None
+        uris = meta.get('workspaceUris', meta.get('workspace_uris'))
+        if isinstance(uris, list) and uris:
+            return uris
+        workspaces = meta.get('workspaces')
+        if isinstance(workspaces, list) and workspaces:
+            return [w.get('workspaceFolderAbsoluteUri') or w.get('workspace_folder_absolute_uri')
+                    for w in workspaces if isinstance(w, dict)]
+        return None
+
+    def _verify_cascade_workspace(self, result, cid, path, uri, surface):
+        environment = result.get('projectEnvInfo') or result.get('project_env_info')
+        if environment is not None:
+            if not isinstance(environment, dict):
+                return False
+            uris = environment.get('workspaceUris', environment.get('workspace_uris'))
+            if uris is not None:
+                return self._matches_workspace_uris(uris, path, uri)
+        # 新版 Antigravity 在本地目录新建对话时 StartCascadeResponse 可能省略 projectEnvInfo，
+        # 仅将 workspace_uris 写入对话摘要库与轨迹元数据；仅当本机存在对应 surface 数据目录时二次核验
+        surface_root = self._surface_root(surface)
+        if surface_root is None or not surface_root.is_dir():
+            return False
+        if self._summary_db_has_workspace(surface_root, cid, path, uri):
+            return True
+        traj = self.call_ls_rpc('GetCascadeTrajectory', {'cascade_id': cid}, surface=surface)
+        meta = (traj.get('trajectory') or {}).get('metadata') if isinstance(traj, dict) else None
+        meta_uris = self._meta_workspace_uris(meta)
+        if meta_uris is not None:
+            return self._matches_workspace_uris(meta_uris, path, uri)
+        return False
+
     def start_cascade(self, *, surface='app', model=None, effort=None, cwd=None):
         path = Path(cwd or '').resolve()
         if not cwd or not path.is_dir():
@@ -1185,8 +1264,7 @@ class AntigravityCli:
         cid = result.get('cascadeId') or result.get('cascade_id')
         if not isinstance(cid, str) or not cid:
             raise BridgeUnavailable('Antigravity 原客户端未确认新会话标识')
-        environment = result.get('projectEnvInfo') or result.get('project_env_info') or {}
-        if environment.get('workspaceUris', environment.get('workspace_uris')) != [uri]:
+        if not self._verify_cascade_workspace(result, cid, path, uri, surface):
             raise BridgeUnavailable('原客户端尚未确认新会话项目绑定，首条消息未发送；请在电脑检查已创建的会话')
         self._invalidate_trajectories_cache(surface)
         return cid
