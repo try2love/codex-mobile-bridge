@@ -118,6 +118,28 @@ class InventoryFingerprintTests(InstallationFixtures):
             shutil.rmtree(directory/'OpenAI.Codex_2')
             self.assertFalse(inventory_current(config, {}))
 
+    def test_protected_version_root_does_not_abort_inventory_refresh(self):
+        old = self.file('WindowsApps/OpenAI.Codex_1/app/Codex.exe')
+        self.file('WindowsApps/OpenAI.Codex_1/AppxManifest.xml')
+        directory = self.root/'WindowsApps'
+        original_iterdir = Path.iterdir
+        state = {'denied': True}
+
+        def deny_protected_root(path):
+            if path == directory and state['denied']:
+                raise PermissionError(5, 'Access is denied', str(path))
+            return original_iterdir(path)
+
+        config = self.cached(self.rows(old))
+        with patch.object(Path, 'iterdir', deny_protected_root):
+            self.assertFalse(inventory_current(config, {}))
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
+            state['denied'] = False
+            self.assertFalse(inventory_current(config, {}))
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
+
     def test_new_squirrel_and_msix_versions_invalidate_cache_even_when_old_directories_survive(self):
         for provider, old_name, new_name, executable in (
             ('claude', 'local/Programs/Claude/app-2.9', 'local/Programs/Claude/app-2.10', 'Claude.exe'),

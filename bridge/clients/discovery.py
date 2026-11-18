@@ -87,7 +87,15 @@ def inventory_fingerprint(rows, preferences):
                                  for value in values]
             if path in version_roots:
                 # Directory timestamps can collide during a fast side-by-side update.
-                result[str(path)].append(sorted(child.name for child in path.iterdir()))
+                try:
+                    children = sorted(child.name for child in path.iterdir())
+                except OSError:
+                    # Windows Store roots such as Program Files/WindowsApps may
+                    # expose stat metadata while denying directory enumeration.
+                    # Keep a stable unavailable marker; Windows package
+                    # registration remains the authoritative update signal.
+                    children = None
+                result[str(path)].append(children)
         except FileNotFoundError:
             result[str(path)] = None
     return result
