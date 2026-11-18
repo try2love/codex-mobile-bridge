@@ -30,6 +30,13 @@ class StreamCompatibilityTests(unittest.TestCase):
         with self.assertRaises(StreamCompatibilityError):
             validate_stream_state(13, {'id': 'thread'})
 
+    def test_v13_accepts_native_system_error_after_a_failed_turn(self):
+        value = self.state()
+        value['threadRuntimeStatus'] = {'type': 'systemError'}
+        value['turns'] = [{'status': 'failed', 'completedAt': 1770000000000,
+                           'items': [{'type': 'agentMessage', 'text': 'upstream request failed'}]}]
+        validate_stream_state(13, value)
+
     def test_future_versions_accept_canonical_history_and_pending_approvals(self):
         value = self.state()
         value['turnHistory'] = {'kind': 'canonical', 'history': {

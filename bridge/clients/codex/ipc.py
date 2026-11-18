@@ -54,7 +54,10 @@ def validate_stream_state(version, state):
     require(isinstance(state.get('modelProvider'), str) and bool(state['modelProvider']))
     require(isinstance(state.get('cwd'), str) and bool(state['cwd']))
     runtime = state.get('threadRuntimeStatus')
-    require(isinstance(runtime, dict) and runtime.get('type') in ('idle', 'active', 'running', 'waiting', 'busy'))
+    # An upstream failure can leave a connected desktop thread in systemError;
+    # it is readable and may accept a fresh turn, but it never proves idle.
+    require(isinstance(runtime, dict) and runtime.get('type') in (
+        'idle', 'active', 'running', 'waiting', 'busy', 'systemError'))
     requests = state.get('requests')
     require(isinstance(requests, list))
     for request in requests:

@@ -80,6 +80,20 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.activate.assert_not_called()
         self.assertEqual(self.bridge.live, {})
 
+    def test_v13_system_error_is_still_unknown_for_shutdown_audit(self):
+        def v13(message):
+            message['version'] = 13
+            state = message['params']['change']['conversationState']
+            state.update(modelProvider='original-provider', cwd='/original/project',
+                         threadRuntimeStatus={'type': 'systemError'},
+                         turns=[{'turnId': 'failed', 'status': 'failed',
+                                 'completedAt': 1794977273000, 'items': []}])
+            return message
+        self.transform_event = v13
+        with self.assertRaisesRegex(TaskStateUnavailable, '无法确认'):
+            self.bridge.assert_desktop_idle()
+        self.assertEqual(self.bridge.live, {})
+
     def test_unfollowed_desktop_busy_thread_prevents_shutdown(self):
         self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'active'}, 'turns': [], 'requests': []}
         with self.assertRaisesRegex(ValueError, '任务运行'): self.bridge.assert_desktop_idle()
