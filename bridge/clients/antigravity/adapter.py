@@ -161,11 +161,12 @@ class Antigravity:
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
                  'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': True} for row in self.store.surfaces()]
 
-    def _waiting_state(self, surface, *, live=True, fresh=False):
+    def _waiting_state(self, surface, *, live=True, fresh=False, expected_identity=None):
         if not live:
             return {}, set()
         if fresh:
-            return self.cli.waiting_state_by_cid(surface=surface, max_age=0)
+            return self.cli.waiting_state_by_cid(surface=surface, max_age=0,
+                                                **({'expected_identity': expected_identity} if expected_identity is not None else {}))
         try:
             return self.cli.waiting_state_by_cid(surface=surface)
         except (OSError, ValueError, BridgeUnavailable):
@@ -355,11 +356,12 @@ class Antigravity:
             items.append({'text': text_chunk})
         return items
 
-    def _ensure_native_idle(self, row, key, cid, surface, *, waiting_msg, busy_msg):
+    def _ensure_native_idle(self, row, key, cid, surface, *, waiting_msg, busy_msg, expected_identity=None):
         if not self.cli.available(surface):
             raise BridgeUnavailable('原客户端服务未连接，请先打开 Antigravity 应用')
         native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
-        waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
+        waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True,
+                                                        expected_identity=expected_identity)
         if waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key)):
             raise BridgeUnavailable(waiting_msg)
         if native_busy or cid in active_cids:
@@ -687,10 +689,12 @@ class Antigravity:
             return {'status': 'accepted', 'delivery': 'native'}
         if action == 'fork':
             try:
+                expected_identity = self.cli.source_identity(surface)
                 self._ensure_native_idle(
                     row, key, cid, surface,
                     waiting_msg='原会话正在等待交互确认，请先回应后再创建分支',
                     busy_msg='请等待 Antigravity 原生会话空闲后再创建分支',
+                    expected_identity=expected_identity,
                 )
             except (ValueError, BridgeUnavailable) as exc:
                 raise ResumePreflightBlocked(str(exc)) from exc
@@ -701,7 +705,8 @@ class Antigravity:
             valid_steps = self.store.valid_fork_steps(row['surfaceRoot'], cid)
             if step_index not in valid_steps:
                 raise ResumePreflightBlocked('请选择原会话中可分支的消息')
-            new_cid = self.cli.fork_conversation(cid, step_index, cwd=row.get('cwd'), surface=surface)
+            new_cid = self.cli.fork_conversation(cid, step_index, cwd=row.get('cwd'), surface=surface,
+                                                 expected_identity=expected_identity)
             return {'status': 'ready', 'result': {'id': gateway_id(surface, new_cid)}}
         if action == 'queue-action':
             if not self.hooks:

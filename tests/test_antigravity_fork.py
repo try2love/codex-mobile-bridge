@@ -112,15 +112,18 @@ class AntigravityForkTests(unittest.TestCase):
         sid = gateway_id('app', CID)
         calls = []
 
-        def fake_rpc(method, payload=None, *, surface='app'):
+        def fake_rpc(method, payload=None, *, surface='app', expected_identity=None):
             calls.append((method, payload, surface))
             if method == 'GetAllCascadeTrajectories':
                 return {'trajectorySummaries': {CID: {'status': 'CASCADE_RUN_STATUS_IDLE'}}}
             if method == 'ForkConversation':
-                return {'newCascadeId': CHILD_CID, 'forkedAtStepIndex': payload['forkAtStepIndex']}
+                self.assertEqual(expected_identity, 'source')
+                return {'newCascadeId': CHILD_CID, 'forkedAtStepIndex': payload['forkAtStepIndex'],
+                        'projectEnvInfo': {'workspaceUris': [self.workspace.resolve().as_uri()]}}
             return {}
 
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source', create=True), \
                 mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
             detail = adapter.call('detail', sid)
             self.assertTrue(detail['capabilities']['fork'])
@@ -148,6 +151,37 @@ class AntigravityForkTests(unittest.TestCase):
             replayed = manager.call('antigravity', 'fork', sid, {'id': rid, 'messageId': '4'})
             self.assertEqual(replayed['result']['id'], gateway_id('app', CHILD_CID))
             self.assertEqual(sum(1 for m, _, _ in calls if m == 'ForkConversation'), 1)
+
+    def test_fork_requires_workspace_and_confirms_returned_project(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        with mock.patch.object(adapter.cli, 'call_ls_rpc') as rpc:
+            with self.assertRaises(ValueError):
+                adapter.cli.fork_conversation(CID, 4, cwd=str(self.workspace / 'missing'))
+            rpc.assert_not_called()
+        for result in (
+            {'newCascadeId': CHILD_CID, 'projectEnvInfo': {'workspaceUris': ['file:///different']}},
+            {'newCascadeId': CHILD_CID, 'new_cascade_id': CID},
+            {'newCascadeId': CHILD_CID},
+        ):
+            with self.subTest(result=result), \
+                    mock.patch.object(adapter.cli, 'source_identity', return_value='source', create=True), \
+                    mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=[result, {}]) as rpc:
+                with self.assertRaises(BridgeUnavailable):
+                    adapter.cli.fork_conversation(CID, 4, cwd=str(self.workspace))
+                writes = [c for c in rpc.call_args_list if c.args[0] == 'ForkConversation']
+                self.assertEqual(len(writes), 1)
+                self.assertEqual(writes[0].kwargs['expected_identity'], 'source')
+
+    def test_fork_rejects_changed_source_before_dispatch(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        target = {'address': 'http://127.0.0.1:9999', 'token': 'tok', 'identity': 'changed'}
+        with mock.patch('bridge.clients.antigravity.cli_session.endpoint', return_value=target), \
+                mock.patch.object(adapter.cli._opener, 'open') as request:
+            with self.assertRaises(BridgeUnavailable):
+                adapter.cli.fork_conversation(CID, 4, cwd=str(self.workspace), expected_identity='source')
+            request.assert_not_called()
 
     def test_fork_maps_known_native_rejections_without_leaking_raw_error_body(self):
         adapter = Antigravity(self.directory, home=self.home)

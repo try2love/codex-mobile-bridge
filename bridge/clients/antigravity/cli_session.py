@@ -591,6 +591,14 @@ class AntigravityCli:
         except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
+    def source_identity(self, surface='app'):
+        try:
+            target = endpoint(surface, self.home)
+            verify_endpoint(target)
+            return target['identity']
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise BridgeUnavailable('无法核验 Antigravity 原生服务身份，请重新连接') from None
+
     def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
@@ -654,16 +662,17 @@ class AntigravityCli:
             return steps[step_index]
         return None
 
-    def waiting_state_by_cid(self, *, surface='app', max_age=2.0):
+    def waiting_state_by_cid(self, *, surface='app', max_age=2.0, expected_identity=None):
         """Return (waiting_requests_by_cid, active_cids) for a surface."""
         with self._lock:
             now = time.monotonic()
             with self._lock:
                 cached = self._trajectories_cache.get(surface)
-                if max_age > 0 and cached and (now - cached[0]) < max_age:
+                if expected_identity is None and max_age > 0 and cached and (now - cached[0]) < max_age:
                     return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
 
-            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
+            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface,
+                                   **({'expected_identity': expected_identity} if expected_identity is not None else {}))
             summaries = res.get('trajectorySummaries', {})
             if not isinstance(summaries, dict):
                 raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
@@ -1366,26 +1375,32 @@ class AntigravityCli:
         self._invalidate_trajectories_cache(surface)
         return cid, expected_identity
 
-    def fork_conversation(self, conversation_id, step_index, *, cwd=None, surface='app'):
+    def fork_conversation(self, conversation_id, step_index, *, cwd=None, surface='app', expected_identity=None):
         """Fork a conversation at a verified turn-end step into the current workspace."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
             raise ValueError('源会话标识无效')
         if type(step_index) is not int or step_index < 0:
             raise ValueError('分支消息位置无效')
+        path = Path(cwd or '').resolve()
+        if not cwd or not path.is_dir():
+            raise ResumePreflightBlocked('请选择有效的原会话项目目录后再创建分支')
+        uri = path.as_uri()
+        if expected_identity is None:
+            expected_identity = self.source_identity(surface)
         payload = {
             'sourceCascadeId': conversation_id,
             'forkAtStepIndex': step_index,
             'targetForkWorkspace': 'FORK_TARGET_CURRENT_WORKSPACE',
+            'sourceWorkspaceUris': [uri],
         }
-        if cwd:
-            path = Path(cwd).resolve()
-            if path.is_dir():
-                payload['sourceWorkspaceUris'] = [path.as_uri()]
-        result = self.call_ls_rpc('ForkConversation', payload, surface=surface)
+        result = self.call_ls_rpc('ForkConversation', payload, surface=surface, expected_identity=expected_identity)
         new_cid = result.get('newCascadeId') or result.get('new_cascade_id')
-        if not isinstance(new_cid, str) or not new_cid.strip() or new_cid == conversation_id:
+        if (not isinstance(new_cid, str) or not new_cid.strip() or new_cid == conversation_id
+                or any(result[key] != new_cid for key in ('newCascadeId', 'new_cascade_id') if key in result)):
             raise BridgeUnavailable('Antigravity 尚未确认分支结果，请在电脑核对')
         self._invalidate_trajectories_cache(surface)
+        if not self._verify_cascade_workspace(result, new_cid, path, uri, surface, expected_identity):
+            raise BridgeUnavailable('原客户端尚未确认分支的项目归属，请在电脑核对；不会重复创建分支')
         return new_cid.strip()
 
     def stop(self, conversation_id, *, surface='app', before_stop=None):
