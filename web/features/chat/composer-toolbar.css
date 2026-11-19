@@ -245,6 +245,7 @@
   -webkit-appearance: none;
   border: 0;
   background-color: transparent;
+  background-image: none;
   color: inherit;
   border-radius: inherit;
   outline: none;

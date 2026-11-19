@@ -601,3 +601,28 @@ test('send mode icon is centered without a focus frame and placeholder fits one 
     expect(result.text).not.toContain('\n');expect(result.text).toContain('/');expect(result.width).toBeLessThanOrEqual(result.available);
   }
 });
+
+
+test('send mode draws one arrow for text and both, and none for icon only', async ({ page }) => {
+  await page.evaluate(() => {
+    const t = composerToolbar;
+    t.preferences.update({ layout: {
+      topLeft: [], topRight: [], bottomLeft: ['more', 'model'], bottomRight: ['sendMode'],
+      more: ['skills', 'permissions', 'context', 'collapse', 'attachments', 'plan', 'goal'],
+    } });
+    t.controls.sendMode.disabled = false;for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.submitControl.getState = () => ({ running: true, hasDraft: true });t.submitControl.send.disabled = false;t.sync();
+  });
+  for (const theme of ['light', 'dark']) for (const language of ['zh', 'en']) for (const display of ['text', 'both', 'icon']) {
+    await page.evaluate(({ theme, language, display }) => {
+      document.documentElement.dataset.theme = theme;BridgeI18n.setLanguage(language);
+      composerToolbar.preferences.update({ display: { sendMode: display } });composerToolbar.sync();
+    }, { theme, language, display });
+    const styles = await page.locator('#composer [data-tool=sendMode]').evaluate(n => ({
+      background: getComputedStyle(n.querySelector('select')).backgroundImage,
+      arrow: getComputedStyle(n, '::after').display,
+    }));
+    expect(styles.background).toBe('none');
+    expect(styles.arrow === 'none').toBe(display === 'icon');
+  }
+});
