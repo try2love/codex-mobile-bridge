@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
 from .store import SURFACE_DIRS, local_file_path
@@ -559,12 +559,17 @@ class AntigravityCli:
         'GetUserStatus',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
+        'GetCascadeTrajectoryGeneratorMetadata',
         'GetSlashCommands',
         'StartCascade',
         'SendUserCascadeMessage',
         'CancelCascadeInvocation',
         'ForceStopCascadeTree',
         'HandleCascadeUserInteraction',
+        'UpdateConversationAnnotations',
+        'ForkConversation',
+        'ListBackgroundTasks',
+        'CancelCascadeSteps',
     )
 
     def __init__(self, home=None, model_catalog=None):
@@ -577,6 +582,8 @@ class AntigravityCli:
         self._stop_generation = 0
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
+        self._annotations_cache = {}
+        self._context_window_cache = {}
         self._waiting_cache = {}
         self._variant_cache = {}
         self._base_cache = {}
@@ -588,12 +595,21 @@ class AntigravityCli:
         except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
+    def source_identity(self, surface='app'):
+        try:
+            target = endpoint(surface, self.home)
+            verify_endpoint(target)
+            return target['identity']
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise BridgeUnavailable('无法核验 Antigravity 原生服务身份，请重新连接') from None
+
     def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
         # Native cancellation must reach the LS while SendUserCascadeMessage is
         # still waiting for its response. Other writes retain their serialization.
-        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree') else self._lock:
+        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree', 'CancelCascadeSteps',
+                                           'ListBackgroundTasks', 'GetAllCascadeTrajectories') else self._lock:
             try:
                 target = endpoint(surface, self.home)
                 if expected_identity is not None and target['identity'] != expected_identity:
@@ -614,6 +630,20 @@ class AntigravityCli:
                     raise ValueError('Antigravity 原生回复无效')
                 verify_endpoint(target)
                 return (result, target['identity']) if return_identity else result
+            except urllib.error.HTTPError as exc:
+                if method == 'ForkConversation':
+                    try:
+                        detail = exc.read(4096).decode('utf-8', errors='replace').lower()
+                    except OSError:
+                        detail = ''
+                    if 'invoked subagents' in detail:
+                        raise ResumePreflightBlocked('该对话已调用子代理，Antigravity 原生暂不支持从此处分支') from None
+                    if 'cannot fork a subagent' in detail:
+                        raise ResumePreflightBlocked('不支持对子代理会话创建分支') from None
+                    if 'end of a turn' in detail:
+                        raise ResumePreflightBlocked('只能从已完成回复的轮次末尾创建分支') from None
+                # Do not expose native error bodies, tokens or retry a write.
+                raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
             except (OSError, ValueError, urllib.error.URLError):
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
@@ -622,8 +652,13 @@ class AntigravityCli:
         with self._lock:
             if surface is None:
                 self._trajectories_cache.clear()
+                self._annotations_cache.clear()
+                self._context_window_cache.clear()
             else:
                 self._trajectories_cache.pop(surface, None)
+                self._annotations_cache.pop(surface, None)
+                for key in [k for k in self._context_window_cache if k[0] == surface]:
+                    self._context_window_cache.pop(key, None)
 
     def _collect_step_fallback(self, cascade_id, step_index, *, surface='app'):
         try:
@@ -635,26 +670,91 @@ class AntigravityCli:
             return steps[step_index]
         return None
 
-    def waiting_state_by_cid(self, *, surface='app', max_age=2.0):
+    @staticmethod
+    def _coerce_nonneg_int(value):
+        if type(value) is int and value >= 0:
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    def context_window_metadata(self, conversation_id, *, surface='app', step_count=None, max_age=15.0):
+        """Read latest native context window size (and estimated tokens) from generator metadata."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return None
+        cache_key = (surface, conversation_id)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._context_window_cache.get(cache_key)
+            if max_age > 0 and cached and cached[1] == step_count and (now - cached[0]) < max_age:
+                return dict(cached[2]) if isinstance(cached[2], dict) else None
+        res = self.call_ls_rpc(
+            'GetCascadeTrajectoryGeneratorMetadata',
+            {'cascadeId': conversation_id},
+            surface=surface,
+        )
+        entries = res.get('generatorMetadata') or res.get('generator_metadata')
+        found = None
+        if isinstance(entries, list):
+            for entry in reversed(entries):
+                if not isinstance(entry, dict):
+                    continue
+                chat_model = entry.get('chatModel') or entry.get('chat_model')
+                if not isinstance(chat_model, dict):
+                    continue
+                start_meta = chat_model.get('chatStartMetadata') or chat_model.get('chat_start_metadata')
+                if not isinstance(start_meta, dict):
+                    continue
+                cwm = start_meta.get('contextWindowMetadata') or start_meta.get('context_window_metadata')
+                if not isinstance(cwm, dict):
+                    continue
+                max_tokens = self._coerce_nonneg_int(cwm.get('maxContextTokens', cwm.get('max_context_tokens')))
+                if not max_tokens or max_tokens <= 0:
+                    continue
+                used = self._coerce_nonneg_int(cwm.get('estimatedTokensUsed', cwm.get('estimated_tokens_used')))
+                found = {'contextWindow': max_tokens}
+                if used is not None:
+                    found['estimatedTokensUsed'] = used
+                break
+        with self._lock:
+            self._context_window_cache[cache_key] = (time.monotonic(), step_count, dict(found) if found else None)
+            if len(self._context_window_cache) > 128:
+                for stale in list(self._context_window_cache.keys())[:-64]:
+                    if stale != cache_key:
+                        self._context_window_cache.pop(stale, None)
+        return found
+
+    def waiting_state_by_cid(self, *, surface='app', max_age=2.0, expected_identity=None):
         """Return (waiting_requests_by_cid, active_cids) for a surface."""
         with self._lock:
             now = time.monotonic()
             with self._lock:
                 cached = self._trajectories_cache.get(surface)
-                if max_age > 0 and cached and (now - cached[0]) < max_age:
+                if expected_identity is None and max_age > 0 and cached and (now - cached[0]) < max_age:
                     return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
 
-            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
+            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface,
+                                   **({'expected_identity': expected_identity} if expected_identity is not None else {}))
             summaries = res.get('trajectorySummaries', {})
             if not isinstance(summaries, dict):
                 raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
 
             waiting_by_cid = {}
             active_cids = set()
+            annotations_by_cid = {}
             fresh_cache = {}
             for traj_cid, summary in summaries.items():
                 if not isinstance(summary, dict):
                     continue
+                raw_ann = summary.get('annotations')
+                if isinstance(raw_ann, dict):
+                    ann = {}
+                    if isinstance(raw_ann.get('title'), str) and raw_ann['title'].strip():
+                        ann['title'] = raw_ann['title'].strip()
+                    if isinstance(raw_ann.get('archived'), bool):
+                        ann['archived'] = raw_ann['archived']
+                    if ann:
+                        annotations_by_cid[traj_cid] = ann
                 status = str(summary.get('status') or '')
                 meta = summary.get('trajectoryMetadata') if isinstance(summary.get('trajectoryMetadata'), dict) else {}
                 root_cid = str(meta.get('rootCascadeId') or meta.get('rootConversationId') or '').strip()
@@ -707,6 +807,7 @@ class AntigravityCli:
 
             with self._lock:
                 self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
+                self._annotations_cache[surface] = {k: dict(v) for k, v in annotations_by_cid.items()}
                 self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
                 self._waiting_cache.update(fresh_cache)
                 if len(self._waiting_cache) > 256:
@@ -715,6 +816,37 @@ class AntigravityCli:
                             self._waiting_cache.pop(stale_key, None)
 
             return waiting_by_cid, active_cids
+
+    def annotations_for(self, conversation_id, *, surface='app', fresh=False):
+        """Return cached or freshly read native annotations (title/archived) for a conversation."""
+        if not conversation_id:
+            return {}
+        if fresh:
+            self.waiting_state_by_cid(surface=surface, max_age=0.0)
+        with self._lock:
+            return dict((self._annotations_cache.get(surface) or {}).get(conversation_id) or {})
+
+    def update_annotations(self, conversation_id, *, title=None, archived=None, surface='app', expected_identity=None):
+        """Update native conversation annotations via UpdateConversationAnnotations (merge)."""
+        annotations = {}
+        if title is not None:
+            annotations['title'] = title
+        if archived is not None:
+            annotations['archived'] = bool(archived)
+        if not annotations:
+            raise ValueError('缺少要更新的会话标注字段')
+        result = self.call_ls_rpc(
+            'UpdateConversationAnnotations',
+            {
+                'cascadeId': conversation_id,
+                'annotations': annotations,
+                'mergeAnnotations': True,
+            },
+            surface=surface,
+            **({'expected_identity': expected_identity} if expected_identity is not None else {}),
+        )
+        self._invalidate_trajectories_cache(surface)
+        return result
 
     def has_waiting_interactions(self, conversation_id, *, surface='app'):
         if not conversation_id:
@@ -1264,13 +1396,23 @@ class AntigravityCli:
         return self._workspace_declarations_match(metadata, path, uri, include_workspaces=True)
 
     def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None,
-                          turn_generation=None, before_send=None, expected_identity=None):
+                          media=None, turn_generation=None, before_send=None, expected_identity=None):
         if turn_generation is None:
             turn_generation = self.turn_generation(conversation_id, surface=surface)
-        normalized_items = list(items) if items is not None else [{'text': prompt}]
-        if not normalized_items:
+        normalized_media = [dict(row) for row in (media or []) if isinstance(row, dict)]
+        if items is not None:
+            normalized_items = list(items)
+        elif prompt or normalized_media:
+            normalized_items = [{'text': prompt or ''}]
+        else:
+            normalized_items = []
+        if not normalized_items and not normalized_media:
             raise ValueError('Antigravity 消息内容不能为空')
+        if not normalized_items:
+            normalized_items = [{'text': ''}]
         body = {'cascade_id': conversation_id, 'items': normalized_items}
+        if normalized_media:
+            body['media'] = normalized_media
         selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
@@ -1305,6 +1447,34 @@ class AntigravityCli:
         self._invalidate_trajectories_cache(surface)
         return cid, expected_identity
 
+    def fork_conversation(self, conversation_id, step_index, *, cwd=None, surface='app', expected_identity=None):
+        """Fork a conversation at a verified turn-end step into the current workspace."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError('源会话标识无效')
+        if type(step_index) is not int or step_index < 0:
+            raise ValueError('分支消息位置无效')
+        path = Path(cwd or '').resolve()
+        if not cwd or not path.is_dir():
+            raise ResumePreflightBlocked('请选择有效的原会话项目目录后再创建分支')
+        uri = path.as_uri()
+        if expected_identity is None:
+            expected_identity = self.source_identity(surface)
+        payload = {
+            'sourceCascadeId': conversation_id,
+            'forkAtStepIndex': step_index,
+            'targetForkWorkspace': 'FORK_TARGET_CURRENT_WORKSPACE',
+            'sourceWorkspaceUris': [uri],
+        }
+        result = self.call_ls_rpc('ForkConversation', payload, surface=surface, expected_identity=expected_identity)
+        new_cid = result.get('newCascadeId') or result.get('new_cascade_id')
+        if (not isinstance(new_cid, str) or not new_cid.strip() or new_cid == conversation_id
+                or any(result[key] != new_cid for key in ('newCascadeId', 'new_cascade_id') if key in result)):
+            raise BridgeUnavailable('Antigravity 尚未确认分支结果，请在电脑核对')
+        self._invalidate_trajectories_cache(surface)
+        if not self._verify_cascade_workspace(result, new_cid, path, uri, surface, expected_identity):
+            raise BridgeUnavailable('原客户端尚未确认分支的项目归属，请在电脑核对；不会重复创建分支')
+        return new_cid.strip()
+
     def stop(self, conversation_id, *, surface='app', before_stop=None):
         with self._turn_lock:
             key = (surface, conversation_id)
@@ -1326,6 +1496,105 @@ class AntigravityCli:
                 'ForceStopCascadeTree',
                 {'conversationId': conversation_id},
                 surface=surface,
+            )
+        finally:
+            self._invalidate_trajectories_cache(surface)
+        if isinstance(tree_result, dict) and tree_result:
+            return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
+        return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
+
+    def running_child_cids(self, conversation_id, *, surface='app', expected_identity):
+        result = self.call_ls_rpc('GetAllCascadeTrajectories', {'exclude_subtrajectories': False},
+                                  surface=surface, expected_identity=expected_identity)
+        summaries = result.get('trajectorySummaries', {})
+        if not isinstance(summaries, dict):
+            raise BridgeUnavailable('原生子任务状态未确认')
+        children = set()
+        for cid, summary in summaries.items():
+            if cid == conversation_id or not isinstance(summary, dict):
+                continue
+            meta = summary.get('trajectoryMetadata')
+            meta = meta if isinstance(meta, dict) else {}
+            parents = [item[name] for item in (summary, meta)
+                       for name in ('parentCascadeId', 'parentConversationId') if item.get(name)]
+            if (parents and all(parent == conversation_id for parent in parents)
+                    and (summary.get('status') in _ACTIVE_RUN_STATUSES or summary.get('notFullyIdle') is True)):
+                children.add(cid)
+        return children
+
+    def list_background_tasks(self, conversation_id, *, surface='app', expected_identity=None):
+        """Return live background command tasks belonging exclusively to conversation_id."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return []
+        result = self.call_ls_rpc('ListBackgroundTasks', {}, surface=surface,
+                                  **({'expected_identity': expected_identity} if expected_identity is not None else {}))
+        raw_tasks = result.get('tasks')
+        if not isinstance(raw_tasks, list):
+            return []
+        tasks = []
+        seen = set()
+        for entry in raw_tasks:
+            if not isinstance(entry, dict) or entry.get('conversationId') != conversation_id:
+                continue
+            task = entry.get('task')
+            if not isinstance(task, dict):
+                continue
+            step_index = task.get('stepIndex')
+            has_step = type(step_index) is int and step_index >= 0
+            raw_id = str(task.get('taskId') or '').strip()
+            task_id = f'bg:{step_index}' if has_step else raw_id
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            label = str(task.get('toolSummary') or task.get('description') or task.get('toolName') or '后台任务').strip()
+            if task.get('isDaemon') is True and not label.startswith('[常驻]'):
+                label = '[常驻] ' + label
+            tasks.append({
+                'id': task_id,
+                'title': label[:120],
+                'status': 'running',
+                'cancellable': has_step,
+            })
+        return tasks
+
+    def stop_background_step(self, conversation_id, step_index, *, surface='app', expected_identity):
+        """Cancel a single live background step within conversation_id without stopping the turn."""
+        if type(step_index) is not int or step_index < 0:
+            raise ValueError('后台任务步骤标识无效')
+        try:
+            return self.call_ls_rpc(
+                'CancelCascadeSteps',
+                {'cascade_id': conversation_id, 'step_indices': [step_index]},
+                surface=surface,
+                expected_identity=expected_identity,
+            )
+        finally:
+            self._invalidate_trajectories_cache(surface)
+
+    def stop_child_cascade(self, child_conversation_id, *, surface='app', before_stop=None, expected_identity):
+        """Stop only a verified child subagent cascade tree without touching the parent conversation."""
+        with self._turn_lock:
+            self._stop_generation += 1
+            self._stop_generations[(surface, child_conversation_id)] = self._stop_generation
+            if before_stop is not None:
+                before_stop()
+        cancel_result = None
+        tree_result = None
+        try:
+            try:
+                cancel_result = self.call_ls_rpc(
+                    'CancelCascadeInvocation',
+                    {'cascade_id': child_conversation_id, 'kill_background_tasks': True, 'notify_parent': True},
+                    surface=surface,
+                    expected_identity=expected_identity,
+                )
+            except BridgeUnavailable:
+                cancel_result = None
+            tree_result = self.call_ls_rpc(
+                'ForceStopCascadeTree',
+                {'conversationId': child_conversation_id},
+                surface=surface,
+                expected_identity=expected_identity,
             )
         finally:
             self._invalidate_trajectories_cache(surface)

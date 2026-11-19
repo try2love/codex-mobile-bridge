@@ -89,6 +89,8 @@ class HookIPCServer:
         self._surface_hints = {}
         self._pending = {}
         self._stop_requests = set()
+        self._stop_meta = {}
+        self._last_initial_steps = {}
         self._queues = self._load_json(self.queues_file, {})
         self._permissions = self._load_json(self.permissions_file, {})
 
@@ -210,23 +212,74 @@ class HookIPCServer:
         cid = self._resolve_cid(payload)
         return self._dispatch_resolved(cid, event, payload)
 
+    @staticmethod
+    def _extract_nonneg_int(payload, *keys):
+        if not isinstance(payload, dict):
+            return None
+        values = [payload[key] for key in keys if key in payload]
+        if (not values or any(type(value) is not int or value < 0 for value in values)
+                or any(value != values[0] for value in values)):
+            return None
+        return values[0]
+
     def _dispatch_resolved(self, cid, event, payload):
         if not cid:
             return {'decision': 'ask'} if event == 'pre_tool_use' else {}
         transcript_path = str(payload.get('transcriptPath') or '')
+        if event == 'pre_invocation':
+            if transcript_path:
+                with self._lock:
+                    self._surface_hints[cid] = transcript_path
+            return self._handle_pre_invocation(cid, payload)
+        initial_steps = self._extract_nonneg_int(payload, 'initialNumSteps', 'initial_num_steps')
         with self._lock:
             if cid not in self._stop_requests:
                 self._heartbeats[cid] = time.monotonic()
+                if initial_steps is not None:
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
             if transcript_path:
                 self._surface_hints[cid] = transcript_path
 
         if event == 'pre_tool_use':
             return self._handle_pre_tool_use(cid, payload)
         if event == 'post_invocation':
-            return self._handle_post_invocation(cid)
+            return self._handle_post_invocation(cid, payload)
         if event == 'stop':
             return self._handle_stop(cid, payload)
         return {}
+
+    def _handle_pre_invocation(self, cid, payload):
+        if not cid:
+            return {}
+        invocation_num = self._extract_nonneg_int(payload, 'invocationNum', 'invocation_num')
+        initial_steps = self._extract_nonneg_int(payload, 'initialNumSteps', 'initial_num_steps')
+        with self._lock:
+            if cid not in self._stop_requests:
+                self._heartbeats[cid] = time.monotonic()
+                if initial_steps is not None:
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
+                return {}
+            meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None})
+            # A terminal acknowledgement does not identify a new user turn.
+            # Require the first invocation and strictly advancing native steps.
+            is_first_invocation = invocation_num == 1
+            advanced_turn = (
+                is_first_invocation
+                and initial_steps is not None
+                and meta.get('stopped_at_steps') is not None
+                and initial_steps > meta['stopped_at_steps']
+            )
+            if advanced_turn:
+                self._stop_requests.discard(cid)
+                self._stop_meta.pop(cid, None)
+                self._heartbeats[cid] = time.monotonic()
+                if initial_steps is not None:
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
+                return {}
+            if initial_steps is not None and meta.get('stopped_at_steps') is None:
+                meta['stopped_at_steps'] = initial_steps
+            self._heartbeats.pop(cid, None)
+            return {'terminationBehavior': 'terminate'}
 
     def _handle_pre_tool_use(self, cid, payload):
         if not cid:
@@ -320,12 +373,16 @@ class HookIPCServer:
         self._save_json(self.queues_file, self._queues)
         return popped
 
-    def _handle_post_invocation(self, cid):
+    def _handle_post_invocation(self, cid, payload=None):
         if not cid:
             return {}
+        initial_steps = self._extract_nonneg_int(payload, 'initialNumSteps', 'initial_num_steps')
         with self._lock:
             if cid in self._stop_requests:
-                # Only an explicit next turn may re-enable tool execution and queued delivery.
+                # A stopped invocation cannot re-enable tools or queued delivery.
+                meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None})
+                if initial_steps is not None and meta.get('stopped_at_steps') is None:
+                    meta['stopped_at_steps'] = initial_steps
                 self._heartbeats.pop(cid, None)
                 return {'terminationBehavior': 'terminate'}
             texts = self._pop_queued_texts(cid, modes={'steer'})
@@ -345,7 +402,7 @@ class HookIPCServer:
             if cid in self._stop_requests:
                 self._heartbeats.pop(cid, None)
                 return {}
-            if payload.get('fullyIdle') is not True or reason != 'model_stop':
+            if payload.get('fullyIdle') is not True or reason not in ('model_stop', 'no_tool_call'):
                 self._heartbeats.pop(cid, None)
                 return {}
             texts = self._pop_queued_texts(cid)
@@ -522,10 +579,14 @@ class HookIPCServer:
         """Clear a stale stop only before an explicit, native-idle-verified send."""
         with self._lock:
             self._stop_requests.discard(conversation_id)
+            self._stop_meta.pop(conversation_id, None)
 
     def request_stop(self, conversation_id):
         with self._lock:
             self._stop_requests.add(conversation_id)
+            self._stop_meta[conversation_id] = {
+                'stopped_at_steps': self._last_initial_steps.get(conversation_id),
+            }
             self._heartbeats.pop(conversation_id, None)
             for item in list(self._pending.values()):
                 if item.conversation_id == conversation_id:

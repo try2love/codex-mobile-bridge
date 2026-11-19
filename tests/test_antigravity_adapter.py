@@ -731,13 +731,17 @@ class AntigravitySafetyTests(unittest.TestCase):
     def test_uploaded_images_and_files_remain_native_path_references(self):
         from bridge.clients.uploads import DesktopUploads
         uploads = DesktopUploads(self.directory)
-        rows = [{'id': 'image', 'image': 'image/png', 'localPath': '/tmp/photo.png', 'name': 'photo.png'},
+        img_file = Path(self.temp.name) / 'photo.png'
+        img_file.write_bytes(b'\x89PNG\r\n\x1a\n')
+        rows = [{'id': 'image', 'image': 'image/png', 'localPath': str(img_file), 'name': 'photo.png'},
                 {'id': 'file', 'image': None, 'localPath': '/tmp/report.txt', 'name': 'report.txt'}]
         with mock.patch.object(uploads.store, 'resolve', return_value=rows):
             images, files = uploads.resolve('antigravity', CID, ['image', 'file'], native_files=True)
-        self.assertEqual(images, [])
-        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedFiles': files}),
-                         'inspect\n\n@/tmp/photo.png\n@/tmp/report.txt')
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0]['url'].startswith('data:image/png;base64,'))
+        self.assertEqual(images[0]['name'], 'photo.png')
+        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedImages': images, 'resolvedFiles': files}),
+                         'inspect\n\n@/tmp/report.txt')
         self.assertNotEqual(uploads.scope('claude', CID), uploads.scope('antigravity', CID))
 
     def test_hook_injection_requires_verified_session_and_native_idle(self):
@@ -1077,6 +1081,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                 return {'trajectorySummaries': state['trajectories'] if surface == 'app' else {}}
             if method == 'GetCascadeTrajectory':
                 return {'trajectory': {'steps': state['traj_steps'].get((body or {}).get('cascadeId'), [])}}
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
@@ -1227,6 +1233,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                         },
                     }
                 }
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
@@ -1433,17 +1441,27 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertEqual([(t['id'], t['cancellable']) for t in tasks], [(child_run, False), (child_done, False)])
         sid = gateway_id('app', CID)
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
-                mock.patch.object(adapter.cli, 'stop') as stop_mock:
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
+                mock.patch.object(adapter.cli, 'stop') as stop_mock, \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, *args, **kwargs: (
+                    {'trajectorySummaries': {child_run: {
+                        'status': 'CASCADE_RUN_STATUS_RUNNING', 'trajectoryMetadata': {'parentCascadeId': CID},
+                    }}} if method == 'GetAllCascadeTrajectories' else {}
+                )) as rpc_mock:
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': unrelated})
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': child_done})
             adapter.hooks = mock.MagicMock()
             adapter.hooks.permission_mode.return_value = 'desktop'
-            with self.assertRaises(ValueError):
-                adapter.call('stop-task', sid, {'taskId': child_run})
+            result = adapter.call('stop-task', sid, {'taskId': child_run})
+            self.assertEqual(result, {'status': 'accepted'})
             stop_mock.assert_not_called()
-            adapter.hooks.request_stop.assert_not_called()
+            adapter.hooks.request_stop.assert_called_once_with(gateway_id('app', child_run))
+            self.assertEqual(
+                [call.args[0] for call in rpc_mock.call_args_list if call.args[0] != 'GetAllCascadeTrajectories'],
+                ['CancelCascadeInvocation', 'ForceStopCascadeTree'],
+            )
 
         resolved_count = 0
         def resolve_once(payload):
