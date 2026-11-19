@@ -1709,7 +1709,7 @@ class DesktopSessions:
         fingerprint = hashlib.sha256(json.dumps([provider, action, sid, creation_intent(body) if action == 'create' else body], sort_keys=True).encode()).hexdigest()
         # Normal chat writes keep progress reads available; account/lifecycle
         # operations additionally invalidate the connector binding.
-        interrupt = action == 'stop' and getattr(type(adapter), 'concurrent_stop', False) is True
+        interrupt = action in ('stop', 'stop-task') and getattr(type(adapter), 'concurrent_stop', False) is True
         with self._changing(provider, rebind=False, interrupt=interrupt):
             if interrupt and (adapter is not self.adapters[provider] or binding != self.binding_epochs[provider]):
                 raise BridgeUnavailable('客户端接入已变化，停止尚未提交，请刷新后重试')

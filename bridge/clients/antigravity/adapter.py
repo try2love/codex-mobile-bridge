@@ -402,6 +402,33 @@ class Antigravity:
             return self.cli.send_user_message(cid, prompt, model=model, surface=surface, items=items, **selection)
         return self.cli.send_user_message(cid, prompt, model=model, surface=surface, **selection)
 
+    def _stop_task(self, cid, surface, body):
+        task_id = str(body.get('taskId') or '').strip()
+        bg_match = re.fullmatch(r'bg:(\d+)', task_id)
+        if not bg_match and (not re.fullmatch(r'[0-9a-fA-F-]{36}', task_id) or task_id == cid):
+            raise ResumePreflightBlocked('后台任务标识无效')
+        try:
+            expected_identity = self.cli.source_identity(surface)
+            if bg_match:
+                live_bg = self.cli.list_background_tasks(cid, surface=surface, expected_identity=expected_identity)
+                if not any(task.get('id') == task_id and task.get('cancellable') is True for task in live_bg):
+                    raise ResumePreflightBlocked('找不到该运行中的后台任务或任务已结束')
+            else:
+                children = self.cli.running_child_cids(cid, surface=surface, expected_identity=expected_identity)
+                if task_id not in children:
+                    raise ResumePreflightBlocked('该子任务已结束或无法核验其属于当前会话')
+        except (OSError, ValueError, BridgeUnavailable) as exc:
+            raise ResumePreflightBlocked(str(exc)) from exc
+        if bg_match:
+            self.cli.stop_background_step(cid, int(bg_match.group(1)), surface=surface,
+                                          expected_identity=expected_identity)
+        else:
+            child_key = gateway_id(surface, task_id)
+            before_stop = (lambda: self.hooks.request_stop(child_key)) if self.hooks else None
+            self.cli.stop_child_cascade(task_id, surface=surface, before_stop=before_stop,
+                                        expected_identity=expected_identity)
+        return {'status': 'accepted'}
+
     def call(self, action, sid=None, body=None):
         body = body or {}
         turn_generation = self.cli.turn_generation() if action in ('send', 'goal', 'compact') else None
@@ -492,6 +519,8 @@ class Antigravity:
             else:
                 self.cli.stop(cid, surface=surface)
             return {'status': 'accepted'}
+        if action == 'stop-task':
+            return self._stop_task(cid, surface, body)
         if action == 'rename':
             try:
                 title = self._validate_title(body.get('title'))
@@ -600,45 +629,21 @@ class Antigravity:
             merged_caps = {**account_data.get('capabilities', {}), **session['capabilities']}
             return {**account_data, 'currentModel': session['model'], 'currentEffort': session['effort'], 'capabilities': merged_caps, **slash_data}
         if action == 'tasks':
-            live = self.cli.available(surface)
-            child_tasks = self.store.list_tasks(row['surfaceRoot'], cid, live=live)
+            child_tasks = self.store.list_tasks(row['surfaceRoot'], cid, live=False)
             bg_tasks = []
-            if live:
+            if self.cli.available(surface):
                 try:
-                    bg_tasks = self.cli.list_background_tasks(cid, surface=surface)
+                    identity = self.cli.source_identity(surface)
+                    bg_tasks = self.cli.list_background_tasks(cid, surface=surface, expected_identity=identity)
+                    running = self.cli.running_child_cids(cid, surface=surface, expected_identity=identity)
+                    if self.cli.source_identity(surface) != identity:
+                        raise BridgeUnavailable('原生服务进程已变化')
+                    for task in child_tasks:
+                        if task['id'] in running:
+                            task.update(status='running', cancellable=True)
                 except (OSError, ValueError, BridgeUnavailable):
                     bg_tasks = []
             return {'tasks': bg_tasks + child_tasks}
-        if action == 'stop-task':
-            task_id = str(body.get('taskId') or '').strip()
-            if not task_id:
-                raise ResumePreflightBlocked('后台任务标识无效')
-            if not self.cli.available(surface):
-                raise ResumePreflightBlocked('原客户端服务未连接，请先打开 Antigravity 应用')
-            bg_match = re.fullmatch(r'bg:(\d+)', task_id)
-            if bg_match:
-                step_index = int(bg_match.group(1))
-                try:
-                    live_bg = self.cli.list_background_tasks(cid, surface=surface)
-                except (OSError, ValueError, BridgeUnavailable) as exc:
-                    raise ResumePreflightBlocked('暂时无法核验该后台任务状态，请刷新后重试') from exc
-                target_bg = next((row_t for row_t in live_bg if row_t.get('id') == task_id and row_t.get('cancellable') is True), None)
-                if target_bg is None:
-                    raise ResumePreflightBlocked('找不到该运行中的后台任务或任务已结束')
-                self.cli.stop_background_step(cid, step_index, surface=surface)
-                return {'status': 'accepted'}
-            if not re.fullmatch(r'[0-9a-fA-F-]{36}', task_id) or task_id == cid:
-                raise ResumePreflightBlocked('后台任务标识无效')
-            child_tasks = self.store.list_tasks(row['surfaceRoot'], cid, live=True)
-            target_child = next((row_t for row_t in child_tasks if row_t.get('id') == task_id), None)
-            if target_child is None:
-                raise ResumePreflightBlocked('该子任务不属于当前会话')
-            if target_child.get('status') != 'running' or target_child.get('cancellable') is not True:
-                raise ResumePreflightBlocked('该子任务已结束，无需停止')
-            child_key = gateway_id(surface, task_id)
-            before_child_stop = (lambda: self.hooks.request_stop(child_key)) if self.hooks else None
-            self.cli.stop_child_cascade(task_id, surface=surface, before_stop=before_child_stop)
-            return {'status': 'accepted'}
         if action == 'image':
             return self.store.read_image(row['surfaceRoot'], cid, body.get('source'))
         if action == 'resume':

@@ -606,7 +606,8 @@ class AntigravityCli:
             raise ValueError('不支持的 Antigravity 原生操作')
         # Native cancellation must reach the LS while SendUserCascadeMessage is
         # still waiting for its response. Other writes retain their serialization.
-        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree', 'CancelCascadeSteps') else self._lock:
+        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree', 'CancelCascadeSteps',
+                                           'ListBackgroundTasks', 'GetAllCascadeTrajectories') else self._lock:
             try:
                 target = endpoint(surface, self.home)
                 if expected_identity is not None and target['identity'] != expected_identity:
@@ -1433,11 +1434,31 @@ class AntigravityCli:
             return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
         return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
 
-    def list_background_tasks(self, conversation_id, *, surface='app'):
+    def running_child_cids(self, conversation_id, *, surface='app', expected_identity):
+        result = self.call_ls_rpc('GetAllCascadeTrajectories', {'exclude_subtrajectories': False},
+                                  surface=surface, expected_identity=expected_identity)
+        summaries = result.get('trajectorySummaries', {})
+        if not isinstance(summaries, dict):
+            raise BridgeUnavailable('原生子任务状态未确认')
+        children = set()
+        for cid, summary in summaries.items():
+            if cid == conversation_id or not isinstance(summary, dict):
+                continue
+            meta = summary.get('trajectoryMetadata')
+            meta = meta if isinstance(meta, dict) else {}
+            parents = [item[name] for item in (summary, meta)
+                       for name in ('parentCascadeId', 'parentConversationId') if item.get(name)]
+            if (parents and all(parent == conversation_id for parent in parents)
+                    and (summary.get('status') in _ACTIVE_RUN_STATUSES or summary.get('notFullyIdle') is True)):
+                children.add(cid)
+        return children
+
+    def list_background_tasks(self, conversation_id, *, surface='app', expected_identity=None):
         """Return live background command tasks belonging exclusively to conversation_id."""
         if not isinstance(conversation_id, str) or not conversation_id.strip():
             return []
-        result = self.call_ls_rpc('ListBackgroundTasks', {}, surface=surface)
+        result = self.call_ls_rpc('ListBackgroundTasks', {}, surface=surface,
+                                  **({'expected_identity': expected_identity} if expected_identity is not None else {}))
         raw_tasks = result.get('tasks')
         if not isinstance(raw_tasks, list):
             return []
@@ -1467,7 +1488,7 @@ class AntigravityCli:
             })
         return tasks
 
-    def stop_background_step(self, conversation_id, step_index, *, surface='app'):
+    def stop_background_step(self, conversation_id, step_index, *, surface='app', expected_identity):
         """Cancel a single live background step within conversation_id without stopping the turn."""
         if type(step_index) is not int or step_index < 0:
             raise ValueError('后台任务步骤标识无效')
@@ -1476,14 +1497,18 @@ class AntigravityCli:
                 'CancelCascadeSteps',
                 {'cascade_id': conversation_id, 'step_indices': [step_index]},
                 surface=surface,
+                expected_identity=expected_identity,
             )
         finally:
             self._invalidate_trajectories_cache(surface)
 
-    def stop_child_cascade(self, child_conversation_id, *, surface='app', before_stop=None):
+    def stop_child_cascade(self, child_conversation_id, *, surface='app', before_stop=None, expected_identity):
         """Stop only a verified child subagent cascade tree without touching the parent conversation."""
-        if before_stop is not None:
-            before_stop()
+        with self._turn_lock:
+            self._stop_generation += 1
+            self._stop_generations[(surface, child_conversation_id)] = self._stop_generation
+            if before_stop is not None:
+                before_stop()
         cancel_result = None
         tree_result = None
         try:
@@ -1492,18 +1517,16 @@ class AntigravityCli:
                     'CancelCascadeInvocation',
                     {'cascade_id': child_conversation_id, 'kill_background_tasks': True, 'notify_parent': True},
                     surface=surface,
+                    expected_identity=expected_identity,
                 )
             except BridgeUnavailable:
                 cancel_result = None
-            try:
-                tree_result = self.call_ls_rpc(
-                    'ForceStopCascadeTree',
-                    {'conversationId': child_conversation_id},
-                    surface=surface,
-                )
-            except BridgeUnavailable:
-                if cancel_result is None:
-                    raise
+            tree_result = self.call_ls_rpc(
+                'ForceStopCascadeTree',
+                {'conversationId': child_conversation_id},
+                surface=surface,
+                expected_identity=expected_identity,
+            )
         finally:
             self._invalidate_trajectories_cache(surface)
         if isinstance(tree_result, dict) and tree_result:

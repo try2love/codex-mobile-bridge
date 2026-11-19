@@ -8,7 +8,7 @@ from unittest import mock
 
 from bridge.clients.antigravity.adapter import Antigravity
 from bridge.clients.antigravity.model import gateway_id
-from bridge.clients.errors import ResumePreflightBlocked
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.manager import DesktopSessions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,8 +83,12 @@ class AntigravityTasksTests(unittest.TestCase):
         }
 
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
-                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda m, p=None, *, surface='app': (
-                    bg_reply if m == 'ListBackgroundTasks' else {}
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda m, p=None, *, surface='app', **kw: (
+                    bg_reply if m == 'ListBackgroundTasks' else {'trajectorySummaries': {
+                        CHILD_RUN: {'status': 'CASCADE_RUN_STATUS_RUNNING',
+                                    'trajectoryMetadata': {'parentCascadeId': CID}},
+                    }}
                 )):
             detail = adapter.call('detail', sid)
             self.assertTrue(detail['capabilities']['tasks'])
@@ -108,8 +112,13 @@ class AntigravityTasksTests(unittest.TestCase):
         sid = gateway_id('app', CID)
         calls = []
 
-        def fake_rpc(method, payload=None, *, surface='app'):
+        def fake_rpc(method, payload=None, *, surface='app', expected_identity=None):
             calls.append((method, payload, surface))
+            self.assertEqual(expected_identity, 'source')
+            if method == 'GetAllCascadeTrajectories':
+                return {'trajectorySummaries': {CHILD_RUN: {
+                    'status': 'CASCADE_RUN_STATUS_RUNNING', 'trajectoryMetadata': {'parentCascadeId': CID},
+                }}}
             if method == 'ListBackgroundTasks':
                 return {
                     'tasks': [{
@@ -120,6 +129,7 @@ class AntigravityTasksTests(unittest.TestCase):
             return {}
 
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
                 mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
             # 1. Stop live background step via CancelCascadeSteps
             res = manager.call('antigravity', 'stop-task', sid, {'id': str(uuid.uuid4()), 'taskId': 'bg:12'})
@@ -137,7 +147,7 @@ class AntigravityTasksTests(unittest.TestCase):
             res_child = manager.call('antigravity', 'stop-task', sid, {'id': str(uuid.uuid4()), 'taskId': CHILD_RUN})
             self.assertEqual(res_child['status'], 'accepted')
             self.assertEqual(
-                calls,
+                [call for call in calls if call[0] != 'GetAllCascadeTrajectories'],
                 [
                     ('CancelCascadeInvocation', {'cascade_id': CHILD_RUN, 'kill_background_tasks': True, 'notify_parent': True}, 'app'),
                     ('ForceStopCascadeTree', {'conversationId': CHILD_RUN}, 'app'),
@@ -149,12 +159,53 @@ class AntigravityTasksTests(unittest.TestCase):
                 calls.clear()
                 res_bad = manager.call('antigravity', 'stop-task', sid, {'id': str(uuid.uuid4()), 'taskId': forbidden})
                 self.assertEqual(res_bad['status'], 'blocked')
-                self.assertEqual(calls, [])
+                self.assertFalse(any(m in ('CancelCascadeSteps', 'CancelCascadeInvocation', 'ForceStopCascadeTree') for m, _, _ in calls))
 
         # Offline stop-task fails preflight
         with mock.patch.object(adapter.cli, 'available', return_value=False):
             with self.assertRaises(ResumePreflightBlocked):
                 adapter.call('stop-task', sid, {'taskId': CHILD_RUN})
+
+    def test_child_stop_invalidates_prepared_sends_only_for_that_child(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        old = adapter.cli.turn_generation()
+        with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={}) as rpc:
+            adapter.cli.stop_child_cascade(CHILD_RUN, expected_identity='source')
+            self.assertGreater(adapter.cli.turn_generation(CHILD_RUN), old)
+            self.assertEqual(adapter.cli.turn_generation(CID), 0)
+            self.assertEqual(adapter.cli.turn_generation(CHILD_RUN, surface='ide'), 0)
+            rpc.reset_mock()
+            with self.assertRaises(BridgeUnavailable):
+                adapter.cli.send_user_message(CHILD_RUN, 'old', turn_generation=old)
+            rpc.assert_not_called()
+
+    def test_stale_saved_child_relation_never_authorizes_stop(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        for native_child in ({}, {'status': 'CASCADE_RUN_STATUS_RUNNING',
+                                  'trajectoryMetadata': {'parentCascadeId': OTHER_CID}}):
+            with self.subTest(native_child=native_child), \
+                    mock.patch.object(adapter.cli, 'available', return_value=True), \
+                    mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
+                    mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={
+                        'trajectorySummaries': {CHILD_RUN: native_child},
+                    }) as rpc:
+                with self.assertRaises(ResumePreflightBlocked):
+                    adapter.call('stop-task', gateway_id('app', CID), {'taskId': CHILD_RUN})
+                self.assertFalse(any(c.args[0].startswith(('Cancel', 'ForceStop')) for c in rpc.call_args_list))
+
+    def test_changed_endpoint_during_task_check_never_cancels(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        target = {'address': 'http://127.0.0.1:9999', 'token': 'tok', 'identity': 'changed'}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
+                mock.patch('bridge.clients.antigravity.cli_session.endpoint', return_value=target), \
+                mock.patch.object(adapter.cli._opener, 'open') as opened:
+            with self.assertRaises(ResumePreflightBlocked):
+                adapter.call('stop-task', gateway_id('app', CID), {'taskId': 'bg:12'})
+            opened.assert_not_called()
 
 
 if __name__ == '__main__':
