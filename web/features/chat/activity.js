@@ -33,7 +33,7 @@ function chatNodesWithTurnCompletions(container,nodes,rows){
   const turns=new Map(),byKey=new Map();
   for(const [index,row] of rows.entries()){
     const key=String(row.key??row.id??index);byKey.set(key,row);
-    if(row.turnId===undefined||row.turnId===null)continue;
+    if(row.turnId===undefined||row.turnId===null||row.turnCompletionKnown===false)continue;
     const id=String(row.turnId),turn=turns.get(id)||{id};
     turn.last=key;
     if(row.turnStatus)turn.status=row.turnStatus;

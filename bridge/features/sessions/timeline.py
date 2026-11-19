@@ -105,6 +105,8 @@ class Timeline:
                     row['turnStartedAt'] = turn['startedAt']
                 if turn.get('completedAt') is not None:
                     row['turnCompletedAt'] = turn['completedAt']
+                if turn.get('completionKnown') is False:
+                    row['turnCompletionKnown'] = False
                 timestamp = message.get('timestamp')
                 if timestamp is None and first_user:
                     timestamp = turn.get('startedAt')

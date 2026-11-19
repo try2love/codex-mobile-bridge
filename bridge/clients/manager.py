@@ -1517,7 +1517,11 @@ class DesktopSessions:
                 boundary = 'user:' + str(message.get('id', index))
             if not turns or turns[-1]['id'] != boundary:
                 turns.append({'id': boundary, 'messages': [], 'actionable': False,
-                              'status': message.get('turnStatus')})
+                              'status': message.get('turnStatus'),
+                              'completionKnown': message.get('turnStatus') in ('completed', 'interrupted', 'failed')})
+            if message.get('turnStatus'):
+                turns[-1]['status'] = message['turnStatus']
+                turns[-1]['completionKnown'] = message['turnStatus'] in ('completed', 'interrupted', 'failed')
             normalized = dict(message, kind=message.get('kind') or message.get('type') or message.get('role', 'unknown'))
             turns[-1]['messages'].append(normalized)
             for source, target in (('turnStartedAt', 'startedAt'), ('turnCompletedAt', 'completedAt')):
