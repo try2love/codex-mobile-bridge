@@ -495,22 +495,22 @@ test('follow-up icon, integrated select and slash placeholder stay synchronized'
   const wrapper = page.locator('#composer [data-tool=sendMode]');
   const icon = wrapper.locator('.toolbar-select-icon');
   await expect(icon).toHaveAttribute('data-icon', 'queue');
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', /待当前任务完成后发送.*\n输入 \/ 查看指令/s);
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', '完成后发送 · 输入 / 查看指令');
   const bounds = { outer: await wrapper.boundingBox(), icon: await icon.boundingBox(), select: await page.locator('#send-mode').boundingBox() };
   expect(bounds.icon.x).toBeGreaterThan(bounds.outer.x);
   expect(bounds.icon.x).toBeGreaterThanOrEqual(bounds.select.x);
   await page.locator('#send-mode').selectOption('steer');
   await expect(icon).toHaveAttribute('data-icon', 'steer');
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', '继续这条聊天…\n输入 / 查看指令');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', '继续这条聊天 · 输入 / 查看指令');
   await page.evaluate(() => BridgeI18n.setLanguage('en'));
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat…\nType / for commands');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat · / commands');
   await page.locator('#send-mode').selectOption('queue');
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', /when this task finishes.*\nType \/ for commands/s);
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Send when done · / commands');
   await page.evaluate(() => {
     composerToolbar.submitControl.getState = () => ({ running: false, hasDraft: true });
     composerToolbar.sync();
   });
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat…\nType / for commands');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat · / commands');
   await expect(page.locator('#message')).toHaveValue('保留草稿与光标');
   await page.locator('#composer .toolbar-more').click();
   await expect(page.locator('#composer .toolbar-more')).toHaveCSS('outline-style', 'none');
@@ -525,4 +525,79 @@ test('follow-up icon, integrated select and slash placeholder stay synchronized'
     t.sync();
   });
   await expect(preview).toHaveAttribute('data-icon', 'steer');
+});
+
+test('bottom right tools stay beside send until actual overflow and return after widening', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => {
+    const t = composerToolbar;
+    t.preferences.update({ layout: {
+      topLeft: [], topRight: [], bottomLeft: ['more', 'model'], bottomRight: ['sendMode'],
+      more: ['skills', 'permissions', 'context', 'collapse', 'attachments', 'plan', 'goal'],
+    }, display: { sendMode: 'both' } });
+    t.controls.sendMode.disabled = false;
+    for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.submitControl.getState = () => ({ running: true, hasDraft: true });
+    t.submitControl.send.disabled = false;t.sync();
+  });
+  const strip = page.locator('#composer .toolbar-bottom-scroll');
+  const send = page.locator('#composer .composer-submit');
+  const mode = page.locator('#composer [data-tool=sendMode]');
+  const model = page.locator('#composer [data-tool=model]');
+  async function fitted() {
+    await expect.poll(() => strip.evaluate(n => n.scrollWidth - n.clientWidth)).toBeLessThanOrEqual(1);
+    const [right, submit, left] = await Promise.all([mode.boundingBox(), send.boundingBox(), model.boundingBox()]);
+    expect(submit.x - right.x - right.width).toBeLessThanOrEqual(8);
+    expect(right.x - left.x - left.width).toBeGreaterThan(50);
+    await strip.evaluate(n => n.scrollLeft = 999);
+    expect(await strip.evaluate(n => n.scrollLeft)).toBe(0);
+  }
+  await fitted();
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect.poll(() => strip.evaluate(n => n.scrollWidth > n.clientWidth + 1)).toBe(true);
+  const pin = await page.locator('#composer .toolbar-pin').boundingBox();
+  const submit = await send.boundingBox();
+  await strip.evaluate(n => n.scrollLeft = n.scrollWidth);
+  expect((await page.locator('#composer .toolbar-pin').boundingBox()).x).toBeCloseTo(pin.x, 0);
+  expect((await send.boundingBox()).x).toBeCloseTo(submit.x, 0);
+  await page.setViewportSize({ width: 1280, height: 900 });await fitted();
+  await page.evaluate(() => {
+    const t = composerToolbar, layout = structuredClone(t.layout);
+    layout.topLeft = ['more'];layout.bottomLeft = [];layout.more.push('model');
+    t.preferences.update({ layout });t.sync();
+  });
+  await expect(page.locator('#composer .toolbar-pin')).toBeHidden();
+  const [rightOnly, submitOnly] = await Promise.all([mode.boundingBox(), send.boundingBox()]);
+  expect(submitOnly.x - rightOnly.x - rightOnly.width).toBeLessThanOrEqual(8);
+});
+
+test('send mode icon is centered without a focus frame and placeholder fits one line', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await page.evaluate(() => {
+    const t = composerToolbar;
+    t.preferences.update({ layout: {
+      topLeft: [], topRight: [], bottomLeft: ['more', 'model'], bottomRight: ['sendMode'],
+      more: ['skills', 'permissions', 'context', 'collapse', 'attachments', 'plan', 'goal'],
+    }, display: { sendMode: 'icon' } });
+    t.controls.sendMode.disabled = false;for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.submitControl.getState = () => ({ running: true, hasDraft: true });t.submitControl.send.disabled = false;t.sync();
+  });
+  const wrapper = page.locator('#composer [data-tool=sendMode]');
+  await page.locator('#send-mode').focus();
+  await expect(wrapper).toHaveCSS('outline-style', 'none');
+  await expect(wrapper).toHaveCSS('border-top-width', '0px');
+  const box = await wrapper.boundingBox(), icon = await wrapper.locator('.toolbar-select-icon').boundingBox();
+  expect(box.width).toBe(44);expect(box.height).toBe(44);
+  expect(icon.x + icon.width / 2).toBeCloseTo(box.x + box.width / 2, 0);
+  expect(icon.y + icon.height / 2).toBeCloseTo(box.y + box.height / 2, 0);
+  for (const language of ['zh', 'en']) for (const followUpMode of ['queue', 'steer']) {
+    await page.evaluate(({ language, followUpMode }) => {
+      BridgeI18n.setLanguage(language);composerToolbar.preferences.update({ followUpMode });composerToolbar.sync();
+    }, { language, followUpMode });
+    const result = await page.locator('#message').evaluate(n => {
+      const style = getComputedStyle(n), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');ctx.font = style.font;
+      return { text: n.placeholder, width: ctx.measureText(n.placeholder).width, available: n.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) };
+    });
+    expect(result.text).not.toContain('\n');expect(result.text).toContain('/');expect(result.width).toBeLessThanOrEqual(result.available);
+  }
 });

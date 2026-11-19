@@ -444,8 +444,7 @@ class ComposerToolbar {
     this.syncBottomLayout();
   }
   syncBottomLayout() {
-    const ids = [...this.layout.bottomLeft, ...this.layout.bottomRight];
-    const pinned = ids.find((id) => this.shown(id) && !(this.collapsed && id === 'more'));
+    const pinned = this.layout.bottomLeft.find((id) => this.shown(id) && !(this.collapsed && id === 'more'));
     for (const key of ['bottomLeft', 'bottomRight']) {
       const group = this.groups[key];
       let index = 0;
@@ -462,10 +461,9 @@ class ComposerToolbar {
     ComposerUI.hidden(this.bottomPin, !pinned);
   }
   syncPlaceholder() {
-    const prompt = this.actionMode() === 'queue'
-      ? '输入下一条消息，待当前任务完成后发送…'
-      : '继续这条聊天…';
-    const placeholder = ComposerUI.t(prompt) + '\n' + ComposerUI.t('输入 / 查看指令');
+    const placeholder = ComposerUI.t(this.actionMode() === 'queue'
+      ? '完成后发送 · 输入 / 查看指令'
+      : '继续这条聊天 · 输入 / 查看指令');
     if (this.input.placeholder !== placeholder) {
       this.input.placeholder = placeholder;
       if (!this.input.value) this.requestInputResize();
