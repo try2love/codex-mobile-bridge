@@ -216,11 +216,11 @@ class HookIPCServer:
     def _extract_nonneg_int(payload, *keys):
         if not isinstance(payload, dict):
             return None
-        for key in keys:
-            val = payload.get(key)
-            if type(val) is int and val >= 0:
-                return val
-        return None
+        values = [payload[key] for key in keys if key in payload]
+        if (not values or any(type(value) is not int or value < 0 for value in values)
+                or any(value != values[0] for value in values)):
+            return None
+        return values[0]
 
     def _dispatch_resolved(self, cid, event, payload):
         if not cid:
@@ -236,7 +236,7 @@ class HookIPCServer:
             if cid not in self._stop_requests:
                 self._heartbeats[cid] = time.monotonic()
                 if initial_steps is not None:
-                    self._last_initial_steps[cid] = initial_steps
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
             if transcript_path:
                 self._surface_hints[cid] = transcript_path
 
@@ -257,31 +257,24 @@ class HookIPCServer:
             if cid not in self._stop_requests:
                 self._heartbeats[cid] = time.monotonic()
                 if initial_steps is not None:
-                    self._last_initial_steps[cid] = initial_steps
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
                 return {}
-            meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None, 'stop_ack': False})
-            is_first_invocation = invocation_num is not None and invocation_num <= 1
+            meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None})
+            # A terminal acknowledgement does not identify a new user turn.
+            # Require the first invocation and strictly advancing native steps.
+            is_first_invocation = invocation_num == 1
             advanced_turn = (
                 is_first_invocation
                 and initial_steps is not None
                 and meta.get('stopped_at_steps') is not None
                 and initial_steps > meta['stopped_at_steps']
             )
-            post_stop_new_turn = (
-                is_first_invocation
-                and meta.get('stop_ack') is True
-                and (
-                    initial_steps is None
-                    or meta.get('stopped_at_steps') is None
-                    or initial_steps > meta['stopped_at_steps']
-                )
-            )
-            if advanced_turn or post_stop_new_turn:
+            if advanced_turn:
                 self._stop_requests.discard(cid)
                 self._stop_meta.pop(cid, None)
                 self._heartbeats[cid] = time.monotonic()
                 if initial_steps is not None:
-                    self._last_initial_steps[cid] = initial_steps
+                    self._last_initial_steps[cid] = max(initial_steps, self._last_initial_steps.get(cid, initial_steps))
                 return {}
             if initial_steps is not None and meta.get('stopped_at_steps') is None:
                 meta['stopped_at_steps'] = initial_steps
@@ -386,8 +379,8 @@ class HookIPCServer:
         initial_steps = self._extract_nonneg_int(payload, 'initialNumSteps', 'initial_num_steps')
         with self._lock:
             if cid in self._stop_requests:
-                # Only an explicit next turn may re-enable tool execution and queued delivery.
-                meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None, 'stop_ack': False})
+                # A stopped invocation cannot re-enable tools or queued delivery.
+                meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None})
                 if initial_steps is not None and meta.get('stopped_at_steps') is None:
                     meta['stopped_at_steps'] = initial_steps
                 self._heartbeats.pop(cid, None)
@@ -407,8 +400,6 @@ class HookIPCServer:
         reason = str(payload.get('terminationReason') or '').lower()
         with self._lock:
             if cid in self._stop_requests:
-                meta = self._stop_meta.setdefault(cid, {'stopped_at_steps': None, 'stop_ack': False})
-                meta['stop_ack'] = True
                 self._heartbeats.pop(cid, None)
                 return {}
             if payload.get('fullyIdle') is not True or reason not in ('model_stop', 'no_tool_call'):
@@ -595,7 +586,6 @@ class HookIPCServer:
             self._stop_requests.add(conversation_id)
             self._stop_meta[conversation_id] = {
                 'stopped_at_steps': self._last_initial_steps.get(conversation_id),
-                'stop_ack': False,
             }
             self._heartbeats.pop(conversation_id, None)
             for item in list(self._pending.values()):

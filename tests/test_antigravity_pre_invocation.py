@@ -123,6 +123,44 @@ class AntigravityPreInvocationHookTests(unittest.TestCase):
         self.assertIn('follow up question', reply.get('reason', ''))
         self.assertEqual(self.server.get_queued_items(CID), [])
 
+    def test_stop_ack_without_strict_counter_progress_never_unlocks(self):
+        variants = [
+            (None, {'invocationNum': 1}),
+            (10, {'invocationNum': 1}),
+            (None, {'invocationNum': 1, 'initialNumSteps': 20}),
+            (10, {'invocationNum': 0, 'initialNumSteps': 20}),
+            (10, {'invocationNum': 1, 'initialNumSteps': 20, 'initial_num_steps': 10}),
+            (10, {'invocationNum': 1, 'invocation_num': 2, 'initialNumSteps': 20}),
+        ]
+        for idx, (baseline, payload) in enumerate(variants):
+            with self.subTest(baseline=baseline, payload=payload), \
+                    mock.patch.object(hook_ipc.HookIPCServer, '_start_server'):
+                server = hook_ipc.HookIPCServer(Path(self.temp.name) / f'case-{idx}')
+                self.addCleanup(server.close)
+                dispatch = lambda event, **fields: server.dispatch_hook_event(event, {'conversationId': CID, **fields})
+                if baseline is not None:
+                    dispatch('pre_invocation', invocationNum=1, initialNumSteps=baseline)
+                queued = server.enqueue_follow_up(CID, 'keep queued')
+                server.request_stop(CID)
+                dispatch('stop', fullyIdle=True, terminationReason='NO_TOOL_CALL')
+                self.assertEqual(dispatch('pre_invocation', **payload), {'terminationBehavior': 'terminate'})
+                self.assertFalse(server.has_recent_heartbeat(CID))
+                self.assertEqual(dispatch('pre_tool_use')['decision'], 'deny')
+                self.assertEqual([item['id'] for item in server.get_queued_items(CID)], [queued['id']])
+
+    def test_late_old_hook_cannot_lower_counter_baseline(self):
+        self.dispatch('pre_invocation', invocationNum=1, initialNumSteps=10)
+        self.dispatch('post_tool_use', initialNumSteps=6)
+        self.server.request_stop(CID)
+        self.assertEqual(self.dispatch('pre_invocation', invocationNum=1, initialNumSteps=8),
+                         {'terminationBehavior': 'terminate'})
+        self.assertIn(CID, self.server._stop_requests)
+
+    def test_no_tool_call_does_not_deliver_queue_without_fully_idle(self):
+        self.server.enqueue_follow_up(CID, 'keep queued')
+        self.assertEqual(self.dispatch('stop', fullyIdle=False, terminationReason='NO_TOOL_CALL'), {})
+        self.assertEqual(len(self.server.get_queued_items(CID)), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
