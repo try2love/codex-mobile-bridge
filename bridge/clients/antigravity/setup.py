@@ -86,6 +86,9 @@ def build_hooks_manifest(state_dir, *, enabled=True, python_executable=None, hoo
                     ],
                 },
             ],
+            'PreInvocation': [
+                {'type': 'command', 'command': cmd('pre_invocation'), 'timeout': 5},
+            ],
             'PostInvocation': [
                 {'type': 'command', 'command': cmd('post_invocation'), 'timeout': 5},
             ],
