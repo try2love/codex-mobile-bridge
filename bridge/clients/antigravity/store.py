@@ -9,7 +9,7 @@ import sqlite3
 from urllib.parse import unquote, urlsplit
 
 from bridge.features.workspace.uploads import MAX_FILE, image_type
-from .model import SURFACE_LABELS, extract_user_text, gateway_id, normalize_steps
+from .model import SURFACE_LABELS, compute_turn_fork_points, extract_user_text, gateway_id, normalize_steps
 
 SURFACE_DIRS = (
     ('app', '.gemini/antigravity'),
@@ -290,6 +290,46 @@ class AntigravityStore:
             })
         return tasks
 
+    @staticmethod
+    def _load_reconciled_steps(compact_path):
+        steps = []
+        with compact_path.open('r', encoding='utf-8', errors='replace') as stream:
+            for idx, line in enumerate(stream):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                step_idx = obj.get('step_index')
+                if not isinstance(step_idx, int):
+                    step_idx = idx
+                    obj['step_index'] = step_idx
+                # Branch reconciliation: if new step index is <= last step index,
+                # the transcript rewound or branched. Prune the earlier abandoned steps.
+                while steps and steps[-1].get('step_index', 0) >= step_idx:
+                    steps.pop()
+                steps.append(obj)
+        return steps
+
+    def valid_fork_steps(self, surface_root, conversation_id):
+        """Return valid native turn-end step indices eligible for ForkConversation."""
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(conversation_id or '')):
+            return set()
+        conv_dir = Path(surface_root) / 'brain' / conversation_id
+        if conv_dir.is_symlink():
+            return set()
+        compact_path = conv_dir / '.system_generated' / 'logs' / 'transcript.jsonl'
+        if not compact_path.is_file():
+            return set()
+        all_steps = self._load_reconciled_steps(compact_path)
+        points = compute_turn_fork_points(all_steps, session_active=False)
+        messages, _, _ = normalize_steps(all_steps, session_active=False, turn_fork_points=points)
+        return {int(msg['forkMessageId']) for msg in messages if isinstance(msg.get('forkMessageId'), str) and msg['forkMessageId'].isdigit()}
+
     def read_transcript_page(self, surface_root, conversation_id, *, limit=40, before=None, session_active=False):
         """Read a reverse-paginated slice of transcript.jsonl with targeted full-line hydration."""
         logs_dir = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs'
@@ -312,31 +352,9 @@ class AntigravityStore:
             except ValueError as exc:
                 raise ValueError('历史游标格式无效') from exc
 
-        steps = []
-        with compact_path.open('r', encoding='utf-8', errors='replace') as stream:
-            for idx, line in enumerate(stream):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                step_idx = obj.get('step_index')
-                if not isinstance(step_idx, int):
-                    step_idx = idx
-                    obj['step_index'] = step_idx
-                if before_index is not None and step_idx >= before_index:
-                    continue
-
-                # Branch reconciliation: if new step index is <= last step index,
-                # the transcript rewound or branched. Prune the earlier abandoned steps.
-                while steps and steps[-1].get('step_index', 0) >= step_idx:
-                    steps.pop()
-
-                steps.append(obj)
+        all_steps = self._load_reconciled_steps(compact_path)
+        turn_fork_points = compute_turn_fork_points(all_steps, session_active=session_active)
+        steps = [s for s in all_steps if before_index is None or s['step_index'] < before_index]
 
         # Prefer six complete turns within the page budget. A single long turn
         # must still paginate; its earlier prompt remains available in older pages.
@@ -383,7 +401,11 @@ class AntigravityStore:
             if hydrated:
                 page = [hydrated.get(step['step_index'], step) for step in page]
 
-        messages, turns, usage = normalize_steps(page, session_active=session_active and before_index is None)
+        messages, turns, usage = normalize_steps(
+            page,
+            session_active=session_active and before_index is None,
+            turn_fork_points=turn_fork_points,
+        )
         return {
             'messages': messages,
             'turns': turns,
