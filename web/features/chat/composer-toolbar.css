@@ -40,18 +40,20 @@
   min-width: 0;
   max-width: 40%;
 }
-.custom-composer .toolbar-bottom-scroll {
+.custom-composer .toolbar-group.toolbar-bottom-scroll {
   flex: 1 1 0;
   overscroll-behavior-x: contain;
 }
 .custom-composer .toolbar-bottom-scroll > .toolbar-group {
-  display: contents;
+  flex: none;
+  overflow: visible;
+  min-width: max-content;
 }
 .custom-composer .toolbar-bottom-scroll .toolbar-tool {
   flex: none;
 }
-.custom-composer .toolbar-bottom-scroll .toolbar-right > .toolbar-tool:first-child {
-  margin-left: 0;
+.custom-composer .toolbar-bottom-scroll > .toolbar-right {
+  margin-left: auto;
 }
 .custom-composer.is-collapsed .toolbar-top {
   margin-bottom: 0;
@@ -234,11 +236,13 @@
 .custom-composer .toolbar-tool[data-tool='sendMode'] {
   position: relative;
   align-items: center;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 8px;
   color: var(--text);
 }
 .custom-composer .toolbar-tool[data-tool='sendMode'] > select {
+  appearance: none;
+  -webkit-appearance: none;
   border: 0;
   background-color: transparent;
   color: inherit;
@@ -247,8 +251,19 @@
   box-shadow: none;
 }
 .custom-composer .toolbar-tool[data-tool='sendMode']:has(> select:focus-visible) {
-  outline: 1px solid var(--muted);
-  outline-offset: 1px;
+  background: var(--soft);
+}
+.custom-composer .toolbar-tool[data-tool='sendMode']::after {
+  content: '';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
 }
 .custom-composer .toolbar-tool[data-tool='sendMode'][data-display='both'] {
   align-items: center;
@@ -264,15 +279,28 @@
   position: relative;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  min-width: 36px;
+  flex: 0 0 44px;
+  height: 44px;
+  width: 44px;
+  min-height: 44px;
+  min-width: 44px;
+  max-width: 44px;
   border-radius: 8px;
+}
+.custom-composer .toolbar-tool[data-tool='sendMode'][data-display='icon']::after {
+  display: none;
+}
+.custom-composer .toolbar-tool[data-tool='sendMode'][data-display='icon'] .toolbar-select-icon {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 .custom-composer .toolbar-tool[data-tool='sendMode'][data-display='icon'] > select {
   position: absolute;
   inset: 0;
   opacity: 0;
   width: 100%;
+  min-width: 0;
   height: 100%;
   padding: 0;
 }
