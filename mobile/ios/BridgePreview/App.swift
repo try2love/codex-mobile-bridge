@@ -130,11 +130,23 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     private var session: URLSession?
     private var data = Data()
     private var completion: ((Bool) -> Void)?
+    private var address = ""
+    private var deadline: TimeInterval = 0
+    private var slowConfirmation = false
     func start(_ origin: String, completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: origin + "/api/auth") else { completion(false); return }
+        cancel()
+        address = origin; deadline = ProcessInfo.processInfo.systemUptime + 12; slowConfirmation = false
         self.completion = completion
+        attempt(timeout: 4)
+    }
+    private func attempt(timeout: TimeInterval) {
+        let budget = min(timeout, deadline - ProcessInfo.processInfo.systemUptime)
+        guard budget > 0 else { completion?(false); completion = nil; return }
+        let origin = address
+        guard let url = URL(string: origin + "/api/auth") else { completion?(false); completion = nil; return }
+        data.removeAll(keepingCapacity: true)
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 4; config.timeoutIntervalForResource = 5
+        config.timeoutIntervalForRequest = budget; config.timeoutIntervalForResource = budget
         config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil); self.session = session
         var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -144,17 +156,25 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     func cancel() { completion = nil; session?.invalidateAndCancel(); session = nil }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard self.session === session else { completionHandler(.cancel); return }
         completionHandler((response as? HTTPURLResponse)?.statusCode == 200 && response.expectedContentLength <= 16384 ? .allow : .cancel)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive bytes: Data) {
+        guard self.session === session else { return }
         guard data.count + bytes.count <= 16384 else { dataTask.cancel(); return }; data.append(bytes)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard self.session === session else { return }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let online = (value?["relay"] as? Bool != true || value?["online"] as? Bool == true) && error == nil && (task.response as? HTTPURLResponse)?.statusCode == 200 && value?["authenticated"] is Bool && value?["passwordless"] is Bool && !(value?["instanceId"] as? String ?? "").isEmpty
         session.finishTasksAndInvalidate()
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; self.completion?(online); self.completion = nil; self.session = nil
+            guard let self, self.session === session, self.completion != nil else { return }
+            let failure = error as NSError?
+            if !self.slowConfirmation && failure?.domain == NSURLErrorDomain && failure?.code == NSURLErrorTimedOut {
+                self.slowConfirmation = true; self.attempt(timeout: 8); return
+            }
+            self.completion?(online); self.completion = nil; self.session = nil
         }
     }
 }
