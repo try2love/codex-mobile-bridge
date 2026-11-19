@@ -19,6 +19,65 @@ SURFACE_DIRS = (
 
 _FRACTION_RE = re.compile(r'\.(\d+)')
 _MAX_FULL_FIELD_CHARS = 65536
+_MAX_ANNOTATION_BYTES = 65536
+_PBTXT_ESCAPE_RE = re.compile(r'\\([0-7]{1,3}|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[abfnrtv\\\'"])')
+_PBTXT_SIMPLE_ESCAPES = {
+    'a': b'\a', 'b': b'\b', 'f': b'\f', 'n': b'\n', 'r': b'\r', 't': b'\t', 'v': b'\v',
+    '\\': b'\\', "'": b"'", '"': b'"',
+}
+
+
+def _decode_pbtxt_string(raw):
+    """Decode a protobuf text-format string literal (UTF-8 or octal/hex/C escapes)."""
+    out = bytearray()
+    pos = 0
+    for match in _PBTXT_ESCAPE_RE.finditer(raw):
+        out.extend(raw[pos:match.start()].encode('utf-8'))
+        esc = match.group(1)
+        if esc in _PBTXT_SIMPLE_ESCAPES:
+            out.extend(_PBTXT_SIMPLE_ESCAPES[esc])
+        elif esc.startswith('x'):
+            out.append(int(esc[1:], 16))
+        elif esc.startswith(('u', 'U')):
+            out.extend(chr(int(esc[1:], 16)).encode('utf-8', errors='replace'))
+        else:
+            out.append(int(esc, 8) & 0xFF)
+        pos = match.end()
+    out.extend(raw[pos:].encode('utf-8'))
+    return out.decode('utf-8', errors='replace')
+
+
+def read_annotation_pbtxt(surface_root, conversation_id):
+    """Read top-level title/archived metadata from annotations/<cid>.pbtxt safely."""
+    if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(conversation_id or '')):
+        return {}
+    path = Path(surface_root) / 'annotations' / f'{conversation_id}.pbtxt'
+    try:
+        if path.is_symlink() or not path.is_file():
+            return {}
+        if path.stat().st_size > _MAX_ANNOTATION_BYTES:
+            return {}
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return {}
+    result = {}
+    depth = 0
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if depth == 0:
+            title_match = re.match(r'^title\s*:\s*"((?:[^"\\]|\\.)*)"\s*$', line)
+            if title_match:
+                result['title'] = _decode_pbtxt_string(title_match.group(1)).strip()
+            else:
+                arch_match = re.match(r'^archived\s*:\s*(true|false)\b', line, re.IGNORECASE)
+                if arch_match:
+                    result['archived'] = arch_match.group(1).lower() == 'true'
+        # Track nested proto blocks while ignoring braces inside quoted strings.
+        cleaned = re.sub(r'"(?:[^"\\]|\\.)*"', '', line)
+        depth = max(0, depth + cleaned.count('{') - cleaned.count('}'))
+    return result
 
 
 def parse_timestamp(value):
@@ -144,16 +203,40 @@ class AntigravityStore:
             return 'cli'
         return 'app'
 
-    def _row_to_summary(self, dir_key, root, row):
+    def _query_summaries_with_archived(self, db_path, sql):
+        if not db_path.is_file():
+            return [], set()
+        try:
+            conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.5)
+            try:
+                conn.row_factory = sqlite3.Row
+                rows = [dict(row) for row in conn.execute(sql).fetchall()]
+                fts_archived = set()
+                try:
+                    fts_rows = conn.execute(
+                        'SELECT DISTINCT conversation_id FROM conversations_fts WHERE archived = 1'
+                    ).fetchall()
+                    fts_archived = {str(r[0]).strip() for r in fts_rows if r and r[0]}
+                except sqlite3.DatabaseError:
+                    fts_archived = set()
+                return rows, fts_archived
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            return [], set()
+
+    def _row_to_summary(self, dir_key, root, row, *, fts_archived=()):
         cid = str(row.get('conversation_id') or '').strip()
         if not re.fullmatch(r'[0-9a-fA-F-]{36}', cid):
             return None
         sid = gateway_id(dir_key, cid)
         cwd = parse_workspace_uris(row.get('workspace_uris') or '')
-        title = str(row.get('title') or '').strip()
+        annotation = read_annotation_pbtxt(root, cid)
+        title = str(annotation.get('title') or row.get('title') or '').strip()
         if not title:
             preview = extract_user_text(str(row.get('preview') or '')).splitlines()
             title = (preview[0][:80] if preview and preview[0].strip() else '') or f'聊天 {cid[:8]}'
+        archived = annotation['archived'] if isinstance(annotation.get('archived'), bool) else (cid in fts_archived)
         updated_at = parse_timestamp(row.get('last_modified_time'))
         active = bool(row.get('not_fully_idle')) or str(row.get('status') or '').endswith('_RUNNING')
         backend = self._backend_for(dir_key, str(row.get('source') or ''))
@@ -171,7 +254,7 @@ class AntigravityStore:
             'projectId': cwd or f'{dir_key}:unassigned',
             'projectName': project_name,
             'updatedAt': updated_at,
-            'archived': False,
+            'archived': archived,
             'status': 'active' if active else 'idle',
             'notFullyIdle': bool(row.get('not_fully_idle')),
             'stepCount': int(row.get('step_count') or 0),
@@ -192,12 +275,13 @@ class AntigravityStore:
         )
         for surface in self.surfaces():
             db_path = surface['root'] / 'conversation_summaries.db'
-            for row in self._query_db(db_path, sql):
+            rows, fts_archived = self._query_summaries_with_archived(db_path, sql)
+            for row in rows:
                 cid = str(row.get('conversation_id') or '').strip()
                 if not cid or (surface['root'], cid) in seen_native:
                     continue
                 seen_native.add((surface['root'], cid))
-                summary = self._row_to_summary(surface['key'], surface['root'], row)
+                summary = self._row_to_summary(surface['key'], surface['root'], row, fts_archived=fts_archived)
                 if summary is not None:
                     sessions.append(summary)
         sessions.sort(key=lambda item: item.get('updatedAt', 0), reverse=True)
@@ -219,6 +303,7 @@ class AntigravityStore:
                 if gateway_id(surface['key'], cid) == sid:
                     transcript = candidate_dir / '.system_generated/logs/transcript.jsonl'
                     mtime = transcript.stat().st_mtime if transcript.is_file() else 0.0
+                    annotation = read_annotation_pbtxt(surface['root'], cid)
                     return {
                         'id': gateway_id(surface['key'], cid),
                         'nativeId': cid,
@@ -227,12 +312,12 @@ class AntigravityStore:
                         'provider': 'antigravity',
                         'host': 'local',
                         'backend': surface['key'],
-                        'title': f'聊天 {cid[:8]}',
+                        'title': str(annotation.get('title') or '').strip() or f'聊天 {cid[:8]}',
                         'cwd': '',
                         'projectId': f'{surface["key"]}:unassigned',
                         'projectName': surface['name'],
                         'updatedAt': mtime,
-                        'archived': False,
+                        'archived': bool(annotation.get('archived')),
                         'status': 'idle',
                         'notFullyIdle': False,
                         'stepCount': 0,
