@@ -125,6 +125,11 @@ def display_absolute_path(path):
     return path
 
 
+def _has_git_component(parts):
+    """Reject .git segments regardless of filesystem case sensitivity."""
+    return any(part.rstrip(' .').casefold() == '.git' for part in parts)
+
+
 class Workspace:
     def __init__(self, root):
         if not root or not Path(root).is_absolute():
@@ -382,8 +387,7 @@ class Workspace:
 
     def upload(self, path, encoded):
         parts = self.parts(path)
-        protected_parts = [part.rstrip(' .').casefold() for part in parts] if os.name == 'nt' else parts
-        if not parts or '.git' in protected_parts: raise PermissionError('请选择项目内的普通文件位置')
+        if not parts or _has_git_component(parts): raise PermissionError('请选择项目内的普通文件位置')
         try: data = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError): raise ValueError('上传内容无效') from None
         if len(data) > MAX_TRANSFER: raise ValueError('每个文件不能超过 20 MB')
@@ -653,7 +657,7 @@ class GitWorkspace:
                 raise ValueError('此操作影响整个仓库，请在仓库根目录对应的聊天中操作')
             if action in ('stage', 'unstage'):
                 parts = self.workspace.parts(path)
-                if not parts or '.git' in parts: raise ValueError('请选择项目中的变更文件')
+                if not parts or _has_git_component(parts): raise ValueError('请选择项目中的变更文件')
                 entry = next((e for e in state['entries'] if e['path'] == path), None)
                 if not entry or entry['submodule']: raise ValueError('文件状态已变化或为子模块，请刷新后在电脑上处理')
                 # Existing parent components must not redirect staging outside the project.
