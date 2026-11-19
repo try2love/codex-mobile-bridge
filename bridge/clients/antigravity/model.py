@@ -364,10 +364,54 @@ def normalize_steps(steps, *, session_active=False):
                 messages.append(msg)
                 turn['messages'].append(msg)
 
+        elif step_type == 'SYSTEM_MESSAGE':
+            content = step.get('content')
+            if not isinstance(content, str) or not content.strip():
+                raw_sys = step.get('system_message')
+                if isinstance(raw_sys, dict):
+                    content = raw_sys.get('systemMessage') or raw_sys.get('system_message') or ''
+                elif isinstance(raw_sys, str):
+                    content = raw_sys
+            if isinstance(content, str) and content.strip():
+                text = content.strip()
+                if len(text) > 4000:
+                    text = text[:4000] + '\n…（已截断）'
+                msg = {
+                    'id': f'step-{step_index}-system',
+                    'role': 'activity',
+                    'kind': 'context',
+                    'timestamp': step_ts,
+                    'title': '系统消息',
+                    'text': text,
+                }
+                messages.append(msg)
+                turn['messages'].append(msg)
+
         if step_ts is not None:
             prev_ts = step_ts
 
     if session_active and turns:
         turns[-1]['status'] = 'inProgress'
+
+    for idx_t, turn in enumerate(turns):
+        turn_id = turn['turnId']
+        is_active_tail = bool(session_active and idx_t == len(turns) - 1)
+        turn_status = 'inProgress' if is_active_tail else ('completed' if turn['status'] == 'inProgress' else turn['status'])
+        turn_msgs = turn.get('messages') or []
+        timestamps = [m['timestamp'] for m in turn_msgs if isinstance(m, dict) and isinstance(m.get('timestamp'), (int, float))]
+        started_at = timestamps[0] if timestamps else None
+        completed_at = timestamps[-1] if timestamps and turn_status != 'inProgress' else None
+        assistants = [m for m in turn_msgs if isinstance(m, dict) and m.get('role') == 'assistant']
+        for msg in turn_msgs:
+            if not isinstance(msg, dict):
+                continue
+            msg['turnId'] = turn_id
+            msg['turnStatus'] = turn_status
+            if started_at is not None:
+                msg['turnStartedAt'] = started_at
+            if completed_at is not None:
+                msg['turnCompletedAt'] = completed_at
+        for idx_a, msg in enumerate(assistants):
+            msg['phase'] = 'final_answer' if (turn_status != 'inProgress' and idx_a == len(assistants) - 1) else 'commentary'
 
     return messages, turns, last_usage
