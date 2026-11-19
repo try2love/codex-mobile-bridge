@@ -559,6 +559,7 @@ class AntigravityCli:
         'GetUserStatus',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
+        'GetCascadeTrajectoryGeneratorMetadata',
         'GetSlashCommands',
         'StartCascade',
         'SendUserCascadeMessage',
@@ -582,6 +583,7 @@ class AntigravityCli:
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
         self._annotations_cache = {}
+        self._context_window_cache = {}
         self._waiting_cache = {}
         self._variant_cache = {}
         self._base_cache = {}
@@ -651,9 +653,12 @@ class AntigravityCli:
             if surface is None:
                 self._trajectories_cache.clear()
                 self._annotations_cache.clear()
+                self._context_window_cache.clear()
             else:
                 self._trajectories_cache.pop(surface, None)
                 self._annotations_cache.pop(surface, None)
+                for key in [k for k in self._context_window_cache if k[0] == surface]:
+                    self._context_window_cache.pop(key, None)
 
     def _collect_step_fallback(self, cascade_id, step_index, *, surface='app'):
         try:
@@ -664,6 +669,60 @@ class AntigravityCli:
         if isinstance(steps, list) and 0 <= step_index < len(steps) and isinstance(steps[step_index], dict):
             return steps[step_index]
         return None
+
+    @staticmethod
+    def _coerce_nonneg_int(value):
+        if type(value) is int and value >= 0:
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    def context_window_metadata(self, conversation_id, *, surface='app', step_count=None, max_age=15.0):
+        """Read latest native context window size (and estimated tokens) from generator metadata."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return None
+        cache_key = (surface, conversation_id)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._context_window_cache.get(cache_key)
+            if max_age > 0 and cached and cached[1] == step_count and (now - cached[0]) < max_age:
+                return dict(cached[2]) if isinstance(cached[2], dict) else None
+        res = self.call_ls_rpc(
+            'GetCascadeTrajectoryGeneratorMetadata',
+            {'cascadeId': conversation_id},
+            surface=surface,
+        )
+        entries = res.get('generatorMetadata') or res.get('generator_metadata')
+        found = None
+        if isinstance(entries, list):
+            for entry in reversed(entries):
+                if not isinstance(entry, dict):
+                    continue
+                chat_model = entry.get('chatModel') or entry.get('chat_model')
+                if not isinstance(chat_model, dict):
+                    continue
+                start_meta = chat_model.get('chatStartMetadata') or chat_model.get('chat_start_metadata')
+                if not isinstance(start_meta, dict):
+                    continue
+                cwm = start_meta.get('contextWindowMetadata') or start_meta.get('context_window_metadata')
+                if not isinstance(cwm, dict):
+                    continue
+                max_tokens = self._coerce_nonneg_int(cwm.get('maxContextTokens', cwm.get('max_context_tokens')))
+                if not max_tokens or max_tokens <= 0:
+                    continue
+                used = self._coerce_nonneg_int(cwm.get('estimatedTokensUsed', cwm.get('estimated_tokens_used')))
+                found = {'contextWindow': max_tokens}
+                if used is not None:
+                    found['estimatedTokensUsed'] = used
+                break
+        with self._lock:
+            self._context_window_cache[cache_key] = (time.monotonic(), step_count, dict(found) if found else None)
+            if len(self._context_window_cache) > 128:
+                for stale in list(self._context_window_cache.keys())[:-64]:
+                    if stale != cache_key:
+                        self._context_window_cache.pop(stale, None)
+        return found
 
     def waiting_state_by_cid(self, *, surface='app', max_age=2.0, expected_identity=None):
         """Return (waiting_requests_by_cid, active_cids) for a surface."""

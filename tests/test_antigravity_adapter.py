@@ -1077,6 +1077,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                 return {'trajectorySummaries': state['trajectories'] if surface == 'app' else {}}
             if method == 'GetCascadeTrajectory':
                 return {'trajectory': {'steps': state['traj_steps'].get((body or {}).get('cascadeId'), [])}}
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
@@ -1227,6 +1229,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                         },
                     }
                 }
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
