@@ -49,6 +49,9 @@ def _document(raw):
             return {'version': 1, 'refs': {}, 'records': {}}
         if not isinstance(value, dict) or value.get('version') != 1 or set(value)-{'version', 'refs', 'records'}:
             raise ValueError()
+        for key in ('refs', 'records'):
+            if key in value and value[key] is None:
+                value[key] = {}
         if any(not isinstance(value.get(key, {}), dict) for key in ('refs', 'records')):
             raise ValueError()
         if any(not isinstance(v, str) or not v for v in value.get('refs', {}).values()):
@@ -97,12 +100,17 @@ def _replace(raw, kind, value):
         document.setdefault(section, {})[key] = value
         return (json.dumps(document, ensure_ascii=False, indent=2)+'\n').encode()
     lines = raw.decode('utf-8').splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if re.fullmatch(section+r':[ \t]*\r?\n?', line)]
-    replacement = _yaml_lines(key, value, 2)
+    newline = '\r\n' if b'\r\n' in raw else '\n'
+    starts = [i for i, line in enumerate(lines) if re.fullmatch(section+r':[ \t]*(?:\{[ \t]*\}|null|~)?[ \t]*\r?\n?', line)]
+    replacement = [line.replace('\n', newline) for line in _yaml_lines(key, value, 2)]
     if not starts:
         if section in document:
             raise ValueError('Harness 凭据格式无法识别，尚未修改账号')
-        return (''.join(lines).rstrip('\r\n')+'\n'+section+':\n'+''.join(replacement)).encode()
+        return (''.join(lines).rstrip('\r\n')+newline+section+':'+newline+''.join(replacement)).encode()
+    inline_empty = not re.fullmatch(section+r':[ \t]*\r?\n?', lines[starts[0]])
+    # Only the selected inline section becomes a block; other native bytes stay intact.
+    if inline_empty:
+        lines[starts[0]] = section+':'+newline
     start = starts[0]+1
     end = next((i for i in range(start, len(lines)) if re.match(r'^[^\s#]', lines[i])), len(lines))
     entries = []
@@ -112,7 +120,8 @@ def _replace(raw, kind, value):
             entries.append((i, _scalar(match[1])))
     target = next((n for n, (_, name) in enumerate(entries) if name == key), None)
     if target is None:
-        lines[end:end] = replacement
+        insertion = start if inline_empty else end
+        lines[insertion:insertion] = replacement
     else:
         first = entries[target][0]
         last = entries[target+1][0] if target+1 < len(entries) else end

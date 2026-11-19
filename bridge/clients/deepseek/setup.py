@@ -256,9 +256,10 @@ def _mapping(text):
         mapping = stack[-1][1]
         if key in mapping:
             raise ValueError('duplicate credential key')
-        value = {} if raw is None else _scalar(raw)
+        block = raw is None or not raw.strip()
+        value = {} if block or re.fullmatch(r'\{[ \t]*\}', raw.strip()) else _scalar(raw)
         mapping[key] = value
-        if isinstance(value, dict):
+        if block:
             stack.append((indent, value))
     return root
 

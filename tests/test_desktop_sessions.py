@@ -16,6 +16,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Adapters(unittest.TestCase):
+    def test_dsh_empty_native_credentials_do_not_block_detail_model_identity(self):
+        from bridge.clients.deepseek.accounts import DeepSeekAccounts
+        home = self.root/'dsh'
+        home.mkdir()
+        path = home/'.credentials.yaml'
+        store = DeepSeekAccounts(self.root/'account-snapshots', home)
+        adapter = Mock(home=home)
+        adapter.call.return_value = {'session': {'id': 'chat', 'cwd': str(self.root)},
+                                     'messages': [{'id': 'reply', 'role': 'assistant', 'text': 'Native reply'}]}
+        self.manager.adapters['deepseek'] = adapter
+        with patch.object(self.manager, '_account_store', return_value=store):
+            for empty in ('{}', '{ }', 'null', '~'):
+                with self.subTest(empty=empty):
+                    raw = ('version: 1\r\nrefs: '+empty+'\r\nrecords: '+empty+'\r\n').encode()
+                    path.write_bytes(raw)
+                    path.chmod(0o600)
+                    self.assertNotIn('error', store.public().get('current', {}))
+                    detail = self.manager.call('deepseek', 'detail', 'chat')
+                    self.assertEqual(detail['messages'][0]['text'], 'Native reply')
+                    self.assertTrue(detail['modelCatalogIdentity'])
+                    self.assertEqual(path.read_bytes(), raw)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
         self.addCleanup(self.temp.cleanup)
