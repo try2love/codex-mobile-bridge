@@ -155,6 +155,30 @@ class UploadActivityTests(unittest.TestCase):
             self.assertEqual(ssh.call_args.args[0], 'test-host')
             compile(ssh.call_args.args[1], '<remote-upload>', 'exec')
 
+    def test_remote_upload_digest_verification_runs_under_python_optimize(self):
+        import contextlib, hashlib, io, json, tempfile
+        captured = []
+        def capture(alias, source, timeout=90):
+            captured.append(source)
+            return {'path': '/remote/path'}
+        upload_file('test-host', 'thread-1', 'up-1', 'file.txt', b'hello', hashlib.sha256(b'hello').hexdigest(), reader=capture)
+        upload_file('test-host', 'thread-1', 'up-1', 'file.txt', b'hello', '0' * 64, reader=capture)
+        script, wrong_digest_script = captured
+        # 验证即使在 optimize=1（对应 PYTHONOPTIMIZE=1 / python -O）下，哈希校验也不会被剥离
+        code = compile(script, '<remote-upload-opt>', 'exec', optimize=1)
+        with tempfile.TemporaryDirectory(dir=self.root) as home:
+            with patch.dict('os.environ', {'CODEX_HOME': home}):
+                with self.assertRaises(ValueError):
+                    exec(compile(wrong_digest_script, '<bad-digest>', 'exec', optimize=1), {})
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    exec(code, {})
+                uploaded = Path(json.loads(buf.getvalue())['path'])
+                self.assertEqual(uploaded.read_bytes(), b'hello')
+                uploaded.write_bytes(b'tampered')
+                with self.assertRaises(ValueError):
+                    exec(code, {})
+
     def test_activity_follows_visible_chats_without_history_reads_or_activation(self):
         self.bridge.list()
         with patch.object(self.bridge.store, 'history', side_effect=AssertionError('No history for list')), patch('bridge.app.service.open_in_desktop', side_effect=AssertionError('No navigation')):
