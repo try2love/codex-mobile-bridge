@@ -32,6 +32,7 @@ from bridge.clients.codex.cli_session import CliSessions
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
+from bridge.clients.codex.native_queue import read_native_queue
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
@@ -5379,6 +5380,21 @@ class Bridge:
         result['draftAccountIdentity'] = identity
         result['identityPending'] = not identity and (bool(getattr(self, '_draft_remote_pending', ())) or
                                                     (self.host != 'local' and bool(self._management_identity(thread_id))))
+        if self.host == 'local' and identity:
+            with self.lock:
+                session = self.live.get(thread_id)
+            if session is not None:
+                with session.condition:
+                    native_desktop = session.origin_verified and session.origin == 'desktop'
+                if native_desktop:
+                    queue = read_native_queue(self.codex_home, thread_id)
+                    # An account change during the read invalidates this projection.
+                    current = self._management_identity(thread_id)
+                    if current != identity:
+                        result.update(draftAccountIdentity=current,
+                                      capabilities=dict.fromkeys(result['capabilities'], False))
+                        return result
+                    result['nativeQueue'] = queue
         if not identity:
             result['capabilities'] = dict.fromkeys(result['capabilities'], False)
         return result

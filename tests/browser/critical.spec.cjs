@@ -620,6 +620,41 @@ test('Codex project trust cancellation prevents creation and confirmation stays 
  expect(result.calls[1].body).toEqual({key:'synthetic-key',confirmed:true,confirmation:'bound-to-selection'});
 });
 
+test('message management keeps native Codex items visible and read only as the queue changes', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(async()=>{
+    BridgeI18n.setLanguage('en');
+    draftGateway='native-queue-fixture';currentId=crypto.randomUUID();currentHost='local';codexDraftScope=null;
+    bindCodexDraft({draftAccountIdentity:'fixture-account'});
+    window.__nativeQueueFixture={rows:[],writes:0,reads:0};
+    const old=api;
+    api=async (url,body,...rest)=>{
+      if(!String(url).includes('/message-management'))return old(url,body,...rest);
+      const fixture=window.__nativeQueueFixture;
+      if(body){fixture.writes++;throw Error('Unexpected native write');}
+      fixture.reads++;
+      return {draftAccountIdentity:'fixture-account',version:'gateway-version',receipts:[],unknown:[],
+        queue:[{id:'gateway-item',text:'Bridge draft',status:'queued'}],nativeQueue:fixture.rows};
+    };
+    messageManagement.request=(...args)=>api(...args);
+    await openMessageManagement();
+  });
+  const dialog=page.locator('dialog.message-management[open]');
+  await expect(dialog.getByText('Bridge draft')).toBeVisible();
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[{id:'desktop-item',text:'Queued on my computer',attachments:['report.png']}];});
+  const native=dialog.locator('section').filter({has:page.getByRole('heading',{name:'Queued in Codex'})});
+  await expect(native.getByText('Queued on my computer')).toBeVisible({timeout:7000});
+  await expect(native.getByText('report.png')).toBeVisible();
+  await expect(native.getByRole('button')).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'Edit',exact:true})).toHaveCount(1);
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[];});
+  await expect(native).toHaveCount(0,{timeout:7000});
+  await dialog.getByRole('button',{name:/^(Close|关闭)$/}).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(()=>page.evaluate(()=>messageManagement.panel.nativeTimer)).toBe(null);
+  expect(await page.evaluate(()=>({writes:__nativeQueueFixture.writes,timer:messageManagement.panel.nativeTimer}))).toEqual({writes:0,timer:null});
+});
+
 test('lost send response reconciles once and preserves newer composer edits', async ({page}) => {
   await ready(page);
   const results = await page.evaluate(async () => {
