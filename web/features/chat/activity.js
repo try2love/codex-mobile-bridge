@@ -27,32 +27,63 @@ function chatTurnCompletionLabel(turn){
   return t(minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒')
     .replace('{minutes}',minutes).replace('{seconds}',seconds%60);
 }
-// Completion is native turn metadata, independent of message grouping or folding.
-// Reuse the row so an unchanged refresh cannot disturb the reader's position.
+// Use native turn and answer identities. Missing evidence keeps the flat rows visible.
+function chatTurnProcessRow(row){
+  return !row.fileSummary&&(row.role==='activity'||row.role==='reasoning'||
+    row.role==='assistant'&&row.phase==='commentary');
+}
 function chatNodesWithTurnCompletions(container,nodes,rows){
-  const turns=new Map(),byKey=new Map();
+  const turns=new Map(),nodeByKey=new Map(nodes.map(node=>[node.dataset.key,node])),managed=new Set();
   for(const [index,row] of rows.entries()){
-    const key=String(row.key??row.id??index);byKey.set(key,row);
-    if(row.turnId===undefined||row.turnId===null||row.turnCompletionKnown===false)continue;
-    const id=String(row.turnId),turn=turns.get(id)||{id};
-    turn.last=key;
+    const key=String(row.key??row.id??index);
+    if(row.turnId===undefined||row.turnId===null||row.turnId==='history'||row.turnCompletionKnown===false)continue;
+    const id=String(row.turnId),turn=turns.get(id)||{id,rows:[]};
+    turn.last=key;turn.rows.push({row,key,index});
     if(row.turnStatus)turn.status=row.turnStatus;
     if(row.turnStartedAt!==undefined)turn.start=row.turnStartedAt;
     if(row.turnCompletedAt!==undefined)turn.end=row.turnCompletedAt;
+    if(row.role==='assistant'&&(row.phase==='final_answer'||row.forkable===true&&row.phase!=='commentary')){
+      turn.answerKey=key;turn.answerIndex=index;
+    }
     turns.set(id,turn);
   }
   const existing=new Map([...container.children].filter(node=>node.classList?.contains('chat-turn-completion')).map(node=>[node.dataset.key,node]));
+  const before=new Map(),after=new Map();
+  for(const turn of turns.values()){
+    const process=turn.rows.filter(({row,index})=>chatTurnProcessRow(row)&&
+      (turn.answerIndex===undefined||index<turn.answerIndex));
+    const label=turn.status==='inProgress'&&process.length
+      ?(typeof BridgeI18n==='undefined'?'正在思考与执行…':BridgeI18n.t('正在思考与执行…'))
+      :chatTurnCompletionLabel(turn);
+    if(!label)continue;
+    const key='turn-completion:'+turn.id,foldable=turn.status==='completed'&&!!turn.answerKey&&process.length>0;
+    const control=existing.get(key)||document.createElement('button');
+    control.type='button';control.className='chat-turn-completion';control.dataset.key=key;control.__chatTurn=turn;
+    if(control.__chatAnswer!==turn.answerKey||turn.status==='inProgress')control.__chatProcessOpen=undefined;
+    control.__chatAnswer=turn.answerKey;
+    const processNodes=process.map(({key})=>nodeByKey.get(key)).filter(Boolean);
+    for(const node of processNodes)managed.add(node);
+    const selected=document.getSelection?.();
+    const reading=selected&&!selected.isCollapsed&&processNodes.some(node=>node.contains(selected.anchorNode));
+    if(reading)control.__chatProcessOpen=true;
+    const update=()=>{
+      const open=!foldable||control.__chatProcessOpen===true;
+      for(const node of processNodes)node.classList.toggle('chat-process-collapsed',!open);
+      control.disabled=!foldable;
+      if(foldable)control.setAttribute('aria-expanded',String(open));else control.removeAttribute('aria-expanded');
+      const text=label+(foldable?(open?' ▴':' ▾'):'');
+      if(control.textContent!==text)control.textContent=text;
+    };
+    control.onclick=()=>{control.__chatProcessOpen=control.__chatProcessOpen!==true;update();};
+    update();
+    if(process.length)before.set(process[0].key,control);else after.set(turn.last,control);
+  }
+  for(const node of nodes)if(!managed.has(node))node.classList?.remove('chat-process-collapsed');
   const result=[];
   for(const node of nodes){
+    if(before.has(node.dataset.key))result.push(before.get(node.dataset.key));
     result.push(node);
-    const row=byKey.get(node.dataset.key),turn=row&&turns.get(String(row.turnId));
-    if(!turn||turn.last!==node.dataset.key)continue;
-    const label=chatTurnCompletionLabel(turn);if(!label)continue;
-    const key='turn-completion:'+turn.id;
-    const footer=existing.get(key)||document.createElement('p');
-    footer.className='chat-turn-completion';footer.dataset.key=key;footer.__chatTurn=turn;
-    if(footer.textContent!==label)footer.textContent=label;
-    result.push(footer);
+    if(after.has(node.dataset.key))result.push(after.get(node.dataset.key));
   }
   return result;
 }

@@ -19,7 +19,7 @@ test('desktop details and history use native rows and a separate unfolded cache 
  const text=source('features/clients/desktop-sessions.js');assert.doesNotMatch(text,/historyMode:'conversation'|renderChatProcessPage|conversation-recent-v1/);
  assert.match(text,/timeline-recent-v1/);
 });
-test('intermediate rows remain direct chronological siblings and never auto-collapse on completion',()=>{
+test('message synchronization keeps direct chronological siblings and does not invent grouping',()=>{
  const text=source('features/chat/activity.js');assert.doesNotMatch(text,/function (?:groupChatTasks|groupChatActivities|renderChatProcessPage)\(/);
  const container={children:[],get firstChild(){return this.children[0]||null;},insertBefore(node,next){node.remove();const i=this.children.indexOf(next);this.children.splice(i<0?this.children.length:i,0,node);node.parentElement=this;}};
  const row=(key,role)=>({tagName:'ARTICLE',dataset:{key},hidden:false,parentElement:null,__chatMessage:{role,turnId:'same',turnStatus:'inProgress'},

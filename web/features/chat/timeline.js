@@ -336,7 +336,8 @@ class ChatTimeline {
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
-    for(const footer of this.container.querySelectorAll('.chat-turn-completion'))footer.textContent=chatTurnCompletionLabel(footer.__chatTurn);
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered);
   }
   async updates(){
     let after=this.sequence,through='',snapshot=null;

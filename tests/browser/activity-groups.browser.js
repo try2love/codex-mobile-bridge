@@ -33,7 +33,7 @@ async function runActivityGroupBrowserChecks(){
       const node=id=>container.querySelector('[data-key="'+id+'"]');apply();await frame();await frame();
       check(!container.querySelector('.chat-activity-group,.chat-process-page'),provider+' has no turn or batch disclosure');
       check(messages.every(message=>node(message.id)?.parentElement===container),provider+' records remain direct chronological siblings');
-      check([...container.children].filter(node=>node.dataset.key).map(node=>node.dataset.key).join('|')===messages.map(row=>row.id).join('|'),provider+' ordering retains progress and user supplement');
+      check([...container.children].filter(node=>node.dataset.key&&!node.classList.contains('chat-turn-completion')).map(node=>node.dataset.key).join('|')===messages.map(row=>row.id).join('|'),provider+' ordering retains progress and user supplement');
       check(node('progress').getBoundingClientRect().height>0&&node('final').getBoundingClientRect().height>0,provider+' progress and final reply stay visible');
       const command=node('command');command.open=true;await frame();await frame();
       const count=reads;messages=messages.map(message=>({...message,turnStatus:'completed'}));apply();await frame();await frame();
