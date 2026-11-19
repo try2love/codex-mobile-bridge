@@ -40,10 +40,13 @@ class ChatTimeline {
     this.showReasoning=document.documentElement.dataset.showReasoning!=='false';
     this.showProcess=document.documentElement.dataset.showProcess!=='false';
     this.showToolImages=document.documentElement.dataset.showToolImages!=='false';
+    this.lastViewportHeight=this.viewport.clientHeight;
     this.onScroll=()=>{
       if(this.suppress||!this.viewport.clientHeight)return;
       const upward=this.viewport.scrollTop<this.lastTop;
-      this.lastTop=this.viewport.scrollTop;this.following=!upward&&this.atBottom();this.anchor=this.capture();
+      // A viewport resize can clamp scrollTop upward while it remains at bottom.
+      const resized=this.viewport.clientHeight!==this.lastViewportHeight;this.lastViewportHeight=this.viewport.clientHeight;
+      this.lastTop=this.viewport.scrollTop;this.following=resized&&this.following&&this.atBottom()||!upward&&this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
@@ -110,7 +113,7 @@ class ChatTimeline {
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
     else restoreChatScrollAnchor(this.viewport,node,anchor);
-    this.lastTop=this.viewport.scrollTop;
+    this.lastTop=this.viewport.scrollTop;this.lastViewportHeight=this.viewport.clientHeight;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
   }
