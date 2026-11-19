@@ -1441,8 +1441,13 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertEqual([(t['id'], t['cancellable']) for t in tasks], [(child_run, False), (child_done, False)])
         sid = gateway_id('app', CID)
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
                 mock.patch.object(adapter.cli, 'stop') as stop_mock, \
-                mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={}) as rpc_mock:
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, *args, **kwargs: (
+                    {'trajectorySummaries': {child_run: {
+                        'status': 'CASCADE_RUN_STATUS_RUNNING', 'trajectoryMetadata': {'parentCascadeId': CID},
+                    }}} if method == 'GetAllCascadeTrajectories' else {}
+                )) as rpc_mock:
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': unrelated})
             with self.assertRaises(ValueError):
@@ -1454,7 +1459,7 @@ class AntigravitySafetyTests(unittest.TestCase):
             stop_mock.assert_not_called()
             adapter.hooks.request_stop.assert_called_once_with(gateway_id('app', child_run))
             self.assertEqual(
-                [call.args[0] for call in rpc_mock.call_args_list],
+                [call.args[0] for call in rpc_mock.call_args_list if call.args[0] != 'GetAllCascadeTrajectories'],
                 ['CancelCascadeInvocation', 'ForceStopCascadeTree'],
             )
 
