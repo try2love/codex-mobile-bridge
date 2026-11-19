@@ -434,22 +434,18 @@ def normalize_steps(steps, *, session_active=False, turn_fork_points=None):
         turn_id = turn['turnId']
         is_active_tail = bool(session_active and idx_t == len(turns) - 1)
         turn_status = 'inProgress' if is_active_tail else ('completed' if turn['status'] == 'inProgress' else turn['status'])
+        turn['status'] = turn_status
         turn_msgs = turn.get('messages') or []
-        timestamps = [m['timestamp'] for m in turn_msgs if isinstance(m, dict) and isinstance(m.get('timestamp'), (int, float))]
-        started_at = timestamps[0] if timestamps else None
-        completed_at = timestamps[-1] if timestamps and turn_status != 'inProgress' else None
+        # Step timestamps describe individual entries in a potentially partial
+        # page. They do not establish the native turn's start or completion.
         assistants = [m for m in turn_msgs if isinstance(m, dict) and m.get('role') == 'assistant']
         for msg in turn_msgs:
             if not isinstance(msg, dict):
                 continue
             msg['turnId'] = turn_id
             msg['turnStatus'] = turn_status
-            if started_at is not None:
-                msg['turnStartedAt'] = started_at
-            if completed_at is not None:
-                msg['turnCompletedAt'] = completed_at
         for idx_a, msg in enumerate(assistants):
-            msg['phase'] = 'final_answer' if (turn_status != 'inProgress' and idx_a == len(assistants) - 1) else 'commentary'
+            msg['phase'] = 'final_answer' if (turn_status == 'completed' and idx_a == len(assistants) - 1) else 'commentary'
         start_step = turn.pop('_startStep', None)
         if is_active_tail or start_step not in fork_points:
             continue

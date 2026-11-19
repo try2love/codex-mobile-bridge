@@ -122,7 +122,7 @@ class AntigravityContextWindowAndTurnTests(unittest.TestCase):
                 'measurement': 'session',
             })
 
-    def test_normalize_steps_emits_system_messages_turn_timing_and_phases(self):
+    def test_normalize_steps_emits_system_messages_without_inferred_turn_clocks(self):
         steps = [
             {'step_index': 0, 'type': 'USER_INPUT', 'content': 'Ask', 'created_at': '2026-11-19T10:00:00Z'},
             {'step_index': 1, 'type': 'SYSTEM_MESSAGE', 'content': 'Workspace reminder', 'created_at': '2026-11-19T10:00:01Z'},
@@ -142,7 +142,8 @@ class AntigravityContextWindowAndTurnTests(unittest.TestCase):
         for msg in messages:
             self.assertEqual(msg['turnId'], 'turn-0')
             self.assertEqual(msg['turnStatus'], 'completed')
-            self.assertEqual(msg['turnCompletedAt'] - msg['turnStartedAt'], 10000.0)
+            self.assertNotIn('turnStartedAt', msg)
+            self.assertNotIn('turnCompletedAt', msg)
 
         active_msgs, _, _ = normalize_steps(steps, session_active=True)
         for msg in active_msgs:
@@ -150,17 +151,45 @@ class AntigravityContextWindowAndTurnTests(unittest.TestCase):
             self.assertNotIn('turnCompletedAt', msg)
         self.assertEqual([m['phase'] for m in active_msgs if m['role'] == 'assistant'], ['commentary', 'commentary'])
 
-        # An idle turn whose compact transcript contains a RUNNING background step still projects completed timing
+        # Idle native state supersedes an old RUNNING compact snapshot, without inventing clocks.
         with_running_step = [
             {'step_index': 0, 'type': 'USER_INPUT', 'content': 'Ask', 'created_at': '2026-11-19T10:00:00Z'},
             {'step_index': 1, 'type': 'GENERIC', 'status': 'RUNNING', 'content': 'bg', 'created_at': '2026-11-19T10:00:01Z'},
             {'step_index': 2, 'type': 'PLANNER_RESPONSE', 'content': 'Done', 'created_at': '2026-11-19T10:00:06Z'},
         ]
-        idle_msgs, _, _ = normalize_steps(with_running_step, session_active=False)
+        idle_msgs, idle_turns, _ = normalize_steps(with_running_step, session_active=False)
         final = next(m for m in idle_msgs if m['role'] == 'assistant')
         self.assertEqual(final['turnStatus'], 'completed')
         self.assertEqual(final['phase'], 'final_answer')
-        self.assertEqual(final['turnCompletedAt'] - final['turnStartedAt'], 6000.0)
+        self.assertEqual(idle_turns[0]['status'], final['turnStatus'])
+        self.assertNotIn('turnStartedAt', final)
+        self.assertNotIn('turnCompletedAt', final)
+
+    def test_partial_missing_or_reversed_step_clocks_never_become_turn_duration(self):
+        variants = [
+            [{'step_index': 20, 'type': 'PLANNER_RESPONSE', 'content': 'Partial answer',
+              'created_at': '2026-11-19T10:00:10Z'}],
+            [{'step_index': 0, 'type': 'USER_INPUT', 'content': 'Missing clock'},
+             {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'content': 'Answer'}],
+            [{'step_index': 0, 'type': 'USER_INPUT', 'content': 'Ask', 'created_at': '2026-11-19T10:00:10Z'},
+             {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'content': 'Answer', 'created_at': '2026-11-19T10:00:00Z'}],
+        ]
+        for steps in variants:
+            with self.subTest(steps=steps):
+                messages, turns, _ = normalize_steps(steps)
+                for item in messages + turns:
+                    self.assertNotIn('turnStartedAt', item)
+                    self.assertNotIn('turnCompletedAt', item)
+
+    def test_failed_turn_status_matches_messages_without_success_phase(self):
+        messages, turns, _ = normalize_steps([
+            {'step_index': 0, 'type': 'USER_INPUT', 'content': 'Ask'},
+            {'step_index': 1, 'type': 'PLANNER_RESPONSE', 'status': 'FAILED', 'content': 'Failed response'},
+        ])
+        self.assertEqual(turns[0]['status'], 'failed')
+        for message in messages:
+            self.assertEqual(message['turnStatus'], 'failed')
+            self.assertNotEqual(message.get('phase'), 'final_answer')
 
 
 if __name__ == '__main__':
