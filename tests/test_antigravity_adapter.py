@@ -1433,17 +1433,22 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertEqual([(t['id'], t['cancellable']) for t in tasks], [(child_run, False), (child_done, False)])
         sid = gateway_id('app', CID)
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
-                mock.patch.object(adapter.cli, 'stop') as stop_mock:
+                mock.patch.object(adapter.cli, 'stop') as stop_mock, \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={}) as rpc_mock:
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': unrelated})
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': child_done})
             adapter.hooks = mock.MagicMock()
             adapter.hooks.permission_mode.return_value = 'desktop'
-            with self.assertRaises(ValueError):
-                adapter.call('stop-task', sid, {'taskId': child_run})
+            result = adapter.call('stop-task', sid, {'taskId': child_run})
+            self.assertEqual(result, {'status': 'accepted'})
             stop_mock.assert_not_called()
-            adapter.hooks.request_stop.assert_not_called()
+            adapter.hooks.request_stop.assert_called_once_with(gateway_id('app', child_run))
+            self.assertEqual(
+                [call.args[0] for call in rpc_mock.call_args_list],
+                ['CancelCascadeInvocation', 'ForceStopCascadeTree'],
+            )
 
         resolved_count = 0
         def resolve_once(payload):
