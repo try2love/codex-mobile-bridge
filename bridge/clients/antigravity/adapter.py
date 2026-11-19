@@ -442,7 +442,7 @@ class Antigravity:
             raise BridgeUnavailable('原客户端服务未连接，请先打开 Antigravity 应用')
         native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
         waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True,
-                                                        expected_identity=expected_identity)
+                                                        **({'expected_identity': expected_identity} if expected_identity is not None else {}))
         if waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key)):
             raise BridgeUnavailable(waiting_msg)
         if native_busy or cid in active_cids:
