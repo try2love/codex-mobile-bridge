@@ -1200,19 +1200,21 @@ class AntigravityCli:
                 before_stop()
         cancel_result = None
         try:
-            cancel_result = self.call_ls_rpc(
-                'CancelCascadeInvocation',
-                {'cascade_id': conversation_id, 'kill_background_tasks': True},
+            try:
+                cancel_result = self.call_ls_rpc(
+                    'CancelCascadeInvocation',
+                    {'cascade_id': conversation_id, 'kill_background_tasks': True},
+                    surface=surface,
+                )
+            except BridgeUnavailable:
+                cancel_result = None
+            tree_result = self.call_ls_rpc(
+                'ForceStopCascadeTree',
+                {'conversationId': conversation_id},
                 surface=surface,
             )
-        except BridgeUnavailable:
-            cancel_result = None
-        tree_result = self.call_ls_rpc(
-            'ForceStopCascadeTree',
-            {'conversationId': conversation_id},
-            surface=surface,
-        )
-        self._invalidate_trajectories_cache(surface)
+        finally:
+            self._invalidate_trajectories_cache(surface)
         if isinstance(tree_result, dict) and tree_result:
             return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
         return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
