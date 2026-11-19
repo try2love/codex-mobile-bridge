@@ -514,4 +514,15 @@ test('follow-up icon, integrated select and slash placeholder stay synchronized'
   await expect(page.locator('#message')).toHaveValue('保留草稿与光标');
   await page.locator('#composer .toolbar-more').click();
   await expect(page.locator('#composer .toolbar-more')).toHaveCSS('outline-style', 'none');
+  await page.locator('.toolbar-menu[open] .toolbar-edit-button').click();
+  const preview = page.locator('.toolbar-editor [data-drag-tool=sendMode] svg');
+  await expect(preview).toHaveAttribute('data-icon', 'queue');
+  await page.evaluate(() => {
+    const t = composerToolbar;
+    t.controls.sendMode.disabled = false;
+    for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.preferences.update({ followUpMode: 'steer' });
+    t.sync();
+  });
+  await expect(preview).toHaveAttribute('data-icon', 'steer');
 });

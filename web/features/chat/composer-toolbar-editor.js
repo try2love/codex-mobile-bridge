@@ -259,7 +259,7 @@ class ComposerToolbarEditor {
     const hiddenSuffix = isHidden ? ' · ' + ComposerUI.t('隐藏') : '';
     const previewNames = { model: '模型', collapse: '收起', plan: '计划', goal: '目标' };
     const label = ComposerUI.t(previewNames[id] || tool.shortLabel);
-    const iconKey = tool.icon?.permissionMode ?? tool.icon?.collapsed;
+    const iconKey = tool.icon?.permissionMode ?? tool.icon?.collapsed ?? tool.icon?.sendMode;
     let preview = this.toolPreviews.get(id);
     if (!preview) {
       const button = ComposerUI.node('button', 'toolbar-drag-tool');
@@ -332,6 +332,9 @@ class ComposerToolbarEditor {
     });
   }
   updateToolState() {
+    for (const id of this.toolPreviews.keys()) {
+      this.updateToolPreview(id, this.zoneOf(id));
+    }
     if (!this.selectedId) {
       return;
     }
