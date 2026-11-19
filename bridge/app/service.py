@@ -1528,7 +1528,7 @@ class Bridge:
                 native = native_connection(host, sid) if desktop_only else None
                 try:
                     response = ipc.request('thread-owner-discovery', {'hostId': host, 'conversationId': sid},
-                                           host=host, timeout=min(6, budget),
+                                           host=host, timeout=min(11, budget),
                                            deadline=min(deadline, time.monotonic() + budget))
                 except IPCError as exc:
                     if str(exc) == 'no-client-found':
@@ -1570,9 +1570,10 @@ class Bridge:
 
                 def submit_next():
                     nonlocal submitted
-                    # Reserve both discovery and snapshot time, scaled by the
-                    # bounded parallelism rather than dividing 20s by all history.
-                    budget = remaining() * workers / max(workers, len(candidates) - submitted) / 2
+                    # The native router can wait 10s for discovery clients before
+                    # replying no-client-found. Leave response and snapshot time
+                    # inside the same absolute operation deadline.
+                    budget = remaining() * workers / max(workers, len(candidates) - submitted) * 2 / 3
                     host, sid = candidates[submitted]
                     submitted += 1
                     pending.add(audits.submit(inspect_thread, host, sid, budget))

@@ -102,6 +102,18 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.activate.assert_not_called(); self.bridge.store.history.assert_not_called()
         self.assertTrue(all(instance.closed for instance in self.instances))
 
+    def test_ownerless_native_router_can_finish_discovery_before_the_audit_deadline(self):
+        # The installed Desktop router gives all discovery clients ten seconds.
+        # A follower ending its own read sooner cannot observe no-client-found.
+        self.owners[('local', 'desktop-only')] = IPCError('no-client-found')
+        def router_window(sid, options):
+            if options['timeout'] <= 10 or options['deadline'] - time.monotonic() <= 10:
+                raise IPCError('桌面读取超时；尚未取得实时会话状态。')
+        self.before_request = router_window
+        self.bridge.assert_desktop_idle(timeout=20, identifiers={'desktop-only'})
+        self.bridge.activate.assert_not_called()
+        self.bridge.store.history.assert_not_called()
+
     def test_future_stream_preserves_idle_and_busy_audits(self):
         def future(message):
             message['version'] = 99
