@@ -457,11 +457,13 @@ class Antigravity:
             cid, expected_identity = self.cli.start_cascade(
                 surface=surface, model=model, effort=effort, cwd=cwd,
             )
+            title_unconfirmed = False
             if cleaned_title:
                 try:
-                    self.cli.update_annotations(cid, title=cleaned_title, surface=surface)
+                    self.cli.update_annotations(cid, title=cleaned_title, surface=surface,
+                                                expected_identity=expected_identity)
                 except (OSError, ValueError, BridgeUnavailable):
-                    pass
+                    title_unconfirmed = True
             self._send_prompt_or_items(cid, prompt, model=model, effort=effort, surface=surface, items=items,
                                        expected_identity=expected_identity)
             key = gateway_id(surface, cid)
@@ -474,7 +476,9 @@ class Antigravity:
                     canonical_model, canonical_effort = model, (effort or '')
                 if canonical_model:
                     self._update_session_settings(key, model=canonical_model, effort=canonical_effort)
-            return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key}}
+            return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key},
+                    **({'titleStatus': 'unconfirmed', 'notice': '会话已创建，标题结果待核对；请在原客户端检查'}
+                       if title_unconfirmed else {})}
         row = self.store.resolve_session(sid)
         if row is None:
             raise ValueError('找不到此 Antigravity 会话')
@@ -537,6 +541,21 @@ class Antigravity:
                         self.cli.stop(cid, surface=surface, before_stop=lambda: self.hooks.request_stop(key))
                     else:
                         self.cli.stop(cid, surface=surface)
+                # A successful cancellation RPC is not evidence that every task
+                # or pending interaction has finished. Re-read before archiving.
+                try:
+                    fresh_row = self.store.resolve_session(key)
+                    if fresh_row is None or fresh_row.get('runtimeKnown') is not True:
+                        raise ValueError('聊天运行状态尚未确认')
+                    native_busy = self.store.is_native_busy(fresh_row['surfaceRoot'], cid)
+                    waiting_state = self._waiting_state(surface, live=True, fresh=True)
+                    session = self._session(fresh_row, live=True, waiting_state=waiting_state)
+                    pending_hooks = bool(self.hooks and (self.hooks.has_pending_approvals(key)
+                                                         or self.hooks.get_queued_items(key)))
+                except (OSError, ValueError, BridgeUnavailable) as exc:
+                    raise ArchiveNotSent('停止后的聊天状态尚未确认，请在原客户端处理后重试') from exc
+                if session['status'] != 'idle' or native_busy or session['requests'] or pending_hooks:
+                    raise ArchiveNotSent('聊天仍有运行、排队或审批，请在原客户端处理后重试')
             elif session['status'] != 'idle' or native_busy or session['requests'] or pending_hooks:
                 raise ArchiveNotSent('聊天有运行、排队、审批或未知状态，请先在原客户端处理')
             self.cli.update_annotations(cid, archived=archived, surface=surface)

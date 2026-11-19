@@ -740,7 +740,7 @@ class AntigravityCli:
         with self._lock:
             return dict((self._annotations_cache.get(surface) or {}).get(conversation_id) or {})
 
-    def update_annotations(self, conversation_id, *, title=None, archived=None, surface='app'):
+    def update_annotations(self, conversation_id, *, title=None, archived=None, surface='app', expected_identity=None):
         """Update native conversation annotations via UpdateConversationAnnotations (merge)."""
         annotations = {}
         if title is not None:
@@ -757,6 +757,7 @@ class AntigravityCli:
                 'mergeAnnotations': True,
             },
             surface=surface,
+            **({'expected_identity': expected_identity} if expected_identity is not None else {}),
         )
         self._invalidate_trajectories_cache(surface)
         return result

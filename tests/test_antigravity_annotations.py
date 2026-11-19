@@ -213,6 +213,48 @@ class AntigravityAnnotationTests(unittest.TestCase):
             with self.assertRaises(BridgeUnavailable):
                 adapter.call('rename', sid, {'title': 'Expected New'})
 
+    def test_disconnect_rechecks_native_state_before_archiving(self):
+        sid = gateway_id('app', CID)
+        for pending in ('running', 'approval', 'queue', 'unknown'):
+            with self.subTest(pending=pending):
+                adapter = Antigravity(self.directory, home=self.home)
+                hooks = mock.Mock()
+                hooks.pending_approvals_for.return_value = []
+                hooks.has_recent_heartbeat.return_value = False
+                hooks.permission_mode.return_value = 'desktop'
+                hooks.has_pending_approvals.side_effect = [False, pending == 'approval']
+                hooks.get_queued_items.side_effect = [[], [{'id': 'queued'}] if pending == 'queue' else []]
+                adapter.hooks = hooks
+                later = ValueError('状态未知') if pending == 'unknown' else pending == 'running'
+                with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                        mock.patch.object(adapter, '_waiting_state', return_value=({}, set())), \
+                        mock.patch.object(adapter.store, 'is_native_busy', side_effect=[True, later]), \
+                        mock.patch.object(adapter.cli, 'stop') as stop, \
+                        mock.patch.object(adapter.cli, 'update_annotations') as update:
+                    with self.assertRaises(ArchiveNotSent):
+                        adapter.call('archive', sid, {'archived': True, 'disconnect': True})
+                    stop.assert_called_once()
+                    update.assert_not_called()
+                adapter.hooks = None
+                adapter.close()
+
+    def test_create_reports_unconfirmed_title_without_repeating_create(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        with mock.patch.object(adapter.cli, 'start_cascade', return_value=(CID, 'source')) as start, \
+                mock.patch.object(adapter.cli, 'update_annotations', side_effect=BridgeUnavailable('unknown')), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send:
+            result = adapter.call('create', body={
+                'directoryProject': {'surface': 'app', 'cwd': str(self.workspace)},
+                'firstMessage': 'hello', 'title': 'Title',
+            })
+        self.assertEqual(result['status'], 'accepted')
+        self.assertEqual(result['titleStatus'], 'unconfirmed')
+        self.assertTrue(result['notice'])
+        start.assert_called_once()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs['expected_identity'], 'source')
+
     def test_rename_falls_back_to_pbtxt_when_older_session_not_in_live_trajectories_map(self):
         adapter = Antigravity(self.directory, home=self.home)
         self.addCleanup(adapter.close)
@@ -240,7 +282,7 @@ class AntigravityAnnotationTests(unittest.TestCase):
         self.assertTrue(all(env['createTitle'] is True for env in envs))
         new_cid = '99999999-8888-4777-8666-555555555555'
         calls = []
-        with mock.patch.object(adapter.cli, 'start_cascade', return_value=new_cid), \
+        with mock.patch.object(adapter.cli, 'start_cascade', return_value=(new_cid, 'source')), \
                 mock.patch.object(adapter.cli, 'update_annotations', side_effect=lambda *a, **kw: calls.append(('ann', a, kw))), \
                 mock.patch.object(adapter.cli, 'send_user_message', side_effect=lambda *a, **kw: calls.append(('send', a, kw))):
             result = adapter.call('create', body={
@@ -251,7 +293,7 @@ class AntigravityAnnotationTests(unittest.TestCase):
         self.assertEqual(result['status'], 'accepted')
         self.assertEqual(calls[0][0], 'ann')
         self.assertEqual(calls[0][1], (new_cid,))
-        self.assertEqual(calls[0][2], {'title': 'Sprint Plan', 'surface': 'app'})
+        self.assertEqual(calls[0][2], {'title': 'Sprint Plan', 'surface': 'app', 'expected_identity': 'source'})
         self.assertEqual(calls[1][0], 'send')
 
         with mock.patch.object(adapter.cli, 'start_cascade') as start_mock:
