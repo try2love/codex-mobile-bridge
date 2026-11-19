@@ -160,6 +160,25 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
 
+    def test_title_only_update_reaches_an_open_chat_without_an_ipc_title_patch(self):
+        self.fixture.state['title'] = None
+        with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN name TEXT')
+            db.execute('UPDATE threads SET title = NULL')
+        session = self.bridge.session(THREAD)
+        self.assertTrue(session.connected)
+        before = self.bridge.timeline_read(THREAD)
+        self.assertEqual(before['meta']['title'], '未命名聊天')
+        session.viewers = 1
+        with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
+            db.execute('UPDATE threads SET name = ? WHERE id = ?', ('原生自动标题', THREAD))
+        self.bridge._maintain_session(session)
+        after = self.bridge.timeline_read(THREAD, 'changes', after=before['sequence'], epoch=before['epoch'], start='')
+        self.assertEqual(after['meta']['title'], '原生自动标题')
+        self.assertGreater(after['sequence'], before['sequence'])
+        self.assertEqual(after['rows'], [])
+        self.assertIsNone(session.state['title'])
+
     def test_desktop_router_restart_rediscovers_owner_without_restarting_gateway(self):
         session = self.bridge.session(THREAD)
         self.assertTrue(session.connected)

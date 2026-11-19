@@ -32,6 +32,7 @@ from bridge.clients.codex.cli_session import CliSessions
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
+from bridge.clients.codex.native_queue import read_native_queue
 from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
@@ -96,6 +97,8 @@ class LiveSession:
         self.state = None
         self.history_state = None
         self.saved_view = None
+        self.saved_title = None
+        self.next_title_read = 0
         self.saved_file_changes = {}
         self.history_limit = 2
         self.timeline_limit = 40
@@ -145,6 +148,17 @@ class LiveSession:
         self.sequence += 1
         self.timeline_source = None
         self.condition.notify_all()
+
+    def observe_saved_title(self, metadata):
+        title = metadata.get('name') or metadata.get('title')
+        if not isinstance(title, str) or not title.strip() or title == '未命名聊天':
+            return
+        with self.condition:
+            if title != self.saved_title:
+                self.saved_title = title
+                source = (self.state if self.connected else self.history_state or self.state) or {}
+                if source.get('title') in (None, '', '未命名聊天'):
+                    self.changed()
 
     def timeline_view(self, conversation=False):
         # Presentation only. Actions still call view() against current state.
@@ -204,6 +218,8 @@ class LiveSession:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
                                      image_cache=self.tool_image_cache, item_limit=item_limit, process_bodies=process_bodies)
+            if result['title'] == '未命名聊天' and self.saved_title:
+                result['title'] = self.saved_title
             if self.question_skips:
                 result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
@@ -3073,6 +3089,7 @@ class Bridge:
                 rows = ([] if source == 'wsl' else bridge.store.poll('list', options) if remote else
                         bridge.store.list(**options))
                 rows = self.hosts.decorate(rows, bridge.host, label, bridge.organization_commands.native_memberships())
+                live_titles = []
                 with bridge.lock:
                     bridge.listed.update(row['id'] for row in rows)
                     for row in rows:
@@ -3082,6 +3099,10 @@ class Bridge:
                         row['connected'] = bool(session and session.connected)
                         row['access'] = bridge._access(row.get('origin', 'desktop'), session)
                         row['title'] = row.get('name') or row.get('title') or '未命名聊天'
+                        if session is not None:
+                            live_titles.append((session, row))
+                for session, row in live_titles:
+                    session.observe_saved_title(row)
                 return rows, None, available
             except (RemoteUnavailable, StoreUnavailable) as exc:
                 return [], {'host': bridge.host, 'label': label, 'error': str(exc)}, []
@@ -3519,6 +3540,7 @@ class Bridge:
             session.attached_parent = dict(parent, host=self.host) if parent else None
             session.origin_verified = True
             session.access = self._access(session.origin, session)
+            session.observe_saved_title(metadata)
 
     def _saved_history(self, session):
         return self.store.history(session.id, turn_limit=session.history_limit, item_limit=session.timeline_limit)
@@ -4175,6 +4197,21 @@ class Bridge:
             source.suspend_observation()
 
     def _maintain_session(self, session):
+        # Desktop's automatic naming can update the local index without
+        # publishing another conversation patch. Only read the open chat.
+        with session.condition:
+            source = (session.state if session.connected else session.history_state or session.state) or {}
+            now = time.monotonic()
+            read_title = (self.local and session.viewers > 0 and session.origin_verified and session.origin == 'desktop'
+                          and not session.saved_title and source.get('title') in (None, '', '未命名聊天')
+                          and now >= session.next_title_read)
+            if read_title:
+                session.next_title_read = now + 3
+        if read_title:
+            try:
+                session.observe_saved_title(self.store.get(session.id))
+            except (KeyError, StoreUnavailable):
+                pass
         with self.submit_lock:
             queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
         if queued and session.connected and session.view().get("status") == "idle":
@@ -5379,6 +5416,21 @@ class Bridge:
         result['draftAccountIdentity'] = identity
         result['identityPending'] = not identity and (bool(getattr(self, '_draft_remote_pending', ())) or
                                                     (self.host != 'local' and bool(self._management_identity(thread_id))))
+        if self.host == 'local' and identity:
+            with self.lock:
+                session = self.live.get(thread_id)
+            if session is not None:
+                with session.condition:
+                    native_desktop = session.origin_verified and session.origin == 'desktop'
+                if native_desktop:
+                    queue = read_native_queue(self.codex_home, thread_id)
+                    # An account change during the read invalidates this projection.
+                    current = self._management_identity(thread_id)
+                    if current != identity:
+                        result.update(draftAccountIdentity=current,
+                                      capabilities=dict.fromkeys(result['capabilities'], False))
+                        return result
+                    result['nativeQueue'] = queue
         if not identity:
             result['capabilities'] = dict.fromkeys(result['capabilities'], False)
         return result

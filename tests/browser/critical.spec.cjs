@@ -621,6 +621,78 @@ test('Codex project trust cancellation prevents creation and confirmation stays 
  expect(result.calls[1].body).toEqual({key:'synthetic-key',confirmed:true,confirmation:'bound-to-selection'});
 });
 
+test('message management keeps native Codex items visible and read only as the queue changes', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(async()=>{
+    BridgeI18n.setLanguage('en');
+    draftGateway='native-queue-fixture';currentId=crypto.randomUUID();currentHost='local';codexDraftScope=null;
+    bindCodexDraft({draftAccountIdentity:'fixture-account'});
+    window.__nativeQueueFixture={rows:[],writes:0,reads:0};
+    const old=api;
+    api=async (url,body,...rest)=>{
+      if(!String(url).includes('/message-management'))return old(url,body,...rest);
+      const fixture=window.__nativeQueueFixture;
+      if(body){fixture.writes++;throw Error('Unexpected native write');}
+      fixture.reads++;
+      return {draftAccountIdentity:'fixture-account',version:'gateway-version',receipts:[],unknown:[],
+        queue:[{id:'gateway-item',text:'Bridge draft',status:'queued'}],nativeQueue:fixture.rows};
+    };
+    messageManagement.request=(...args)=>api(...args);
+    await openMessageManagement();
+  });
+  const dialog=page.locator('dialog.message-management[open]');
+  await expect(dialog.getByText('Bridge draft')).toBeVisible();
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[{id:'desktop-item',text:'Queued on my computer',attachments:['report.png']}];});
+  const native=dialog.locator('section').filter({has:page.getByRole('heading',{name:'Queued in Codex'})});
+  await expect(native.getByText('Queued on my computer')).toBeVisible({timeout:7000});
+  await expect(native.getByText('report.png')).toBeVisible();
+  await expect(native.getByRole('button')).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'Edit',exact:true})).toHaveCount(1);
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[];});
+  await expect(native).toHaveCount(0,{timeout:7000});
+  await dialog.getByRole('button',{name:/^(Close|关闭)$/}).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(()=>page.evaluate(()=>messageManagement.panel.nativeTimer)).toBe(null);
+  expect(await page.evaluate(()=>({writes:__nativeQueueFixture.writes,timer:messageManagement.panel.nativeTimer}))).toEqual({writes:0,timer:null});
+});
+
+test('Codex chat header uses the same host title when history is still unnamed', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  const titles=await page.evaluate(async()=>{
+    const old=api,id=crypto.randomUUID(),opening=[];
+    let persisted='自动生成的标题';
+    const detail=title=>({id,title,host:'local',requests:[],submissions:[],connected:false,
+      loadingHistory:false,historyComplete:true,status:'idle'});
+    api=async (url,body,signal)=>{
+      const path=new URL(url,location.origin);
+      if(path.pathname==='/api/sessions')return {sessions:[{id,title:persisted,host:'local',cwd:'/fixture',recency:1,projectKey:'local|unassigned',projectName:'其他'}],remoteHosts:[],availableSources:['desktop']};
+      if(path.pathname.endsWith('/timeline'))return new Promise(resolve=>opening.push(()=>resolve({epoch:id,sequence:1,rows:[],meta:detail('未命名聊天'),files:[]})));
+      if(path.pathname.endsWith('/changes'))return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+      if(path.pathname.endsWith('/notifications'))return {available:false};
+      return {};
+    };
+    try{
+      $('login').hidden=true;$('app').hidden=false;
+      await loadList(true);
+      listRows.unshift({...listRows[0],host:'remote:other',title:'错误主机上的同 ID'});
+      const open=openChat(id,'local');
+      for(let i=0;!opening.length&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));
+      const initial=$('chat-title').textContent;
+      opening[0]();await open;
+      const afterHistory=$('chat-title').textContent;
+      persisted='列表收到更新后的名称';await loadList(true);
+      const afterList=$('chat-title').textContent;
+      renderState(detail('未命名聊天'));
+      const afterStale=$('chat-title').textContent;
+      renderState(detail('比列表更新的原生名称'));
+      const afterNative=$('chat-title').textContent;
+      return {initial,afterHistory,afterList,afterStale,afterNative};
+    }finally{chatTimeline?.dispose();chatTimeline=null;api=old;}
+  });
+  expect(titles).toEqual({initial:'自动生成的标题',afterHistory:'自动生成的标题',
+    afterList:'列表收到更新后的名称',afterStale:'列表收到更新后的名称',afterNative:'比列表更新的原生名称'});
+});
+
 test('lost send response reconciles once and preserves newer composer edits', async ({page}) => {
   await ready(page);
   const results = await page.evaluate(async () => {
