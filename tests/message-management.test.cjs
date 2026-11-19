@@ -100,3 +100,16 @@ test('reopening after a failed editor save reloads current storage instead of re
  m.editorSave=Promise.reject(Error('previous save conflict'));m.scope=()=>m.target;m.doc={activeElement:null};m.beforeOpen=()=>{};m.loadEditor=async()=>structuredClone(stored);m.dialog.showModal=()=>shown++;
  await m.open();assert.equal(shown,1);assert.deepEqual(m.editor,stored);assert.deepEqual(m.persistedEditor,stored);assert.equal(m.refreshes,1);
 });
+test('open, persistEditor and editRow work without structuredClone',async()=>{
+ const originalClone=globalThis.structuredClone;
+ globalThis.structuredClone=undefined;
+ try{
+  const {m,saved}=fixture();let shown=0;
+  m.scope=()=>({id:'chat',host:'local'});m.doc={activeElement:null};m.beforeOpen=()=>{};m.loadEditor=async()=>undefined;m.dialog.showModal=()=>shown++;
+  await m.open();assert.equal(shown,1);assert.deepEqual(m.target,{id:'chat',host:'local'});assert.equal(m.persistedEditor,undefined);
+  await m.editRow({id:'queued',text:'hello'});assert.equal(m.editor.body.text,'hello');
+  m.editor.body.text='mutated-after';await settle();assert.equal(saved[0].editor.body.text,'hello');
+ }finally{
+  globalThis.structuredClone=originalClone;
+ }
+});
