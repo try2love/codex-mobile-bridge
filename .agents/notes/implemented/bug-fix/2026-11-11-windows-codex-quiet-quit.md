@@ -28,6 +28,7 @@ Windows 实机用已有 .NET 编译器编译助手，三个原生测试通过、
 
 ## 相关记录审计
 
+- [Windows Codex 惰性 File 菜单](2026-11-20-windows-codex-lazy-file-menu.md)：部分替代本篇“一律不展开菜单”的决定。默认闭菜单的实机版本仅允许在已核验可见主窗口中原生展开准确 File 一次；隐藏窗口、不激活前台和一次派发约束仍适用，菜单短暂出现是明确保留的成本。
 - [Claude 后台退出](2026-11-11-windows-claude-quiet-quit.md)：部分重叠，共用“不恢复、不展开”的要求，具体原生选择器不同。
 - [桌面任务退出证据](2026-10-16-claude-desktop-quit-evidence.md)：部分重叠，保留任务和身份守卫，不改变其业务规则。
 - [原生回归夹具](../testing/2026-10-28-regression-and-dependency-gates.md)：部分重叠，其中旧 Codex 隐藏窗口恢复与展开后取消场景由本次禁止可见动作的场景替代；其他平台和依赖门禁不变。
