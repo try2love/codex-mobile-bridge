@@ -1623,6 +1623,19 @@ class AntigravitySafetyTests(unittest.TestCase):
                     ('ForceStopCascadeTree', {'conversationId': CID}),
                 ])
 
+            # ForceStopCascadeTree 超时或失败时必须清理轨迹缓存，同时仍向上抛出 BridgeUnavailable
+            adapter.cli._trajectories_cache['ide'] = (time.monotonic(), {}, {CID})
+            adapter.cli._trajectories_cache['app'] = (time.monotonic(), {}, {CID})
+            def fail_tree(method, payload=None, *, surface='app'):
+                if method == 'ForceStopCascadeTree':
+                    raise BridgeUnavailable('tree stop timed out')
+                return {}
+            with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fail_tree):
+                with self.assertRaises(BridgeUnavailable):
+                    adapter.cli.stop(CID, surface='ide')
+            self.assertNotIn('ide', adapter.cli._trajectories_cache)
+            self.assertIn('app', adapter.cli._trajectories_cache)
+
     def test_antigravity_groups_effort_variants_by_base_model_and_preserves_legacy_ids(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory / 'desktop-sessions/settings.json'
