@@ -210,7 +210,7 @@ class Antigravity:
                 'capabilities': {'send': live, 'stop': live, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
-                                 'slashCommands': live, 'compact': live, 'rename': live,
+                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live,
                                  'plan': live, 'goal': live, 'archive': live, 'unarchive': live}}
 
     def management(self):
@@ -685,6 +685,24 @@ class Antigravity:
                 items=[{'item': {'slashCommand': {'info': dict(compact_cmd['info'])}}}],
             )
             return {'status': 'accepted', 'delivery': 'native'}
+        if action == 'fork':
+            try:
+                self._ensure_native_idle(
+                    row, key, cid, surface,
+                    waiting_msg='原会话正在等待交互确认，请先回应后再创建分支',
+                    busy_msg='请等待 Antigravity 原生会话空闲后再创建分支',
+                )
+            except (ValueError, BridgeUnavailable) as exc:
+                raise ResumePreflightBlocked(str(exc)) from exc
+            anchor = str(body.get('messageId') or '').strip()
+            if not re.fullmatch(r'\d+', anchor):
+                raise ResumePreflightBlocked('请选择原会话中可分支的消息')
+            step_index = int(anchor)
+            valid_steps = self.store.valid_fork_steps(row['surfaceRoot'], cid)
+            if step_index not in valid_steps:
+                raise ResumePreflightBlocked('请选择原会话中可分支的消息')
+            new_cid = self.cli.fork_conversation(cid, step_index, cwd=row.get('cwd'), surface=surface)
+            return {'status': 'ready', 'result': {'id': gateway_id(surface, new_cid)}}
         if action == 'queue-action':
             if not self.hooks:
                 raise ValueError('排队连接不可用')

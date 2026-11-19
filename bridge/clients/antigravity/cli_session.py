@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
 from .store import SURFACE_DIRS, local_file_path
@@ -566,6 +566,7 @@ class AntigravityCli:
         'ForceStopCascadeTree',
         'HandleCascadeUserInteraction',
         'UpdateConversationAnnotations',
+        'ForkConversation',
     )
 
     def __init__(self, home=None, model_catalog=None):
@@ -616,6 +617,20 @@ class AntigravityCli:
                     raise ValueError('Antigravity 原生回复无效')
                 verify_endpoint(target)
                 return (result, target['identity']) if return_identity else result
+            except urllib.error.HTTPError as exc:
+                if method == 'ForkConversation':
+                    try:
+                        detail = exc.read(4096).decode('utf-8', errors='replace').lower()
+                    except OSError:
+                        detail = ''
+                    if 'invoked subagents' in detail:
+                        raise ResumePreflightBlocked('该对话已调用子代理，Antigravity 原生暂不支持从此处分支') from None
+                    if 'cannot fork a subagent' in detail:
+                        raise ResumePreflightBlocked('不支持对子代理会话创建分支') from None
+                    if 'end of a turn' in detail:
+                        raise ResumePreflightBlocked('只能从已完成回复的轮次末尾创建分支') from None
+                # Do not expose native error bodies, tokens or retry a write.
+                raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
             except (OSError, ValueError, urllib.error.URLError):
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
@@ -1350,6 +1365,28 @@ class AntigravityCli:
             raise BridgeUnavailable('原客户端尚未确认新会话项目绑定，首条消息未发送；请在电脑检查已创建的会话')
         self._invalidate_trajectories_cache(surface)
         return cid, expected_identity
+
+    def fork_conversation(self, conversation_id, step_index, *, cwd=None, surface='app'):
+        """Fork a conversation at a verified turn-end step into the current workspace."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError('源会话标识无效')
+        if type(step_index) is not int or step_index < 0:
+            raise ValueError('分支消息位置无效')
+        payload = {
+            'sourceCascadeId': conversation_id,
+            'forkAtStepIndex': step_index,
+            'targetForkWorkspace': 'FORK_TARGET_CURRENT_WORKSPACE',
+        }
+        if cwd:
+            path = Path(cwd).resolve()
+            if path.is_dir():
+                payload['sourceWorkspaceUris'] = [path.as_uri()]
+        result = self.call_ls_rpc('ForkConversation', payload, surface=surface)
+        new_cid = result.get('newCascadeId') or result.get('new_cascade_id')
+        if not isinstance(new_cid, str) or not new_cid.strip() or new_cid == conversation_id:
+            raise BridgeUnavailable('Antigravity 尚未确认分支结果，请在电脑核对')
+        self._invalidate_trajectories_cache(surface)
+        return new_cid.strip()
 
     def stop(self, conversation_id, *, surface='app', before_stop=None):
         with self._turn_lock:
