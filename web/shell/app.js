@@ -739,7 +739,7 @@ $('new-chat-form').onsubmit=async event=>{
     }
     const result=await api(newChatUrl('/api/sessions'),{id:attempt.id,project:attempt.project,title:attempt.title,...attempt.modelOptions,...(attempt.kind?{kind:attempt.kind}:{})});
     sessionStorage.removeItem('new-chat-attempt');$('new-chat-dialog').close();
-    $('search').value='';$('archived').value='false';
+    $('search').value='';$('archived').checked=false;
     loadList(true).catch(e=>toast(e.message));toast(result.message);
     await openChat(result.id,result.host);
   }catch(e){
@@ -1217,8 +1217,9 @@ function renderQueue(rows){
   if(rows.length||pending.length){const manage=el('button','plain',t('消息管理'));manage.type='button';manage.onclick=openMessageManagement;$('queued').append(manage);}
   const target=currentId,host=currentHost;
   for(const row of rows){
-    const card=el('div','queue-card'),reply=row.text.startsWith('<send_user_message_question_reply>');
-    card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
+    const text=typeof row?.text==='string'?row.text:String(row?.text??'');
+    const card=el('div','queue-card'),reply=text.startsWith('<send_user_message_question_reply>');
+    card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):text));
     if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));
     if(row.status==='queued'){
       const cancel=el('button','plain',t('撤回待发送消息'));
