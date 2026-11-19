@@ -3182,6 +3182,7 @@ const en={
   "正在读取最近内容…": "Loading recent content…",
   "正在读取电脑项目…": "Loading desktop projects…",
   "正在读取聊天…": "Loading chat…",
+  "未命名聊天": "Untitled chat",
   "正在连接…": "Connecting…",
   "正在连接桌面，可先阅读已保存的历史。": "Connecting to the desktop. You can read saved history in the meantime.",
   "此电脑": "This computer",

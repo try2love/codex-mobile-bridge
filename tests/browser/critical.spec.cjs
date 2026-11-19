@@ -655,6 +655,43 @@ test('message management keeps native Codex items visible and read only as the q
   expect(await page.evaluate(()=>({writes:__nativeQueueFixture.writes,timer:messageManagement.panel.nativeTimer}))).toEqual({writes:0,timer:null});
 });
 
+test('Codex chat header uses the same host title when history is still unnamed', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  const titles=await page.evaluate(async()=>{
+    const old=api,id=crypto.randomUUID(),opening=[];
+    let persisted='自动生成的标题';
+    const detail=title=>({id,title,host:'local',requests:[],submissions:[],connected:false,
+      loadingHistory:false,historyComplete:true,status:'idle'});
+    api=async (url,body,signal)=>{
+      const path=new URL(url,location.origin);
+      if(path.pathname==='/api/sessions')return {sessions:[{id,title:persisted,host:'local',cwd:'/fixture',recency:1,projectKey:'local|unassigned',projectName:'其他'}],remoteHosts:[],availableSources:['desktop']};
+      if(path.pathname.endsWith('/timeline'))return new Promise(resolve=>opening.push(()=>resolve({epoch:id,sequence:1,rows:[],meta:detail('未命名聊天'),files:[]})));
+      if(path.pathname.endsWith('/changes'))return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+      if(path.pathname.endsWith('/notifications'))return {available:false};
+      return {};
+    };
+    try{
+      $('login').hidden=true;$('app').hidden=false;
+      await loadList(true);
+      listRows.unshift({...listRows[0],host:'remote:other',title:'错误主机上的同 ID'});
+      const open=openChat(id,'local');
+      for(let i=0;!opening.length&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));
+      const initial=$('chat-title').textContent;
+      opening[0]();await open;
+      const afterHistory=$('chat-title').textContent;
+      persisted='列表收到更新后的名称';await loadList(true);
+      const afterList=$('chat-title').textContent;
+      renderState(detail('未命名聊天'));
+      const afterStale=$('chat-title').textContent;
+      renderState(detail('比列表更新的原生名称'));
+      const afterNative=$('chat-title').textContent;
+      return {initial,afterHistory,afterList,afterStale,afterNative};
+    }finally{chatTimeline?.dispose();chatTimeline=null;api=old;}
+  });
+  expect(titles).toEqual({initial:'自动生成的标题',afterHistory:'自动生成的标题',
+    afterList:'列表收到更新后的名称',afterStale:'列表收到更新后的名称',afterNative:'比列表更新的原生名称'});
+});
+
 test('lost send response reconciles once and preserves newer composer edits', async ({page}) => {
   await ready(page);
   const results = await page.evaluate(async () => {

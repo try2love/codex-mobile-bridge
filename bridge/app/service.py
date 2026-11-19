@@ -97,6 +97,8 @@ class LiveSession:
         self.state = None
         self.history_state = None
         self.saved_view = None
+        self.saved_title = None
+        self.next_title_read = 0
         self.saved_file_changes = {}
         self.history_limit = 2
         self.timeline_limit = 40
@@ -146,6 +148,17 @@ class LiveSession:
         self.sequence += 1
         self.timeline_source = None
         self.condition.notify_all()
+
+    def observe_saved_title(self, metadata):
+        title = metadata.get('name') or metadata.get('title')
+        if not isinstance(title, str) or not title.strip() or title == '未命名聊天':
+            return
+        with self.condition:
+            if title != self.saved_title:
+                self.saved_title = title
+                source = (self.state if self.connected else self.history_state or self.state) or {}
+                if source.get('title') in (None, '', '未命名聊天'):
+                    self.changed()
 
     def timeline_view(self, conversation=False):
         # Presentation only. Actions still call view() against current state.
@@ -205,6 +218,8 @@ class LiveSession:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
                                      image_cache=self.tool_image_cache, item_limit=item_limit, process_bodies=process_bodies)
+            if result['title'] == '未命名聊天' and self.saved_title:
+                result['title'] = self.saved_title
             if self.question_skips:
                 result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
@@ -3074,6 +3089,7 @@ class Bridge:
                 rows = ([] if source == 'wsl' else bridge.store.poll('list', options) if remote else
                         bridge.store.list(**options))
                 rows = self.hosts.decorate(rows, bridge.host, label, bridge.organization_commands.native_memberships())
+                live_titles = []
                 with bridge.lock:
                     bridge.listed.update(row['id'] for row in rows)
                     for row in rows:
@@ -3083,6 +3099,10 @@ class Bridge:
                         row['connected'] = bool(session and session.connected)
                         row['access'] = bridge._access(row.get('origin', 'desktop'), session)
                         row['title'] = row.get('name') or row.get('title') or '未命名聊天'
+                        if session is not None:
+                            live_titles.append((session, row))
+                for session, row in live_titles:
+                    session.observe_saved_title(row)
                 return rows, None, available
             except (RemoteUnavailable, StoreUnavailable) as exc:
                 return [], {'host': bridge.host, 'label': label, 'error': str(exc)}, []
@@ -3520,6 +3540,7 @@ class Bridge:
             session.attached_parent = dict(parent, host=self.host) if parent else None
             session.origin_verified = True
             session.access = self._access(session.origin, session)
+            session.observe_saved_title(metadata)
 
     def _saved_history(self, session):
         return self.store.history(session.id, turn_limit=session.history_limit, item_limit=session.timeline_limit)
@@ -4176,6 +4197,21 @@ class Bridge:
             source.suspend_observation()
 
     def _maintain_session(self, session):
+        # Desktop's automatic naming can update the local index without
+        # publishing another conversation patch. Only read the open chat.
+        with session.condition:
+            source = (session.state if session.connected else session.history_state or session.state) or {}
+            now = time.monotonic()
+            read_title = (self.local and session.viewers > 0 and session.origin_verified and session.origin == 'desktop'
+                          and not session.saved_title and source.get('title') in (None, '', '未命名聊天')
+                          and now >= session.next_title_read)
+            if read_title:
+                session.next_title_read = now + 3
+        if read_title:
+            try:
+                session.observe_saved_title(self.store.get(session.id))
+            except (KeyError, StoreUnavailable):
+                pass
         with self.submit_lock:
             queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
         if queued and session.connected and session.view().get("status") == "idle":
