@@ -257,7 +257,7 @@ class AntigravityStore:
             return False
         raise ValueError('无法核验原生会话是否空闲，请在电脑检查会话')
 
-    def list_tasks(self, surface_root, conversation_id):
+    def list_tasks(self, surface_root, conversation_id, *, live=False):
         """Return subagent child conversations for AgentsPanel."""
         db_path = Path(surface_root) / 'conversation_summaries.db'
         rows = self._query_db(
@@ -286,7 +286,7 @@ class AntigravityStore:
                 'id': cid,
                 'title': title,
                 'status': status,
-                'cancellable': False,
+                'cancellable': bool(live and status == 'running'),
             })
         return tasks
 
