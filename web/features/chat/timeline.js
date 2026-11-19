@@ -100,7 +100,8 @@ class ChatTimeline {
       entry.node.hidden=!this.rowVisible(row);
       if(entry.node.hidden)entry.node.__cancelProcessReads?.();
     }
-    syncChatMessageNodes(this.container,[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order).map(row=>this.nodes.get(row.key).node));
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     this.refreshActions();
     this.restore(anchor,bottom);
   }
@@ -210,7 +211,7 @@ class ChatTimeline {
       for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
       ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
     }
-    syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
@@ -335,6 +336,7 @@ class ChatTimeline {
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
+    for(const footer of this.container.querySelectorAll('.chat-turn-completion'))footer.textContent=chatTurnCompletionLabel(footer.__chatTurn);
   }
   async updates(){
     let after=this.sequence,through='',snapshot=null;

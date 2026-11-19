@@ -74,3 +74,4 @@
 
 .activity>summary .chat-activity-file{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:.16em}
 .activity>summary .chat-activity-stats{margin-inline-start:.45em;white-space:nowrap;font-size:.9em}
+.chat-turn-completion{color:var(--muted);font-size:12px;line-height:1.6;margin:10px 0 24px}

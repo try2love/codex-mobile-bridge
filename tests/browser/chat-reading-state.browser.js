@@ -77,6 +77,26 @@ async function runChatReadingStateChecks(){
       check(getNode('thought').open&&getNode('thought').querySelector('.activity-body').scrollTop===0,provider+' shrinking summary clamps to its actual range');
       if(view){view.prepareChat('different-chat');apply(rows);}else apply(rows,true);
       await frame();check(!getNode('tool').open&&getNode('tool').querySelector('.activity-body').scrollTop===0,provider+' new conversation does not inherit expansion or scroll');
+      const start=1700000000000;
+      rows=[row('turn-user',0,'user','First task'),row('turn-tool',1,'activity','Tool result'),row('turn-answer',2,'assistant','Final answer')]
+        .map(message=>({...message,turnId:'native-first',turnStatus:'inProgress',turnStartedAt:start}));
+      apply(rows,true);await frame();
+      check(!root.querySelector('.chat-turn-completion'),provider+' running task has no completion footer');
+      rows=rows.map(message=>({...message,turnStatus:'completed',turnCompletedAt:start+125000}));
+      apply(rows);await frame();
+      const footer=root.querySelector('.chat-turn-completion');
+      check(footer?.textContent===BridgeI18n.t('已完成，用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',2).replace('{seconds}',5),provider+' completion uses the native 125 second interval');
+      check(footer.previousElementSibling===getNode('turn-answer'),provider+' completion is a flat sibling after the answer');
+      check(!getNode('turn-tool').open,provider+' completion does not change per-item disclosure');
+      const language=BridgeI18n.language();BridgeI18n.setLanguage('en');timeline?.relabel();view?.relabel();
+      check(root.querySelector('.chat-turn-completion').textContent==='Completed in 2 min 5 sec',provider+' completion translates without changing native clocks');
+      BridgeI18n.setLanguage(language);timeline?.relabel();view?.relabel();
+      apply(rows);await frame();
+      check(root.querySelectorAll('.chat-turn-completion').length===1&&root.querySelector('.chat-turn-completion')===footer,provider+' repeated refresh reuses exactly one footer');
+      rows=[...rows,{...row('partial-history',3,'assistant','Older task without start'),turnId:'native-second',turnStatus:'completed',turnCompletedAt:start+500000}];
+      apply(rows);await frame();
+      check([...root.querySelectorAll('.chat-turn-completion')].at(-1).textContent===BridgeI18n.t('已完成'),provider+' missing native start does not fabricate elapsed time');
+      if(timeline){timeline.setVisibility({showProcess:false});timeline.setVisibility({showProcess:true});check(root.querySelectorAll('.chat-turn-completion').length===2,provider+' process visibility preserves completion metadata');}
     }finally{view?.clear();timeline?.dispose();root.remove();}
   }
   return {width:innerWidth,passed:checks.length,checks};

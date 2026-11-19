@@ -15,6 +15,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ZCodePrototypeTests(unittest.TestCase):
+    def test_native_product_turn_clocks_survive_projection_without_guessing_from_messages(self):
+        start = 1700000000000
+        snapshot = {'sessionId': 'sess_test', 'revision': 1, 'seq': 1, 'logEpoch': 'epoch',
+                    'control': {'activeWorks': []}, 'pendingInteractions': [], 'queue': {'items': []},
+                    'rows': {'totalCount': 3, 'window': [
+                        {'rowId': 1, 'kind': 'turnHeader', 'turnId': 'legacy', 'productTurnId': 'product',
+                         'state': 'completedSuccess', 'startedAt': start, 'endedAt': start + 125000, 'activeMs': 60000},
+                        {'rowId': 2, 'kind': 'assistantText', 'turnId': 'legacy-followup', 'productTurnId': 'product',
+                         'visibility': 'visible', 'text': 'answer', 'createdAt': start + 1000},
+                        {'rowId': 3, 'kind': 'assistantText', 'turnId': 'partial',
+                         'visibility': 'visible', 'text': 'partial history', 'createdAt': start + 200000},
+                    ]}}
+        rows = project_snapshot(snapshot, str(self.project))['messages']
+        self.assertEqual(rows[0]['turnId'], 'product')
+        self.assertEqual(rows[0]['turnStatus'], 'completed')
+        self.assertEqual(rows[0]['turnStartedAt'], start)
+        self.assertEqual(rows[0]['turnCompletedAt'], start + 125000)
+        self.assertEqual(rows[1]['turnId'], 'partial')
+        self.assertNotIn('turnStartedAt', rows[1])
+        self.assertNotIn('turnCompletedAt', rows[1])
+        self.assertNotIn('turnStatus', rows[1])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
         self.addCleanup(self.temp.cleanup)

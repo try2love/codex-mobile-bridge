@@ -71,12 +71,23 @@ def project_snapshot(snapshot, workspace, reply_models=None):
     turns = [{'turnId': row['turnId'], 'sequence': row['rowId'],
               'status': TURN_STATES.get(row.get('state'), row.get('state') or 'unknown')}
              for row in snapshot['rows']['window'] if row['kind'] == 'turnHeader']
+    headers = {row.get('productTurnId') or row['turnId']: row
+               for row in snapshot['rows']['window'] if row['kind'] == 'turnHeader'}
     for row in snapshot['rows']['window']:
         if row.get('visibility') != 'visible' or row['kind'] not in ('userInput', 'assistantText', 'reasoning', 'toolCall'):
             continue
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
                    'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
                             'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        turn_id = row.get('productTurnId') or row.get('turnId')
+        if isinstance(turn_id, str) and turn_id:
+            message['turnId'] = turn_id
+            header = headers.get(turn_id)
+            if header:
+                message['turnStatus'] = TURN_STATES.get(header.get('state'), 'unknown')
+                for source, target in (('startedAt', 'turnStartedAt'), ('endedAt', 'turnCompletedAt')):
+                    if header.get(source) is not None:
+                        message[target] = header[source]
         if row['kind'] in ('userInput', 'assistantText') and row.get('createdAt') is not None:
             message['timestamp'] = row['createdAt']
         if row['kind'] == 'assistantText':
