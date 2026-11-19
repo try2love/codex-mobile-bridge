@@ -34,6 +34,7 @@ PUBLIC_URLS = set('''
 /mermaid-viewer.js /mermaid-viewer.css /mermaid-cards.js /mermaid-cards.css
 /vendor/katex/katex.min.js /vendor/katex/katex.min.css /style.css
 /manifest.webmanifest /icon.png /icon-ui.png /icon-favicon.png /icon-touch.png /icon-192.png
+/manifest-dark.webmanifest /icon-dark.png /icon-ui-dark.png /icon-favicon-dark.png /icon-touch-dark.png /icon-192-dark.png
 '''.split())
 
 SSH_SOURCES = {
