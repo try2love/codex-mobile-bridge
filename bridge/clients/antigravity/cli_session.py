@@ -565,6 +565,7 @@ class AntigravityCli:
         'CancelCascadeInvocation',
         'ForceStopCascadeTree',
         'HandleCascadeUserInteraction',
+        'UpdateConversationAnnotations',
     )
 
     def __init__(self, home=None, model_catalog=None):
@@ -577,6 +578,7 @@ class AntigravityCli:
         self._stop_generation = 0
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
+        self._annotations_cache = {}
         self._waiting_cache = {}
         self._variant_cache = {}
         self._base_cache = {}
@@ -622,8 +624,10 @@ class AntigravityCli:
         with self._lock:
             if surface is None:
                 self._trajectories_cache.clear()
+                self._annotations_cache.clear()
             else:
                 self._trajectories_cache.pop(surface, None)
+                self._annotations_cache.pop(surface, None)
 
     def _collect_step_fallback(self, cascade_id, step_index, *, surface='app'):
         try:
@@ -651,10 +655,20 @@ class AntigravityCli:
 
             waiting_by_cid = {}
             active_cids = set()
+            annotations_by_cid = {}
             fresh_cache = {}
             for traj_cid, summary in summaries.items():
                 if not isinstance(summary, dict):
                     continue
+                raw_ann = summary.get('annotations')
+                if isinstance(raw_ann, dict):
+                    ann = {}
+                    if isinstance(raw_ann.get('title'), str) and raw_ann['title'].strip():
+                        ann['title'] = raw_ann['title'].strip()
+                    if isinstance(raw_ann.get('archived'), bool):
+                        ann['archived'] = raw_ann['archived']
+                    if ann:
+                        annotations_by_cid[traj_cid] = ann
                 status = str(summary.get('status') or '')
                 meta = summary.get('trajectoryMetadata') if isinstance(summary.get('trajectoryMetadata'), dict) else {}
                 root_cid = str(meta.get('rootCascadeId') or meta.get('rootConversationId') or '').strip()
@@ -707,6 +721,7 @@ class AntigravityCli:
 
             with self._lock:
                 self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
+                self._annotations_cache[surface] = {k: dict(v) for k, v in annotations_by_cid.items()}
                 self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
                 self._waiting_cache.update(fresh_cache)
                 if len(self._waiting_cache) > 256:
@@ -715,6 +730,36 @@ class AntigravityCli:
                             self._waiting_cache.pop(stale_key, None)
 
             return waiting_by_cid, active_cids
+
+    def annotations_for(self, conversation_id, *, surface='app', fresh=False):
+        """Return cached or freshly read native annotations (title/archived) for a conversation."""
+        if not conversation_id:
+            return {}
+        if fresh:
+            self.waiting_state_by_cid(surface=surface, max_age=0.0)
+        with self._lock:
+            return dict((self._annotations_cache.get(surface) or {}).get(conversation_id) or {})
+
+    def update_annotations(self, conversation_id, *, title=None, archived=None, surface='app'):
+        """Update native conversation annotations via UpdateConversationAnnotations (merge)."""
+        annotations = {}
+        if title is not None:
+            annotations['title'] = title
+        if archived is not None:
+            annotations['archived'] = bool(archived)
+        if not annotations:
+            raise ValueError('缺少要更新的会话标注字段')
+        result = self.call_ls_rpc(
+            'UpdateConversationAnnotations',
+            {
+                'cascadeId': conversation_id,
+                'annotations': annotations,
+                'mergeAnnotations': True,
+            },
+            surface=surface,
+        )
+        self._invalidate_trajectories_cache(surface)
+        return result
 
     def has_waiting_interactions(self, conversation_id, *, surface='app'):
         if not conversation_id:
