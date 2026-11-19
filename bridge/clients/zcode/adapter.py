@@ -682,12 +682,13 @@ class ZCodePrototype(ZCodeDesktop):
             result = self.transport({'action': action, **context, 'body': body})
             workspace, binding = result.pop('workspace', None), result.pop('binding', None)
             if result.get('status') == 'accepted' and workspace:
-                self.workspaces[result['result']['id']] = workspace
+                created_sid = result['result']['id']
+                self.workspaces[created_sid] = workspace
                 if binding:
                     self.bindings[workspace] = binding
+                    self.debug_sessions.add(created_sid)
                     if not self.sid:
-                        self.sid, self.workspace = result['result']['id'], workspace
-                        self.debug_sessions.add(self.sid)
+                        self.sid, self.workspace = created_sid, workspace
             return result
         if not isinstance(sid, str) or not sid.startswith('sess_'):
             raise ValueError('ZCode 会话标识无效')

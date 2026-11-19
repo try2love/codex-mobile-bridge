@@ -1494,6 +1494,34 @@ test('a verified per-session connection enables only text without granting app-w
  assert.equal(ui.calls.filter(c=>c.body).length,1);
 });
 
+test('created ZCode sessions stay writable when application inventory only advertises session access',async()=>{
+ for(const cwd of ['/project','/another-project']){
+  const ui=fixture(),view=ui.view,client={id:'zcode',enabled:true,connected:false,historyAvailable:true};
+  const session={id:'sess_new',title:'New chat',cwd,status:'idle',runtimeKnown:true,
+   controlScope:'session',connectionState:'ready',requests:[]};
+  let capabilities={send:true,resume:true,stop:false,queue:false,steer:false};
+  ui.setHandler(async(url,body)=>{
+   if(body){assert.match(url,/\/send/);return {status:'accepted'};}
+   if(url.includes('/detail'))return {session,messages:[{id:'reply',role:'assistant',text:'First reply'}],capabilities};
+   if(url.includes('/list'))return {sessions:[session],connected:true};
+   return {};
+  });
+  view.setClientStates([client]);await view.choose('zcode');await view.open(session.id);
+  assert.equal(view.canMutate(),true);assert.equal(view.canResume(),false);assert.match(view.status.textContent,/已连接/);
+  view.input.value='Continue';view.updateComposer();assert.equal(view.send.disabled,false);
+  view.setClientStates([{...client}]);
+  assert.equal(view.canMutate(),true);assert.equal(view.freshDetail,true);assert.equal(view.send.disabled,false);
+  await view.submit();await new Promise(setImmediate);assert.equal(ui.calls.filter(call=>call.body&&call.url.includes('/send')).length,1);
+
+  capabilities={...capabilities,send:false};session.runtimeKnown=false;session.status='unknown';
+  view.applyDetail({session,messages:[],capabilities});view.input.value='Do not send';view.updateComposer();
+  assert.equal(view.send.disabled,true);await view.submit();
+  assert.equal(ui.calls.filter(call=>call.body&&call.url.includes('/send')).length,1);
+  view.setClientStates([{...client,historyAvailable:false}]);
+  assert.equal(view.canMutate(),false);assert.equal(view.send.disabled,true);
+ }
+});
+
 test('only selecting a ZCode row continues its verified private session',async()=>{
  const ui=fixture(),view=ui.view,actions=[];
  view.provider='zcode';view.clientStates=[{id:'zcode',enabled:true,pipeReady:true}];

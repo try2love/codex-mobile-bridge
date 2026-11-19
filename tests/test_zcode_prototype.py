@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from bridge.clients.errors import BridgeUnavailable
 from bridge.clients.manager import DesktopSessions
 from bridge.clients.zcode.adapter import ZCodePrototype, project_files, project_snapshot
 from bridge.platforms.macos.loopback import listener_identity
@@ -245,6 +246,83 @@ class ZCodePrototypeTests(unittest.TestCase):
         import base64
         self.assertEqual(base64.b64decode(request['body']['files'][0]['data']), b'new project')
         self.assertEqual(adapter.config['binding'], {'owner': 'one'})
+
+    def test_created_sessions_keep_their_verified_scope_beside_an_existing_anchor(self):
+        owner = {'pid': 7, 'birth': 'one'}
+        (self.root/'tasks-index.sqlite').touch()
+        for same_project in (True, False):
+            with self.subTest(same_project=same_project):
+                project = self.project if same_project else self.root
+                binding = {'clientId': 'native', 'connectionId': 'connection',
+                           'runtime': {'identity': 'runtime', 'workspaceKey': str(project)}}
+                snapshot = {'sessionId': 'sess_new', 'revision': 1, 'seq': 2, 'logEpoch': 'epoch',
+                            'control': {'canStop': False, 'activeWorks': []},
+                            'rows': {'totalCount': 0, 'window': []}, 'pendingInteractions': [],
+                            'queue': {'items': []}, 'inputRouting': {'mode': 'startNow'}}
+                transport = Mock(side_effect=lambda request: {
+                    'status': 'accepted', 'result': {'id': 'sess_new'},
+                    'workspace': str(project), 'binding': binding} if request['action'] == 'create'
+                    else {'snapshot': snapshot})
+                adapter = ZCodePrototype(self.root, {**self.config, 'dataDirectory': str(self.root)},
+                                         transport, pipe=Mock())
+                adapter.application_create = True
+                adapter.process = adapter.application_owner = owner
+                adapter.debug_sessions.add('sess_test')
+                result = adapter.call('create', body={'id': str(uuid.uuid4()),
+                    'projectKey': str(project), 'firstMessage': 'new chat'})
+                self.assertEqual(result['status'], 'accepted')
+                self.assertEqual(adapter.sid, 'sess_test')
+                self.assertEqual(adapter.workspace, str(self.project))
+                self.assertEqual(adapter.application_owner, owner)
+                with patch.object(adapter, '_live_process', return_value=owner), \
+                        patch('bridge.clients.zcode.reply_metadata.native_reply_models', return_value={}):
+                    self.assertFalse(adapter.inventory_status()['connected'])
+                    detail = adapter.call('detail', 'sess_new')
+                    self.assertTrue(detail['session']['runtimeKnown'])
+                    self.assertTrue(detail['capabilities']['send'])
+                    self.assertEqual(detail['session'].get('controlScope'), 'session')
+                    self.assertEqual(detail['session']['connectionState'], 'ready')
+                    self.assertEqual(transport.call_args.args[0]['binding'], binding)
+
+                    snapshot['queue'] = None
+                    unknown = adapter.call('detail', 'sess_new')
+                    self.assertFalse(unknown['session']['runtimeKnown'])
+                    self.assertFalse(unknown['capabilities']['send'])
+                    self.assertFalse(any(unknown['capabilities']['sendModes'].values()))
+
+    def test_created_session_without_binding_does_not_claim_a_live_session(self):
+        transport = Mock(return_value={'status': 'accepted', 'result': {'id': 'sess_new'},
+                                      'workspace': str(self.root)})
+        adapter = ZCodePrototype(self.root, self.config, transport, pipe=Mock())
+        adapter.application_create = True
+        adapter.call('create', body={'id': str(uuid.uuid4()), 'projectKey': str(self.root),
+                                     'firstMessage': 'new chat'})
+        self.assertNotIn('sess_new', adapter.debug_sessions)
+        transport.reset_mock()
+        with self.assertRaisesRegex(BridgeUnavailable, '显式接入'):
+            adapter.call('send', 'sess_new', {'id': str(uuid.uuid4()), 'text': 'do not dispatch'})
+        transport.assert_not_called()
+
+    def test_created_session_registration_is_retired_with_its_original_process(self):
+        owner = {'pid': 7, 'birth': 'one'}
+        transport = Mock(return_value={'status': 'accepted', 'result': {'id': 'sess_new'},
+                                      'workspace': str(self.root), 'binding': {'owner': 'one'}})
+        adapter = ZCodePrototype(self.root, self.config, transport, pipe=Mock())
+        adapter.application_create = True
+        adapter.process = adapter.application_owner = owner
+        adapter.call('create', body={'id': str(uuid.uuid4()), 'projectKey': str(self.root),
+                                     'firstMessage': 'new chat'})
+        self.assertIn('sess_new', adapter.debug_sessions)
+        replacement = {'pid': 7, 'birth': 'other'}
+        adapter._adopt_process(replacement)
+        self.assertFalse(adapter.debug_sessions)
+        self.assertFalse(adapter.bindings)
+        self.assertFalse(adapter.application_create)
+        transport.reset_mock()
+        with patch.object(adapter, '_live_process', return_value=replacement), \
+                self.assertRaisesRegex(BridgeUnavailable, '连接原会话'):
+            adapter.call('send', 'sess_new', {'id': str(uuid.uuid4()), 'text': 'do not dispatch'})
+        transport.assert_not_called()
 
     def test_new_project_requires_explicit_binding_after_adapter_restart(self):
         new = str(self.root / 'new-project')
