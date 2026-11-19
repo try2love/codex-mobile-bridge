@@ -376,8 +376,8 @@ for(const [name,file,invoke] of [
 }
 
 for (const [name, file, invoke] of [
-  ['shared native activity groups preserve reading and presentation', 'activity-groups', 'runActivityGroupBrowserChecks'],
-  ['shared history batches preserve reading and page cached process rows', 'history-batches', 'runHistoryBatchBrowserChecks'],
+  ['shared native rows remain chronological without task groups', 'activity-groups', 'runActivityGroupBrowserChecks'],
+  ['shared history batches preserve reading and native row order', 'history-batches', 'runHistoryBatchBrowserChecks'],
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],
   ['chat history, list entry and scroll position', 'desktop-history', 'runDesktopHistoryBrowserChecks'],
@@ -404,17 +404,6 @@ for (const [name, file, invoke] of [
     await testInfo.attach('checks', {body: JSON.stringify(result), contentType: 'application/json'});
   });
 }
-
-test('one native disclosure covers process fragments around a user supplement', async ({page}, testInfo) => {
-  await ready(page);await expect(page.locator('#bootstrap-status')).toBeHidden();
-  await page.route('**/__browser/process-disclosure.browser.js',route=>route.fulfill({
-    contentType:'text/javascript',body:readFileSync(path.join(__dirname,'process-disclosure.browser.js'),'utf8'),
-  }));
-  await page.addScriptTag({url:'/__browser/process-disclosure.browser.js'});
-  const result=await page.evaluate(()=>runProcessDisclosureChecks());
-  expect(result.passed).toBe(42);
-  await testInfo.attach('process-disclosure-checks',{body:JSON.stringify(result),contentType:'application/json'});
-});
 
 for (const provider of ['claude', 'deepseek']) {
   test(provider + ' project dialog and directory isolation', async ({page}) => {

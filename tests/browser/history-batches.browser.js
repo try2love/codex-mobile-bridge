@@ -63,21 +63,12 @@ async function runHistoryBatchBrowserChecks(){
       check((timeline?timeline.rows.size:view.historyMessages.length)===202,provider+' retains all 200 raw tools plus current reply and user supplement');
       check(getNode('current')===currentNode&&body.isConnected&&!mutations.some(record=>[...record.removedNodes].some(node=>node===currentNode||node===body||node.contains?.(body))),provider+' history never detaches or replaces the current reply body');
       check(Math.abs(currentNode.getBoundingClientRect().top-top)<3,provider+' combined history preserves the current reading anchor');
-      const user=getNode('supplement'),group=container.querySelector('.chat-activity-tools'),shown=()=>[...group.lastChild.children].filter(node=>node.dataset.key!==undefined);
-      check(user.parentElement===container&&!user.closest('.chat-activity-group')&&user.getBoundingClientRect().height>0,provider+' the third-page temporary task stays an outer user message');
-      check(group&&!group.open&&shown().length===20&&shown()[0]===getNode('tool-181')&&shown().at(-1)===getNode('tool-200'),provider+' tools initially attach only the most recent 20 cached rows');
-      check(!getNode('tool-1').isConnected&&getNode('tool-181').isConnected,provider+' omitted tool nodes remain cached without entering the DOM');
-      check(timeline?timeline.meta.requests[0].id===pending.id:view.state.requests[0].id===pending.id&&view.requests.children.length>0,provider+' stale historical approvals never replace the current pending request');
-      for(let parent=group.parentElement;parent;parent=parent.parentElement)if(parent.matches('details.chat-activity-group'))parent.open=true;
-      group.firstChild.click();await frame();await frame();
-      const first=getNode('tool-181'),firstTop=first.getBoundingClientRect().top,button=group.querySelector('.chat-activity-older'),reads=requests.length;
-      check(!button.hidden&&first.getBoundingClientRect().height>0,provider+' expanded tools expose a local earlier-process control');
-      button.click();await frame();await frame();
-      check(shown().length===40&&shown()[0]===getNode('tool-161')&&shown().at(-1)===getNode('tool-200'),provider+' local process paging appends exactly 20 earlier cached tools');
-      check(requests.length===reads&&mergeCount===1,provider+' local process paging performs no native history request or full history merge');
-      check(getNode('tool-181')===first&&first.isConnected&&Math.abs(first.getBoundingClientRect().top-firstTop)<3,provider+' local process paging preserves the previously visible tool node and pixel anchor');
-      check(getNode('current')===currentNode&&body.isConnected&&Math.abs(currentNode.getBoundingClientRect().top-top)<3,provider+' opening and paging process details preserves outer reply reading');
-      check(!notices.length,provider+' history batching completes without a retry or error notice');
+      const user=getNode('supplement'),tools=[...container.children].filter(node=>node.dataset.key?.startsWith('tool-'));
+      check(user.parentElement===container&&user.getBoundingClientRect().height>0,provider+' user supplement stays in its chronological position');
+      check(!container.querySelector('.chat-activity-group')&&tools.length===200,provider+' all loaded activities remain direct native rows');
+      check(getNode('tool-1').isConnected&&getNode('tool-200').isConnected,provider+' loaded history is not hidden in a local group page');
+      check(timeline?timeline.meta.requests[0].id===pending.id:view.state.requests[0].id===pending.id&&view.requests.children.length>0,provider+' historical reads never replace current approvals');
+      check(!notices.length,provider+' history completes without a retry or error notice');
       if(view){
         const draft='Unsent '+provider+' draft';view.input.value=draft;view.reading={following:false,top:viewport.scrollTop,anchor:captureChatScrollAnchor(viewport,container)};
         const newerRows=Array.from({length:200},(_,i)=>row('new-'+i,1000+i,'assistant','New synthetic reply '+i));
@@ -92,7 +83,7 @@ async function runHistoryBatchBrowserChecks(){
         check(view.historyMessages.length===200&&view.historyMessages[0].id==='new-0'&&view.historyMessages.at(-1).id==='new-199'&&!getNode('current'),provider+' only explicit newer-content selection switches to the actual latest page');
         check(view.input.value===draft&&!container.querySelector('.ds-history-newer')&&view.reading.following&&requests.length===3,provider+' switching latest keeps the draft, removes the control and follows the new reply');
       }
-      providers.push({provider,pages:requests.length,historyMerges:mergeCount,rawTools:200,initialAttached:20,afterLocalPaging:shown().length});
+      providers.push({provider,pages:requests.length,historyMerges:mergeCount,rawTools:200,attachedTools:tools.length});
     }finally{observer?.disconnect();view?.clear();timeline?.dispose();for(const entry of deferred)if(!entry.done)entry.resolve(nativePage({rows:[],before:null,hasMore:false}));if(done)await done;root.remove();}
   }}finally{for(const [name,value] of [['showReasoning',original.reasoning],['showProcess',original.process]])if(value===undefined)delete document.documentElement.dataset[name];else document.documentElement.dataset[name]=value;}
   return {passed:checks.length,width:innerWidth,checks,providers};

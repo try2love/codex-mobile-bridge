@@ -2,6 +2,8 @@
 
 Status: implemented
 
+当前 UI 的分组展示与聚合读取已由[恢复逐条中间过程展示](../simplification/2026-11-19-unfold-native-chat-process.md)取代；下文保留原决定及兼容端点背景。
+
 [同轮过程折叠](../bug-fix/2026-11-19-native-turn-process-disclosure.md)更新了下文的共享 UI 展开规则。分页、游标校验及存储边界继续适用。
 
 ## 问题

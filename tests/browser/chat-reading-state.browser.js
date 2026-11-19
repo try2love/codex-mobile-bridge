@@ -9,7 +9,7 @@ async function runChatReadingStateChecks(){
     root.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:20';document.body.append(root);
     let view,timeline,sequence=0,current=[];
     const row=(id,order,role='assistant',text=longText)=>({id,order,role,text,version:'v1'});
-    let rows=[row('before',0),row('thought',1,'reasoning'),row('tool',2,'activity'),row('after',3)];
+    let rows=[row('before',0),row('thought',1,'activity',longText),row('tool',2,'activity'),row('after',3)];
     const detail=messages=>({connected:true,session:{id:'reading',title:'Reading fixture',status:'idle',capabilities:{}},messages,files:[]});
     let apply,getNode,viewport,container;
     if(provider==='codex'){
@@ -39,10 +39,6 @@ async function runChatReadingStateChecks(){
       const positions={thought:210,tool:330};
       for(const id of Object.keys(positions)){
         const node=getNode(id);
-        for(let parent=node.parentElement;parent;parent=parent.parentElement){
-          if(!parent.matches('details.chat-activity-group')||parent.open)continue;
-          if(parent.matches('.chat-activity-turn'))parent.firstChild.click();else parent.open=true;
-        }
         node.open=true;
       }
       await frame();await frame();

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+当前 UI 的分组展示与聚合读取已由[恢复逐条中间过程展示](../simplification/2026-11-19-unfold-native-chat-process.md)取代；下文保留原决定及兼容端点背景。
+
 用户后续提供完整运行/结束截图，纠正了此前对预览的理解；当前展示以[整轮用时折叠](../bug-fix/2026-11-16-task-duration-disclosure.md)为准。以下保留当时决定与局限，不将此前误读写成用户否定三级结构。
 
 当时实现误读了用户验收反馈，取消统一外层与三级结构，改为[正文与连续操作独立展示](../bug-fix/2026-11-16-inline-activity-disclosures.md)替代该展示决定；下文保留原决定与验证局限，稳定节点和阅读状态约束仍适用。

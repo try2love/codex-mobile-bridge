@@ -70,7 +70,7 @@ test('persistent history is display only and cannot override fresh disconnected 
  view.prepareChat('b');view.applyDetail({session:{id:'b',title:'Fresh',requests:[{id:'live'}]},messages:[{id:'fresh',role:'assistant',text:'Fresh content'}],connected:false});
  ui.run('window.historyReads.shift().resolve({session:{id:"b",title:"Old"},messages:[{id:"old",role:"assistant",text:"Obsolete content"}]})');
  await Promise.resolve();assert.match(view.messageList.textContent,/Fresh content/);assert.doesNotMatch(view.messageList.textContent,/Obsolete/);
- const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'conversation-recent-v1');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
+ const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'timeline-recent-v1');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
 });
 test('late persistent history cannot cross a desktop chat or authentication switch',async()=>{
  const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
@@ -87,61 +87,42 @@ test('fresh empty desktop history replaces persisted content and account changes
  await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
 });
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
-test('live process reads only its bounded directory, then folds before any requested body read',async()=>{
- const ui=await opened(),view=ui.view,reads=[];
- ui.setHandler(async(url,body,signal)=>{const query=new URL(url,'http://fixture').searchParams;reads.push({query,signal});if(query.has('historyProcess'))return {rows:[{key:'note',version:'v',role:'assistant',kind:'agentMessage',phase:'commentary',text:'Progress explanation',detailCursor:'note-body'},{key:'tool',version:'v',role:'activity',kind:'commandExecution',title:'Run command',text:'',hasDetail:true,detailCursor:'tool-body'},{key:'empty',version:'v',role:'activity',title:'Completed action',text:'',hasDetail:false}],next:null};return {key:'tool',version:'v',text:'Command and output',offset:0,next:null};});
- const message={id:'process',key:'process',version:'v',role:'activity',kind:'processPage',processCursor:'process-cursor',turnId:'t',turnStatus:'inProgress'};
- view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:[message],requests:[]});
- const group=view.messageList.querySelector('.chat-process-page');assert.ok(group);assert.equal(group.open,true);
- await new Promise(setImmediate);assert.equal(reads.length,1);assert.equal(reads[0].query.get('historyProcess'),'process-cursor');assert.equal(reads[0].query.get('historyAfter'),'latest');assert.match(group.textContent,/Progress explanation/);
- const completed={...message,turnStatus:'completed'};
- view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[completed],requests:[]});assert.equal(group.open,false);
- const click=()=>group.firstChild.onclick({preventDefault(){}});
- click();assert.equal(group.open,true);
- const tool=group.__records.get('tool').node;assert.equal(tool.open,false);assert.equal(group.__records.get('empty').node.tagName,'SECTION');
- tool.open=true;tool.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2);assert.equal(reads[1].query.get('historyDetail'),'tool-body');assert.match(tool.textContent,/Command and output/);assert.ok(tool.querySelector('.activity-copy'));
- click();click();await new Promise(setImmediate);assert.equal(reads.length,2,'same directory and body reuse loaded content');
- view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[{...completed,version:'v2'}],requests:[]});assert.equal(group.open,true,'completed refresh preserves explicit reader intent');
+test('native details expose each intermediate row without process-directory requests',async()=>{
+ const ui=await opened(),view=ui.view;const rows=[
+  {id:'input',role:'user',text:'Request'},
+  {id:'reason',role:'reasoning',text:'Reasoning summary'},
+  {id:'tool',role:'activity',title:'Run command',text:'echo fixture'},
+  {id:'progress',role:'assistant',phase:'commentary',text:'Progress explanation'},
+  {id:'final',role:'assistant',text:'Final reply'},
+ ];
+ const calls=ui.calls.length;view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:rows});
+ assert.deepEqual(view.messageList.children.filter(node=>node.dataset.key).map(node=>node.dataset.key),rows.map(row=>row.id));
+ assert.equal(view.messageList.querySelector('.chat-activity-group'),null);
+ assert.equal(view.messageList.querySelector('.chat-process-page'),null);
+ const tool=view.messageNodes.get('tool').node;tool.open=true;tool.ontoggle();
+ view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:rows});
+ assert.equal(view.messageNodes.get('tool').node,tool);assert.equal(tool.open,true);
+ assert.match(view.messageList.textContent,/Progress explanation/);assert.match(view.messageList.textContent,/Final reply/);
+ assert.equal(ui.calls.length,calls);
 });
-test('closing process cancels directory reads and ignores late results',async()=>{
- const ui=await opened(),view=ui.view;let finish,signal;
- ui.setHandler((url,body,requestSignal)=>{signal=requestSignal;return new Promise(resolve=>finish=resolve);});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await Promise.resolve();group.open=false;group.ontoggle();assert.equal(signal.aborted,true);
- finish({rows:[{key:'late',role:'activity',text:'Late private body'}],next:null});await new Promise(setImmediate);assert.doesNotMatch(group.textContent,/Late private body/);assert.equal(group.__records.size,0);
-});
-test('completed process cache stays in the component and cannot evict shared conversation history',async()=>{
- const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
- ui.run('window.cacheReads=[];window.cacheWrites=[];window.BridgeChatHistoryCache={read:(...args)=>{window.cacheReads.push(args);return null;},write:(...args)=>window.cacheWrites.push(args)}');
- let reads=0;ui.setHandler(async url=>{reads++;return url.includes('historyProcess')?{rows:[{key:'tool',role:'activity',kind:'commandExecution',version:'v',text:'',hasDetail:true,detailCursor:'body'}],next:null}:{version:'v',offset:0,text:'Loaded command output',next:null};});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',turnStatus:'completed',processCursor:'cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);const tool=group.__records.get('tool').node;tool.open=true;tool.ontoggle();await new Promise(setImmediate);
- group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);
- assert.equal(reads,2);assert.equal(ui.run('window.cacheReads.length'),0);assert.equal(ui.run('window.cacheWrites.every(entry=>entry[1]==="conversation-recent-v1")'),true);
-});
-test('long commentary preview does not request its body until the reader clicks',async()=>{
- const ui=await opened(),view=ui.view;let reads=0;
- ui.setHandler(async url=>{reads++;return {rows:[{key:'note',role:'assistant',phase:'commentary',text:'p'.repeat(8000),version:'v',detailCursor:'full-note'}],next:null};});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads,1);assert.equal(group.__records.get('note').node.querySelector('button').textContent,'展开完整内容');
-});
-test('ordinary long message expands in body pages and copy reads its full text',async()=>{
- const ui=await opened(),view=ui.view;const full='x'.repeat(20000);let reads=0;
- ui.setHandler(async url=>{reads++;const query=new URL(url,'http://fixture').searchParams,offset=Number(query.get('historyOffset')||0);return {key:'reply',version:'v',offset,text:full.slice(offset,offset+16000),next:offset+16000<full.length?offset+16000:null};});
- const message={id:'reply',key:'reply',role:'assistant',text:full.slice(0,8000),truncated:true,version:'v',detailCursor:'scoped-reply'};
- view.applyDetail({session:{id:'a',title:'A'},messages:[message]});assert.equal(reads,0);
- const more=view.messageList.querySelector('.detail-more');await more.click();assert.equal(reads,1);assert.equal(view.messageList.querySelector('.message-body').textContent.length,16000);await more.click();assert.equal(view.messageList.querySelector('.message-body').textContent.length,20000);assert.equal(more.hidden,true);
- assert.equal(await view.fullMessage(message),full);
+test('native long message remains complete for copy without a second process-body request',async()=>{
+ const ui=await opened(),view=ui.view,full='x'.repeat(20000);let copied;
+ ui.run('window.BridgeClipboard.copy=async(getText)=>window.copiedText=await getText()');
+ const count=ui.calls.length;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:full}]});
+ assert.equal(view.messageList.querySelector('.message-body').textContent,full);
+ await view.messageList.querySelector('.message-copy').click();assert.equal(ui.run('window.copiedText'),full);
+ assert.equal(ui.calls.length,count);
 });
 test('desktop upward reading 36px from the bottom remains stable during resize',async()=>{
  const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:'Visible reply'}]});
  view.messages.scrollHeight=1000;view.messages.clientHeight=100;view.messages.scrollTop=864;view.reading={top:900,following:true};view.rememberReading();assert.equal(view.reading.following,false);
  view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,864);
 });
-test('desktop process disclosure click disables bottom following before content grows',async()=>{
- const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'cursor'}]});
- view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};const group=view.messageList.querySelector('.chat-process-page');
- view.messages.onclick?.({target:group.firstChild});assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
+test('opening an individual native activity keeps the outer reading position',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'tool',role:'activity',title:'Command',text:'echo fixture'}]});
+ view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};
+ const activity=view.messageNodes.get('tool').node;view.messages.onclick?.({target:activity.firstChild});
+ assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
 });
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
@@ -733,7 +714,7 @@ test('Claude request-size limit stays in attachment help and rejects oversized i
  const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},maxRequestBytes:10*1024*1024,messages:[]}));await ui.view.open('a');assert.ok(!ui.view.composerBody.querySelector('.ds-attachment-hint'));assert.match(ui.view.attachButton.title,/10 MiB/);ui.view.attachments.add([{name:'large.png',type:'image/png',size:8*1024*1024}]);assert.equal(ui.calls.some(c=>c.upload),false);assert.match(ui.view.attachments.error,/10 MiB/);
 });
 test('history updates retain expanded activities and honor visibility settings',async()=>{
- const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].firstChild.onclick({preventDefault(){}});ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
+ const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].open=true;ui.view.messageList.children[0].ontoggle();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
