@@ -474,7 +474,21 @@ class Antigravity:
             page = self.store.read_transcript_page(row['surfaceRoot'], cid, limit=body.get('historyLimit') or 40,
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
             if page.get('contextUsage'):
-                session['contextUsage'] = page['contextUsage']
+                session['contextUsage'] = dict(page['contextUsage'])
+            if not session['readOnly'] and not body.get('historyBefore'):
+                try:
+                    ctx_meta = self.cli.context_window_metadata(cid, surface=surface, step_count=row.get('stepCount'))
+                except (OSError, ValueError, BridgeUnavailable):
+                    ctx_meta = None
+                if isinstance(ctx_meta, dict) and ctx_meta.get('contextWindow'):
+                    if isinstance(session.get('contextUsage'), dict):
+                        session['contextUsage']['contextWindow'] = ctx_meta['contextWindow']
+                    elif ctx_meta.get('estimatedTokensUsed') is not None:
+                        session['contextUsage'] = {
+                            'usedTokens': ctx_meta['estimatedTokensUsed'],
+                            'contextWindow': ctx_meta['contextWindow'],
+                            'measurement': 'session',
+                        }
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
                     'readOnly': session['readOnly'],
