@@ -22,8 +22,9 @@ const ComposerUI = Object.freeze({
       node.hidden = !!value;
     }
   },
-  icon(id, { permissionMode = '', collapsed = false } = {}) {
-    const icon = id === 'permissions' ? permissionIcon(permissionMode) : ComposerIcons.create(id);
+  icon(id, { permissionMode = '', collapsed = false, sendMode = 'queue' } = {}) {
+    const icon = id === 'permissions' ? permissionIcon(permissionMode)
+      : ComposerIcons.create(id === 'sendMode' ? sendMode : id);
     if (id === 'permissions') {
       icon.dataset.permissionMode = permissionMode;
     }

@@ -34,6 +34,25 @@
 .custom-composer .toolbar-bottom {
   padding-top: 0;
 }
+.custom-composer .toolbar-pin {
+  display: flex;
+  flex: none;
+  min-width: 0;
+  max-width: 40%;
+}
+.custom-composer .toolbar-bottom-scroll {
+  flex: 1 1 0;
+  overscroll-behavior-x: contain;
+}
+.custom-composer .toolbar-bottom-scroll > .toolbar-group {
+  display: contents;
+}
+.custom-composer .toolbar-bottom-scroll .toolbar-tool {
+  flex: none;
+}
+.custom-composer .toolbar-bottom-scroll .toolbar-right > .toolbar-tool:first-child {
+  margin-left: 0;
+}
 .custom-composer.is-collapsed .toolbar-top {
   margin-bottom: 0;
 }
@@ -208,10 +227,34 @@
   height: 18px;
   flex: none;
   color: var(--muted);
+  position: absolute;
+  left: 8px;
+  pointer-events: none;
+}
+.custom-composer .toolbar-tool[data-tool='sendMode'] {
+  position: relative;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+}
+.custom-composer .toolbar-tool[data-tool='sendMode'] > select {
+  border: 0;
+  background-color: transparent;
+  color: inherit;
+  border-radius: inherit;
+  outline: none;
+  box-shadow: none;
+}
+.custom-composer .toolbar-tool[data-tool='sendMode']:has(> select:focus-visible) {
+  outline: 1px solid var(--muted);
+  outline-offset: 1px;
 }
 .custom-composer .toolbar-tool[data-tool='sendMode'][data-display='both'] {
   align-items: center;
-  gap: 4px;
+}
+.custom-composer .toolbar-tool[data-tool='sendMode'][data-display='both'] > select {
+  padding-left: 31px;
 }
 .custom-composer .toolbar-tool[data-tool='sendMode'][data-display='both'] .toolbar-select-icon,
 .custom-composer .toolbar-tool[data-tool='sendMode'][data-display='icon'] .toolbar-select-icon {
@@ -232,10 +275,6 @@
   width: 100%;
   height: 100%;
   padding: 0;
-}
-.custom-composer .toolbar-tool[data-tool='sendMode'][data-display='icon']:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .custom-composer .toolbar-tool-disabled > .toolbar-select-icon {
   opacity: 0.45;
@@ -303,7 +342,7 @@
   -webkit-tap-highlight-color: transparent;
 }
 .custom-composer .composer-submit:has(> button:focus-visible) {
-  outline: 2px solid var(--accent);
+  outline: 1px solid var(--muted);
   outline-offset: 3px;
 }
 .custom-composer .composer-submit > button:focus-visible {

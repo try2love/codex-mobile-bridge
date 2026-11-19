@@ -426,3 +426,92 @@ test('compact and dark layouts keep the editor and follow-up controls reachable'
     await page.locator('.toolbar-editor-close').click();
   }
 });
+
+test('eight bottom controls scroll between fixed endpoints in both languages and themes', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await page.evaluate(() => {
+    const t = composerToolbar;
+    t.preferences.update({
+      layout: {
+        topLeft: [], topRight: [],
+        bottomLeft: ['more', 'model', 'skills', 'permissions'],
+        bottomRight: ['sendMode', 'context', 'attachments'],
+        more: ['collapse', 'plan', 'goal'],
+      },
+      display: Object.fromEntries(['more', 'model', 'skills', 'permissions', 'sendMode', 'context', 'attachments'].map(id => [id, 'both'])),
+    });
+    for (const id of ['model', 'skills', 'permissions', 'sendMode', 'context', 'attachments']) {
+      t.controls[id].hidden = false;
+      t.controls[id].disabled = false;
+    }
+    t.submitControl.getState = () => ({ running: true, hasDraft: true });
+    t.submitControl.send.disabled = false;
+    for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.sync();
+  });
+  const strip = page.locator('#composer .toolbar-bottom-scroll');
+  const pin = page.locator('#composer .toolbar-pin');
+  const submit = page.locator('#composer .composer-submit');
+  await expect(pin.locator('[data-tool=more]')).toBeVisible();
+  for (const language of ['zh', 'en']) for (const theme of ['light', 'dark']) {
+    await page.evaluate(({ language, theme }) => {
+      BridgeI18n.setLanguage(language);
+      document.documentElement.dataset.theme = theme;
+      composerToolbar.sync();
+      composerToolbar.bottomScroll.scrollLeft = 0;
+    }, { language, theme });
+    await expect.poll(() => strip.evaluate(n => n.scrollWidth > n.clientWidth)).toBe(true);
+    const before = { left: await pin.boundingBox(), right: await submit.boundingBox() };
+    await strip.evaluate(n => n.scrollLeft = n.scrollWidth);
+    await expect.poll(() => strip.evaluate(n => n.scrollLeft > 0)).toBe(true);
+    const after = { left: await pin.boundingBox(), right: await submit.boundingBox() };
+    expect(after.left.x).toBeCloseTo(before.left.x, 0);
+    expect(after.right.x).toBeCloseTo(before.right.x, 0);
+    expect(after.right.x + after.right.width).toBeLessThanOrEqual(320);
+    expect(await page.locator('#composer').evaluate(n => n.scrollWidth <= n.clientWidth + 1)).toBe(true);
+    await expect(page.locator('#composer [data-tool=attachments]')).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`eight-tools-${language}-${theme}.png`) });
+  }
+  await page.evaluate(() => {
+    composerToolbar.setCollapsed(true);
+    composerToolbar.setCollapsed(false);
+  });
+  expect(await page.locator('#composer .toolbar-bottom-scroll [data-tool]').evaluateAll(nodes => nodes.map(n => n.dataset.tool)))
+    .toEqual(['model', 'skills', 'permissions', 'sendMode', 'context', 'attachments']);
+});
+
+test('follow-up icon, integrated select and slash placeholder stay synchronized', async ({ page }) => {
+  await page.evaluate(() => {
+    const t = composerToolbar, layout = structuredClone(t.layout);
+    layout.more = layout.more.filter(id => id !== 'sendMode');
+    layout.topLeft.push('sendMode');
+    t.preferences.update({ layout, display: { sendMode: 'both' }, followUpMode: 'queue' });
+    t.controls.sendMode.disabled = false;
+    for (const option of t.controls.sendMode.options) option.disabled = false;
+    t.submitControl.send.disabled = false;
+    t.submitControl.getState = () => ({ running: true, hasDraft: true });
+    t.sync();
+  });
+  const wrapper = page.locator('#composer [data-tool=sendMode]');
+  const icon = wrapper.locator('.toolbar-select-icon');
+  await expect(icon).toHaveAttribute('data-icon', 'queue');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', /待当前任务完成后发送.*\n输入 \/ 查看指令/s);
+  const bounds = { outer: await wrapper.boundingBox(), icon: await icon.boundingBox(), select: await page.locator('#send-mode').boundingBox() };
+  expect(bounds.icon.x).toBeGreaterThan(bounds.outer.x);
+  expect(bounds.icon.x).toBeGreaterThanOrEqual(bounds.select.x);
+  await page.locator('#send-mode').selectOption('steer');
+  await expect(icon).toHaveAttribute('data-icon', 'steer');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', '继续这条聊天…\n输入 / 查看指令');
+  await page.evaluate(() => BridgeI18n.setLanguage('en'));
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat…\nType / for commands');
+  await page.locator('#send-mode').selectOption('queue');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', /when this task finishes.*\nType \/ for commands/s);
+  await page.evaluate(() => {
+    composerToolbar.submitControl.getState = () => ({ running: false, hasDraft: true });
+    composerToolbar.sync();
+  });
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat…\nType / for commands');
+  await expect(page.locator('#message')).toHaveValue('保留草稿与光标');
+  await page.locator('#composer .toolbar-more').click();
+  await expect(page.locator('#composer .toolbar-more')).toHaveCSS('outline-style', 'none');
+});

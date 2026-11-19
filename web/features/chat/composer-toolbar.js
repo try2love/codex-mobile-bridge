@@ -64,6 +64,11 @@ class ComposerToolbar {
         this.bottom.insertBefore(group, this.actions);
       }
     }
+    this.bottomPin = ComposerUI.node('div', 'toolbar-pin');
+    this.bottomScroll = ComposerUI.node('div', 'toolbar-group toolbar-bottom-scroll');
+    this.bottomScroll.append(this.groups.bottomLeft, this.groups.bottomRight);
+    this.bottom.insertBefore(this.bottomPin, this.actions);
+    this.bottom.insertBefore(this.bottomScroll, this.actions);
     this.body.id ||= 'composer-body-' + ++ComposerToolbar.nextBodyId;
     this.restoreButton = ComposerUI.button('展开输入区', 'collapse');
     this.restoreButton.classList.add('toolbar-restore');
@@ -214,7 +219,8 @@ class ComposerToolbar {
     this.resizeObserver = new ResizeObserver(this.overflowChanged);
     // Tool widths can change inside a group whose outer width stays fixed.
     for (const wrapper of Object.values(this.wrappers)) this.resizeObserver.observe(wrapper);
-    for (const group of Object.values(this.groups)) {
+    this.scrollGroups = [this.groups.topLeft, this.groups.topRight, this.bottomScroll];
+    for (const group of this.scrollGroups) {
       this.resizeObserver.observe(group);
       group.addEventListener('scroll', this.overflowChanged, { passive: true });
     }
@@ -223,6 +229,7 @@ class ComposerToolbar {
     return ComposerUI.icon(id, this.toolIconState(id));
   }
   toolIconState(id) {
+    if (id === 'sendMode') return { sendMode: this.controls.sendMode.value };
     if (id === 'permissions')
       return { permissionMode: this.controls[id].dataset.permissionMode || '' };
     if (id === 'collapse') return { collapsed: this.collapsed };
@@ -325,6 +332,7 @@ class ComposerToolbar {
     }
     this.scheduled = false;
     this.submitControl.sync();
+    this.syncPlaceholder();
     for (const id of ['skills', 'permissions', 'attachments']) {
       this.decorate(id);
     }
@@ -391,6 +399,13 @@ class ComposerToolbar {
         );
       }
       if (id === 'sendMode') {
+        const icon = wrapper.querySelector('.toolbar-select-icon');
+        const selected = control.value;
+        if (icon?.dataset.icon !== selected && composerFollowUpModes.includes(selected)) {
+          const next = this.toolIcon(id);
+          next.classList.add('toolbar-select-icon');
+          icon.replaceWith(next);
+        }
         ComposerUI.attribute(
           wrapper,
           'title',
@@ -426,6 +441,35 @@ class ComposerToolbar {
       !this.collapsed &&
         !['topLeft', 'topRight'].some((key) => this.layout[key].some((id) => this.shown(id))),
     );
+    this.syncBottomLayout();
+  }
+  syncBottomLayout() {
+    const ids = [...this.layout.bottomLeft, ...this.layout.bottomRight];
+    const pinned = ids.find((id) => this.shown(id) && !(this.collapsed && id === 'more'));
+    for (const key of ['bottomLeft', 'bottomRight']) {
+      const group = this.groups[key];
+      let index = 0;
+      for (const id of this.layout[key]) {
+        if (id === pinned || (this.collapsed && id === 'more')) continue;
+        const wrapper = this.wrappers[id];
+        const before = group.children[index++];
+        if (before !== wrapper) group.insertBefore(wrapper, before || null);
+      }
+    }
+    if (pinned && this.wrappers[pinned].parentElement !== this.bottomPin) {
+      this.bottomPin.append(this.wrappers[pinned]);
+    }
+    ComposerUI.hidden(this.bottomPin, !pinned);
+  }
+  syncPlaceholder() {
+    const prompt = this.actionMode() === 'queue'
+      ? '输入下一条消息，待当前任务完成后发送…'
+      : '继续这条聊天…';
+    const placeholder = ComposerUI.t(prompt) + '\n' + ComposerUI.t('输入 / 查看指令');
+    if (this.input.placeholder !== placeholder) {
+      this.input.placeholder = placeholder;
+      if (!this.input.value) this.requestInputResize();
+    }
   }
   syncModeTag() {
     const mode = this.workMode.value;
@@ -444,7 +488,7 @@ class ComposerToolbar {
     }
     this.overflowFrame = requestAnimationFrame(() => {
       this.overflowFrame = null;
-      const edges = Object.values(this.groups).map((group) => {
+      const edges = this.scrollGroups.map((group) => {
         const offset = group.scrollLeft;
         return {
           group,
@@ -759,7 +803,7 @@ class ComposerToolbar {
     if (this.overflowFrame) {
       cancelAnimationFrame(this.overflowFrame);
     }
-    for (const group of Object.values(this.groups)) {
+    for (const group of this.scrollGroups) {
       group.removeEventListener('scroll', this.overflowChanged);
     }
     this.unsubscribe();
