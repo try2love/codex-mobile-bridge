@@ -18,11 +18,12 @@ class MessageManagement {
   }
   node(tag,className=''){const node=this.doc.createElement(tag);node.className=className;return node;}
   button(label,action){const button=this.node('button');button.type='button';button.textContent=this.t(label);button.addEventListener('click',action);return button;}
+  cloneValue(value){if(typeof structuredClone==='function')return structuredClone(value);return value===undefined?undefined:JSON.parse(JSON.stringify(value));}
   current(token){return this.dialog.open&&this.generation===token;}
   async open(){
-    if(this.busy)return;this.target=structuredClone(typeof this.scope==='function'?this.scope():this.scope);if(!this.target)return;
+    if(this.busy)return;this.target=this.cloneValue(typeof this.scope==='function'?this.scope():this.scope);if(!this.target)return;
     const token=++this.generation;
-    this.opener=this.doc.activeElement;this.beforeOpen();await Promise.resolve(this.editorSave).catch(()=>{});this.editor=await this.loadEditor(this.target);this.persistedEditor=structuredClone(this.editor);if(token!==this.generation)return;
+    this.opener=this.doc.activeElement;this.beforeOpen();await Promise.resolve(this.editorSave).catch(()=>{});this.editor=await this.loadEditor(this.target);this.persistedEditor=this.cloneValue(this.editor);if(token!==this.generation)return;
     this.dialog.showModal();this.generation++;await this.refresh();
   }
   locked(){return this.busy||!!this.drag||!!this.editor||Date.now()<(this.scrollingUntil||0);}
@@ -45,7 +46,7 @@ class MessageManagement {
   }
   // Background state must not replace an actively edited list or its scroll position.
   update(){if(this.dialog.open&&!this.locked())return this.refresh();}
-  persistEditor(value){const target=structuredClone(this.target),snapshot=structuredClone(value);this.editorSave=Promise.resolve(this.editorSave).catch(()=>{}).then(async()=>{await this.saveEditor(target,snapshot,this.persistedEditor??null);this.persistedEditor=structuredClone(snapshot);});return this.editorSave;}
+  persistEditor(value){const target=this.cloneValue(this.target),snapshot=this.cloneValue(value);this.editorSave=Promise.resolve(this.editorSave).catch(()=>{}).then(async()=>{await this.saveEditor(target,snapshot,this.persistedEditor??null);this.persistedEditor=this.cloneValue(snapshot);});return this.editorSave;}
   async action(callback){
     if(this.busy||this.drag)return;this.busy=true;this.closeButton.disabled=true;this.refreshButton.disabled=true;this.content.inert=true;this.status.textContent='';
     try{await callback();return true;}catch(error){this.status.textContent=error.message||String(error);return false;}
@@ -93,7 +94,7 @@ class MessageManagement {
   async editRow(row){
     if(this.editor){this.status.textContent=this.t('请先完成或放弃当前编辑');return;}
     const ok=await this.action(async()=>{
-      const editor={id:row.id,sourceId:row.id,baseVersion:this.data.version,originalText:row.text||'',body:structuredClone(row),status:'editing',operation:'edit'};
+      const editor={id:row.id,sourceId:row.id,baseVersion:this.data.version,originalText:row.text||'',body:this.cloneValue(row),status:'editing',operation:'edit'};
       await this.persistEditor(editor);this.editor=editor;
     });if(ok){this.render();this.editInput?.focus({preventScroll:true});}
   }
