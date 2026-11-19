@@ -315,6 +315,17 @@ class AntigravityAccountTests(unittest.TestCase):
                 credentials.write(content)
                 credentials.vault.write.assert_called_with('gemini', 'antigravity', content.encode())
 
+    def test_malformed_index_json_raises_clear_value_error_instead_of_key_or_type_error(self):
+        self.store.directory.mkdir(parents=True, exist_ok=True)
+        index_path = self.store.directory / 'index.json'
+        for raw in ('{}', '[]', 'null', '{not-json', json.dumps({'accounts': [{'id': '0' * 32}]})):
+            with self.subTest(raw=raw):
+                index_path.write_text(raw, encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, '账号索引无效'):
+                    self.store.public()
+                with self.assertRaisesRegex(ValueError, '账号索引无效'):
+                    self.store.remove('0' * 32)
+
 
 if __name__ == '__main__':
     unittest.main()
