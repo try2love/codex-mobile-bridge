@@ -2,6 +2,8 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+  "输入下一条消息，待当前任务完成后发送…": "Write the next message to send when this task finishes…",
+  "输入 / 查看指令": "Type / for commands",
   "编辑了文件，运行了命令": "Edited files and ran commands",
   "加载更早过程": "Load earlier activity",
   "已回答问题": "Answered questions",
