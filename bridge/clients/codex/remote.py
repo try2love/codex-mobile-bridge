@@ -33,6 +33,26 @@ def ssh_read(alias, source, timeout=18):
         return _ssh_read(alias, source, timeout)
 
 
+def _parse_ssh_json(stdout):
+    """Parse JSON from remote stdout while ignoring login shell banner noise."""
+    text = (stdout or '').strip()
+    if not text:
+        raise ValueError('Empty remote output')
+    try:
+        return json.loads(text)
+    except ValueError:
+        lines = [line for line in text.splitlines() if line.strip()]
+        for index in range(len(lines) - 1, -1, -1):
+            candidate = '\n'.join(lines[index:])
+            if not candidate.lstrip().startswith(('{', '[')):
+                continue
+            try:
+                return json.loads(candidate)
+            except ValueError:
+                continue
+        raise
+
+
 def _ssh_read(alias, source, timeout=18):
     command = ssh_command(alias)
     try:
@@ -41,7 +61,7 @@ def _ssh_read(alias, source, timeout=18):
             raise SshTransportUnavailable('SSH 主机暂不可用，请检查电脑上的连接')
         if result.returncode:
             raise RemoteUnavailable('SSH 读取失败，请检查电脑上该主机的 SSH 连接')
-        return json.loads(result.stdout)
+        return _parse_ssh_json(result.stdout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SshTransportUnavailable('SSH 主机暂不可用，请检查电脑上的连接') from exc
     except ValueError as exc:
@@ -630,10 +650,10 @@ def upload_file(alias, thread, identifier, name, data, digest, *, reader=None):
 p=Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))/'mobile-bridge'/'uploads'/v['thread']/v['id']/v['name']
 p.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
 b=base64.b64decode(v['data'],validate=True)
-assert hashlib.sha256(b).hexdigest()==v['sha256']
+if hashlib.sha256(b).hexdigest()!=v['sha256']: raise ValueError('Uploaded file digest mismatch')
 if p.is_symlink(): raise ValueError('Invalid attachment path')
 if p.exists():
-    assert hashlib.sha256(p.read_bytes()).hexdigest()==v['sha256']
+    if hashlib.sha256(p.read_bytes()).hexdigest()!=v['sha256']: raise ValueError('Existing file digest mismatch')
 else:
     tmp=p.parent/(v['id']+'.part')
     with tmp.open('wb') as f: f.write(b)
