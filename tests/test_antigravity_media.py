@@ -163,6 +163,39 @@ class AntigravityNativeMediaAndScopeTests(unittest.TestCase):
         self.assertEqual(files[0]['name'], 'note.txt')
         self.assertEqual(Path(files[0]['path']).read_bytes(), b'hello text')
 
+    def test_native_media_keeps_signature_and_upload_size_limits(self):
+        for url in (PNG_URL.replace('image/png', 'image/svg+xml'),
+                    PNG_URL.replace('image/png', 'image/jpeg'),
+                    'data:image/png;base64,aGVsbG8='):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                Antigravity._build_media({'resolvedImages': [{'url': url}]})
+        with mock.patch('bridge.clients.antigravity.adapter.MAX_FILE', len(PNG) - 1), self.assertRaises(ValueError):
+            Antigravity._build_media({'resolvedImages': [{'url': PNG_URL}]})
+        with mock.patch('bridge.clients.antigravity.adapter.MAX_TOTAL', len(PNG)), self.assertRaises(ValueError):
+            Antigravity._build_media({'resolvedImages': [{'url': PNG_URL}, {'url': PNG_URL}]})
+        media, _ = Antigravity._build_media({'resolvedImages': [{'url': PNG_URL}, {'url': PNG_URL}]})
+        self.assertEqual(len(media), 2)
+
+    def test_stale_or_redirected_reference_is_rejected_before_native_send(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        outside = Path(self.temp.name) / 'outside.txt'
+        outside.write_text('outside')
+        self.ref_file.unlink()
+        for changed in ('missing', 'symlink'):
+            if changed == 'symlink':
+                self.ref_file.symlink_to(outside)
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                adapter._build_scope_items({'resolvedReferences': [{'path': str(self.ref_file), 'kind': 'file'}]})
+            with self.subTest(changed=changed), \
+                    mock.patch.object(adapter.cli, 'available', return_value=True), \
+                    mock.patch.object(adapter.cli, 'send_user_message') as send:
+                with self.assertRaises(ValueError):
+                    adapter.call('send', gateway_id('app', CID), {
+                        'text': 'read it', 'resolvedReferences': [{'path': str(self.ref_file), 'kind': 'file'}],
+                    })
+                send.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

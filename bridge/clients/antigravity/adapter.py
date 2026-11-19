@@ -9,6 +9,7 @@ import threading
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.file_mentions import file_mentions
 from bridge.features.sessions.create import ArchiveNotSent
+from bridge.features.workspace.uploads import MAX_FILE, MAX_FILES, MAX_TOTAL, image_type
 from bridge.platforms.antigravity import profile_lease
 from .cli_session import AntigravityCli
 from .hook_ipc import HookIPCServer
@@ -254,7 +255,11 @@ class Antigravity:
         """Convert data-URL resolvedImages into native SendUserCascadeMessage Media items."""
         media = []
         fallback_paths = []
-        for idx, row in enumerate(body.get('resolvedImages') or []):
+        images = body.get('resolvedImages') or []
+        if len(images) > MAX_FILES:
+            raise ValueError('每条消息最多添加 10 个不同附件')
+        total = 0
+        for idx, row in enumerate(images):
             if not isinstance(row, dict):
                 continue
             url = row.get('url')
@@ -264,12 +269,21 @@ class Antigravity:
                     raise ValueError('图片附件格式无效，请重新上传')
                 mime = match.group(1).lower()
                 raw_b64 = re.sub(r'\s+', '', match.group(2))
+                if len(raw_b64) > 4 * ((MAX_FILE + 2) // 3):
+                    raise ValueError('每个附件需为 1 字节至 20 MB')
                 try:
                     decoded = base64.b64decode(raw_b64, validate=True)
                 except ValueError as exc:
                     raise ValueError('图片附件编码无效，请重新上传') from exc
                 if not decoded:
                     raise ValueError('图片附件内容为空，请重新上传')
+                if len(decoded) > MAX_FILE:
+                    raise ValueError('每个附件需为 1 字节至 20 MB')
+                total += len(decoded)
+                if total > MAX_TOTAL:
+                    raise ValueError('每条消息的附件总计不能超过 100 MB')
+                if image_type(decoded) != mime:
+                    raise ValueError('图片附件类型与内容不匹配，请重新上传')
                 name = str(row.get('name') or f'image-{idx + 1}.png').strip() or f'image-{idx + 1}.png'
                 media.append({
                     'mime_type': mime,
@@ -290,11 +304,14 @@ class Antigravity:
             if not isinstance(row, dict) or not isinstance(row.get('path'), str) or not row['path'].strip():
                 continue
             candidate = Path(row['path'])
-            if candidate.is_absolute() and (candidate.is_file() or candidate.is_dir()):
+            if (candidate.is_absolute() and candidate.resolve() == candidate
+                    and (candidate.is_file() or candidate.is_dir())):
                 kind = 'directory' if candidate.is_dir() else 'file'
+                if row.get('kind') not in (None, kind):
+                    raise ValueError('项目引用类型已变化，请重新选择')
                 scope_items.append({'item': {kind: {'absolute_uri': candidate.resolve().as_uri()}}})
             else:
-                fallback_refs.append(row)
+                raise ValueError('项目引用已失效或目录已变化，请重新选择')
         return scope_items, fallback_refs
 
     @staticmethod
