@@ -181,7 +181,7 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
 
 final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
     private var web: WKWebView?
-    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String)?
+    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String, navigationType: WKNavigationType)?
     private var origin = ""
     private var channelCatalogTimer:Timer?
     private var channelMonitor: NWPathMonitor?
@@ -1117,7 +1117,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func loadNative(_ web: WKWebView, _ request: URLRequest) {
         guard self.web === web, connectionError == nil else { return }
-        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString) }
+        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString, .other) }
         web.load(request)
     }
     private func recoverConnection() { if !checkChannels(failure: true) { recoverLegacy() } }
@@ -1213,7 +1213,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         connectionDeadline = deadline; DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: deadline)
         web.scrollView.pinchGestureRecognizer?.isEnabled = false
     }
-    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString) }; web.reload() } }
+    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString, .reload) }; web.reload() } }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let status = (response.response as? HTTPURLResponse)?.statusCode ?? 0
         if let peer=peerViews[webView] {decisionHandler((response.response.url?.absoluteString.components(separatedBy:"#").first==peer.next+"/mobile-channel" && status==200) ? .allow:.cancel);return}
@@ -1233,7 +1233,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let expected = nativeMainNavigation
             nativeMainNavigation = nil
             if !action.sourceFrame.isMainFrame {
-                guard action.navigationType == .other, expected?.generation == generation,
+                guard action.navigationType == expected?.navigationType, expected?.generation == generation,
                       expected?.url == url.absoluteString, GatewayURL.same(url, documentAddress) else { decisionHandler(.cancel); return }
             }
         } else if !action.sourceFrame.isMainFrame { decisionHandler(.cancel); return }
