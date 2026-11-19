@@ -96,7 +96,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(self.work.upload('folder/new.txt', data)['existing'])
         with self.assertRaises(ValueError): self.work.upload('folder/new.txt', 'YQ==')
         self.assertEqual((self.root / 'folder/new.txt').read_text(encoding='utf-8'), '文件🙂')
-        with self.assertRaises(PermissionError): self.work.upload('.git/config', data)
+        for bad in ('.git/config', '.GIT/hooks/pre-commit', 'sub/.Git/config'):
+            with self.assertRaises(PermissionError): self.work.upload(bad, data)
         with patch('bridge.features.workspace.workspace.os.link', side_effect=OSError('disk error')):
             with self.assertRaises(ValueError): operate(str(self.root), 'upload', {'path': 'failed', 'encoded': data})
         self.assertFalse((self.root / 'failed').exists()); self.assertEqual(list(self.root.rglob('.bridge-upload-*')), [])
