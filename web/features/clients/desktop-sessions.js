@@ -73,7 +73,7 @@ class DesktopSessionsView {
     this.commands=typeof ComposerCommands==='function'?new ComposerCommands({input:this.input,
       scope:()=>this.isChatOpen&&this.sid?JSON.stringify([this.provider,this.sid,this.generation,this.draftGateway,this.draftScope?.account]):null,
       actions:()=>this.buildCommandActions(),onError:text=>this.notify(text)}):null;
-    this.toolbar=new ComposerToolbar({form:this.form,tools:this.tools,bottom:actions,actions:sendActions,input:this.input,body:this.composerBody,hint:this.modeHint,onPreferenceChange:()=>this.syncWorkModes(),sendState:()=>({running:this.state?.status==='active',hasDraft:!!this.input.value.trim()||this.attachments.rows.length>0||!!this.quotes?.quotes.length,pending:!!this.busy,sending:this.sendingHere()}),workMode:this.workMode,controls:{model:this.modelButton,skills:this.skillsButton,permissions:this.permissionsButton,context:this.contextButton,attachments:this.attachButton,sendMode:this.mode}});
+    this.toolbar=new ComposerToolbar({form:this.form,tools:this.tools,bottom:actions,actions:sendActions,input:this.input,body:this.composerBody,hint:this.modeHint,onPreferenceChange:()=>this.syncWorkModes(),sendState:()=>({running:this.state?.status==='active'||this.state?.capabilities?.stop===true&&this.hasPendingWrite('send'),hasDraft:!!this.input.value.trim()||this.attachments.rows.length>0||!!this.quotes?.quotes.length,pending:!!this.busy,sending:this.sendingHere()}),workMode:this.workMode,controls:{model:this.modelButton,skills:this.skillsButton,permissions:this.permissionsButton,context:this.contextButton,attachments:this.attachButton,sendMode:this.mode}});
     this.workModes.onRender=()=>this.toolbar.requestSync();
     this.updateComposer();
   }

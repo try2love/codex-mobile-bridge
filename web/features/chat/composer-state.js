@@ -32,7 +32,7 @@ function deriveComposerAction(state, preferred = 'queue') {
       !state.hasDraft ||
       stop ||
       !availableModes.includes(mode),
-    stopDisabled: !state.running || !!state.pending || state.stopEnabled === false,
+    stopDisabled: !state.running || (!!state.pending && state.stopEnabled !== true) || state.stopEnabled === false,
     choicesDisabled: !!state.pending || state.modeEnabled === false,
   };
 }

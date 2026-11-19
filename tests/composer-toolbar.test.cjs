@@ -245,3 +245,9 @@ test('submit display is customizable while its position stays outside movable to
   f.store.resetLayout();
   assert.equal(f.store.value.display.submit, 'both');
 });
+
+test('a current native stop allowance survives a concurrent write without enabling another send',()=>{
+ const action=deriveComposerAction({running:true,hasDraft:false,pending:true,stopEnabled:true,sendEnabled:false});
+ assert.equal(action.stop,true);assert.equal(action.stopDisabled,false);assert.equal(action.sendDisabled,true);
+ assert.equal(deriveComposerAction({running:true,hasDraft:false,pending:true,stopEnabled:false}).stopDisabled,true);
+});

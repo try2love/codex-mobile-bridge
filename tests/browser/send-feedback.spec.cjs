@@ -168,6 +168,17 @@ test('merged controls send queue and steer through the real submit handler and s
   });
   await expect(send).toHaveText('排队');
   expect(await page.evaluate(() => mergedLive.view.mode.value)).toBe('queue');
+  await page.evaluate(() => {
+    const v=mergedLive.view;
+    v.input.value='';v.state.status='idle';v.state.capabilities.stop=true;v.freshDetail=false;
+    v.pendingWrites.add({scope:v.writeScope(),action:'send'});v.busy=true;v.stopping=false;v.updateComposer();
+  });
+  await expect(root.locator('.composer-submit-stop')).toBeVisible({timeout:3000});
+  await expect(root.locator('.composer-submit-stop')).toBeEnabled({timeout:3000});
+  await page.evaluate(()=>{
+    const v=mergedLive.view;v.pendingWrites.clear();v.busy=false;v.freshDetail=true;v.state.status='active';v.stopping=true;v.updateComposer();
+  });
+  await expect(root.locator('.composer-submit-stop')).toBeDisabled();
 
 });
 for(const [provider,backend] of [['claude','code'],['claude','cowork'],['deepseek','desktop']])test(`${provider} ${backend} has immediate, scoped send feedback`,async({page},testInfo)=>{
