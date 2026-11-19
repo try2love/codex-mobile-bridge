@@ -202,7 +202,39 @@ def _parse_iso_seconds(ts):
         return None
 
 
-def normalize_steps(steps, *, session_active=False):
+def compute_turn_fork_points(steps, *, session_active=False):
+    """Map each USER_INPUT step_index (or initial turn start) to its valid native fork step index."""
+    if not isinstance(steps, list) or not steps:
+        return {}
+    user_positions = [i for i, st in enumerate(steps) if isinstance(st, dict) and str(st.get('type') or '') == 'USER_INPUT']
+    last_step_index = None
+    for st in reversed(steps):
+        if isinstance(st, dict) and isinstance(st.get('step_index'), int):
+            last_step_index = st['step_index']
+            break
+    if last_step_index is None:
+        return {}
+    points = {}
+    if not user_positions:
+        if not session_active:
+            first_idx = next((st.get('step_index') for st in steps if isinstance(st, dict) and isinstance(st.get('step_index'), int)), None)
+            if first_idx is not None and last_step_index >= first_idx:
+                points[first_idx] = last_step_index
+        return points
+    for pos_i, pos in enumerate(user_positions):
+        start_idx = steps[pos].get('step_index')
+        if not isinstance(start_idx, int):
+            continue
+        if pos_i + 1 < len(user_positions):
+            next_user_idx = steps[user_positions[pos_i + 1]].get('step_index')
+            if isinstance(next_user_idx, int) and next_user_idx > start_idx:
+                points[start_idx] = next_user_idx - 1
+        elif not session_active and last_step_index >= start_idx:
+            points[start_idx] = last_step_index
+    return points
+
+
+def normalize_steps(steps, *, session_active=False, turn_fork_points=None):
     """Convert ordered transcript steps into (messages, turns, context_usage)."""
     messages = []
     turns = []
@@ -210,11 +242,16 @@ def normalize_steps(steps, *, session_active=False):
     last_usage = None
     pending_tool_msgs = []
     prev_ts = None
+    fork_points = (
+        dict(turn_fork_points)
+        if isinstance(turn_fork_points, dict)
+        else compute_turn_fork_points(steps, session_active=session_active)
+    )
 
     def ensure_turn(step_idx, status='completed'):
         nonlocal current_turn
         if current_turn is None:
-            current_turn = {'turnId': f'turn-{step_idx}', 'status': status, 'messages': []}
+            current_turn = {'turnId': f'turn-{step_idx}', 'status': status, 'messages': [], '_startStep': step_idx}
             turns.append(current_turn)
         return current_turn
 
@@ -236,7 +273,7 @@ def normalize_steps(steps, *, session_active=False):
             msg = {'id': f'step-{step_index}-user', 'role': 'user', 'text': text, 'timestamp': step_ts}
             if attachments:
                 msg['attachments'] = attachments
-            current_turn = {'turnId': f'turn-{step_index}', 'status': 'completed', 'messages': [msg]}
+            current_turn = {'turnId': f'turn-{step_index}', 'status': 'completed', 'messages': [msg], '_startStep': step_index}
             turns.append(current_turn)
             messages.append(msg)
             if step_ts is not None:
@@ -369,5 +406,20 @@ def normalize_steps(steps, *, session_active=False):
 
     if session_active and turns:
         turns[-1]['status'] = 'inProgress'
+
+    for idx_t, turn in enumerate(turns):
+        start_step = turn.pop('_startStep', None)
+        is_active_tail = bool(session_active and idx_t == len(turns) - 1)
+        if is_active_tail or start_step not in fork_points:
+            continue
+        fork_step = fork_points[start_step]
+        if not isinstance(fork_step, int) or fork_step < 0:
+            continue
+        final_assistant = None
+        for msg in turn.get('messages') or []:
+            if isinstance(msg, dict) and msg.get('role') == 'assistant':
+                final_assistant = msg
+        if final_assistant is not None:
+            final_assistant['forkMessageId'] = str(fork_step)
 
     return messages, turns, last_usage
