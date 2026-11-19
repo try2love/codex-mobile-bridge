@@ -1,16 +1,19 @@
 'use strict';
 // Shared presentation only; callers retain their own permission/confirmation flow.
+function permissionIcon(preset){
+  const names={ask:'permissions',default:'permissions','auto-review':'permission-review','full-access':'permission-full',
+    bypassPermissions:'permission-full',acceptEdits:'edit',plan:'plan',desktop:'permission-desktop',
+    'mobile-ask':'permission-mobile','auto-allow':'permission-full',build:'permissions',guarded:'permission-review',yolo:'permission-full'};
+  return ComposerIcons.create(Object.hasOwn(names,preset)?names[preset]:'permission-custom');
+}
+
 function permissionOption(button,preset,label,help,selected){
   button.className='permission-option';button.type='button';
   button.setAttribute('aria-pressed',String(selected));
-  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');
-  const path=document.createElementNS(svg.namespaceURI,'path');
-  path.setAttribute('d','M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7l-9-4Z'+(preset==='ask'?'M12 8v5m0 3h.01':preset==='auto-review'?'M8 12l3 3 5-6':'M13 7l-4 6h4l-2 4 5-6h-4l1-4'));
-  svg.append(path);
+  const svg=permissionIcon(preset);
   const copy=document.createElement('span'),title=document.createElement('strong'),description=document.createElement('small');
   title.textContent=BridgeI18n.t(label);description.textContent=BridgeI18n.t(help);copy.append(title,description);
-  const check=document.createElement('span');check.className='permission-check';check.textContent=selected?'✓':'';check.setAttribute('aria-hidden','true');
+  const check=document.createElement('span');check.className='permission-check';if(selected)check.append(ComposerIcons.create('check'));check.setAttribute('aria-hidden','true');
   button.append(svg,copy,check);return button;
 }
 
@@ -23,16 +26,31 @@ class ContextUsageControl {
   }
   update(state){
     if(!state||state.id!==this.state?.id){this.dialog?.remove();this.dialog=null;}
-    this.state=state;if(this.compactButton)this.compactButton.disabled=!state?.connected||state?.capabilities?.compact!==true||!!state?.busy;this.button.hidden=!state;const usage=state?.contextUsage;
+    this.state=state;
+    if(this.compactButton){
+      const disabled=!state?.connected||state?.capabilities?.compact!==true||!!state?.busy;
+      if(this.compactButton.disabled!==disabled)this.compactButton.disabled=disabled;
+    }
+    if(this.button.hidden!==!state)this.button.hidden=!state;
+    const usage=state?.contextUsage;
     const known=usage?.measurement!=='lastPrompt'&&Number.isFinite(usage?.usedTokens)&&usage.usedTokens>=0&&Number.isFinite(usage.contextWindow)&&usage.contextWindow>0;
     const percent=known?Math.round(usage.usedTokens/usage.contextWindow*100):null;
-    this.ring.style.setProperty('--context-percent',known?Math.min(percent,100)+'%':'0%');this.ring.classList.toggle('unknown',!known);
-    this.button.title=BridgeI18n.t('上下文使用量')+' · '+(known?percent+'%':BridgeI18n.t('暂未提供'));this.button.setAttribute('aria-label',this.button.title);
+    const ringPercent=known?Math.min(percent,100)+'%':'0%';
+    if(this.ringPercent!==ringPercent){
+      this.ring.style.setProperty('--context-percent',ringPercent);
+      this.ringPercent=ringPercent;
+    }
+    if(this.ring.classList.contains('unknown')===known)this.ring.classList.toggle('unknown',!known);
+    const label=BridgeI18n.t('上下文使用量')+' · '+(known?percent+'%':BridgeI18n.t('暂未提供'));
+    if(this.button.title!==label){
+      this.button.title=label;
+      this.button.setAttribute('aria-label',label);
+    }
   }
   open(){
     if(!this.state)return;this.dialog?.remove();const dialog=this.dialog=document.createElement('dialog');dialog.className='picker';
     const title=document.createElement('h2');title.textContent=BridgeI18n.t('上下文使用量');
-    const close=document.createElement('button');close.type='button';close.className='icon-button';close.textContent='×';close.setAttribute('aria-label',BridgeI18n.t('关闭'));close.onclick=()=>dialog.close();const head=document.createElement('div');head.className='picker-head';head.append(title,close);dialog.append(head);
+    const close=document.createElement('button');close.type='button';close.className='icon-button';close.append(ComposerIcons.create('close'));close.setAttribute('aria-label',BridgeI18n.t('关闭'));close.onclick=()=>dialog.close();const head=document.createElement('div');head.className='picker-head';head.append(title,close);dialog.append(head);
     const line=(label,value)=>{const p=document.createElement('p');p.textContent=BridgeI18n.t(label)+(value===undefined?'':' · '+value);dialog.append(p);};
     const usage=this.state.contextUsage,previous=this.state.lastPromptContextUsage,number=value=>Number.isFinite(value)&&value>=0?value.toLocaleString(BridgeI18n.locale()):BridgeI18n.t('暂未提供');
     if(!usage)line(this.state.contextUsageStatus==='unsupported'?'当前客户端或会话模式未提供上下文用量接口。':this.state.contextUsageStatus==='unavailable'?'当前会话尚未提供上下文用量；有可用数据时会自动更新。':'当前客户端尚未提供此会话的上下文用量。');

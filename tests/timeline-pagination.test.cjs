@@ -136,3 +136,20 @@ test('a live reset keeps the visible message during a mobile handoff and resumes
  viewport.scrollTop=1500;timeline.restore(null,true);assert.equal(viewport.scrollTop,830);
  delete window.BridgeMobileHandoff;timeline.restore(null,true);assert.equal(timeline.following,true);
 });
+
+test('viewport height clamping keeps bottom following but an ordinary upward read still opts out',()=>{
+ const f=scrollFixture();
+ try{
+  f.ui.following=true;f.ui.lastTop=9400;f.viewport.clientHeight=800;f.viewport.scrollTop=9200;f.emit('scroll');
+  assert.equal(f.ui.following,true);
+  f.viewport.scrollTop=9164;f.emit('scroll');assert.equal(f.ui.following,false);
+ }finally{f.ui.dispose();}
+});
+
+test('restoring after a viewport resize does not swallow the next real upward read',()=>{
+ const f=scrollFixture();
+ try{
+  f.viewport.clientHeight=800;f.ui.restore(null,true);
+  f.ui.lastTop=9200;f.viewport.scrollTop=9164;f.emit('scroll');assert.equal(f.ui.following,false);
+ }finally{f.ui.dispose();}
+});

@@ -11,7 +11,7 @@ class Element {
 const catalog={current:'ask',options:[{preset:'ask',available:true},{preset:'auto-review',available:false,reason:'Desktop setting required'},{preset:'full-access',available:true}]};
 function fixture(nativeCli=false){
   const dialog=new Element(),calls=[],saved=[],context=vm.createContext({document:{createElement:()=>new Element(),createElementNS:()=>new Element()},BridgeI18n:{t:s=>s},confirm:()=>true});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/permissions.js'),'utf8'),context);
+  for(const file of ['web/shared/composer-icons.js','web/features/chat/permissions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   let current=true,load=async()=>catalog,save=async preset=>{calls.push(preset);return {confirmed:true};};
   return {dialog,calls,saved,open:()=>context.permissionPicker(dialog,{nativeCli,load:()=>load(),save:p=>save(p),isCurrent:()=>current,onSaved:r=>saved.push(r)}),
     buttons:()=>dialog.children[0].children,status:()=>dialog.children[1],refresh:()=>dialog.children[2],

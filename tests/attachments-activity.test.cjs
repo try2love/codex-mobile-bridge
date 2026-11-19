@@ -106,3 +106,10 @@ test('large host references do not consume upload bytes; upload capability does 
  ui.panel.canUpload=()=>true;ui.panel.add([file('photo.png')]);await tick();
  assert.equal(ui.calls.length,1);assert.equal(ui.panel.references().length,1);assert.equal(ui.panel.ids().length,1);
 });
+
+test('an add menu without upload capability cannot retry a failed attachment',()=>{
+ const ui=fixture();ui.panel.rows.push({id:'failed',name:'old.png',size:5,status:'failed',error:'failed'});
+ ui.panel.canUpload=()=>false;ui.panel.render();
+ const retry=ui.root.children[0].children.find(n=>n.textContent==='重试');
+ assert.equal(retry.disabled,true);retry.onclick();assert.equal(ui.calls.length,0);assert.equal(ui.panel.rows[0].status,'failed');
+});
