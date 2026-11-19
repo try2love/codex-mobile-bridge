@@ -1,4 +1,5 @@
 """Antigravity history, original-server writes and explicitly enabled hooks."""
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +22,9 @@ _KNOWN_NATIVE_SYSTEM_COMMANDS = frozenset({
     'goal', 'compact', 'schedule', 'browser', 'plan', 'grill-me', 'teamwork', 'learn', 'boost',
 })
 _BUSY_STRUCTURED_ERROR = '原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送'
+
+
+_DATA_IMAGE_URL_RE = re.compile(r'^data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$')
 
 
 def _parse_slash_prefix(text):
@@ -246,10 +250,66 @@ class Antigravity:
         return None
 
     @staticmethod
-    def _prompt(body):
+    def _build_media(body):
+        """Convert data-URL resolvedImages into native SendUserCascadeMessage Media items."""
+        media = []
+        fallback_paths = []
+        for idx, row in enumerate(body.get('resolvedImages') or []):
+            if not isinstance(row, dict):
+                continue
+            url = row.get('url')
+            if isinstance(url, str):
+                match = _DATA_IMAGE_URL_RE.match(url.strip())
+                if not match:
+                    raise ValueError('图片附件格式无效，请重新上传')
+                mime = match.group(1).lower()
+                raw_b64 = re.sub(r'\s+', '', match.group(2))
+                try:
+                    decoded = base64.b64decode(raw_b64, validate=True)
+                except ValueError as exc:
+                    raise ValueError('图片附件编码无效，请重新上传') from exc
+                if not decoded:
+                    raise ValueError('图片附件内容为空，请重新上传')
+                name = str(row.get('name') or f'image-{idx + 1}.png').strip() or f'image-{idx + 1}.png'
+                media.append({
+                    'mime_type': mime,
+                    'inline_data': base64.b64encode(decoded).decode('ascii'),
+                    'description': name,
+                    'display_name': name,
+                })
+            elif isinstance(row.get('path'), str) and row['path'].strip():
+                fallback_paths.append(row)
+        return media, fallback_paths
+
+    @staticmethod
+    def _build_scope_items(body):
+        """Convert existing workspace resolvedReferences into native PathScopeItem entries."""
+        scope_items = []
+        fallback_refs = []
+        for row in body.get('resolvedReferences') or []:
+            if not isinstance(row, dict) or not isinstance(row.get('path'), str) or not row['path'].strip():
+                continue
+            candidate = Path(row['path'])
+            if candidate.is_absolute() and (candidate.is_file() or candidate.is_dir()):
+                kind = 'directory' if candidate.is_dir() else 'file'
+                scope_items.append({'item': {kind: {'absolute_uri': candidate.resolve().as_uri()}}})
+            else:
+                fallback_refs.append(row)
+        return scope_items, fallback_refs
+
+    @staticmethod
+    def _prompt(body, *, exclude_scoped_references=False):
         text = str(body.get('text') or body.get('firstMessage') or '').strip()
-        files = [row for name in ('resolvedReferences', 'resolvedImages', 'resolvedFiles')
-                 for row in body.get(name, []) if isinstance(row, dict) and isinstance(row.get('path'), str)]
+        files = []
+        if exclude_scoped_references:
+            _, fallback_refs = Antigravity._build_scope_items(body)
+            files.extend(fallback_refs)
+        else:
+            files.extend(row for row in (body.get('resolvedReferences') or []) if isinstance(row, dict) and isinstance(row.get('path'), str))
+        for row in body.get('resolvedImages') or []:
+            if isinstance(row, dict) and not isinstance(row.get('url'), str) and isinstance(row.get('path'), str):
+                files.append(row)
+        files.extend(row for row in (body.get('resolvedFiles') or []) if isinstance(row, dict) and isinstance(row.get('path'), str))
         return file_mentions(text, files) if files else text
 
     def _account(self, surface='app', refresh=False):
@@ -319,39 +379,43 @@ class Antigravity:
             raise ValueError('最多选择 8 个 Skill')
         return unique
 
-    def _build_message_items(self, prompt, *, plugins, default_command=None, surface, cid=None, model=None, effort=None, cwd=None):
+    def _build_message_items(self, prompt, *, plugins, default_command=None, scope_items=None, surface, cid=None, model=None, effort=None, cwd=None):
         cmd_name, remainder = _parse_slash_prefix(prompt)
-        if not cmd_name and not plugins and not default_command:
+        extra_scope = list(scope_items or [])
+        if not cmd_name and not plugins and not default_command and not extra_scope:
             return None
-        commands_by_name = self._commands_by_name(surface=surface, cid=cid, model=model, effort=effort, cwd=cwd)
-        offered_skills = {name: row for name, row in commands_by_name.items() if row.get('category') == 'skill'}
-        for skill_id in plugins:
-            if skill_id not in offered_skills:
-                raise ValueError('技能已不可用，请刷新后选择')
-        leading_cmd = commands_by_name.get(cmd_name) if cmd_name else None
-        if cmd_name and leading_cmd is None and cmd_name in _KNOWN_NATIVE_SYSTEM_COMMANDS:
-            raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{cmd_name} 指令')
         items = []
-        seen_commands = set()
-        if leading_cmd is not None:
-            items.append({'item': {'slashCommand': {'info': dict(leading_cmd['info'])}}})
-            seen_commands.add(leading_cmd['name'])
-        elif default_command:
-            mode_cmd = commands_by_name.get(default_command)
-            if not mode_cmd:
-                raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{default_command} 模式')
-            items.append({'item': {'slashCommand': {'info': dict(mode_cmd['info'])}}})
-            seen_commands.add(mode_cmd['name'])
-        for skill_id in plugins:
-            if skill_id not in seen_commands:
-                items.append({'item': {'slashCommand': {'info': dict(offered_skills[skill_id]['info'])}}})
-                seen_commands.add(skill_id)
+        leading_cmd = None
+        if cmd_name or plugins or default_command:
+            commands_by_name = self._commands_by_name(surface=surface, cid=cid, model=model, effort=effort, cwd=cwd)
+            offered_skills = {name: row for name, row in commands_by_name.items() if row.get('category') == 'skill'}
+            for skill_id in plugins:
+                if skill_id not in offered_skills:
+                    raise ValueError('技能已不可用，请刷新后选择')
+            leading_cmd = commands_by_name.get(cmd_name) if cmd_name else None
+            if cmd_name and leading_cmd is None and cmd_name in _KNOWN_NATIVE_SYSTEM_COMMANDS:
+                raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{cmd_name} 指令')
+            seen_commands = set()
+            if leading_cmd is not None:
+                items.append({'item': {'slashCommand': {'info': dict(leading_cmd['info'])}}})
+                seen_commands.add(leading_cmd['name'])
+            elif default_command:
+                mode_cmd = commands_by_name.get(default_command)
+                if not mode_cmd:
+                    raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{default_command} 模式')
+                items.append({'item': {'slashCommand': {'info': dict(mode_cmd['info'])}}})
+                seen_commands.add(mode_cmd['name'])
+            for skill_id in plugins:
+                if skill_id not in seen_commands:
+                    items.append({'item': {'slashCommand': {'info': dict(offered_skills[skill_id]['info'])}}})
+                    seen_commands.add(skill_id)
+        items.extend(extra_scope)
         if not items:
             return None
         if leading_cmd is not None:
             if remainder:
                 items.append({'text': remainder})
-        else:
+        elif prompt:
             text_chunk = ' ' + prompt if not prompt.startswith((' ', '\n', '\t')) else prompt
             items.append({'text': text_chunk})
         return items
@@ -390,8 +454,10 @@ class Antigravity:
         return raw.strip()
 
     def _send_prompt_or_items(self, cid, prompt, *, model, surface, effort=None, items=None,
-                              turn_generation=None, before_send=None, expected_identity=None):
+                              media=None, turn_generation=None, before_send=None, expected_identity=None):
         selection = {'effort': effort} if effort else {}
+        if media:
+            selection['media'] = media
         if turn_generation is not None:
             selection['turn_generation'] = turn_generation
         if before_send is not None:
@@ -780,9 +846,12 @@ class Antigravity:
             return {'status': 'accepted', **({'text': item['text']} if operation == 'edit' else {})}
         if action == 'send':
             native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
-            prompt, mode = self._prompt(body), body.get('mode') or 'send'
+            media, _ = self._build_media(body)
+            scope_items, _ = self._build_scope_items(body)
+            prompt = self._prompt(body, exclude_scoped_references=True)
+            mode = body.get('mode') or 'send'
             plugins = self._validate_plugins_arg(body.get('plugins'))
-            if not prompt or mode not in ('send', 'queue', 'steer'):
+            if (not prompt and not media and not scope_items) or mode not in ('send', 'queue', 'steer'):
                 raise ValueError('Antigravity 消息或发送方式无效')
             waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
             if (waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key))) and mode == 'send':
@@ -790,20 +859,23 @@ class Antigravity:
             if native_busy or cid in active_cids:
                 if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
+                if media:
+                    raise BridgeUnavailable('原会话运行中，排队或插话暂不支持图片附件，请等待当前回复结束后直接发送')
+                queued_prompt = self._prompt(body, exclude_scoped_references=False)
                 self._reject_busy_structured_follow_up(
-                    prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
+                    queued_prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
                     surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
                 )
-                item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)
+                item = self.hooks.enqueue_follow_up(key, queued_prompt, mode=mode)
                 return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
             default_command = 'plan' if session.get('collaborationMode') == 'plan' else None
             items = self._build_message_items(
-                prompt, plugins=plugins, default_command=default_command,
+                prompt, plugins=plugins, default_command=default_command, scope_items=scope_items,
                 surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
             )
             before_send = begin_turn if self.hooks and not waiting_by_cid.get(cid) and not self.hooks.has_pending_approvals(key) else None
             self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
-                                       items=items, turn_generation=turn_generation, before_send=before_send)
+                                       items=items, media=media, turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
         raise ValueError('此 Antigravity 操作尚不支持')
 

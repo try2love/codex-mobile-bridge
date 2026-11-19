@@ -731,13 +731,17 @@ class AntigravitySafetyTests(unittest.TestCase):
     def test_uploaded_images_and_files_remain_native_path_references(self):
         from bridge.clients.uploads import DesktopUploads
         uploads = DesktopUploads(self.directory)
-        rows = [{'id': 'image', 'image': 'image/png', 'localPath': '/tmp/photo.png', 'name': 'photo.png'},
+        img_file = Path(self.temp.name) / 'photo.png'
+        img_file.write_bytes(b'\x89PNG\r\n\x1a\n')
+        rows = [{'id': 'image', 'image': 'image/png', 'localPath': str(img_file), 'name': 'photo.png'},
                 {'id': 'file', 'image': None, 'localPath': '/tmp/report.txt', 'name': 'report.txt'}]
         with mock.patch.object(uploads.store, 'resolve', return_value=rows):
             images, files = uploads.resolve('antigravity', CID, ['image', 'file'], native_files=True)
-        self.assertEqual(images, [])
-        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedFiles': files}),
-                         'inspect\n\n@/tmp/photo.png\n@/tmp/report.txt')
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0]['url'].startswith('data:image/png;base64,'))
+        self.assertEqual(images[0]['name'], 'photo.png')
+        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedImages': images, 'resolvedFiles': files}),
+                         'inspect\n\n@/tmp/report.txt')
         self.assertNotEqual(uploads.scope('claude', CID), uploads.scope('antigravity', CID))
 
     def test_hook_injection_requires_verified_session_and_native_idle(self):
