@@ -31,7 +31,9 @@ final class GatewayChannels {
  }
  static boolean proves(String device,String target,String secret)throws Exception{
   String key=ConnectionDiscovery.hash(secret),nonce=UUID.randomUUID().toString().replace("-","")+UUID.randomUUID().toString().replace("-","");
-  JSONObject reply=new ConnectionDiscovery().read(target+"/api/connection/prove?device="+device+"&id="+ConnectionDiscovery.hash(key)+"&challenge="+nonce,null);
+  ConnectionDiscovery probe=new ConnectionDiscovery();JSONObject reply;
+  try{reply=probe.readProbe(target+"/api/connection/prove?device="+device+"&id="+ConnectionDiscovery.hash(key)+"&challenge="+nonce);}
+  finally{probe.cancel();}
   return device.equals(reply.optString("deviceId"))&&java.security.MessageDigest.isEqual(sign(key,device+"\n"+target+"\n"+nonce).getBytes(StandardCharsets.UTF_8),reply.optString("proof").getBytes(StandardCharsets.UTF_8));
  }
  static List<String> endpoints(JSONObject descriptor)throws Exception{

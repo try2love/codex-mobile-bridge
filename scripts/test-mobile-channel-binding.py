@@ -85,17 +85,23 @@ fixture_id='a'*32
 class Proof(BaseHTTPRequestHandler):
     delay=2.2
     forged=False
+    corrupt=False
+    requests=[]
     def log_message(self,*_): pass
     def do_GET(self):
         assert self.headers.get('Cookie') is None and self.headers.get('Authorization') is None
         query=parse_qs(urlsplit(self.path).query)
+        self.requests.append(query['challenge'][0])
         key=hashlib.sha256(fixture_secret.encode()).hexdigest()
         assert query['id']==[hashlib.sha256(key.encode()).hexdigest()]
         target='http://'+self.headers['Host']
         value=hmac.new(key.encode(),(fixture_id+'\n'+target+'\n'+query['challenge'][0]).encode(),hashlib.sha256).hexdigest()
+        if self.corrupt: value='0'*64
         time.sleep(self.delay)
         body=json.dumps({'deviceId':'b'*32 if self.forged else fixture_id,'proof':value}).encode()
-        self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+        self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers()
+        try:self.wfile.write(body)
+        except (BrokenPipeError,ConnectionResetError):pass
 server=ThreadingHTTPServer(('127.0.0.1',0),Proof)
 threading.Thread(target=server.serve_forever,daemon=True).start()
 target='http://127.0.0.1:'+str(server.server_port)
@@ -114,6 +120,13 @@ try:
         subprocess.run(command+[fixture_id,target,fixture_secret,'true'],check=True,timeout=15)
         Proof.delay=0;Proof.forged=True
         subprocess.run(command+[fixture_id,target,fixture_secret,'false'],check=True,timeout=15)
-    print('Android and iOS production probes accepted a 2.2-second delayed response and rejected a forged identity')
+        Proof.delay=4.3;Proof.forged=False;Proof.requests=[]
+        subprocess.run(command+[fixture_id,target,fixture_secret,'true'],check=True,timeout=15)
+        assert len(Proof.requests)==2 and len(set(Proof.requests))==1, 'Slow confirmation must reuse only this probe challenge'
+        Proof.delay=0;Proof.corrupt=True;Proof.requests=[]
+        subprocess.run(command+[fixture_id,target,fixture_secret,'false'],check=True,timeout=15)
+        assert len(Proof.requests)==1, 'A failed proof must not be retried'
+        Proof.corrupt=False
+    print('Android and iOS probes accepted delayed responses, kept one challenge, and rejected forged identity/proof')
 finally:
     server.shutdown();server.server_close()
