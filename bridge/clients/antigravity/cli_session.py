@@ -1151,13 +1151,23 @@ class AntigravityCli:
             return self._stop_generations.get((surface, conversation_id), 0)
 
     def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None,
-                          turn_generation=None, before_send=None):
+                          media=None, turn_generation=None, before_send=None):
         if turn_generation is None:
             turn_generation = self.turn_generation(conversation_id, surface=surface)
-        normalized_items = list(items) if items is not None else [{'text': prompt}]
-        if not normalized_items:
+        normalized_media = [dict(row) for row in (media or []) if isinstance(row, dict)]
+        if items is not None:
+            normalized_items = list(items)
+        elif prompt or normalized_media:
+            normalized_items = [{'text': prompt or ''}]
+        else:
+            normalized_items = []
+        if not normalized_items and not normalized_media:
             raise ValueError('Antigravity 消息内容不能为空')
+        if not normalized_items:
+            normalized_items = [{'text': ''}]
         body = {'cascade_id': conversation_id, 'items': normalized_items}
+        if normalized_media:
+            body['media'] = normalized_media
         selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
