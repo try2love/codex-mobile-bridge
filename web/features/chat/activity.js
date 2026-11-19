@@ -16,6 +16,46 @@ function renderChatMessageTime(container,value,now=new Date()){
   time.title=new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'short'}).format(date);
   time.setAttribute('aria-label',time.title);container.append(time);
 }
+function chatTurnCompletionLabel(turn){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(turn.status==='interrupted')return t('已停止');
+  if(turn.status==='failed')return t('运行失败');
+  if(turn.status!=='completed')return '';
+  const start=chatMessageDate(turn.start),end=chatMessageDate(turn.end);
+  if(!start||!end||!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return t('已完成');
+  const seconds=Math.floor((end-start)/1000),minutes=Math.floor(seconds/60);
+  return t(minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒')
+    .replace('{minutes}',minutes).replace('{seconds}',seconds%60);
+}
+// Completion is native turn metadata, independent of message grouping or folding.
+// Reuse the row so an unchanged refresh cannot disturb the reader's position.
+function chatNodesWithTurnCompletions(container,nodes,rows){
+  const turns=new Map(),byKey=new Map();
+  for(const [index,row] of rows.entries()){
+    const key=String(row.key??row.id??index);byKey.set(key,row);
+    if(row.turnId===undefined||row.turnId===null)continue;
+    const id=String(row.turnId),turn=turns.get(id)||{id};
+    turn.last=key;
+    if(row.turnStatus)turn.status=row.turnStatus;
+    if(row.turnStartedAt!==undefined)turn.start=row.turnStartedAt;
+    if(row.turnCompletedAt!==undefined)turn.end=row.turnCompletedAt;
+    turns.set(id,turn);
+  }
+  const existing=new Map([...container.children].filter(node=>node.classList?.contains('chat-turn-completion')).map(node=>[node.dataset.key,node]));
+  const result=[];
+  for(const node of nodes){
+    result.push(node);
+    const row=byKey.get(node.dataset.key),turn=row&&turns.get(String(row.turnId));
+    if(!turn||turn.last!==node.dataset.key)continue;
+    const label=chatTurnCompletionLabel(turn);if(!label)continue;
+    const key='turn-completion:'+turn.id;
+    const footer=existing.get(key)||document.createElement('p');
+    footer.className='chat-turn-completion';footer.dataset.key=key;footer.__chatTurn=turn;
+    if(footer.textContent!==label)footer.textContent=label;
+    result.push(footer);
+  }
+  return result;
+}
 function chatFollowsLatest(viewport){
   return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
 }
@@ -26,7 +66,7 @@ function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
   for(const node of container.children){
-    if(node.hidden||node.dataset.key===undefined||!accept(node))continue;
+    if(node.hidden||node.dataset.key===undefined||node.classList?.contains('chat-turn-completion')||!accept(node))continue;
     const rect=node.getBoundingClientRect();
     anchor={key:node.dataset.key,offset:rect.top-top};
     if(rect.bottom>top)break;

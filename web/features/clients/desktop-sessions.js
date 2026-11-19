@@ -647,6 +647,7 @@ class DesktopSessionsView {
         : (message.role==='activity'||message.phase==='commentary')&&document.documentElement.dataset.showProcess==='false';
       next.set(key,{stamp,node});nodes.push(node);
     }
+    nodes.splice(0,nodes.length,...chatNodesWithTurnCompletions(this.messageList,nodes,messages));
     if(this.historyPage?.hasMore){const older=this.button(this.historyRetry?'历史加载失败，点击重试':this.historyBusy?'正在读取…':'加载更早内容',()=>this.loadOlderHistory());older.classList.add('plain','ds-history-older');older.disabled=!!this.historyBusy;nodes.unshift(older);}this.messageNodes=next;if(!nodes.length&&this.state)nodes.push(this.translated('p','这条聊天还没有消息','muted ds-history-empty'));nodes.push(this.progress);
     if(this.deferredHistory){
       if(!this.historyNewer){this.historyNewer=this.button('有新内容 ↓',()=>{const latest=this.deferredHistory;if(!latest)return;this.reading={following:true,top:this.messages.scrollTop};this.applyHistory(latest);});this.historyNewer.classList.add('ds-history-newer');}

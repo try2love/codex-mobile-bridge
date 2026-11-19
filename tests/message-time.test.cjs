@@ -21,6 +21,19 @@ test('English and timezone offsets preserve the same native instant',()=>{
  assert.equal(render('2026-11-08T23:30:00-05:00',now)[0].dateTime,'2026-11-09T04:30:00.000Z');
 });
 
+test('completion uses native turn boundaries and never invents a duration or success',()=>{
+ const context=vm.createContext({Date,BridgeI18n:{t:s=>s}});
+ vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),context);
+ const label=vm.runInContext('chatTurnCompletionLabel',context),start=1700000000000;
+ assert.equal(label({status:'completed',start,end:start+125000}),'已完成，用时 2 分钟 5 秒');
+ assert.equal(label({status:'completed',start,end:start+999}),'已完成，用时 0 秒');
+ for(const end of [undefined,null,0,'invalid',start-1])assert.equal(label({status:'completed',start,end}),'已完成');
+ assert.equal(label({status:'completed',end:start+125000}),'已完成');
+ assert.equal(label({status:'interrupted',start,end:start+125000}),'已停止');
+ assert.equal(label({status:'failed',start,end:start+125000}),'运行失败');
+ for(const status of ['inProgress','unknown','idle',undefined])assert.equal(label({status,start,end:start+125000}),'');
+});
+
 test('Claude connector preserves native timestamp while sanitizing the transcript',()=>{
  const source=fs.readFileSync('bridge/clients/claude/connector.js','utf8');
  const sanitizer=source.slice(source.indexOf('  function sanitize('),source.indexOf('  function callArgs('));

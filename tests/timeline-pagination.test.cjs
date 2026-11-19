@@ -70,6 +70,8 @@ for(const className of ['activity-body'])for(const gesture of ['wheel','touch'])
 function persistentFixture(){
  const writes=[],meta=[],window={BridgeChatHistoryCache:{read:()=>new Promise(resolve=>cachedResolve=resolve),write:(...args)=>writes.push(args)}};let cachedResolve,freshResolve;
  const ctx=vm.createContext({window,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},syncChatMessageNodes(container,nodes){container.children=nodes;}});
+ vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),ctx);
+ ctx.syncChatMessageNodes=(container,nodes)=>{container.children=nodes;};
  vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);const Type=vm.runInContext('ChatTimeline',ctx);
  const ui=Object.assign(Object.create(Type.prototype),{cacheKey:'synthetic-history',sequence:-1,epoch:'',generation:0,windowRevision:0,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),abort:new AbortController(),older:{},newer:{},following:true,
   container:{children:[],replaceChildren(){this.children=[];}},viewport:{removeEventListener(){}},resize:{disconnect(){}},
