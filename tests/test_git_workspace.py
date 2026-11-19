@@ -253,6 +253,14 @@ class GitWorkspaceTests(unittest.TestCase):
                 GitWorkspace(self.work).mutate('stage-all', state['version'])
         self.assertEqual(self.git('diff', '--cached').stdout, b'')
 
+    def test_stage_and_unstage_reject_case_variants_of_git_directory(self):
+        self.baseline(); owner = GitWorkspace(self.work); state = owner.require_repository()
+        for action in ('stage', 'unstage'):
+            for path in ('.git/config', '.GIT/hooks/pre-commit', 'nested/.Git/HEAD'):
+                with self.subTest(action=action, path=path):
+                    with self.assertRaisesRegex(ValueError, '请选择项目中的变更文件'):
+                        owner.mutate(action, state['version'], path)
+
 
 class GitHttpTests(unittest.TestCase):
     setUpClass = classmethod(support.HttpTests.setUpClass.__func__)
