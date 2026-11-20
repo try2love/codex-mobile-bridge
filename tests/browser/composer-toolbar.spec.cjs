@@ -571,10 +571,11 @@ test('bottom right tools stay beside send until actual overflow and return after
   expect(submitOnly.x - rightOnly.x - rightOnly.width).toBeLessThanOrEqual(8);
 });
 
-test('send mode icon is centered without a focus frame and placeholder fits one line', async ({ page }) => {
+test('send mode icon is centered without a focus frame and placeholder fits one line', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 760 });
   await page.evaluate(() => {
     const t = composerToolbar;
+    t.input.value = '';
     t.preferences.update({ layout: {
       topLeft: [], topRight: [], bottomLeft: ['more', 'model'], bottomRight: ['sendMode'],
       more: ['skills', 'permissions', 'context', 'collapse', 'attachments', 'plan', 'goal'],
@@ -595,10 +596,20 @@ test('send mode icon is centered without a focus frame and placeholder fits one 
       BridgeI18n.setLanguage(language);composerToolbar.preferences.update({ followUpMode });composerToolbar.sync();
     }, { language, followUpMode });
     const result = await page.locator('#message').evaluate(n => {
-      const style = getComputedStyle(n), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');ctx.font = style.font;
-      return { text: n.placeholder, width: ctx.measureText(n.placeholder).width, available: n.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) };
+      const style = getComputedStyle(n), placeholder = getComputedStyle(n, '::placeholder'), probe = document.createElement('span');
+      // WebKit's Canvas text metrics can differ from its DOM shaping. Measure
+      // the rendered placeholder font in the same layout engine as the input.
+      probe.textContent = n.placeholder;probe.style.cssText = 'position:fixed;visibility:hidden;white-space:pre';
+      probe.style.font = placeholder.font || style.font;
+      probe.style.letterSpacing = placeholder.letterSpacing;probe.style.wordSpacing = placeholder.wordSpacing;
+      probe.style.whiteSpace = placeholder.whiteSpace;probe.style.textTransform = placeholder.textTransform;probe.style.transform = placeholder.transform;
+      document.body.append(probe);const width = probe.getBoundingClientRect().width;probe.remove();
+      const ctx = document.createElement('canvas').getContext('2d');ctx.font = placeholder.font || style.font;
+      return { text: n.placeholder, width, canvasWidth: ctx.measureText(n.placeholder).width,
+        font: placeholder.font, available: n.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) };
     });
-    expect(result.text).not.toContain('\n');expect(result.text).toContain('/');expect(result.width).toBeLessThanOrEqual(result.available);
+    await page.screenshot({ path: testInfo.outputPath('placeholder-' + language + '-' + followUpMode + '.png') });
+    expect(result.text).not.toContain('\n');expect(result.text).toContain('/');expect(result.width, JSON.stringify(result)).toBeLessThanOrEqual(result.available);
   }
 });
 
