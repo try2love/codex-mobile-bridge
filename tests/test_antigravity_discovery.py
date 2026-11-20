@@ -97,6 +97,64 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.target(image, args, **options)
 
+    def test_endpoint_reads_env_csrf_token_for_antigravity_2_34_on_linux_and_macos(self):
+        # Antigravity 2.34.0 将 CSRF 令牌从命令行 --csrf_token 移入 ANTIGRAVITY_SERVER_CSRF_TOKEN 环境变量
+        args = ['--standalone', '--override_ide_version', '2.34.0', '--app_data_dir', 'antigravity']
+        app_root = self.home/'opt/Antigravity'
+        (app_root/'resources/bin').mkdir(parents=True)
+        ls_exe = app_root/'resources/bin/language_server'
+        ls_exe.write_bytes(b'elf')
+
+        linux_log = self.home/'.config/Antigravity/logs/language_server.log'
+        linux_log.parent.mkdir(parents=True)
+        linux_log.write_text('Language server listening on random port at 24567 for HTTP\n')
+
+        proc = self.home/'proc-234'
+        p123 = proc/'123'
+        p123.mkdir(parents=True)
+        uid = p123.stat().st_uid
+        (p123/'stat').write_text('123 (language_server) S 1 ' + ' '.join(['0'] * 17) + ' 999 0')
+        (p123/'environ').write_bytes(b'OTHER=1\x00ANTIGRAVITY_SERVER_CSRF_TOKEN=' + (b'c' * 36) + b'\x00')
+        identity = {'pid': 123, 'uid': uid, 'image': str(ls_exe), 'birth': '999'}
+
+        def map_proc(value):
+            return proc if str(value) == '/proc' else Path(value)
+        map_proc.home = lambda: self.home
+
+        with mock.patch.object(native.sys, 'platform', 'linux'), \
+                mock.patch.object(native, 'Path', map_proc), \
+                mock.patch.object(native.os, 'getuid', return_value=uid, create=True), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=identity), \
+                mock.patch.object(native, '_listener', return_value=True):
+            found = native.endpoint('app', self.home)
+        self.assertEqual(found['address'], 'http://127.0.0.1:24567')
+        self.assertEqual(found['token'], 'c' * 36)
+
+        # 非法短令牌或含非法字符仍必须拒绝
+        (p123/'environ').write_bytes(b'ANTIGRAVITY_SERVER_CSRF_TOKEN=short!\x00')
+        with mock.patch.object(native.sys, 'platform', 'linux'), \
+                mock.patch.object(native, 'Path', map_proc), \
+                mock.patch.object(native.os, 'getuid', return_value=uid, create=True), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=identity), \
+                mock.patch.object(native, '_listener', return_value=True):
+            with self.assertRaises(ValueError):
+                native.endpoint('app', self.home)
+
+        # macOS 通过同用户 sysctl (_environment) 读取 ANTIGRAVITY_SERVER_CSRF_TOKEN
+        _, mac_image = self.bundle()
+        mac_log = self.home/'Library/Logs/Antigravity/language_server.log'
+        mac_log.parent.mkdir(parents=True, exist_ok=True)
+        mac_log.write_text('Language server listening on random port at 24568 for HTTP\n')
+        with mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch('bridge.platforms.macos.codex_daemon_env._environment',
+                           return_value={'ANTIGRAVITY_SERVER_CSRF_TOKEN': 'm' * 36}) as mac_env:
+            value, port = self.target(mac_image, args)
+        mac_env.assert_called_once_with(123, ('ANTIGRAVITY_SERVER_CSRF_TOKEN',))
+        self.assertEqual(port, 24568)
+        self.assertEqual(value['token'], 'm' * 36)
+
     def test_large_language_server_log_preserves_head_and_tail_ports(self):
         _, image = self.bundle()
         log = self.home/'Library/Logs/Antigravity/language_server.log'
