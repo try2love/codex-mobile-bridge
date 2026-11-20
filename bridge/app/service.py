@@ -2393,7 +2393,10 @@ class Bridge:
 
     def _cli_recovery_record(self):
         path = self.data_dir / 'cli-daemon-recovery.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        # Windows readers do not share deletion; cancellation replaces this
+        # record under the same lock after the short read has closed its handle.
+        with self.cli_maintenance.lock:
+            return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
 
     def _activate_cli_recovery(self, thread_id, plan):
         from bridge.clients.codex.cli_session import _managed_cli

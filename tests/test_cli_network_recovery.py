@@ -3,6 +3,7 @@ from contextlib import ExitStack, closing, nullcontext
 import hashlib
 import json
 import os
+from pathlib import Path
 import sqlite3
 import sys
 import threading
@@ -642,6 +643,84 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.cli._start_daemon.assert_not_called()
         self.cli.attach.assert_not_called()
         self.assertEqual(self.bridge.submissions['unrelated:submission']['status'], 'unknown')
+
+    def test_cancel_waits_for_an_open_recovery_reader_before_replacing_its_record(self):
+        self.bridge.submissions['unrelated:submission'] = {'status': 'unknown'}
+        preview = self.bridge.cli_network(self.thread_id)
+        pending = self.bridge.cli_network(self.thread_id, {'confirmed': True, 'generation': preview['generation']})
+        self.bridge.cli_maintenance.cancel()
+        self.bridge.cli_maintenance.worker.join(2)
+        self.assertFalse(self.bridge.cli_maintenance.worker.is_alive())
+        path = self.bridge.data_dir/'cli-daemon-recovery.json'
+        opened, release, cancelling, other_locks_held, release_other_locks = (threading.Event() for _ in range(5))
+        original_read, original_replace = Path.read_text, Path.replace
+        outcomes, sequence = {}, []
+        lock = self.bridge.cli_maintenance.lock
+        class ReadLock:
+            def __enter__(self):
+                if threading.current_thread().name == 'cancel-recovery':
+                    cancelling.set()
+                return lock.__enter__()
+            def __exit__(self, *args):
+                return lock.__exit__(*args)
+        def read(record, *args, **kwargs):
+            if record == path and threading.current_thread().name == 'recovery-reader':
+                with record.open('r', encoding='utf-8') as stream:
+                    sequence.append('reader-open')
+                    opened.set()
+                    if not release.wait(3):
+                        raise AssertionError('record reader was not released')
+                    value = stream.read()
+                sequence.append('reader-closed')
+                return value
+            return original_read(record, *args, **kwargs)
+        def replace(temporary, target):
+            if target == path and 'reader-closed' not in sequence:
+                error = PermissionError('Windows does not permit replacement while this reader is open')
+                error.winerror = 5
+                raise error
+            sequence.append('replaced')
+            return original_replace(temporary, target)
+        def reader():
+            outcomes['record'] = self.bridge._cli_recovery_record()
+        def cancel():
+            try:
+                outcomes['cancel'] = self.bridge.cli_network(self.thread_id, {'action': 'cancel', 'operationId': pending['operationId']})
+            except BaseException as error:
+                outcomes['error'] = error
+        def hold_other_locks():
+            with self.bridge.accounts.gate, self.cli.start_lock:
+                other_locks_held.set()
+                release_other_locks.wait(10)
+        reader_thread = threading.Thread(target=reader, name='recovery-reader')
+        cancel_thread = threading.Thread(target=cancel, name='cancel-recovery')
+        holder_thread = threading.Thread(target=hold_other_locks)
+        with patch.object(self.bridge.cli_maintenance, 'lock', ReadLock()), \
+                patch.object(Path, 'read_text', read), patch.object(Path, 'replace', replace):
+            try:
+                reader_thread.start()
+                self.assertTrue(opened.wait(3))
+                reader_holds_lock = not lock.acquire(blocking=False)
+                if not reader_holds_lock:
+                    lock.release()
+                holder_thread.start()
+                self.assertTrue(other_locks_held.wait(3))
+                cancel_thread.start()
+                self.assertTrue(cancelling.wait(3))
+            finally:
+                release.set()
+                reader_thread.join(3); cancel_thread.join(3)
+                release_other_locks.set();holder_thread.join(3)
+        self.assertFalse(reader_thread.is_alive()); self.assertFalse(cancel_thread.is_alive())
+        self.assertTrue(reader_holds_lock, 'recovery reader must protect its open file from cancellation replacement')
+        if 'error' in outcomes:
+            raise outcomes['error']
+        self.assertEqual(outcomes['cancel']['state'], 'cancelled')
+        self.assertEqual(outcomes['record']['phase'], 'waiting')
+        self.assertEqual(self.bridge._cli_recovery_record()['phase'], 'cancelled')
+        self.assertEqual(sequence, ['reader-open', 'reader-closed', 'replaced'])
+        self.assertEqual(self.bridge.submissions['unrelated:submission']['status'], 'unknown')
+        self.stop.assert_not_called(); self.cli._start_daemon.assert_not_called(); self.cli.attach.assert_not_called()
 
     def test_waiting_recovery_aborts_if_process_generation_changes(self):
         self.busy = True
