@@ -6,6 +6,16 @@ const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
 const {stopOwnedGui,transportScript,baselinePolicy}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
+test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
+  const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
+  for(const current of ['2.2.1','2.2.2-preview.2']){
+    const channel=current.includes('-')?'preview':'stable',update={current,currentChannel:channel,channel};
+    for(const state of ['idle','checking','current','available','skipped','error'])verifyUpdateDiscovery({...update,state},current);
+    for(const state of ['unsupported','downloading','preparing','restarting','downloaded','installer-handoff'])assert.throws(()=>verifyUpdateDiscovery({...update,state},current));
+    assert.throws(()=>verifyUpdateDiscovery({...update,current:'0.0.0',state:'idle'},current));
+    assert.throws(()=>verifyUpdateDiscovery({...update,channel:channel==='stable'?'preview':'stable',state:'idle'},current));
+  }
+});
 test('baseline expectations respect old Linux support and published preview manifest availability',()=>{
   for(const platform of ['darwin','win32']){
     assert.deepEqual(baselinePolicy('2.2.1',platform),{state:'current',includeCandidate:true,previewDiscoveryTested:true});
