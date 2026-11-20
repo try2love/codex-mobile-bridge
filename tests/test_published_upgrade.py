@@ -49,12 +49,14 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         self.rejected('differs from product', changed='bridge/app/service.py\n')
         self.rejected('differs from product', changed='tests/browser/unreviewed-fixture.spec.cjs\n')
 
-    def test_preview2_guard_uses_the_actual_product_version_and_reviewed_ancestor(self):
+    def test_preview2_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
         source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        subprocess.run(['git', 'merge-base', '--is-ancestor', prepare.BASE, source], cwd=ROOT, check=True)
         product = json.loads(subprocess.check_output(['git', 'show', source + ':package.json'], cwd=ROOT))
         self.assertEqual(product['version'], prepare.VERSION)
         self.assertEqual(prepare.VERSION, '2.2.2-preview.2')
+        self.assertEqual(prepare.BASE, '7672f49605a972c3d6b2e79dcde780ede1ee1642')
+        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text()
+        self.assertIn('fetch-depth: 0', workflow)
 
     def test_intel_supplement_executes_sha_checkout_and_version_guards(self):
         workflow = (ROOT/'.github/workflows/mobile.yml').read_text()

@@ -4,8 +4,16 @@ const {spawn,spawnSync}=require('node:child_process'),path=require('node:path');
 const {EventEmitter,once}=require('node:events');
 const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm');
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
-const {stopOwnedGui,transportScript}=require('../scripts/smoke-published-upgrade.cjs');
+const {stopOwnedGui,transportScript,baselinePolicy}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
+test('baseline expectations respect old Linux support and published preview manifest availability',()=>{
+  for(const platform of ['darwin','win32']){
+    assert.deepEqual(baselinePolicy('2.2.1',platform),{state:'current',includeCandidate:true,previewDiscoveryTested:true});
+    assert.deepEqual(baselinePolicy('2.2.2-preview.1',platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false});
+  }
+  for(const version of ['2.2.1','2.2.2-preview.1'])assert.deepEqual(baselinePolicy(version,'linux'),{state:'unsupported',includeCandidate:false,previewDiscoveryTested:false});
+  assert.throws(()=>baselinePolicy('2.2.2-preview.2','darwin'),/Unknown official baseline/);
+});
 test('published-package installer refuses a daily workstation before any install or fixture write',()=>{
   const result=spawnSync(process.execPath,[script],{env:{...process.env,GITHUB_ACTIONS:'false',RUNNER_ENVIRONMENT:'github-hosted'},encoding:'utf8'});
   assert.equal(result.status,1);assert.match(result.stderr,/Only run against an ephemeral GitHub-hosted runner/);

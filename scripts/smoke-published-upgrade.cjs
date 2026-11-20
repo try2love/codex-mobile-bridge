@@ -7,6 +7,11 @@ const {createHash,randomUUID}=require('node:crypto');
 const {runWorker}=require('../desktop/shared/controller.cjs');
 const oldVersion='2.2.1',candidateVersion='2.2.2-preview.2';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function baselinePolicy(version,platform=process.platform){
+  assert.ok([oldVersion,'2.2.2-preview.1'].includes(version),'Unknown official baseline');
+  return {state:platform==='linux'?'unsupported':'current',includeCandidate:platform!=='linux'&&version===oldVersion,
+    previewDiscoveryTested:platform!=='linux'&&version===oldVersion};
+}
 function packageName(version,platform=process.platform,arch=process.arch){
   const suffix=platform==='darwin'?`macOS-${arch}.zip`:platform==='win32'?'Windows-x64-Setup.exe':`Linux-${arch==='x64'?'amd64':'arm64'}.deb`;
   return `Codex-Mobile-Bridge-${version}-${suffix}`;
@@ -308,12 +313,19 @@ async function main(){
         await fs.mkdir(path.join(data,'synthetic-codex'));
         const settings=await worker('snapshot');Object.assign(settings.preferences,{port,lan:true,localAccess:true,autoStart:false,tunnel:false,connections:[],codexHome:path.join(data,'synthetic-codex'),ipcPath:path.join(data,'fixture.sock')});
         Object.assign(settings.auth,{username:'admin',password:randomUUID(),sessionHours:0});await worker('save',settings);await fs.writeFile(path.join(data,'notification-watches.json'),'[]\n');
+        const policy=baselinePolicy(baseline);
         await inspectDesktop(files.app,data,baseline,work,'baseline',async({ui,main})=>{
-          await main.evaluate(transportScript(directory,true));await ui.evaluate("tab('updates')");
+          await ui.evaluate("tab('updates')");
+          if(policy.state==='unsupported'){
+            assert.equal((await ui.evaluate('snapshot.update')).state,'unsupported');
+            assert.equal(await ui.evaluate("document.getElementById('check-update').disabled"),true);
+            return;
+          }
+          await main.evaluate(transportScript(directory,policy.includeCandidate));
           await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','baseline background check completion');
           await click(ui,'check-update');
           const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');return !['idle','checking'].includes(value.state)&&value;},'legacy stable filtering');
-          assert.equal(value.state,'current','old packages must not discover a preview from the release directory');
+          assert.equal(value.state,policy.state,'official baseline release-directory behavior');
         });
         await verifyData('baseline',{seed:true});await worker('stop');
         await install(candidateArchive,target,work,'candidate');await useRuntime();await verifyVersion(candidateVersion);
@@ -340,7 +352,7 @@ async function main(){
           returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native});await useRuntime();
         }
         await verifyVersion(oldVersion);await inspectDesktop(files.app,data,oldVersion,work,'returned-stable');await verifyData('returned-stable');
-        const result={ok:true,baseline,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,checks,
+        const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,checks,
           transport:'fixture release directory; original official signed manifests/packages; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
         results.push(result);await fs.writeFile(path.join(work,'result.json'),JSON.stringify(result,null,2)+'\n');console.log('PASS official '+baseline+' bootstrap and stable return');
       }finally{if(worker)await worker('stop').catch(error=>console.error('Owned gateway cleanup: '+error.message));}
@@ -348,5 +360,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={packageName,paths,stopOwnedGui,debuggerClient,transportScript,nativeClick};
+module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
