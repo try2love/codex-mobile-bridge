@@ -1,7 +1,7 @@
 // Launch the actual signed bundle with isolated data; do not start a gateway.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),net=require('node:net');
-const {spawn}=require('node:child_process');
+const {execFileSync,spawn}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function main(){
   assert.equal(process.platform,'darwin');
@@ -10,7 +10,9 @@ async function main(){
   const data=await fs.mkdtemp(path.join(root,'.tmp','macos-launch-'));
   const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));
-  const executable=path.join(path.resolve(process.argv[2]),'Contents/MacOS/Codex Mobile Bridge');
+  const app=path.resolve(process.argv[2]);
+  const executableName=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :CFBundleExecutable',path.join(app,'Contents/Info.plist')],{encoding:'utf8'}).trim();
+  const executable=path.join(app,'Contents/MacOS',executableName);
   const env={...process.env,CMB_DATA_DIR:data};
   for(const key of ['CMB_PYTHON','PYTHONPATH','PYTHONHOME','ELECTRON_RUN_AS_NODE'])delete env[key];
   const child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port],{env,stdio:['ignore','ignore','pipe']});
