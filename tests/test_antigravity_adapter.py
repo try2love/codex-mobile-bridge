@@ -1236,4 +1236,73 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def test_stop_kills_background_tasks_forces_tree_and_clears_hook_heartbeat(self):
+        adapter = self.adapter()
+        self.addCleanup(adapter.close)
+        sid = gateway_id('app', CID)
+        rpc_calls = []
 
+        def fake_rpc(method, payload=None, *, surface='app'):
+            rpc_calls.append((surface, method, payload))
+            if method == 'CancelCascadeInvocation' and payload.get('cascade_id') == CID:
+                # Even if soft cancel raises (e.g., idle root with running descendant), ForceStopCascadeTree stops the tree.
+                raise BridgeUnavailable('root invocation idle')
+            if method == 'ForceStopCascadeTree':
+                return {'stoppedConversationIds': [CID, 'child-1']}
+            return {}
+
+        adapter.ensure_plugin()
+        adapter.hooks.set_permission_mode(sid, 'mobile-ask')
+        transcript = self.root / 'brain' / CID / '.system_generated' / 'logs' / 'transcript.jsonl'
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text('{"step_index":0,"type":"USER_INPUT","content":"hi"}\n', encoding='utf-8')
+        # Also verify _hook_session resolves a new session present in brain/ before DB flush.
+        unflushed_cid = '99999999-8888-4777-8666-555555555555'
+        unflushed_log = self.root / 'brain' / unflushed_cid / '.system_generated' / 'logs' / 'transcript.jsonl'
+        unflushed_log.parent.mkdir(parents=True, exist_ok=True)
+        unflushed_log.write_text('{}\n', encoding='utf-8')
+        self.assertEqual(
+            adapter._hook_session({'conversationId': unflushed_cid, 'transcriptPath': str(unflushed_log)}),
+            gateway_id('app', unflushed_cid),
+        )
+
+        approval_reply = {}
+        def wait_approval():
+            approval_reply['result'] = adapter.hooks.dispatch_hook_event(
+                'pre_tool_use',
+                {'conversationId': CID, 'transcriptPath': str(transcript), 'toolCall': {'name': 'run_command', 'args': {}}},
+            )
+
+        t = threading.Thread(target=wait_approval, daemon=True)
+        t.start()
+        deadline = time.monotonic() + 2.0
+        while not adapter.hooks.pending_approvals_for(sid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(adapter.hooks.has_recent_heartbeat(sid))
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())):
+            res = adapter.call('stop', sid)
+            self.assertEqual(res, {'status': 'accepted'})
+            t.join(timeout=2.0)
+            self.assertEqual(approval_reply['result'].get('decision'), 'deny')
+            self.assertFalse(adapter.hooks.has_recent_heartbeat(sid))
+            self.assertEqual(rpc_calls, [
+                ('app', 'CancelCascadeInvocation', {'cascade_id': CID, 'kill_background_tasks': True}),
+                ('app', 'ForceStopCascadeTree', {'conversationId': CID}),
+            ])
+            detail = adapter.call('detail', sid)
+            self.assertEqual(detail['session']['status'], 'idle')
+            term = adapter.hooks.dispatch_hook_event('post_invocation', {'conversationId': CID, 'transcriptPath': str(transcript)})
+            self.assertEqual(term, {'terminationBehavior': 'terminate'})
+
+            # Normal path where both CancelCascadeInvocation and ForceStopCascadeTree succeed
+            rpc_calls.clear()
+            with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={'stoppedConversationIds': [CID]}) as rpc_ok:
+                stopped = adapter.cli.stop(CID, surface='ide')
+                self.assertEqual(stopped['stoppedConversationIds'], [CID])
+                self.assertEqual([c.args for c in rpc_ok.call_args_list], [
+                    ('CancelCascadeInvocation', {'cascade_id': CID, 'kill_background_tasks': True}),
+                    ('ForceStopCascadeTree', {'conversationId': CID}),
+                ])
