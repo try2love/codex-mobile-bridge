@@ -4,7 +4,7 @@ class DesktopSessionsView {
   constructor({root,select,request,notify,onSelect,csrf,onUnauthorized,pinPreferences=null,onSessionMenu=null,onOpenSessionMenu=null}) {
     Object.assign(this,{root,select,request,notify,onSelect,csrf,onUnauthorized,pinPreferences,onSessionMenu,onOpenSessionMenu});this.provider='codex';this.generation=0;this.detailRevision=0;this.modelSelectionRevision=0;this.drafts=new Map();this.provisionalDrafts=new Map();this.accountDrafts=new Map();this.skillSelections=new Map();this.composerDrafts=typeof ComposerDrafts==='function'?new ComposerDrafts():null;this.draftGateway='';this.draftScope=null;this.draftTouched=false;this.restoringDraft=false;this.pending=new Map();this.rows=[];this.messageNodes=new Map();this.providerViews=new Map();this.detailCache=new Map();this.activity=new SessionActivity({key:'bridge-desktop-session-activity'});try{this.collapsedGroups=new Set(JSON.parse(localStorage.getItem('bridge-desktop-session-groups')||'[]'));}catch{this.collapsedGroups=new Set();}
     this.readTasks=new Map();this.readEpoch=0;this.providerReadEpochs=new Map();this.listPrefetchAt=new Map();this.detailCacheSizes=new Map();this.detailCacheBytes=0;this.modelDialog=null;this.mermaidScope=window.BridgeMermaidCards?.createScope();
-    this.listCacheIdentity='';this.listCacheHost='';this.modelCatalogs=new Map();
+    this.listCacheIdentity='';this.listCacheHost='';this.modelCatalogs=new Map();this.nativeCommands=new Map();this.nativeCommandsLoading=new Map();
     this.container=this.node('section','desktop-sessions');root.append(this.container);this.container.hidden=true;
     this.list=this.node('aside','ds-list');this.main=this.node('main','ds-main');this.container.append(this.list,this.main);
     this.search=this.node('input','search');this.search.placeholder=BridgeI18n.t('搜索');this.label(this.search,'搜索聊天或项目');this.search.oninput=()=>this.renderList();
@@ -66,7 +66,7 @@ class DesktopSessionsView {
     this.rowsRoot.addEventListener('scroll',()=>this.saveListSnapshot(this.provider),{passive:true});
     this.commands=typeof ComposerCommands==='function'?new ComposerCommands({input:this.input,
       scope:()=>this.isChatOpen&&this.sid?JSON.stringify([this.provider,this.sid,this.generation,this.draftGateway,this.draftScope?.account]):null,
-      actions:()=>[...ComposerCommands.controls({model:this.modelButton,skills:this.skillsButton,permissions:this.permissionsButton,context:this.contextUsage,workMode:this.workMode}),...(this.commandActions?.()||[])],onError:text=>this.notify(text)}):null;
+      actions:()=>this.buildCommandActions(),onError:text=>this.notify(text)}):null;
     this.updateComposer();
   }
   node(tag,cls='',text){const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;}
@@ -256,13 +256,14 @@ class DesktopSessionsView {
     const snapshotKey=this.listSnapshotKey(provider);if(snapshotKey){localStorage.removeItem(snapshotKey);sessionStorage.removeItem(snapshotKey);}
     if(!this.draftGateway||!this.composerDrafts)for(const [key,text] of this.accountDrafts.get(identity(next))||[])this.drafts.set(key,text);
     for(const key of this.detailCache.keys())if(jsonKey(key))this.forgetDetail(key);for(const key of this.skillSelections.keys())if(jsonKey(key))this.skillSelections.delete(key);
+    for(const key of this.nativeCommands.keys()){try{if(JSON.parse(key)[1]===provider)this.nativeCommands.delete(key);}catch{}}
     for(const key of this.pending.keys())if(key.startsWith(provider+':'))this.pending.delete(key);
     for(const key of Object.keys(this.activity.rows))if(key.startsWith(provider+'|'))delete this.activity.rows[key];this.activity.save();
     this.workbench.reset(provider);this.attachments.forget(jsonKey);
     if(provider!==this.provider)return;
     this.rows=[];this.listStamp='';this.lastMessages=[];this.requestStamp='';this.messageNodes.clear();this.messageList.replaceChildren();this.requests.replaceChildren();this.showSelection(false);this.renderList();this.updateComposer();await this.refresh();
   }
-  clear(){this.modelCatalogs.clear();this.forgetResumes();this.sendingPreview=null;this.sendFeedback.replaceChildren();this.sendFeedback.hidden=true;this.quotes?.reset();this.resetMermaidScope();this.modelDialog?.close();this.listSync.reset();this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.previewOnly=false;this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.provisionalDrafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.listCacheIdentity='';this.listCacheHost='';this.draftGateway='';this.draftScope=null;this.detailCache.clear();this.historyMessages=[];this.historyPage=null;this.historyRetry=false;this.historyBusy=false;this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messageList.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
+  clear(){this.modelCatalogs.clear();this.nativeCommands.clear();this.nativeCommandsLoading.clear();this.forgetResumes();this.sendingPreview=null;this.sendFeedback.replaceChildren();this.sendFeedback.hidden=true;this.quotes?.reset();this.resetMermaidScope();this.modelDialog?.close();this.listSync.reset();this.readEpoch++;this.readTasks.clear();this.providerReadEpochs.clear();this.listPrefetchAt.clear();this.detailCacheSizes.clear();this.detailCacheBytes=0;this.clientStates=[];this.workbench.reset();clearTimeout(this.timer);this.generation++;this.detailRevision++;this.provider='codex';this.previewOnly=false;this.select.value='codex';this.select.hidden=true;this.container.hidden=true;this.root.classList.remove('desktop-mode');this.sid=null;this.state=null;this.showSelection(false);this.drafts.clear();this.provisionalDrafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('desktop-draft:'))sessionStorage.removeItem(key);}this.accountDrafts.clear();this.skillSelections.clear();this.providerViews.clear();this.listCacheIdentity='';this.listCacheHost='';this.draftGateway='';this.draftScope=null;this.detailCache.clear();this.historyMessages=[];this.historyPage=null;this.historyRetry=false;this.historyBusy=false;this.activity.clear();this.freshDetail=false;this.rows=[];this.listStamp='';this.rowsRoot.replaceChildren();this.lastMessages=[];this.requestStamp='';this.pending.clear();this.attachments.reset();this.messageList.replaceChildren();this.requests.replaceChildren();this.messageNodes.clear();}
   async refresh(){
     clearTimeout(this.timer);const generation=this.generation,provider=this.provider;if(this.previewOnly||provider==='codex'||document.hidden||this.root.hidden)return;
     if(this.resumeAttempt){if(!this.resumeAttempt.timer&&!this.resumeAttempt.controller)this.checkResume(this.resumeAttempt);return;}
@@ -445,8 +446,67 @@ class DesktopSessionsView {
                (this.resumeSelected===this.sid||this.savedResumeId())){
         this.continueChat();
       }
+      if(this.canMutate()&&this.state.capabilities.slashCommands===true)this.ensureNativeCommands();
       this.onDetailReady?.();
     }
+  }
+  nativeCommandKey(sid=this.sid,state=this.state,provider=this.provider){
+    if(!sid||!state||state.capabilities?.slashCommands!==true)return '';
+    return JSON.stringify([this.draftGateway||'',provider,sid,state.cwd||'',this.draftScope?.account||'']);
+  }
+  async ensureNativeCommands(force=false){
+    const sid=this.sid,provider=this.provider,state=this.state,generation=this.generation;
+    const key=this.nativeCommandKey(sid,state,provider);
+    if(!key||!this.canMutate())return null;
+    if(!force&&this.nativeCommands.has(key))return this.nativeCommands.get(key);
+    if(!force&&this.nativeCommandsLoading.has(key))return this.nativeCommandsLoading.get(key);
+    const task=(async()=>{
+      try{
+        const query={section:'commands',...(force?{refresh:'true'}:{})};
+        const value=await this.request(this.path('catalog',sid,provider,query));
+        if(Array.isArray(value?.commands)&&!value?.pluginError)this.nativeCommands.set(key,{commands:value.commands});
+        if(sid===this.sid&&provider===this.provider&&generation===this.generation)this.commands?.refresh();
+        return this.nativeCommands.get(key)||null;
+      }catch{
+        return null;
+      }finally{
+        if(this.nativeCommandsLoading.get(key)===task)this.nativeCommandsLoading.delete(key);
+      }
+    })();
+    this.nativeCommandsLoading.set(key,task);
+    return task;
+  }
+  nativeCommandActions(){
+    if(this.state?.capabilities?.slashCommands!==true)return [];
+    const cached=this.nativeCommands.get(this.nativeCommandKey());
+    const ready=this.canMutate()&&!this.busy&&this.state?.capabilities?.send===true;
+    const active=this.state?.status==='active';
+    const disabledReason=active?'原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送':!ready?'此指令当前不可用，请使用菜单中的可用选项。':'';
+    const enabled=ready&&!active;
+    const rows=cached?.commands||[];
+    const result=rows.map(cmd=>({
+      id:cmd.id,
+      label:cmd.description||cmd.name||cmd.id,
+      category:cmd.category,
+      enabled,
+      disabledReason,
+      native:true,
+      args:true,
+    }));
+    const seen=new Set(result.map(row=>row.id));
+    for(const [id,fallbackLabel] of [['plan','计划模式'],['goal','目标模式'],['compact','压缩上下文']]){
+      if(seen.has(id))continue;
+      result.push({id,label:fallbackLabel,category:'system',enabled,disabledReason,native:true,args:true});
+    }
+    return result;
+  }
+  buildCommandActions(){
+    const native=this.nativeCommandActions();
+    const nativeIds=new Set(native.map(row=>row.id));
+    const controls=ComposerCommands.controls({model:this.modelButton,skills:this.skillsButton,permissions:this.permissionsButton,context:this.contextUsage,workMode:this.workMode})
+      .filter(row=>!nativeIds.has(row.id));
+    const extra=(this.commandActions?.()||[]).filter(row=>!nativeIds.has(row.id));
+    return [...native,...controls,...extra];
   }
   renderNotice(){
     if(this.resumeAttempt){const message=this.resumeAttempt.waitingNetwork?'正在等待网络恢复…':'正在接续原会话…';this.status.textContent=BridgeI18n.t(message);this.notice.textContent=BridgeI18n.t(message);this.notice.hidden=false;return;}
@@ -470,7 +530,7 @@ class DesktopSessionsView {
     this.commands?.refresh();
   }
   renderContext(){
-    this.contextUsage.update({...this.state,id:JSON.stringify([this.draftGateway,this.provider,this.sid]),connected:this.freshDetail,busy:!!this.busy});this.contextButton.disabled=!this.state;
+    this.contextUsage.update({...this.state,id:JSON.stringify([this.draftGateway,this.provider,this.sid]),connected:this.freshDetail,busy:!!this.busy||this.provider==='antigravity'&&this.state?.status==='active'});this.contextButton.disabled=!this.state;
   }
   contextDetails(){this.contextUsage.open();}
   resizeInput(){if(this.composerBody.hidden)return;this.input.style.height='auto';this.input.style.height=Math.min(160,Math.max(48,this.input.scrollHeight||48))+'px';}
@@ -567,8 +627,9 @@ class DesktopSessionsView {
   }
   async skills(){
     if(!this.sid||this.state?.capabilities?.skills!==true)return;const sid=this.sid,generation=this.generation,selected=this.selectedSkills(),dialog=this.dialog('Skill'),loading=this.translated('p','正在读取已安装 Skill…','muted');dialog.append(loading);dialog.showModal();
-    try{const catalog=await this.request(this.path('catalog'));if(sid!==this.sid||generation!==this.generation||!dialog.open)return dialog.close();loading.remove();const rows=catalog.skills||[],offered=new Set(rows.filter(s=>s.selectable!==false&&catalog.capabilities?.skills!==false).map(s=>s.id));for(const [id,skill] of selected)skill.invalid=!offered.has(id);this.updateComposer();
-      const search=this.node('input','search'),list=this.node('div','skill-list');search.placeholder=BridgeI18n.t('搜索 Skill');this.label(search,'搜索 Skill');const render=()=>{list.replaceChildren();const query=search.value.trim().toLocaleLowerCase();for(const skill of rows.filter(s=>[s.name,s.description].join(' ').toLocaleLowerCase().includes(query))){const label=this.node('label','skill-option'),check=this.node('input'),info=this.node('span');check.type='checkbox';check.checked=selected.has(skill.id);check.disabled=!offered.has(skill.id);check.onchange=()=>{if(generation!==this.generation||sid!==this.sid)return dialog.close();if(check.checked&&this.state?.backend==='cli')selected.clear();else if(check.checked&&selected.size>=8){check.checked=false;this.notify(BridgeI18n.t('最多选择 8 个 Skill'));return;}if(check.checked)selected.set(skill.id,{id:skill.id,name:skill.name||skill.id});else selected.delete(skill.id);this.updateComposer();this.saveDraft();if(this.state?.backend==='cli')render();};info.append(this.node('strong','',skill.name||skill.id),this.node('small','',skill.description||''));if(skill.kind==='plugin')info.append(this.node('small','',BridgeI18n.t('插件')+' · '+BridgeI18n.t(skill.status||'只读')));label.append(check,info);list.append(label);}if(!list.children.length)list.append(this.translated('p','没有匹配的 Skill','muted'));};search.oninput=render;render();dialog.append(search,list);if(catalog.pluginError)dialog.append(this.node('p','error',BridgeI18n.t(catalog.pluginError)));
+    try{const catalog=await this.request(this.path('catalog'));if(sid!==this.sid||generation!==this.generation||!dialog.open)return dialog.close();loading.remove();const nativeKey=this.nativeCommandKey();if(nativeKey&&Array.isArray(catalog?.commands)&&!catalog?.pluginError){this.nativeCommands.set(nativeKey,{commands:catalog.commands});this.commands?.refresh();}const rows=catalog.skills||[],offered=new Set(rows.filter(s=>s.selectable!==false&&catalog.capabilities?.skills!==false).map(s=>s.id));for(const [id,skill] of selected)skill.invalid=!offered.has(id);this.updateComposer();
+      const singleSkillOnly=this.state?.backend==='cli'&&this.state?.capabilities?.multiSkills!==true;
+      const search=this.node('input','search'),list=this.node('div','skill-list');search.placeholder=BridgeI18n.t('搜索 Skill');this.label(search,'搜索 Skill');const render=()=>{list.replaceChildren();const query=search.value.trim().toLocaleLowerCase();for(const skill of rows.filter(s=>[s.name,s.description].join(' ').toLocaleLowerCase().includes(query))){const label=this.node('label','skill-option'),check=this.node('input'),info=this.node('span');check.type='checkbox';check.checked=selected.has(skill.id);check.disabled=!offered.has(skill.id);check.onchange=()=>{if(generation!==this.generation||sid!==this.sid)return dialog.close();if(check.checked&&singleSkillOnly)selected.clear();else if(check.checked&&selected.size>=8){check.checked=false;this.notify(BridgeI18n.t('最多选择 8 个 Skill'));return;}if(check.checked)selected.set(skill.id,{id:skill.id,name:skill.name||skill.id});else selected.delete(skill.id);this.updateComposer();this.saveDraft();if(singleSkillOnly)render();};info.append(this.node('strong','',skill.name||skill.id),this.node('small','',skill.description||''));if(skill.kind==='plugin')info.append(this.node('small','',BridgeI18n.t('插件')+' · '+BridgeI18n.t(skill.status||'只读')));label.append(check,info);list.append(label);}if(!list.children.length)list.append(this.translated('p','没有匹配的 Skill','muted'));};search.oninput=render;render();dialog.append(search,list);if(catalog.pluginError)dialog.append(this.node('p','error',BridgeI18n.t(catalog.pluginError)));
     }catch(error){if(dialog.open){loading.textContent=BridgeI18n.t(error.message);loading.className='error';}}
   }
   async goalAction(operation,payload){

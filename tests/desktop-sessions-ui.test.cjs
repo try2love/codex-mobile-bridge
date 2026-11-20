@@ -1751,3 +1751,104 @@ test('model picker renders quota badges and structured usageSummary without alte
  assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
  plainDialog.close();
 });
+
+test('Antigravity live session enables native slash commands, multi-select skills, and context compact without local interception',async()=>{
+ const fs=require('node:fs'),path=require('node:path');
+ const ui=fixture(),view=ui.view;
+ const commands=[
+  {id:'boost',name:'boost',description:'Invoke Boost',category:'system'},
+  {id:'teamwork',name:'teamwork',description:'Invoke Team',category:'system'},
+  {id:'plan',name:'plan',description:'Plan carefully',category:'system'},
+  {id:'goal',name:'goal',description:'Run goal',category:'system'},
+  {id:'compact',name:'compact',description:'Compact now',category:'system'},
+  {id:'gdrive',name:'gdrive',description:'Drive access',category:'skill'},
+  {id:'generative_ui',name:'generative_ui',description:'HTML widgets',category:'skill'},
+  {id:'deploy-flow',name:'deploy-flow',description:'Deploy flow',category:'workflow'},
+ ];
+ const skills=[
+  {id:'gdrive',name:'gdrive',description:'Drive access',selectable:true},
+  {id:'generative_ui',name:'generative_ui',description:'HTML widgets',selectable:true},
+ ];
+ let status='idle';
+ ui.setHandler(async(url,body)=>{
+  if(body)return {status:'accepted',delivery:'native'};
+  if(url.includes('/catalog'))return {
+   commands,skills,currentModel:'m1',
+   capabilities:{skills:true,multiSkills:true,slashCommands:true,compact:true,plan:true,goal:true,send:true},
+  };
+  if(url.includes('/detail'))return {
+   connected:true,
+   session:{id:'a',title:'Agy Chat',cwd:'/repo',backend:'cli',status,model:'m1',collaborationMode:'default'},
+   capabilities:{send:true,models:true,skills:true,multiSkills:true,slashCommands:true,compact:true,plan:true,goal:true,attachments:true},
+   messages:[],
+  };
+  return {sessions:[{id:'a',title:'Agy Chat',cwd:'/repo',backend:'cli',status}]};
+ });
+ await view.choose('antigravity');
+ await view.open('a');
+ await new Promise(setImmediate);
+ assert.ok(ui.calls.some(c=>!c.body&&c.url.includes('/catalog')&&c.url.includes('section=commands')));
+
+ ui.run(fs.readFileSync(path.join(__dirname,'../web/features/chat/composer-commands.js'),'utf8'));
+ if(!view.input.before)view.input.before=()=>{};
+ if(!view.input.setAttribute)view.input.setAttribute=()=>{};
+ if(!view.input.removeAttribute)view.input.removeAttribute=()=>{};
+ const Commands=ui.run('ComposerCommands');
+ const picker=new Commands({input:view.input,scope:()=>view.sid,actions:()=>view.buildCommandActions(),onError:text=>view.notify(text)});
+ view.commands=picker;
+ const actions=view.buildCommandActions();
+ for(const id of ['boost','teamwork','plan','goal','compact','gdrive','generative_ui','deploy-flow']){
+  const matches=actions.filter(row=>row.id===id);
+  assert.equal(matches.length,1,id);
+  assert.equal(matches[0].native,true,id);
+  assert.equal(matches[0].enabled,true,id);
+ }
+
+ // Native /plan and /boost pass straight through consume() to send without switching local workMode dropdown
+ view.input.value='/plan design cache';
+ assert.equal(picker.consume(),false);
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).url.includes('/send'),true);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.text,'/plan design cache');
+ assert.equal(view.workMode.value,'default');
+
+ view.input.value='/boost refactor';
+ assert.equal(picker.consume(),false);
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.text,'/boost refactor');
+
+ // Skill picker allows multi-selection even with backend === 'cli' when multiSkills is true
+ await view.skills();
+ const checks=ui.document.querySelector('dialog').querySelectorAll('.skill-option').map(n=>n.querySelector('input'));
+ assert.equal(checks.length,2);
+ checks[0].checked=true;checks[0].onchange();
+ checks[1].checked=true;checks[1].onchange();
+ assert.equal(checks[0].checked,true);
+ assert.equal(checks[1].checked,true);
+ assert.equal(view.skillPills.children.length,2);
+ ui.document.querySelector('dialog').close();
+ view.input.value='summarize doc';
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.deepEqual(Array.from(ui.calls.filter(c=>c.body).at(-1).body.plugins),['gdrive','generative_ui']);
+
+ // Context usage dialog exposes compact button when idle and triggers compact endpoint
+ view.contextUsage.open();
+ await new Promise(setImmediate);
+ assert.equal(view.contextUsage.compactButton.disabled,false);
+ await view.contextUsage.compactButton.onclick();
+ assert.ok(ui.calls.some(c=>c.body&&c.url.includes('/compact')));
+
+ // Active Antigravity session disables native commands & compact button and guards submission
+ status='active';
+ await view.open('a');
+ await new Promise(setImmediate);
+ view.input.value='/boost too soon';
+ assert.equal(picker.consume(),true);
+ assert.equal(view.input.value,'/boost too soon');
+ view.contextUsage.open();
+ assert.equal(view.contextUsage.compactButton.disabled,true);
+ view.contextUsage.dialog.close();
+});

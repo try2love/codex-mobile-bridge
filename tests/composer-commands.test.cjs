@@ -40,3 +40,60 @@ test('shared controls keep native capability and busy gates and only open compac
   rows.find(row=>row.id==='compact').run();assert.deepEqual(calls,['open']);context.state.busy=true;
   assert.equal(ComposerCommands.controls({context}).find(row=>row.id==='compact').enabled,false);
 });
+test('native slash commands insert on choose, preserve underscores, pass through submit, and surface busy disabledReason',()=>{
+  const calls=[],notices=[],events=[];
+  let selection=[],focused=false;
+  const nativeActions=[
+    {id:'boost',label:'Invoke Boost',category:'system',enabled:true,native:true,args:true},
+    {id:'generative_ui',label:'Render widgets',category:'skill',enabled:true,native:true,args:true},
+    {id:'deploy-flow',label:'Deploy workflow',category:'workflow',enabled:true,native:true,args:true},
+    {id:'plan',label:'Plan carefully',category:'system',enabled:true,native:true,args:true},
+    {id:'compact',label:'Compact conversation',category:'system',enabled:true,native:true,args:true},
+  ];
+  const input={
+    value:'/bo',disabled:false,
+    dispatchEvent:e=>events.push(e.type),
+    setSelectionRange:(s,e)=>{selection=[s,e];},
+    focus:()=>{focused=true;},
+    setAttribute(){},removeAttribute(){},
+  };
+  const nodes=[];
+  const makeNode=(tag)=>({
+    tag,children:[],attributes:{},textContent:'',style:{},
+    setAttribute(k,v){this.attributes[k]=v;},removeAttribute(k){delete this.attributes[k];},
+    append(...items){this.children.push(...items);},
+    replaceChildren(...items){this.children=[...items];},
+    scrollIntoView(){},
+  });
+  global.document={activeElement:input,createElement:makeNode};
+  const menu=makeNode('div');menu.hidden=true;
+  const picker=Object.assign(Object.create(ComposerCommands.prototype),{
+    input,menu,actions:()=>nativeActions,scope:()=>'agy-1',index:0,rows:[],onError:text=>notices.push(text),
+  });
+  picker.refresh();
+  assert.equal(menu.hidden,false);
+  assert.deepEqual(picker.rows.map(r=>r.id),['boost']);
+  assert.equal(picker.choose('boost','agy-1'),true);
+  assert.equal(input.value,'/boost ');
+  assert.deepEqual(selection,[7,7]);
+  assert.equal(focused,true);
+  assert.equal(events.includes('input'),true);
+
+  input.value='/';
+  picker.refresh();
+  assert.equal(menu.children[1].children[0].textContent,'/generative_ui');
+  assert.equal(menu.children[1].children[1].textContent,'Skill · Render widgets');
+  assert.equal(menu.children[2].children[1].textContent,'工作流 · Deploy workflow');
+
+  for(const text of ['/boost refactor auth','/generative_ui chart','/plan api','/compact','/compact keep summary','/boost ']){
+    input.value=text;
+    assert.equal(picker.consume(),false,text);
+    assert.equal(notices.length,0,text);
+  }
+  for(const row of nativeActions){row.enabled=false;row.disabledReason='原会话运行中，排队或插话暂不支持 /指令 与 Skill';}
+  input.value='/boost wait';
+  assert.equal(picker.consume(),true);
+  assert.equal(input.value,'/boost wait');
+  assert.equal(notices[0],'原会话运行中，排队或插话暂不支持 /指令 与 Skill');
+  assert.deepEqual(calls,[]);
+});

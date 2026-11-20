@@ -1236,4 +1236,267 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def _sample_slash_commands(self):
+        return [
+            {'id': 'goal', 'name': 'goal', 'title': 'goal', 'description': 'Run goal',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'goal', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'compact', 'name': 'compact', 'title': 'compact', 'description': 'Compact conversation',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'plan', 'name': 'plan', 'title': 'plan', 'description': 'Plan carefully',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'plan', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'boost', 'name': 'boost', 'title': 'boost', 'description': 'Invoke Boost',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'teamwork', 'name': 'teamwork', 'title': 'teamwork', 'description': 'Invoke Team',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'teamwork', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'gdrive', 'name': 'gdrive', 'title': 'gdrive', 'description': 'Drive skill',
+             'category': 'skill', 'type': 'SLASH_COMMAND_TYPE_SKILL',
+             'info': {'name': 'gdrive', 'type': 'SLASH_COMMAND_TYPE_SKILL'}},
+            {'id': 'generative_ui', 'name': 'generative_ui', 'title': 'generative_ui', 'description': 'Render widgets',
+             'category': 'skill', 'type': 'SLASH_COMMAND_TYPE_SKILL',
+             'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}},
+            {'id': 'deploy-flow', 'name': 'deploy-flow', 'title': 'deploy-flow', 'description': 'Deploy workflow',
+             'category': 'workflow', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW',
+             'info': {'name': 'deploy-flow', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW'}},
+        ]
+
+    def test_cli_slash_commands_rpc_payload_and_normalization(self):
+        cli = AntigravityCli(self.home)
+        project = (self.directory / 'proj').resolve()
+        project.mkdir(parents=True, exist_ok=True)
+        calls = []
+
+        def fake_rpc(method, payload=None, *, surface='app'):
+            calls.append((method, payload, surface))
+            if method == 'GetUserStatus':
+                return {'userStatus': {'cascadeModelConfigData': {
+                    'defaultOverrideModelConfig': {'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_DEF'}},
+                    'clientModelConfigs': [
+                        {'modelId': 'm-live', 'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_LIVE'}},
+                    ],
+                }}}
+            if method == 'GetSlashCommands':
+                return {'commands': [
+                    {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM', 'icon': 'bolt'},
+                     'title': 'boost', 'description': 'Invoke Boost'},
+                    {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'},
+                     'title': 'generative_ui', 'description': 'HTML widgets'},
+                    {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'},
+                     'title': 'duplicate', 'description': 'Ignore dup'},
+                    {'info': {'name': 'custom-wf', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW'},
+                     'title': 'custom-wf', 'description': 'User workflow'},
+                ]}
+            return {'ok': True}
+
+        with mock.patch.object(cli, 'call_ls_rpc', side_effect=fake_rpc):
+            cmds = cli.slash_commands(surface='app', conversation_id=CID, model='auto', cwd=str(project))
+            self.assertEqual([c['id'] for c in cmds], ['boost', 'generative_ui', 'custom-wf'])
+            self.assertEqual([c['category'] for c in cmds], ['system', 'skill', 'workflow'])
+            slash_call = [p for m, p, _ in calls if m == 'GetSlashCommands'][-1]
+            self.assertEqual(slash_call, {
+                'enablePersonal': True,
+                'cascadeId': CID,
+                'workspaceUris': [project.as_uri()],
+                'cascadeConfig': {'plannerConfig': {'requestedModel': {'model': 'MODEL_PLACEHOLDER_DEF'}}},
+            })
+
+            cli.slash_commands(surface='ide', model='m-live')
+            ide_call = [p for m, p, s in calls if m == 'GetSlashCommands' and s == 'ide'][-1]
+            self.assertEqual(ide_call['cascadeConfig'], {'plannerConfig': {'requestedModel': {'model': 'MODEL_PLACEHOLDER_LIVE'}}})
+
+            items = [{'item': {'slashCommand': {'info': cmds[0]['info']}}}, {'text': ' fix bugs'}]
+            cli.send_user_message(CID, '/boost fix bugs', model='m-live', surface='app', items=items)
+            send_call = [p for m, p, _ in calls if m == 'SendUserCascadeMessage'][-1]
+            self.assertEqual(send_call['items'], items)
+            self.assertEqual(send_call['cascade_config']['planner_config']['requested_model'], {'model': 'MODEL_PLACEHOLDER_LIVE'})
+
+    def test_adapter_live_slash_commands_catalog_skills_compact_and_modes(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        project = (self.directory / 'proj').resolve()
+        project.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds) as slash_mock, \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': [{'id': 'm1', 'name': 'M1', 'nativeModel': 'MODEL_M1'}], 'userStatus': {}, 'notice': ''}), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send_mock, \
+                mock.patch.object(adapter.cli, 'start_cascade', return_value=CID):
+            detail = adapter.call('detail', sid)
+            for cap in ('skills', 'multiSkills', 'slashCommands', 'compact', 'plan', 'goal'):
+                self.assertTrue(detail['capabilities'][cap], cap)
+
+            models_cat = adapter.call('catalog', sid, {'section': 'models'})
+            self.assertEqual(models_cat['skills'], [])
+            slash_mock.assert_not_called()
+
+            cmd_cat = adapter.call('catalog', sid, {'section': 'commands'})
+            self.assertEqual([c['id'] for c in cmd_cat['commands']], [c['id'] for c in cmds])
+            self.assertEqual([s['id'] for s in cmd_cat['skills']], ['gdrive', 'generative_ui'])
+
+            all_cat = adapter.call('catalog', sid, {'section': 'all'})
+            self.assertEqual([s['id'] for s in all_cat['skills']], ['gdrive', 'generative_ui'])
+            self.assertEqual([c['id'] for c in all_cat['commands']], [c['id'] for c in cmds])
+
+            # Gracefully degrade catalog if GetSlashCommands fails
+            with mock.patch.object(adapter.cli, 'slash_commands', side_effect=BridgeUnavailable('ls down')):
+                degraded = adapter.call('catalog', sid, {'section': 'commands'})
+                self.assertEqual(degraded['commands'], [])
+                self.assertEqual(degraded['skills'], [])
+                self.assertIn('pluginError', degraded)
+
+            # Leading slash command + create + skills + path pass-through
+            adapter.call('send', sid, {'text': '/boost refactor auth'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' refactor auth'},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/generative_ui chart'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'text': ' chart'},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/compact'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': 'check files', 'plugins': ['gdrive', 'generative_ui']})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'gdrive', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'item': {'slashCommand': {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'text': ' check files'},
+            ])
+
+            with self.assertRaises(ValueError):
+                adapter.call('send', sid, {'text': 'bad', 'plugins': ['missing-skill']})
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/Users/me/app.py'})
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/unknown-custom arg'})
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            send_mock.reset_mock()
+            adapter.call('create', None, {'firstMessage': '/teamwork audit repo', 'directoryProject': {'surface': 'app', 'cwd': str(project)}})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'teamwork', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' audit repo'},
+            ])
+
+            # Compact, settings + work-mode + goal
+            send_mock.reset_mock()
+            self.assertEqual(adapter.call('compact', sid, {'id': str(uuid.uuid4())})['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+            ])
+
+            adapter.call('work-mode', sid, {'mode': 'plan'})
+            adapter.call('settings', sid, {'model': 'm1'})
+            self.assertEqual(adapter._settings[sid], {'workMode': 'plan', 'model': 'm1'})
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': 'design api'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'plan', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' design api'},
+            ])
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/boost bypass plan'})
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'boost')
+            adapter.call('work-mode', sid, {'mode': 'default'})
+            self.assertEqual(adapter._settings[sid], {'model': 'm1'})
+
+            send_mock.reset_mock()
+            self.assertEqual(adapter.call('goal', sid, {'operation': 'set', 'objective': 'ship v2'})['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'goal', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' ship v2'},
+            ])
+
+    def test_adapter_busy_queue_and_steer_strictly_reject_slash_commands_and_skills(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        adapter.hooks = mock.MagicMock()
+        adapter.hooks.permission_mode.return_value = 'desktop'
+        adapter.hooks.has_pending_approvals.return_value = False
+        adapter.hooks.has_recent_heartbeat.return_value = True
+        adapter.hooks.enqueue_follow_up.return_value = {'id': 'q1'}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, {CID})), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds):
+            for bad_body in (
+                {'text': '/boost now', 'mode': 'queue'},
+                {'text': '/compact', 'mode': 'steer'},
+                {'text': '/deploy-flow prod', 'mode': 'queue'},
+                {'text': 'use skill', 'mode': 'queue', 'plugins': ['gdrive']},
+                {'text': 'plan', 'mode': 'steer', 'workMode': 'plan'},
+            ):
+                with self.assertRaises(BridgeUnavailable):
+                    adapter.call('send', sid, bad_body)
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('compact', sid, {})
+            adapter.hooks.enqueue_follow_up.assert_not_called()
+
+            queued = adapter.call('send', sid, {'text': 'plain follow-up', 'mode': 'queue'})
+            self.assertEqual(queued, {'status': 'queued', 'id': 'q1', 'delivery': 'hook-queue'})
+            adapter.hooks.enqueue_follow_up.assert_called_once_with(sid, 'plain follow-up', mode='queue')
+
+    def test_desktop_sessions_routes_antigravity_compact_goal_and_work_mode(self):
+        _create_surface_db(self.root, [self.row])
+        settings = self.directory / 'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds), \
+                mock.patch.object(adapter, 'account_scope', return_value='scope-1'), \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': [], 'userStatus': {}, 'notice': ''}), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send_mock:
+            compact_res = manager.call('antigravity', 'compact', sid, {'id': str(uuid.uuid4())})
+            self.assertEqual(compact_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'compact')
+
+            send_mock.reset_mock()
+            goal_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'finish release', 'workMode': 'goal'})
+            self.assertEqual(goal_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'goal')
+
+            send_mock.reset_mock()
+            plan_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'design schema', 'workMode': 'plan'})
+            self.assertEqual(plan_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'plan')
+
+            # Reset back to default mode
+            send_mock.reset_mock()
+            def_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'normal message', 'workMode': 'default'})
+            self.assertEqual(def_res['status'], 'accepted')
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            cmd_catalog = manager.call('antigravity', 'catalog', sid, {'section': 'commands'})
+            self.assertIn('teamwork', [row['id'] for row in cmd_catalog['commands']])
+            self.assertEqual([row['id'] for row in cmd_catalog['skills']], ['gdrive', 'generative_ui'])
+            self.assertTrue(cmd_catalog['capabilities']['slashCommands'])
+            full_catalog = manager.call('antigravity', 'catalog', sid, {})
+            self.assertIn('boost', [row['id'] for row in full_catalog['commands']])
+            self.assertEqual([row['id'] for row in full_catalog['skills']], ['gdrive', 'generative_ui'])
+
+
 
