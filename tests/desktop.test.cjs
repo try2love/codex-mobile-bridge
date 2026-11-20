@@ -846,6 +846,25 @@ test('check update button locks immediately and unlocks after failed check',asyn
   assert.equal(ui.nodes.get('check-update').disabled,false);
   assert.match(ui.nodes.get('update-state').textContent,/network failed/);
 });
+test('desktop update selector only queries and explicit install passes the displayed candidate identity',async()=>{
+  const ui=await renderer();let checked,installed;
+  ui.value.update={state:'current',current:'2.2.1',channel:'stable',currentChannel:'stable'};await ui.poll();
+  assert.equal(ui.nodes.get('update-channel').value,'stable');
+  ui.api.checkUpdate=async value=>{checked=value;ui.value.update={state:'available',current:'2.2.1',channel:'preview',intent:'opt-in-preview',version:'2.2.2-preview.2',candidateId:'checked'};};
+  ui.api.installUpdate=async value=>{installed=value;};
+  ui.nodes.get('update-channel').value='preview';await ui.nodes.get('update-channel').onchange();
+  assert.equal(checked.channel,'preview');assert.equal(installed,undefined);assert.match(ui.nodes.get('install-update').textContent,/安装预览版/);
+  await ui.nodes.get('install-update').onclick();assert.equal(installed.candidateId,'checked');
+  ui.value.update={...ui.value.update,intent:'return-stable',version:'2.2.1'};await ui.poll();assert.match(ui.nodes.get('install-update').textContent,/返回稳定版/);
+});
+test('Linux handoff UI keeps running-version truth and manual fallback avoids a restart promise',async()=>{
+  const ui=await renderer('zh-CN',{platform:'linux'});
+  ui.value.update={state:'available',current:'2.2.2-preview.2',version:'2.2.1',manualInstall:true,manualRelease:true};await ui.poll();
+  assert.equal(ui.nodes.get('install-update').textContent,'打开官方发布页');assert.match(ui.nodes.get('update-state').textContent,/缺少签名/);
+  ui.value.update={state:'installer-handoff',current:'2.2.1',version:'2.2.2-preview.2',manualInstall:true,path:'/verified/package.deb'};await ui.poll();
+  assert.equal(ui.nodes.get('install-update').hidden,true);assert.match(ui.nodes.get('update-state').textContent,/当前版本仍在运行/);
+  ui.run("applyLanguage('en')");assert.match(ui.nodes.get('update-state').textContent,/current version is still running/);
+});
 test('skipped update hides the automatic prompt while manual check offers installation',async()=>{
   const ui=await renderer();let skips=0;
   ui.value.update={state:'available',current:'2.0.0-preview.1',version:'2.0.0-preview.2'};await ui.poll();

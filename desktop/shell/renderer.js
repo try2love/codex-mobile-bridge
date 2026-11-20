@@ -465,20 +465,24 @@ BridgeI18n.apply();
 $('add-connection').onclick=addConnection;
 $('connection-kind').onchange=()=>setupGuide($('connection-guide'),$('connection-kind').value);
 
-const updateMessages={idle:'检查是否有新版本。',checking:'正在检查更新…',current:'当前已是最新可用版本。',available:'有新版本可用。',skipped:'已跳过此版本。手动检查仍可更新。',downloading:'正在下载更新…',preparing:'正在验证并准备更新…',restarting:'即将重启应用…',unsupported:'当前系统或运行方式不支持应用内更新，请从发布页面下载新版。'};
-let updateBusy=false;
+const updateMessages={idle:'检查是否有新版本。',checking:'正在检查更新…',current:'当前已是最新可用版本。',available:'有新版本可用。',skipped:'已跳过此版本。手动检查仍可更新。',downloading:'正在下载更新…',preparing:'正在验证并准备更新…',restarting:'即将重启应用…',downloaded:'更新包已校验并保存，请手动完成安装或替换。当前版本仍在运行。','installer-handoff':'更新包已校验并交给系统打开，请在安装器中完成安装。当前版本仍在运行。','manual-release':'已打开官方发布页，请手动下载并安装此版本。',unsupported:'当前系统或运行方式不支持应用内更新，请从发布页面下载新版。'};
+let updateBusy=false,updateChannel;
 function renderUpdate(){
   const value=snapshot?.update;if(!value)return;
   const busy=['downloading','preparing','restarting'].includes(value.state)||updateBusy;
+  updateChannel??=value.channel||(value.current.includes('-')?'preview':'stable');
+  $('update-channel').value=updateChannel;
+  $('update-channel').disabled=busy||value.state==='unsupported';
   $('update-version').textContent=t('当前版本：')+value.current+(value.version?' → '+value.version:'');
-  $('update-state').textContent=value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':updateMessages[value.state]||'');
+  $('update-state').textContent=(value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
   $('update-badge').hidden=value.state!=='available';
   $('update-banner').hidden=value.state!=='available'||activeTab==='advanced';
   $('update-banner').textContent=t('发现新版本，点击查看：')+(value.version||'');
   $('check-update').disabled=busy||value.state==='checking'||value.state==='unsupported';
   $('skip-update').hidden=value.state!=='available'||value.skipped===true;
   $('skip-update').disabled=busy||value.state==='checking';
-  $('install-update').hidden=!value.version||['current','unsupported'].includes(value.state);
+  $('install-update').hidden=!value.version||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
+  $('install-update').textContent=t(value.manualRelease?'打开官方发布页':value.manualInstall?'下载所选版本':value.intent==='return-stable'?'返回稳定版并重启':value.intent==='opt-in-preview'?'安装预览版并重启':'更新并重启');
   $('install-update').disabled=busy||value.state==='checking';
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';
   $('update-progress').hidden=value.state!=='downloading';
@@ -495,13 +499,16 @@ function renderUpdate(){
     for(const id of ['start','stop','choose-data','install-cloudflared'])$(id).disabled=true;
   }else $('settings').inert=false;
 }
-$('check-update').onclick=async()=>{
+async function checkUpdateChannel(){
   if(updateBusy)return;
+  updateChannel=$('update-channel').value;
   updateBusy=true;renderUpdate();
-  try{await api.checkUpdate();await refresh();}
+  try{await api.checkUpdate({channel:updateChannel});await refresh();}
   catch(error){feedback(error.message,true);}
   finally{updateBusy=false;renderUpdate();}
-};
+}
+$('check-update').onclick=checkUpdateChannel;
+$('update-channel').onchange=checkUpdateChannel;
 $('skip-update').onclick=async()=>{
   if(updateBusy)return;
   updateBusy=true;renderUpdate();
@@ -514,7 +521,7 @@ $('install-update').onclick=async()=>{
   if(dirty||devicesDirty){feedback('请先保存配置，再更新应用。',true);return;}
   if(cloudflaredBusy||startPending||$('save').disabled||busyActions.size){feedback('请等待当前操作完成后再更新。',true);return;}
   updateBusy=true;renderUpdate();
-  try{await api.installUpdate();await refresh();}catch(error){feedback(error.message,true);}
+  try{await api.installUpdate({candidateId:snapshot?.update?.candidateId});await refresh();}catch(error){feedback(error.message,true);}
   finally{updateBusy=false;renderUpdate();}
 };
 $('update-releases').onclick=()=>api.open('releases').catch(error=>feedback(error.message,true));

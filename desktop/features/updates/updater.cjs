@@ -1,7 +1,7 @@
 'use strict';
 // Release metadata is authenticated independently of macOS/Windows code signing.
 const sync=require('node:fs'),fs=require('node:fs/promises'),path=require('node:path');
-const {createHash,verify}=require('node:crypto');
+const {createHash,verify,randomUUID}=require('node:crypto');
 const REPO='try2love/codex-mobile-bridge';
 const RELEASES=`https://api.github.com/repos/${REPO}/releases?per_page=100`;
 // The mirror only changes transport. Release selection still requires GitHub's
@@ -83,21 +83,39 @@ async function fetchWithMirror(fetch,url,{signal,headers}){
   }
   throw lastError||Error('无法获取更新，请检查网络后重试。');
 }
-function assetName(v,platform,arch){
+function assetName(v,platform,arch,format='deb'){
   version(v);
-  if(!({darwin:['arm64','x64'],win32:['x64']}[platform]||[]).includes(arch))throw Error('此系统暂无应用内更新包。');
+  if(!({darwin:['arm64','x64'],win32:['x64'],linux:['arm64','x64']}[platform]||[]).includes(arch))throw Error('此系统暂无应用内更新包。');
+  if(platform==='linux'){
+    if(!['deb','AppImage'].includes(format))throw Error('此系统暂无应用内更新包。');
+    return `Codex-Mobile-Bridge-${v}-Linux-${arch==='x64'?(format==='deb'?'amd64':'x86_64'):arch}.${format}`;
+  }
   return `Codex-Mobile-Bridge-${v}-${platform==='darwin'?'macOS':'Windows'}-${arch}.zip`;
 }
-function manifest(bytes,key,{current,platform,arch,expected}){
+function currentChannel(current){version(current);return current.includes('-')?'preview':'stable';}
+function returnCompatible(current,target,dataFormat){
+  // Only this reviewed data-format pair may cross the anti-downgrade boundary.
+  return /^2\.2\.2-preview\.\d+$/.test(current)&&target==='2.2.1'&&(!dataFormat||dataFormat==='bridge-data-v1');
+}
+function manifest(bytes,key,{current,platform,arch,expected,format='deb',channel=currentChannel(current),intent='update'}){
   const envelope=JSON.parse(bytes.toString('utf8'));
   if(typeof envelope.payload!=='string'||typeof envelope.signature!=='string')throw Error('更新清单签名无效。');
   const payload=Buffer.from(envelope.payload,'base64'),signature=Buffer.from(envelope.signature,'base64');
   if(signature.length!==64||!verify(null,payload,key,signature))throw Error('更新清单签名无效。');
   const value=JSON.parse(payload.toString('utf8'));
-  if(value.schema!==1||value.version!==expected||compare(value.version,current)<=0||!current.includes('-')&&value.version.includes('-'))throw Error('更新版本不适用于当前应用。');
-  const asset=value.assets?.[`${platform}-${arch}`],name=assetName(value.version,platform,arch);
+  if(value.schema!==1||value.version!==expected)throw Error('更新版本不适用于当前应用。');
+  const direction=compare(value.version,current),returning=intent==='return-stable'&&currentChannel(current)==='preview'&&channel==='stable'&&!value.version.includes('-');
+  if(direction===0||direction<0&&(!returning||!returnCompatible(current,value.version,value.dataFormat))||
+    channel==='stable'&&value.version.includes('-')||!current.includes('-')&&value.version.includes('-')&&!(channel==='preview'&&intent==='opt-in-preview'))throw Error('更新版本不适用于当前应用。');
+  if(value.dataFormat!==undefined&&value.dataFormat!=='bridge-data-v1')throw Error('此版本的数据格式兼容性尚未确认，已取消安装。');
+  const asset=value.assets?.[`${platform}-${arch}${platform==='linux'?'-'+format:''}`],name=assetName(value.version,platform,arch,format);
+  // Historical releases without signed Linux hashes can only offer the official
+  // release page. Their public checksum file is not an authenticated manifest.
+  if(platform==='linux'&&!asset)return {version:value.version,notes:typeof value.notes==='string'?value.notes.slice(0,20000):'',manualRelease:true,
+    releasePage:`https://github.com/${REPO}/releases/tag/v${value.version}`,transition:{intent,from:current,to:value.version,dataFormat:value.dataFormat||'bridge-data-v1'}};
   if(!asset||asset.name!==name||!Number.isSafeInteger(asset.size)||asset.size<=0||asset.size>MAX_PACKAGE||!/^[a-f0-9]{64}$/.test(asset.sha256))throw Error('更新包校验信息不完整。');
-  return {version:value.version,notes:typeof value.notes==='string'?value.notes.slice(0,20000):'',asset:{...asset,url:releaseUrl(value.version,name)}};
+  return {version:value.version,notes:typeof value.notes==='string'?value.notes.slice(0,20000):'',asset:{...asset,url:releaseUrl(value.version,name)},
+    transition:{intent,from:current,to:value.version,dataFormat:value.dataFormat||'bridge-data-v1'}};
 }
 async function transfer(fetch,url,{limit,signal,file,onProgress=()=>{}}){
   const response=await fetchWithMirror(fetch,url,{signal,headers:{'User-Agent':'Codex-Mobile-Bridge','Accept':url===RELEASES?'application/vnd.github+json':'application/octet-stream'}});
@@ -114,14 +132,17 @@ async function transfer(fetch,url,{limit,signal,file,onProgress=()=>{}}){
   }finally{await handle?.close();await reader.cancel();}
 }
 class Updater{
-  constructor({current,platform=process.platform,arch=process.arch,key,fetch,directory,install,preflight,supported=true,skipFile}){
-    Object.assign(this,{current,platform,arch,key,fetch,directory,apply:install,preflight,supported,skipFile});
-    this.skipIdentity=platform+'-'+arch+':'+(current.match(/-(alpha|beta|preview|rc)\./)?.[1]||'stable');
-    this.state={state:supported?'idle':'unsupported',current};
+  constructor({current,platform=process.platform,arch=process.arch,format='deb',key,fetch,directory,install,preflight,supported=true,skipFile}){
+    Object.assign(this,{current,platform,arch,format,key,fetch,directory,apply:install,preflight,supported,skipFile});
+    this.currentChannel=currentChannel(current);this.channel=this.currentChannel;this.checkToken=0;
+    this.set(supported?'idle':'unsupported');
   }
+  get skipIdentity(){return this.platform+'-'+this.arch+(this.platform==='linux'?'-'+this.format:'')+':'+this.channel;}
   status(){return {...this.state};}
   get busy(){return ['downloading','preparing','restarting'].includes(this.state.state);}
-  set(state,extra={}){this.state={current:this.current,...extra,state};return this.status();}
+  set(state,extra={}){this.state={current:this.current,currentChannel:this.currentChannel,channel:this.channel,...extra,state};return this.status();}
+  details(candidate){return {version:candidate.version,notes:candidate.notes,candidateId:candidate.id,intent:candidate.transition.intent,
+    requiresConfirmation:candidate.transition.intent!=='update',...(this.platform==='linux'?{manualInstall:true}:{}),...(candidate.manualRelease?{manualRelease:true}:{})};}
   async skippedVersions(){
     if(!this.skipFile)return this.skipped||{};
     try{const value=JSON.parse(await fs.readFile(this.skipFile,'utf8'));return value&&typeof value==='object'&&!Array.isArray(value)?value:{};}catch{return {};}
@@ -131,52 +152,73 @@ class Updater{
   }
   async skip(){
     if(this.checking||this.busy||!this.candidate||this.state.state!=='available')throw Error('请先检查更新。');
-    const version=this.candidate.version;
-    const skipped={...await this.skippedVersions(),[this.skipIdentity]:version};
-    if(this.skipFile){await fs.mkdir(path.dirname(this.skipFile),{recursive:true,mode:0o700});await fs.writeFile(this.skipFile,JSON.stringify(skipped),{mode:0o600});}
-    else this.skipped=skipped;
-    return this.set('skipped',{version,notes:this.candidate.notes});
-  }
-  async check({manual=false}={}){
-    if(this.busy||this.checking||!this.supported)return this.status();
-    this.checking=true;this.candidate=null;this.set('checking');
+    if(this.skipping)return this.status();
+    this.skipping=true;
     try{
-      assetName(this.current,this.platform,this.arch);
-      const signal=AbortSignal.timeout(30000);
+      const candidate=this.candidate,identity=this.skipIdentity,version=candidate.version;
+      const skipped={...await this.skippedVersions(),[identity]:version};
+      if(this.skipFile){await fs.mkdir(path.dirname(this.skipFile),{recursive:true,mode:0o700});await fs.writeFile(this.skipFile,JSON.stringify(skipped),{mode:0o600});}
+      else this.skipped=skipped;
+      return this.candidate===candidate?this.set('skipped',this.details(candidate)):this.status();
+    }finally{this.skipping=false;}
+  }
+  async check({manual=false,channel}={}){
+    if(channel!==undefined&&(!manual||!['stable','preview'].includes(channel)))throw Error('更新渠道无效。');
+    const selected=channel||this.channel;
+    if(this.busy||this.skipping||!this.supported||!manual&&this.channel!==this.currentChannel||this.checking&&selected===this.channel)return this.status();
+    this.channel=selected;this.checkAbort?.abort();this.checkAbort=new AbortController();
+    const token=++this.checkToken,active=()=>token===this.checkToken;
+    this.checking=true;this.candidate=null;this.set('checking');
+    const intent=selected===this.currentChannel?'update':selected==='preview'?'opt-in-preview':'return-stable';
+    try{
+      assetName(this.current,this.platform,this.arch,this.format);
+      const signal=AbortSignal.any([this.checkAbort.signal,AbortSignal.timeout(30000)]);
       const releases=JSON.parse((await transfer(this.fetch,RELEASES,{signal,limit:4*1024*1024})).bytes);
+      if(!active())return this.status();
       if(!Array.isArray(releases))throw Error('更新列表无效。');
       const candidates=releases.filter(item=>{
-        if(item.draft||!/^v/.test(item.tag_name||'')||!this.current.includes('-')&&item.prerelease)return false;
-        try{return compare(item.tag_name.slice(1),this.current)>0&&(this.current.includes('-')||!item.tag_name.includes('-'))&&item.assets?.some(a=>a.name==='bridge-update.json');}catch{return false;}
+        if(item.draft||!/^v/.test(item.tag_name||''))return false;
+        const target=item.tag_name.slice(1);
+        try{return (selected!=='stable'||!item.prerelease&&!target.includes('-'))&&(intent!=='opt-in-preview'||target.includes('-'))&&
+          (intent==='return-stable'?compare(target,this.current)!==0:compare(target,this.current)>0)&&item.assets?.some(a=>a.name==='bridge-update.json');}catch{return false;}
       }).sort((a,b)=>compare(b.tag_name.slice(1),a.tag_name.slice(1)));
       if(!candidates.length)return this.set('current');
       const expected=candidates[0].tag_name.slice(1);
       const bytes=(await transfer(this.fetch,releaseUrl(expected,'bridge-update.json'),{signal,limit:256*1024})).bytes;
-      this.candidate=manifest(bytes,this.key,{current:this.current,platform:this.platform,arch:this.arch,expected});
+      if(!active())return this.status();
+      const value=manifest(bytes,this.key,{current:this.current,platform:this.platform,arch:this.arch,format:this.format,expected,channel:selected,intent});
+      const candidate=Object.freeze({...value,id:randomUUID(),asset:Object.freeze(value.asset),transition:Object.freeze(value.transition)});
       const skipped=(await this.skippedVersion())===expected;
-      return this.set(skipped&&!manual?'skipped':'available',{version:expected,notes:this.candidate.notes,...(skipped&&manual?{skipped:true}:{})});
-    }catch(error){return this.set('error',{message:error.message});}
-    finally{this.checking=false;}
+      if(!active())return this.status();
+      this.candidate=candidate;
+      return this.set(skipped&&!manual?'skipped':'available',{...this.details(candidate),...(skipped&&manual?{skipped:true}:{})});
+    }catch(error){return active()?this.set('error',{message:error.message}):this.status();}
+    finally{if(active())this.checking=false;}
   }
-  async install(){
+  async install({candidateId,confirmed=false}={}){
     if(this.busy)return this.status();
-    if(!this.candidate||this.checking)throw Error('请先检查更新。');
-    const candidate=this.candidate;let staging;
-    this.set('preparing',{version:candidate.version});
+    if(!this.candidate||this.checking||this.skipping||candidateId!==undefined&&candidateId!==this.candidate.id)throw Error('请先检查更新。');
+    if(this.candidate.transition.intent!=='update'&&(!confirmed||candidateId!==this.candidate.id))throw Error('请确认所选版本后再安装。');
+    const candidate=this.candidate;let staging,retained=false;
+    const details=this.details(candidate);
+    this.set('preparing',details);
     try{
+      if(candidate.manualRelease){await this.apply(candidate);return this.set('manual-release',details);}
       await this.preflight?.();
-      this.set('downloading',{version:candidate.version,received:0,total:candidate.asset.size});
+      this.set('downloading',{...details,received:0,total:candidate.asset.size});
       await fs.mkdir(this.directory,{recursive:true,mode:0o700});
       staging=await fs.mkdtemp(path.join(this.directory,'download-'));
-      const archive=path.join(staging,'update.zip');
+      const archive=path.join(staging,this.platform==='linux'?candidate.asset.name:'update.zip');
       const downloaded=await transfer(this.fetch,candidate.asset.url,{signal:AbortSignal.timeout(15*60*1000),limit:candidate.asset.size,file:archive,
-        onProgress:received=>this.set('downloading',{version:candidate.version,received,total:candidate.asset.size})});
+        onProgress:received=>this.set('downloading',{...details,received,total:candidate.asset.size})});
       if(downloaded.size!==candidate.asset.size||downloaded.sha256!==candidate.asset.sha256)throw Error('更新包校验失败，已取消安装。');
-      this.set('preparing',{version:candidate.version});
-      await this.apply({...candidate,archive});
-      return this.set('restarting',{version:candidate.version});
-    }catch(error){return this.set('error',{message:error.message,version:candidate.version});}
-    finally{if(staging)await fs.rm(staging,{recursive:true,force:true});}
+      this.set('preparing',details);
+      if(this.platform==='linux')retained=true;
+      const outcome=await this.apply({...candidate,archive});
+      if(this.platform==='linux')return this.set(outcome?.state==='installer-handoff'?'installer-handoff':'downloaded',{...details,path:archive});
+      return this.set('restarting',details);
+    }catch(error){return this.set('error',{...details,message:error.message,...(retained?{path:path.join(staging,candidate.asset.name)}:{})});}
+    finally{if(staging&&!retained)await fs.rm(staging,{recursive:true,force:true});}
   }
 }
 module.exports={Updater,activeUpdateHandoff,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer};

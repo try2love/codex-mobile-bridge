@@ -26,7 +26,7 @@ const root=path.resolve(__dirname,'..');
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 const iconTheme=createIconTheme({app,nativeTheme,nativeImage,platform:process.platform,assetsDir:path.join(__dirname,'assets'),getWindow:()=>window,getTray:()=>tray});
-let installPending,installStatus={},updater,workerWrites=0,officialRemote;
+let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false;
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
@@ -127,11 +127,21 @@ function worker(action,payload){
   return action==='snapshot'?snapshotPending:result;
 }
 async function installUpdate(candidate){
+  if(process.platform==='linux'){
+    if(candidate.manualRelease){await shell.openExternal(candidate.releasePage);return {state:'manual-release'};}
+    await worker('update-backup',{target:updateTarget(),version:candidate.version,transition:candidate.transition});
+    if(candidate.asset.name.endsWith('.AppImage')){
+      shell.showItemInFolder(candidate.archive);return {state:'downloaded'};
+    }
+    const error=await shell.openPath(candidate.archive);
+    if(error){shell.showItemInFolder(candidate.archive);return {state:'downloaded'};}
+    return {state:'installer-handoff'};
+  }
   snapshotWorker.close();managementWorker.close();
   const target=updateTarget();
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
-    platform:process.platform,arch:process.arch,target,parentPid:process.pid,token});
+    platform:process.platform,arch:process.arch,target,parentPid:process.pid,token,transition:candidate.transition});
   // Preserve selected data location even when an old local bundle carried it inside Resources.
   saveDataDir(dataDir);
   const log=fs.openSync(path.join(dataDir,'desktop-update.log'),'a',0o600);
@@ -162,7 +172,8 @@ async function installUpdate(candidate){
 function setupUpdater(){
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
-    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32'].includes(process.platform),
+    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.env.APPIMAGE?'AppImage':'deb',
+    supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32','linux'].includes(process.platform),
     preflight:process.platform==='win32'?()=>worker('update-preflight',{target:updateTarget()}):undefined,install:installUpdate});
   setTimeout(()=>updater.check(),5000).unref();
   setInterval(()=>updater.check(),6*60*60*1000).unref();
@@ -173,12 +184,27 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
-  ipcMain.handle('bridge:check-update',event=>{authorize(event);return updater.check({manual:true});});
+  ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
-  ipcMain.handle('bridge:install-update',event=>{
+  ipcMain.handle('bridge:install-update',async(event,payload)=>{
     authorize(event);
-    if(installPending||workerWrites||setupPending||updateManaged())throw Error('请等待当前操作完成后再更新。');
-    return updater.install();
+    const blocked=()=>installPending||workerWrites||setupPending||updateManaged();
+    if(blocked()||updateConfirmation)throw Error('请等待当前操作完成后再更新。');
+    const value=updater.status(),candidateId=payload?.candidateId;
+    if(!candidateId||value.candidateId!==candidateId)throw Error('请先检查更新。');
+    if(value.requiresConfirmation){
+      updateConfirmation=true;
+      try{
+        const answer=await dialog.showMessageBox(window,{type:'warning',title:t('应用更新'),
+          message:t(value.intent==='return-stable'?'确认返回稳定版？':'确认安装预览版？'),
+          detail:`${value.current} → ${value.version}\n\n${t(process.platform==='linux'?(value.manualRelease?'此版本缺少签名的 Linux 更新包信息，将打开官方发布页供你手动下载。':'下载通过签名与摘要校验后，由系统安装器或你手动完成替换。安装完成前，当前版本继续运行。'):value.intent==='return-stable'?'返回稳定版会替换当前应用并重启。已保存的配置和登录会保留。':'预览版可能存在未解决的问题。安装会替换当前应用并重启。')}`,
+          buttons:[t('取消'),t(process.platform==='linux'?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
+        if(answer.response!==1)return updater.status();
+        if(blocked())throw Error('请等待当前操作完成后再更新。');
+        return await updater.install({candidateId,confirmed:true});
+      }finally{updateConfirmation=false;}
+    }
+    return updater.install({candidateId});
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});
   ipcMain.handle('bridge:set-language',(event,value)=>{

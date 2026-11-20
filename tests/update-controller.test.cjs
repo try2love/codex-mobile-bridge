@@ -6,9 +6,9 @@ const requireMain=require('node:module').createRequire(main);
 
 // Exercise the real controller with a virtual helper and clock. No app, files,
 // gateway, or actual update process is started by these failure-path tests.
-function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false}={}){
+function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false,confirm=async()=>({response:0}),shellError=''}={}){
   let now=0;
-  const calls={exit:[],quit:0,closed:0,managementClosed:0,workers:[]},timers=[],intervals=[];
+  const calls={exit:[],quit:0,closed:0,managementClosed:0,workers:[],dialogs:[],opened:[],revealed:[]},timers=[],intervals=[],handlers=new Map();
   const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
     getVersion:()=> '2.0.0-preview.3',getPath:()=>userData,exit:code=>calls.exit.push(code),quit:()=>calls.quit++};
   const context=vm.createContext({__dirname:path.dirname(main),
@@ -21,7 +21,9 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
     },
     setInterval(fn,ms){intervals.push(ms);return {unref(){}};},
     require(name){
-      if(name==='electron')return {app};
+      if(name==='electron')return {app,ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},
+        dialog:{showMessageBox:async(parent,options)=>{calls.dialogs.push(options);return confirm();}},
+        shell:{openExternal:async url=>calls.opened.push(url),openPath:async file=>{calls.opened.push(file);return shellError;},showItemInFolder:file=>calls.revealed.push(file)}};
       if(name==='./features/updates/mac-handoff.cjs')return {...requireMain(name),relaunchMacUpdate(){}};
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='node:crypto')return {randomUUID:()=> 'verified-token'};
@@ -40,13 +42,15 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
   vm.runInContext(fs.readFileSync(main,'utf8'),context);
   vm.runInContext("dataDir='/fixture/data'",context);
   if(pending)vm.runInContext('snapshotPending=new Promise(()=>{})',context);
-  return {context,calls,timers,intervals,run:()=>context.installUpdate({archive:'verified.zip',asset:{sha256:'verified'},version:'2.0.0-preview.2'})};
+  return {context,calls,timers,intervals,handlers,register(updater){context.fixtureUpdater=updater;vm.runInContext("updater=fixtureUpdater;window={webContents:{mainFrame:{url:entry}}}",context);context.register();},
+    invoke(name,payload){return handlers.get(name)(vm.runInContext('({sender:window.webContents,senderFrame:window.webContents.mainFrame})',context),payload);},
+    run:()=>context.installUpdate({archive:'verified.zip',asset:{sha256:'verified'},version:'2.0.0-preview.2'})};
 }
 
 for(const platform of ['darwin','win32','linux'])for(const packaged of [true,false]){
   test(`real updater setup respects ${platform} packaged=${packaged}`,()=>{
     const f=controller({platform,packaged});f.context.setupUpdater();
-    const updater=vm.runInContext('updater',f.context),supported=packaged&&platform!=='linux';
+    const updater=vm.runInContext('updater',f.context),supported=packaged;
     assert.ok(updater instanceof require('../desktop/features/updates/updater.cjs').Updater);
     assert.equal(updater.supported,supported);
     assert.equal(updater.status().state,supported?'idle':'unsupported');
@@ -66,6 +70,42 @@ test('Windows download preflight uses the current installation through the priva
   assert.equal(f.calls.workers[0].action,'update-preflight');
   assert.equal(f.calls.workers[0].payload.target,path.dirname('/fixture/app/Bridge.exe'));
   assert.deepEqual(f.calls.exit,[]);
+});
+
+test('selected channel crosses authorized IPC and confirmations default to cancel without installation',async()=>{
+  let checked,installed=0;
+  const value={candidateId:'checked',current:'2.2.2-preview.2',version:'2.2.1',intent:'return-stable',requiresConfirmation:true};
+  const f=controller();f.register({status:()=>value,check:options=>{checked=options;},install:async()=>{installed++;}});
+  await f.invoke('bridge:check-update',{channel:'stable'});assert.equal(checked.channel,'stable');assert.equal(checked.manual,true);
+  await assert.rejects(f.invoke('bridge:install-update',{candidateId:'old'}),/检查/);assert.equal(f.calls.dialogs.length,0);
+  await f.invoke('bridge:install-update',{candidateId:'checked'});assert.equal(installed,0);
+  assert.equal(f.calls.dialogs[0].defaultId,0);assert.equal(f.calls.dialogs[0].cancelId,0);assert.match(f.calls.dialogs[0].detail,/2\.2\.2-preview\.2 → 2\.2\.1/);
+});
+test('confirmation forwards the checked identity and rechecks writes after the asynchronous dialog',async()=>{
+  let installed,release;
+  const value={candidateId:'checked',current:'2.2.1',version:'2.2.2-preview.2',intent:'opt-in-preview',requiresConfirmation:true};
+  const f=controller({confirm:()=>new Promise(resolve=>{release=resolve;})});
+  f.register({status:()=>value,install:async options=>{installed=options;}});
+  const pending=f.invoke('bridge:install-update',{candidateId:'checked'});await new Promise(setImmediate);
+  await assert.rejects(f.invoke('bridge:install-update',{candidateId:'checked'}),/当前操作/);
+  vm.runInContext('workerWrites=1',f.context);release({response:1});await assert.rejects(pending,/当前操作/);assert.equal(installed,undefined);
+  vm.runInContext('workerWrites=0',f.context);const again=f.invoke('bridge:install-update',{candidateId:'checked'});release({response:1});await again;
+  assert.equal(installed.candidateId,'checked');assert.equal(installed.confirmed,true);
+});
+test('Linux verified DEB handoff backs up first and never exits or claims completed installation',async()=>{
+  const f=controller({platform:'linux'}),candidate={archive:'/private/verified.deb',version:'2.2.2-preview.2',asset:{name:'Bridge.deb'},transition:{intent:'update'}};
+  assert.equal((await f.context.installUpdate(candidate)).state,'installer-handoff');
+  assert.equal(f.calls.workers[0].action,'update-backup');assert.equal(f.calls.workers[0].payload.transition,candidate.transition);
+  assert.deepEqual(f.calls.opened,[candidate.archive]);assert.deepEqual(f.calls.exit,[]);assert.equal(f.calls.closed,0);
+  const failed=controller({platform:'linux',shellError:'No installer'});assert.equal((await failed.context.installUpdate(candidate)).state,'downloaded');
+  assert.deepEqual(failed.calls.revealed,[candidate.archive]);
+  const appimage=controller({platform:'linux'});candidate.asset.name='Bridge.AppImage';assert.equal((await appimage.context.installUpdate(candidate)).state,'downloaded');
+  assert.deepEqual(appimage.calls.opened,[]);assert.deepEqual(appimage.calls.revealed,[candidate.archive]);
+});
+test('legacy Linux release fallback only opens its fixed release page without backup or system install',async()=>{
+  const f=controller({platform:'linux'}),candidate={manualRelease:true,releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1'};
+  assert.equal((await f.context.installUpdate(candidate)).state,'manual-release');assert.deepEqual(f.calls.opened,[candidate.releasePage]);
+  assert.deepEqual(f.calls.workers,[]);assert.deepEqual(f.calls.exit,[]);
 });
 
 test('verified helper exits immediately even with a stalled snapshot and cancellable quit',async()=>{
