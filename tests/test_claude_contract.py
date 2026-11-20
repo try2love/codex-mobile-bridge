@@ -270,3 +270,62 @@ class DesktopActionContract(unittest.IsolatedAsyncioTestCase):
         with patch('bridge.clients.claude.mailbox.MAX_REQUEST', exact_size): desktop.write(request)
         self.assertEqual(len(path.read_bytes()), exact_size)
         self.assertEqual(MAX_REQUEST, 10485760)
+
+    def test_respond_guards_null_inputs_and_never_leaves_unknown_receipt(self):
+        # 桌面端 pendingToolPermissions 携带 input: null 时应安全归一为空字典。
+        null_input_row = claude_model.session('code', {
+            'sessionId': 'native-null', 'pendingToolPermissions': [
+                {'requestId': 'req-null', 'toolName': 'AskUserQuestion', 'input': None}]})
+        self.assertEqual(null_input_row['requests'][0]['input'], {})
+
+        # 绑定真实 Claude 适配器：非法 answers / decision 应在发出 IPC 前被拦截为 blocked，
+        # 不应在 requests.sqlite 中残留 unknown 并阻塞后续归档。
+        import asyncio
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        adapter = Claude(Path(self.temp.name)/'real-claude', auto_connect=False)
+        adapter.loop = loop
+        adapter.thread = loop_thread
+        sid = claude_model.gateway_id('code', 'native-1')
+        adapter.index = {sid: {'backend': 'code', 'nativeId': 'native-1'}}
+        adapter.status = lambda *args, **kwargs: {'connected': True, 'reason': ''}
+        pending = {'sessionId': 'native-1', 'turnRunning': False, 'pendingToolPermissions': [
+            {'requestId': 'req-1', 'toolName': 'AskUserQuestion',
+             'input': {'questions': [{'id': 'q1', 'question': '请选择？'}]}}]}
+        archived_state = False
+        async def fake_call(kind, method, *args, **kwargs):
+            nonlocal archived_state
+            if method == 'getSession':
+                return pending
+            if method == 'mobileArchiveState':
+                return {'session': {'sessionId': 'native-1', 'turnRunning': False,
+                                    'isArchived': archived_state, 'pendingToolPermissions': []},
+                        'archiveFlags': {}, 'archiveSafe': True}
+            if method == 'mobileArchive':
+                archived_state = True
+                return {'ok': True}
+            raise AssertionError(f'不应触发写入 IPC: {method}')
+        adapter.desktop = Mock(connected=True, unconfirmed_mutations=None,
+                               capabilities={'code': ['mobileArchive']},
+                               call=AsyncMock(side_effect=fake_call))
+        self.manager.adapters['claude'] = adapter
+        self.manager.config['enabled'] = {'claude': True}
+
+        for body in (
+            {'id': str(uuid.uuid4()), 'requestId': 'req-1', 'decision': 'accept', 'answers': None},
+            {'id': str(uuid.uuid4()), 'requestId': 'req-1', 'decision': 'accept', 'answers': {'q1': None}},
+            {'id': str(uuid.uuid4()), 'requestId': 'req-1', 'decision': 'invalid'},
+            {'id': str(uuid.uuid4()), 'requestId': 'missing', 'decision': 'accept'},
+        ):
+            with self.subTest(body=body):
+                receipt = self.manager.call('claude', 'respond', sid, body)
+                self.assertEqual(receipt['status'], 'blocked')
+
+        archive = self.manager._archive('claude', sid, {'id': str(uuid.uuid4()), 'archived': True})
+        self.assertEqual(archive['status'], 'confirmed')
+
+        # 合法 answers 应正常映射并调用原生 respondToToolPermission。
+        self.assertEqual(claude_model.respond_answers(
+            {'questions': [{'id': 'q1', 'question': '请选择？'}]},
+            {'q1': {'answers': ['方案一', '补充']}})['answers'], {'请选择？': '方案一, 补充'})
