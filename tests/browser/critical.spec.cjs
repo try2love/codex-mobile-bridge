@@ -18,6 +18,46 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
+  await ready(page);
+  await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));
+  const result = await page.evaluate(async () => {
+    const body = document.createElement('div'); document.body.append(body);
+    let statusRequests = 0; const historyRequests = [];
+    const workbench = {
+      node(tag, cls = '', text) {
+        const node = document.createElement(tag); node.className = cls;
+        if (text !== undefined) node.textContent = BridgeI18n.t(text);
+        return node;
+      },
+      button(text, action) { const node = this.node('button', '', text); node.onclick = action; return node; },
+      raw(node) { return node; },
+      url: (_session, operation) => '/fixture/' + operation + '?',
+      async request(url) {
+        if (url.includes('git-status')) { statusRequests++; throw Error('Git 变更列表过大或不可读取'); }
+        historyRequests.push(url);
+        return {commits:[{id:'a'.repeat(40),parents:[],author:'Fixture',date:'2026-11-20T00:00:00Z',subject:'Latest commit',refs:'HEAD -> main'}],hasMore:true};
+      }
+    };
+    const panel = new GitPanel(workbench, {host:'remote:fixture'}, {body});
+    const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } throw Error('Git history fixture did not settle'); };
+    await panel.load();
+    await wait(() => !!body.querySelector('.wb-history-row'));
+    const latestVisibleByDefault = body.querySelector('.wb-history-row')?.textContent.includes('Latest commit') || false;
+    const firstLimit = new URL(historyRequests[0], location.href).searchParams.get('limit');
+    body.querySelector('.wb-history-list button:last-child').click(); await wait(() => historyRequests.length === 2);
+    await wait(() => body.querySelector('.wb-history-list')?.textContent.includes('加载更早的提交'));
+    const nextLimit = new URL(historyRequests[1], location.href).searchParams.get('limit');
+    body.querySelector('.wb-git-modes button:first-child').click(); await wait(() => statusRequests === 1);
+    const navigationVisible = !!body.querySelector('.wb-git-modes') && body.querySelectorAll('.wb-git-modes button').length === 3;
+    const changeErrorVisible = !!body.querySelector('.wb-status.error');
+    body.querySelector('.wb-git-modes button:nth-child(2)').click(); await wait(() => historyRequests.length === 3);
+    panel.dispose(); body.remove();
+    return {statusRequests, historyRequests:historyRequests.length, navigationVisible, changeErrorVisible, latestVisibleByDefault, firstLimit, nextLimit};
+  });
+  expect(result).toEqual({statusRequests:1,historyRequests:3,navigationVisible:true,changeErrorVisible:true,latestVisibleByDefault:true,firstLimit:'40',nextLimit:'80'});
+});
+
 async function historyCacheFixture(browser,viewport){
   const context=await browser.newContext({viewport});
   await context.route('**/*',route=>new URL(route.request().url()).origin==='https://history-cache.fixture.invalid'
