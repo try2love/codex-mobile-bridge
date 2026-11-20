@@ -17,6 +17,9 @@ on:
       acceptance_target_os:
         type: string
         default: all
+      build_target:
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       source_ref:
@@ -35,6 +38,11 @@ on:
         description: Acceptance platforms (ignored by ordinary builds)
         type: choice
         options: [all, Windows]
+        default: all
+      build_target:
+        description: Build all architectures or only the Intel Mac package
+        type: choice
+        options: [all, intel]
         default: all
   push:
     # Main receives source updates without building Apps; use manual or release builds.
@@ -56,15 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            arch: arm64
-            app-dir: mac-arm64
-          - os: macos-15-intel
-            arch: x64
-            app-dir: mac
-          - os: windows-latest
-            arch: x64
+        include: ${{ fromJSON(inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
-    if: inputs.acceptance_only != true
+    if: inputs.acceptance_only != true && inputs.build_target != 'intel'
     strategy:
       fail-fast: false
       matrix:
