@@ -70,6 +70,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: ${{ inputs.build_target == 'intel' && 0 || 1 }}
+      - name: Verify reuse of completed release CI for Intel-only packaging
+        if: inputs.build_target == 'intel'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import json, subprocess
+          source = 'ad5e929dbade70ec1bb8429abb99f6a9a6477e7f'
+          run = json.loads(subprocess.check_output(['gh', 'api', 'repos/try2love/codex-mobile-bridge/actions/runs/44759627600'], text=True))
+          assert run['head_sha'] == source and run['conclusion'] == 'success'
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines())
+          assert changed <= {'.github/workflows/desktop.yml', 'scripts/smoke-update-controller.cjs', 'tests/release-assets.test.cjs'}, changed
+          PYCODE
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -82,11 +97,14 @@ jobs:
         run: OPENSSL_STATIC=1 python -m pip install --no-cache-dir --no-binary cryptography cryptography==50.0.2
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
-      - run: python -B -m unittest discover -s tests -v
-      - run: npm run test:desktop
-      - run: npm run test:updater
+      - if: inputs.build_target != 'intel'
+        run: python -B -m unittest discover -s tests -v
+      - if: inputs.build_target != 'intel'
+        run: npm run test:desktop
+      - if: inputs.build_target != 'intel'
+        run: npm run test:updater
       - name: Verify native macOS published-peer upgrade handoff
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.build_target != 'intel'
         run: python -B tests/acceptance/zcode_published_peer.py
       - run: python scripts/build-desktop.py
       - name: Verify packaged Windows continuous terminal
