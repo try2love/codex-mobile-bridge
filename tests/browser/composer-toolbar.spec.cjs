@@ -503,14 +503,14 @@ test('follow-up icon, integrated select and slash placeholder stay synchronized'
   await expect(icon).toHaveAttribute('data-icon', 'steer');
   await expect(page.locator('#message')).toHaveAttribute('placeholder', '继续这条聊天 · 输入 / 查看指令');
   await page.evaluate(() => BridgeI18n.setLanguage('en'));
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat · / commands');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue chat · / commands');
   await page.locator('#send-mode').selectOption('queue');
   await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Send when done · / commands');
   await page.evaluate(() => {
     composerToolbar.submitControl.getState = () => ({ running: false, hasDraft: true });
     composerToolbar.sync();
   });
-  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue this chat · / commands');
+  await expect(page.locator('#message')).toHaveAttribute('placeholder', 'Continue chat · / commands');
   await expect(page.locator('#message')).toHaveValue('保留草稿与光标');
   await page.locator('#composer .toolbar-more').click();
   await expect(page.locator('#composer .toolbar-more')).toHaveCSS('outline-style', 'none');
