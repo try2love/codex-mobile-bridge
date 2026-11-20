@@ -17,6 +17,7 @@
 
 - 改善手机慢连接判断：快速探测超时后进行一次有截止时间的确认，减少蜂窝、Tailscale 等慢响应场景的过早离线提示；修复 iOS 原生“刷新页面”未实际重新加载。[#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
 - 保留 Codex 已收到的流式正文，避免后续空快照抹去内容；省略没有正文和附件的空白回答占位，同步聊天标题，修复第三方 API 执行错误后连接错误退为只读。[#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- 改善 Windows 取消 CLI 恢复时的并发文件读取，避免取消操作偶发写入失败；不重启或重发未确认任务。
 - 修复 Windows Codex 正常退出，兼容原生菜单按需展开，继续核验任务和进程身份。[#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
 - 改善 Antigravity Linux AppImage、自定义解压目录与自动发现；修复新聊天项目绑定、旧模型缓存和变体思考强度选择。[#210](https://github.com/try2love/codex-mobile-bridge/issues/210) · [PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209) · [#213](https://github.com/try2love/codex-mobile-bridge/issues/213) · [#214](https://github.com/try2love/codex-mobile-bridge/issues/214) · [PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216)
 - 改善损坏状态和受保护 WindowsApps 目录对启动、扫描的影响；处理 ZCode 工作目录被删除、新聊天接入状态及 API 模型批量添加，兼容 DSH 原生凭据空配置段。[PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) · [#211](https://github.com/try2love/codex-mobile-bridge/issues/211) · [#204](https://github.com/try2love/codex-mobile-bridge/issues/204) · [#203](https://github.com/try2love/codex-mobile-bridge/issues/203) · [#217](https://github.com/try2love/codex-mobile-bridge/issues/217)
@@ -55,6 +56,7 @@ This preview improves composing and reading chats, adds native Antigravity opera
 
 - Confirm slow mobile gateway reads within a shared deadline after the initial timeout; fix native iOS page refresh. [#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
 - Preserve streamed Codex content across empty snapshots, omit empty assistant placeholders, synchronize titles, and keep terminal API errors from incorrectly making the conversation read-only. [#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- Prevent concurrent recovery-record reads from intermittently blocking cancellation on Windows, without restarting or replaying uncertain tasks.
 - Restore normal Windows Codex quit through its verified lazy native menu. [#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
 - Improve Antigravity Linux AppImage/discovery, new-chat project binding, stale model catalogs and legacy effort selection. [#210](https://github.com/try2love/codex-mobile-bridge/issues/210) · [PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209) · [#213](https://github.com/try2love/codex-mobile-bridge/issues/213) · [#214](https://github.com/try2love/codex-mobile-bridge/issues/214) · [PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216)
 - Handle corrupt rebuildable state, protected WindowsApps enumeration, removed ZCode workspaces, new-session readiness, bulk API model additions and empty native DSH credential sections. [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) · [#211](https://github.com/try2love/codex-mobile-bridge/issues/211) · [#204](https://github.com/try2love/codex-mobile-bridge/issues/204) · [#203](https://github.com/try2love/codex-mobile-bridge/issues/203) · [#217](https://github.com/try2love/codex-mobile-bridge/issues/217)
