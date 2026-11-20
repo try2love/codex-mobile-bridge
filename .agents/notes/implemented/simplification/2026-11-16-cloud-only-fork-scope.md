@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-当前基线为 `try2love/codex-mobile-bridge` 的发布标签 `v2.2.2-preview.1`（`1561a0c8`），包含上游 `main` 的 `v2.2.1`（`1004e5ae`）。本分支只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
+当前上游同步点是 `try2love/codex-mobile-bridge` 的 `release/v2.2.2-preview`（`edf121a5`），按各分支顶端的提交时间选出。它包含上游 `main` 的 `v2.2.1`（`1004e5ae`）和发布标签 `v2.2.2-preview.1`（`1561a0c8`）；标签后只增加 [Intel 移动端 CI 补验](../testing/2026-11-18-published-package-upgrade.md)，产品代码和版本不变。本分支只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
 
 通用 WebSocket、通知 JSON 存储、直连推送、旧共享中继、模型选择与非云测试直接恢复上游。删除开发热刷新命令、主进程和 preload 扩展、源码监听器、页面钩子、样式及测试。混合文件从上游实现重新叠加最小云接入，不保留顺手修复或通用重构。云专用 Range 校验移至 `relay/http_framing.py`，`relay/protocol.py`、`relay/server.py` 和 `shared_relay.py` 整文件跟随上游。
 
@@ -35,6 +35,10 @@ Status: implemented
 - 在通用 HTTP 输出中恢复关闭连接可避免旧云回归失败，但会再次偏离非云主线。改为云内部请求声明关闭连接，代价仅是带正文的回环请求不复用该 TCP 连接。
 
 ## Testing
+
+### 发布分支 CI 补验合并
+
+无冲突合入 `edf121a5`，三个上游文件与发布分支完全一致；`node --test tests/release-assets.test.cjs` 通过 8 项。本次没有触发远端 CI 或重新部署客户端。
 
 ### v2.2.2-preview.1 合并
 
