@@ -1118,6 +1118,25 @@ class CliSessions:
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
 
+    @staticmethod
+    def _merge_streamed_item(previous, incoming):
+        """Keep deltas when a native replacement omits an already streamed field."""
+        if not isinstance(previous, dict) or not isinstance(incoming, dict):
+            return incoming
+        if previous.get('id') != incoming.get('id') or previous.get('type') != incoming.get('type'):
+            return incoming
+        item = dict(incoming)
+        for field in ('text', 'aggregatedOutput'):
+            prior = previous.get(field)
+            if isinstance(prior, str) and prior and not item.get(field):
+                item[field] = prior
+        if incoming.get('type') == 'reasoning' and not item.get('summary') and not item.get('content'):
+            for field in ('summary', 'content'):
+                prior = previous.get(field)
+                if isinstance(prior, list) and not item.get(field):
+                    item[field] = copy.deepcopy(prior)
+        return item
+
     def _event(self, event):
         method = event.get('method')
         params = event.get('params') or {}
@@ -1192,9 +1211,10 @@ class CliSessions:
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):
-                    items = turn['items']
                     previous_times = {item.get('id'): item['timestamp'] for item in row['items'] if item.get('timestamp') is not None}
-                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in items]
+                    previous_items = {item.get('id'): item for item in row['items'] if item.get('id') is not None}
+                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in turn['items']]
+                    items = [self._merge_streamed_item(previous_items.get(item.get('id')), item) for item in items]
                     if method == 'turn/completed':
                         incoming_ids = {item.get('id') for item in items}
                         # Completed event items can omit user messages still present in thread/read.
@@ -1216,10 +1236,7 @@ class CliSessions:
                         if existing.get('id') == item.get('id'):
                             if item.get('timestamp') is None and existing.get('timestamp') is not None:
                                 item = {**item, 'timestamp': existing['timestamp']}
-                            if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
-                                # A late start must not erase deltas already received.
-                                item = {**item, **{field: existing[field] for field in ('summary', 'content')
-                                                  if not item.get(field) and isinstance(existing.get(field), list)}}
+                            item = self._merge_streamed_item(existing, item)
                             items[index] = item
                             break
                     else:

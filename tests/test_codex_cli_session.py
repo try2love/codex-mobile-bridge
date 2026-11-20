@@ -127,6 +127,41 @@ class CliSessionTests(unittest.TestCase):
         rows = turn['messages']
         self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
 
+    def test_streamed_agent_text_survives_empty_item_replacements(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='streamed reply')
+        emit('item/completed', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed',
+                                     'items': [{'id': 'reply', 'type': 'agentMessage', 'text': ''}]})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+
+    def test_late_agent_started_event_does_not_erase_delta(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='early reply')
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'early reply')
+
+    def test_empty_reasoning_completion_keeps_deltas_only_without_summary(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        emit('item/reasoning/textDelta', turnId='turn-1', itemId='reason', delta='reason delta')
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], ['reason delta'])
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': ['safe summary'], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['summary'], ['safe summary'])
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], [])
+
     def test_thread_snapshot_turn_clocks_convert_native_seconds_without_inventing_completion(self):
         stamp = 1794211440000
         self.fake.thread['turns'] = [
