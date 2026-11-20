@@ -564,6 +564,7 @@ class AntigravityCli:
         'StartCascade',
         'SendUserCascadeMessage',
         'CancelCascadeInvocation',
+        'RevertToCascadeStep',
         'ForceStopCascadeTree',
         'HandleCascadeUserInteraction',
         'UpdateConversationAnnotations',
@@ -1601,6 +1602,17 @@ class AntigravityCli:
         if isinstance(tree_result, dict) and tree_result:
             return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
         return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
+
+    def revert_to_step(self, conversation_id, step_index, *, conversation_only=False, surface='app'):
+        if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
+            raise ValueError('撤回步骤位置无效')
+        result = self.call_ls_rpc(
+            'RevertToCascadeStep',
+            {'cascadeId': conversation_id, 'stepIndex': step_index, 'conversationOnly': bool(conversation_only)},
+            surface=surface,
+        )
+        self._invalidate_trajectories_cache(surface)
+        return result
 
     def close(self):
         pass
