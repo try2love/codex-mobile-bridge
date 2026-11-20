@@ -14,6 +14,7 @@
     "shell/app.js"
   ],
   "/bootstrap.js": "shared/bootstrap.js",
+  "/cloud-web.js": "hosts/cloud-web.js",
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",
@@ -28,7 +29,7 @@
     "features/chat/session-menu.css",
     "shared/visualize.css"
   ],
-  "/activity.js": "features/chat/activity.js",
+  "/activity.js": ["features/chat/history-cache.js", "features/chat/activity.js"],
   "/attachments.js": [
     "features/chat/composer-drafts.js",
     "features/chat/composer-quotes.js",

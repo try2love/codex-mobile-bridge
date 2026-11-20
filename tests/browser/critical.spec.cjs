@@ -18,6 +18,48 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+async function historyCacheFixture(browser,viewport){
+  const context=await browser.newContext({viewport});
+  await context.route('**/*',route=>new URL(route.request().url()).origin==='https://history-cache.fixture.invalid'
+    ?route.fulfill({contentType:'text/html',body:'<!doctype html><title>Synthetic history cache</title><body></body>'}):route.abort());
+  const page=async()=>{const result=await context.newPage();await result.goto('https://history-cache.fixture.invalid/');
+    await result.addScriptTag({content:readFileSync(path.join(__dirname,'../../web/features/chat/history-cache.js'),'utf8')});return result;};
+  return {context,page};
+}
+
+test('persistent history cache isolates scopes retains valid pages and survives unavailable IndexedDB',async({browser},info)=>{
+  const fixture=await historyCacheFixture(browser,info.project.use.viewport);
+  try{
+    const page=await fixture.page();await page.addScriptTag({content:readFileSync(path.join(__dirname,'history-cache.browser.js'),'utf8')});
+    const result=await page.evaluate(()=>runHistoryCacheBrowserChecks());
+    expect(result.failures).toEqual([]);expect(result.passed).toBe(13);
+  }finally{await fixture.context.close();}
+});
+
+test('history cache logout session and namespace forget defeat stale writes from another real page',async({browser},info)=>{
+  const fixture=await historyCacheFixture(browser,info.project.use.viewport);
+  try{
+    const writer=await fixture.page(),cleaner=await fixture.page();
+    for(const page of [writer,cleaner])await page.evaluate(()=>{window.__historyClock=1000000;window.__historyCache=new ChatHistoryCache(indexedDB,()=>window.__historyClock);});
+    for(const mode of ['session','namespace','logout']){
+      const scope=JSON.stringify(['auth-a','host-a','claude',mode+'-race']),namespace=JSON.stringify(['auth-a','host-a','claude']),other=JSON.stringify(['auth-a','host-a','codex','keep']);
+      await cleaner.evaluate(async other=>{await __historyCache.forget();window.__historyClock+=10;await __historyCache.write(other,'recent',{text:'keep'});},other);
+      const now=await cleaner.evaluate(()=>window.__historyClock);
+      await writer.evaluate(async({scope,now})=>{
+        window.__historyClock=now;const db=await __historyCache.open();let release;const gate=new Promise(resolve=>release=resolve);
+        window.__restoreOpen=__historyCache.open.bind(__historyCache);__historyCache.open=async()=>{await gate;return db;};window.__releaseWrite=release;
+        window.__staleWrite=__historyCache.write(scope,'recent',{text:'old cached history'});
+      },{scope,now});
+      await cleaner.evaluate(async({scope,mode,namespace})=>{window.__historyClock++;if(mode==='namespace')await __historyCache.forgetNamespace(namespace);else await __historyCache.forget(mode==='logout'?undefined:scope);},{scope,mode,namespace});
+      expect(await writer.evaluate(async now=>{window.__historyClock=now;window.__releaseWrite();const written=await window.__staleWrite;__historyCache.open=window.__restoreOpen;return written;},now+1)).toBe(false);
+      expect(await cleaner.evaluate(scope=>__historyCache.read(scope),scope)).toBeNull();
+      expect(await cleaner.evaluate(other=>__historyCache.read(other),other)).toEqual(mode==='logout'?null:{text:'keep'});
+      expect(await writer.evaluate(async({scope,now})=>{window.__historyClock=now+2;return __historyCache.write(scope,'recent',{text:'new history'});},{scope,now})).toBe(true);
+      expect(await cleaner.evaluate(async({scope,now})=>{window.__historyClock=now+2;return __historyCache.read(scope);},{scope,now})).toEqual({text:'new history'});
+    }
+  }finally{await fixture.context.close();}
+});
+
 test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
   await page.route('**/api/auth', route => route.fulfill({json: {
     authenticated: false, passwordless: false,
@@ -319,7 +361,23 @@ for (const scenario of ['success', 'css-once', 'js-twice', 'js-fatal', 'runtime'
   });
 }
 
+for(const [name,file,invoke] of [
+  ['Codex continuous live display stays bounded without losing history', 'timeline', 'runTimelineSlidingWindowChecks'],
+  ['shared desktop continuous live display stays bounded without losing history', 'desktop-history', 'runDesktopSlidingWindowChecks'],
+]){
+  test(name,async({page},testInfo)=>{
+    await ready(page);await page.addScriptTag({url:'/timeline.js'});
+    await page.route('**/__sliding-checks.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(path.join(__dirname,file+'.browser.js'),'utf8')}));
+    await page.addScriptTag({url:'/__sliding-checks.js'});
+    const result=await page.evaluate(name=>globalThis[name](),invoke);
+    expect(result.passed).toBeGreaterThan(0);
+    await testInfo.attach('sliding-window-checks',{body:JSON.stringify(result),contentType:'application/json'});
+  });
+}
+
 for (const [name, file, invoke] of [
+  ['shared native activity groups preserve reading and presentation', 'activity-groups', 'runActivityGroupBrowserChecks'],
+  ['shared history batches preserve reading and page cached process rows', 'history-batches', 'runHistoryBatchBrowserChecks'],
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],
   ['chat history, list entry and scroll position', 'desktop-history', 'runDesktopHistoryBrowserChecks'],
@@ -332,6 +390,14 @@ for (const [name, file, invoke] of [
   test(name, async ({page}, testInfo) => {
     await ready(page, file==='agent-model-settings'?'session-menu':'success');
     await expect(page.locator('#bootstrap-status')).toBeHidden();
+    if(file==='history-batches')await page.route('**/__browser/history-batches.browser.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(path.join(__dirname,'history-batches.browser.js'),'utf8')}));
+    if(file==='activity-groups'){
+      await page.route('**/__browser/activity-groups.browser.js',route=>route.fulfill({contentType:'text/javascript',body:readFileSync(path.join(__dirname,'activity-groups.browser.js'),'utf8')}));
+      await page.exposeBinding('__captureActivityGroup',async(source,value)=>{
+        const screenshot=await source.page.screenshot({path:testInfo.outputPath('activity-groups-'+value.width+'-'+value.theme+'-'+value.size+'.png')});
+        await testInfo.attach('activity-group-rendering',{body:screenshot,contentType:'image/png'});
+      });
+    }
     await page.addScriptTag({url: `/__browser/${file}.browser.js`});
     const result = await page.evaluate(name => globalThis[name](), invoke);
     expect(Array.isArray(result) ? result.length : result.passed).toBeGreaterThan(0);
@@ -987,4 +1053,103 @@ test('wide chat list collapse preserves conversation and drafts across clients a
  }
  await page.evaluate(()=>BridgeI18n.setLanguage('en'));await expect(toggle).toHaveAttribute('aria-label','Collapse chat list');await toggle.click();await info.attach('collapsed-wide',{body:await page.screenshot(),contentType:'image/png'});
  await page.setViewportSize({width:390,height:844});await expect(toggle).toBeHidden();
+});
+
+
+test.describe('workbench split',()=>{
+
+test.beforeEach(async({page})=>{
+ await page.goto('/?case=success');
+ await page.waitForFunction(()=>document.getElementById('bootstrap-status')?.hidden);
+ await page.evaluate(async()=>{
+  await BridgeFeatures.load('chat');
+  for(const id of ['app','chat'])document.getElementById(id).hidden=false;
+  for(const id of ['login','sessions','welcome'])document.getElementById(id).hidden=true;
+  document.getElementById('app').classList.add('chat-open');BridgeI18n.setLanguage('zh');
+  const wb=window.BridgeWorkbench;
+  window.__workspaceReads=[];
+  wb.request=async url=>{
+   window.__workspaceReads.push(url);
+   if(new URL(url,location.origin).pathname.endsWith('/preview'))return {kind:'image',mime:'image/png',data:window.__thumbnailData};
+   return {project:'/project',path:'/project',parentPath:'/',projectPath:'',entries:[{kind:'file',name:'photo.png',path:'/project/photo.png',size:100}],total:1,nextOffset:null};
+  };
+  const canvas=document.createElement('canvas');canvas.width=400;canvas.height=200;
+  canvas.getContext('2d').fillRect(0,0,400,200);window.__thumbnailData=canvas.toDataURL('image/png').split(',')[1];
+  wb.openChat=(id,host)=>wb.open(id,host,{rootId:'parent',title:'侧边聊天'});
+  wb.open('parent','local');
+  document.getElementById('message').value='Unsent parent draft';
+ });
+});
+
+test('split opens files directly from main and child chats and restores the last tool',async({page},testInfo)=>{
+ const wide=await page.evaluate(()=>BridgeWorkbench.canSplit());
+ const button=page.locator('#chat .wb-split-button');
+ if(!wide){
+  await expect(button).toBeHidden();await expect(button).toBeDisabled();
+  expect(await page.evaluate(()=>{BridgeWorkbench.toggleSplit();return BridgeWorkbench.current.files.length;})).toBe(0);
+  return;
+ }
+ await button.click();
+ await expect(page.locator('#chat')).toHaveClass(/wb-split/);
+ await expect(page.locator('#chat .wb-file-name')).toHaveText('photo.png');
+ await expect(page.locator('#message')).toBeVisible();
+ await button.click();
+ await page.evaluate(()=>{
+  const wb=BridgeWorkbench,tab={id:'file:/project/readme.txt',name:'readme.txt',body:wb.node('pre','','Saved tool content')};
+  wb.current.files.push(tab);wb.select(tab.id);wb.select('chat');
+ });
+ await button.click();
+ await expect(page.locator('#chat .workbench-panel')).toHaveText('Saved tool content');
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('file:/project/readme.txt');
+ await button.click();
+ await page.evaluate(()=>{BridgeWorkbench.open('child','local',{rootId:'parent',title:'侧边聊天'});});
+ await button.click();
+ expect(await page.evaluate(()=>({chat:BridgeWorkbench.current.chatId,tool:BridgeWorkbench.current.splitTab}))).toEqual({chat:'child',tool:'file:/project/readme.txt'});
+ await expect(page.locator('#chat .wb-tab[data-tab="child:child"] [role="tab"]')).toHaveAttribute('aria-selected','true');
+ await expect(page.locator('#chat .wb-tab[data-tab="child:child"]')).toHaveAttribute('draggable','false');
+ await expect(page.locator('#message')).toHaveValue('Unsent parent draft');
+ await testInfo.attach('chat-and-tool-split',{body:await page.screenshot(),contentType:'image/png'});
+});
+
+test('fresh child chat opens files in the right pane without treating the child as a tool',async({page})=>{
+ await page.evaluate(()=>BridgeWorkbench.open('child','local',{rootId:'parent',title:'侧边聊天'}));
+ if(!await page.evaluate(()=>BridgeWorkbench.canSplit())){
+  await expect(page.locator('#chat .wb-split-button')).toBeHidden();
+  expect(await page.evaluate(()=>{BridgeWorkbench.split('child:child');BridgeWorkbench.toggleSplit();return BridgeWorkbench.splitMode;})).toBe(false);return;
+ }
+ await page.locator('#chat .wb-split-button').click();
+ await expect(page.locator('#chat .wb-file-name')).toHaveText('photo.png');
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('files');
+ await page.evaluate(()=>BridgeWorkbench.split('child:child'));
+ expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBe('files');
+ await expect(page.locator('#message')).toBeVisible();
+});
+
+for(const order of [['files','child:child','file:notes'],['file:notes','child:child','files']]){
+ test('closing the split tool skips neighboring child tabs: '+order.join(', '),async({page})=>{
+  test.skip(!await page.evaluate(()=>BridgeWorkbench.canSplit()),'Requires a wide split pane');
+  await page.evaluate(order=>{
+   const wb=BridgeWorkbench,s=wb.current;
+   s.files=order.map(id=>({id,name:id,body:wb.node('div','','Tool '+id),...(id.startsWith('child:')?{chatId:'child'}:{})}));
+   wb.split('files');
+  },order);
+  await page.locator('#chat .wb-tab[data-tab="files"] button[aria-label="关闭"]').click();
+  expect(await page.evaluate(()=>({split:BridgeWorkbench.current.splitTab,chat:BridgeWorkbench.current.chatId}))).toEqual({split:'file:notes',chat:'parent'});
+  await expect(page.locator('#chat .workbench-panel')).toHaveText('Tool file:notes');
+  await page.locator('#chat .wb-tab[data-tab="file:notes"] button[aria-label="关闭"]').click();
+  expect(await page.evaluate(()=>BridgeWorkbench.current.splitTab)).toBeNull();
+  await expect(page.locator('#message')).toBeVisible();
+  await expect(page.locator('#chat .workbench-panel')).toBeHidden();
+ });
+}
+
+test('visible files render decoded thumbnails in the right split pane and narrow layout',async({page},testInfo)=>{
+ await page.evaluate(()=>{const wb=BridgeWorkbench;wb.setThumbnails(true);if(wb.canSplit())wb.toggleSplit();else wb.files();});
+ const image=page.locator('#chat .wb-file-icon .wb-thumbnail');
+ await expect(image).toBeVisible();
+ expect(await image.evaluate(node=>({width:node.naturalWidth,height:node.naturalHeight}))).toEqual({width:96,height:48});
+ expect(await page.evaluate(()=>window.__workspaceReads.filter(url=>new URL(url,location.origin).pathname.endsWith('/preview')).length)).toBe(1);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+ await testInfo.attach('files-thumbnail',{body:await page.screenshot(),contentType:'image/png'});
+});
 });

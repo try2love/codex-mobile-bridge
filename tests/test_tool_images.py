@@ -54,6 +54,7 @@ class ToolImageTests(unittest.TestCase):
         original = copy.deepcopy(item)
         row = normalize_item(item)
         self.assertEqual(item, original)
+        self.assertEqual(row.get('toolName'), 'cua_repl.js')
         self.assertNotIn(PNG, row['output'])
         self.assertIn('Screenshot ready', row['output'])
         self.assertEqual(row['attachments'][0]['type'], 'toolImage')
@@ -65,6 +66,7 @@ class ToolImageTests(unittest.TestCase):
             {'type': 'function_call', 'call_id': 'call', 'name': 'mcp__cua_repl__js'},
             {'type': 'function_call_output', 'call_id': 'call', 'output': json.dumps(result())}]}]})
         saved = state['turns'][0]['messages'][0]
+        self.assertEqual(saved.get('toolName'), 'mcp__cua_repl__js')
         self.assertEqual(live['attachments'], saved['attachments'])
         self.assertNotIn(PNG, saved['output'])
 

@@ -5,6 +5,7 @@ const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
 const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./shared/controller.cjs');
 const {pairingImage}=require('./features/connections/qr.cjs');
+const {validateCloud}=require('./features/connections/cloud.cjs');
 const {createTray}=require('./shell/tray.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
@@ -48,6 +49,32 @@ function restoreOfficialService(){
 function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
 let handoff=null;
 function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
+function readSavedDataDir(file){
+  try{
+    const parsed=JSON.parse(fs.readFileSync(file,'utf8'));
+    const candidate=parsed?.dataDir;
+    // Whitespace may be part of an existing directory name; validate without rewriting it.
+    if(typeof candidate==='string'&&candidate.trim())return candidate;
+    throw Error('缺少有效的 dataDir 字段');
+  }catch(error){
+    throw Error(`无法恢复已保存的数据目录，请检查或恢复 ${file}：${error.message}`);
+  }
+}
+function saveDataDir(targetDir){
+  const userDir=app.getPath('userData');
+  fs.mkdirSync(userDir,{recursive:true});
+  const file=path.join(userDir,'bridge-location.json');
+  const payload=JSON.stringify({dataDir:targetDir});
+  // 先写同目录临时文件再原子重命名，避免写入中途进程退出留下损坏的 JSON
+  const temporary=`${file}.${process.pid||'tmp'}.tmp`;
+  try{
+    fs.writeFileSync(temporary,payload,{mode:0o600});
+    fs.renameSync(temporary,file);
+  }catch(error){
+    try{fs.unlinkSync?.(temporary);}catch{}
+    throw error;
+  }
+}
 function loadDataDir(){
   handoff=currentHandoff();
   if(handoff)return handoff.dataDir;
@@ -56,9 +83,19 @@ function loadDataDir(){
     return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
   const saved=path.join(app.getPath('userData'),'bridge-location.json');
-  if(fs.existsSync(saved))return JSON.parse(fs.readFileSync(saved,'utf8')).dataDir;
+  if(fs.existsSync(saved)){
+    const configured=readSavedDataDir(saved);
+    if(configured)return configured;
+  }
   const local=path.join(process.resourcesPath,'bridge-data-dir.txt');
-  if(app.isPackaged&&fs.existsSync(local))return fs.readFileSync(local,'utf8').trim();
+  if(app.isPackaged&&fs.existsSync(local)){
+    try{
+      const configured=fs.readFileSync(local,'utf8').trim();
+      if(configured)return configured;
+    }catch(error){
+      if(error?.code!=='ENOENT'&&typeof console!=='undefined')console?.warn?.('无法读取随包数据目录配置，将回退默认目录：',error);
+    }
+  }
   return app.isPackaged?path.join(app.getPath('userData'),'gateway'):path.join(root,'.local');
 }
 function authorize(event){
@@ -79,12 +116,12 @@ function worker(action,payload){
   if(action==='snapshot'&&updateQuitting)return Promise.resolve({...lastSnapshot,update:updater.status()});
   if(setupPending&&['save','start','stop'].includes(action))return Promise.reject(Error('请等待服务器操作完成。'));
   if(action==='start')payload={...payload,connectionSecrets};
-  const writes=(action==='cli-access'&&payload?.action!=='list')||(action==='network-adaptation'&&payload?.action!=='status')||(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches','webhook-endpoint', 'transfer-settings'].includes(action);
+  const writes=(action==='cloud'&&!['status','capabilities','sponsorship','devices'].includes(payload?.action))||(action==='cli-access'&&payload?.action!=='list')||(action==='network-adaptation'&&payload?.action!=='status')||(['harness','desktop-sessions'].includes(action)&&!['status','clients','detect'].includes(payload?.action))||['server-setup','connection-credentials','save','start','stop','devices','notification-watches','webhook-endpoint', 'transfer-settings'].includes(action);
   if(writes&&updater?.busy)return Promise.reject(Error('正在更新应用，请稍候。'));
   if(writes)workerWrites++;
   if(action==='snapshot'&&snapshotPending)return snapshotPending;
   const options=workerFor({packaged:app.isPackaged,resources:process.resourcesPath,root,dataDir});
-  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):['accounts','account','cli-access','desktop-sessions','start','stop','save'].includes(action)?managementWorker.call(options,action,payload):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:value.networkInterfaces??interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged(),loginStartup:loginStartup.status()}:value).finally(()=>{if(writes)workerWrites--;});
+  const result=(action==='snapshot'&&!updater?.busy?snapshotWorker.read(options):['cloud','accounts','account','cli-access','desktop-sessions','start','stop','save'].includes(action)?managementWorker.call(options,action,payload):runWorker(options,action,payload)).then(value=>['snapshot','save'].includes(action)?{...value,networkInterfaces:value.networkInterfaces??interfaces(),cloudflaredInstall:installStatus,update:updater?.status(),updateResult:updateResult(),updateManaged:updateManaged(),loginStartup:loginStartup.status()}:value).finally(()=>{if(writes)workerWrites--;});
   if(action==='snapshot')snapshotPending=result.then(value=>{lastSnapshot=value;return value;}).finally(()=>{snapshotPending=null;});
   return action==='snapshot'?snapshotPending:result;
 }
@@ -95,8 +132,7 @@ async function installUpdate(candidate){
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
     platform:process.platform,arch:process.arch,target,parentPid:process.pid,token});
   // Preserve selected data location even when an old local bundle carried it inside Resources.
-  fs.mkdirSync(app.getPath('userData'),{recursive:true});
-  fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+  saveDataDir(dataDir);
   const log=fs.openSync(path.join(dataDir,'desktop-update.log'),'a',0o600);
   // A Windows process locks its cwd. Use a stable directory outside both the
   // installation being replaced and the transaction cleaned up on a later update.
@@ -136,6 +172,18 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
+  ipcMain.handle('bridge:cloud',async(event,payload)=>{
+    authorize(event);
+    const request=validateCloud(payload);
+    const result=await worker('cloud',request);
+    if(request.action==='devices')for(const device of result.devices||[]){
+      const code=device.pairing_code;
+      if(typeof code==='string'&&/^bridge-pair:v1:[0-9a-f-]{36}:[0-9A-F]{64}:[0-9a-f]{32}$/.test(code)){
+        device.pairing_image=(await pairingImage({url:code})).image;
+      }
+    }
+    return result;
+  });
   ipcMain.handle('bridge:check-update',event=>{authorize(event);return updater.check({manual:true});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
   ipcMain.handle('bridge:install-update',event=>{
@@ -162,6 +210,8 @@ function register(){
       if(payload.action==='zcode-official-state')return service.status();
       if(payload.action==='zcode-official-save')return service.save(payload.link);
       if(payload.action==='zcode-official-login')return service.login(payload.link);
+      if(payload.action==='zcode-official-browser-login')return service.login(payload.link,{external:true});
+      if(payload.action==='zcode-official-login-receipt')return service.completeLoginReceipt(payload.receipt);
       if(payload.action==='zcode-official-connect'){
         if(service.localLink(payload.link).url!==service.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
         await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});
@@ -296,8 +346,7 @@ function register(){
       installStatus={};connectionSecrets={};
       const changed=selected!==dataDir;
       if(changed){officialRemote?.dispose();officialRemote=null;}
-      publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
-      fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);
       if(changed)restoreOfficialService();
     }
     return selected;
@@ -360,27 +409,40 @@ function createWindow(hidden=false){
   window.on('closed',()=>{window=null;});
   return window;
 }
+let startupReady=false;
 if(!app.requestSingleInstanceLock())app.quit();
 else{
-  app.on('second-instance',(_event,argv)=>{if(!loginStartup.hidden(argv))showWindow();});
+  // 仅在启动初始化完成且未进入退出流程时显示窗口，防止未就绪或启动失败时拉起半残界面
+  app.on('second-instance',(_event,argv)=>{if(startupReady&&!quitting&&!loginStartup.hidden(argv))showWindow();});
+  // 单元测试替身只实现 app.whenReady().then(...) 而未提供 .catch()，因此必须在 async 回调内部 try/catch 兜底；
+  // 一旦启动关键路径抛错，显式弹窗并清理退出，避免单实例锁被无窗口僵尸进程长期占用
   app.whenReady().then(async()=>{
-    language=normalize(app.getLocale());
-    try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();publishLanguage(dataDir,language);
-    setupUpdater();register();
-    if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
-    if(['win32','darwin'].includes(process.platform)){
-      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
-      if(process.platform==='darwin')icon.setTemplateImage(true);
-      tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
-        open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
-        onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
+    try{
+      language=normalize(app.getLocale());
+      try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
+      dataDir=loadDataDir();publishLanguage(dataDir,language);
+      setupUpdater();register();
+      if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
+      if(['win32','darwin'].includes(process.platform)){
+        const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
+        if(process.platform==='darwin')icon.setTemplateImage(true);
+        tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
+          open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
+          onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
+      }
+      startupReady=true;
+      createWindow(!!tray&&loginStartup.hidden(process.argv,true));
+      restoreOfficialService();
+    }catch(error){
+      startupReady=false;
+      if(typeof console!=='undefined')console?.error?.(error);
+      try{dialog?.showErrorBox?.(t('网关操作未完成'),t(error?.message||String(error)));}catch{}
+      releaseTray();
+      app.quit?.();
     }
-    createWindow(!!tray&&loginStartup.hidden(process.argv,true));
-    restoreOfficialService();
   });
   app.on('before-quit',releaseTray);
-  app.on('activate',showWindow);
+  app.on('activate',()=>{if(startupReady&&!quitting)showWindow();});
   // Closing the controller leaves the gateway running for the phone.
   app.on('window-all-closed',()=>app.quit());
 }

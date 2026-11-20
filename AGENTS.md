@@ -1,5 +1,7 @@
 # 项目开发导航
 
+本分支只维护云服务及其必要接入，包括云账号、设备授权、加密中继/P2P、云网页、云推送及对应构建、测试和文档。非云服务部分直接采用 `try2love/codex-mobile-bridge` 的 `main`；本地修复、功能和通用工具调整即使没有文本冲突也不保留。混合文件只保留云服务需要的最小差异，云兼容问题优先在云适配层处理。边界与清理依据见[云服务分支范围](.agents/notes/implemented/simplification/2026-11-16-cloud-only-fork-scope.md)。
+
 先读 [docs/architecture/README.md](docs/architecture/README.md)，按功能、客户端和操作系统定位改动。运行与协议约束见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 开发与验收流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。新增依赖须通过模块边界检查；不要通过扩大例外清单掩盖无关跨层调用。

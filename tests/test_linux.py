@@ -4,15 +4,50 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import bridge.features.network.interfaces as interfaces
 import bridge.platforms.linux.interfaces as linux_interfaces
+from bridge.platforms.linux import desktop as linux_desktop
 from bridge.clients.codex.catalog import Catalog
 from bridge.features.sessions.create import CreationError, open_in_desktop
 
 
 class LinuxTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'posix', 'synthetic /proc symlinks')
+    def test_deleted_desktop_image_remains_visible_only_for_its_exact_path_and_uid(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as folder:
+            root = Path(folder).resolve()
+            expected = root/'old-version'/'desktop'
+            processes = [root/str(pid) for pid in (123, 124, 125)]
+            for process, image in zip(processes, (expected, root/'other-version'/'desktop', expected)):
+                process.mkdir(); (process/'exe').symlink_to(str(image)+' (deleted)')
+                (process/'cmdline').write_bytes(b'desktop\0--profile\0fixture\0')
+            stat = Path.stat
+            def owner(path, *args, **kwargs):
+                return SimpleNamespace(st_uid=os.getuid()+1) if path == processes[2] else stat(path, *args, **kwargs)
+            with patch.object(Path, 'iterdir', return_value=processes), \
+                 patch.object(Path, 'stat', autospec=True, side_effect=owner), \
+                 patch.object(linux_desktop.os, 'readlink', wraps=os.readlink) as readlink:
+                state = {'pids': [], 'commands': {}}
+                linux_desktop.inventory({}, lambda image: state if image == expected else None)
+                self.assertEqual(state, {'pids': [123], 'commands': {123: 'desktop --profile fixture'}})
+                self.assertEqual(linux_desktop.processes(lambda image: image == expected), [123])
+                self.assertNotIn(processes[2]/'exe', [call.args[0] for call in readlink.call_args_list])
+
+    @unittest.skipUnless(os.name == 'posix', 'synthetic /proc symlinks')
+    def test_live_images_remain_visible_but_relative_or_disappearing_images_do_not(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as folder:
+            root = Path(folder).resolve(); image = root/'desktop'; image.touch()
+            processes = [root/str(pid) for pid in (123, 124, 125)]
+            for process in processes: process.mkdir()
+            (processes[0]/'exe').symlink_to(image)
+            relative = processes[1]/'relative'; relative.touch()
+            (processes[1]/'exe').symlink_to('relative')
+            with patch.object(Path, 'iterdir', return_value=processes):
+                self.assertEqual(list(linux_desktop._process_rows()), [(processes[0], image)])
+
     def test_ubuntu_chatgpt_package_layout(self):
         runtime = Path('/usr/lib/chatgpt/resources/codex')
         with patch('bridge.clients.codex.catalog.sys.platform', 'linux'), \

@@ -1071,6 +1071,8 @@ class CliSessions:
             row = {'turnId': turn.get('id'), 'status': turn.get('status'),
                           'turnStartedAtMs': (turn.get('startedAt') or 0) * 1000,
                           'items': turn.get('items') or [], 'error': turn.get('error')}
+            if turn.get('completedAt') is not None:
+                row['turnCompletedAtMs'] = turn['completedAt'] * 1000
             if turn.get('model'):
                 row['params'] = {'model': turn['model'], 'effort': turn.get('reasoningEffort')}
             turns.append(row)
@@ -1175,6 +1177,7 @@ class CliSessions:
                     row = {'turnId': turn.get('id'), 'items': []}
                     state['turns'].append(row)
                 if method == 'turn/started':
+                    row.pop('turnCompletedAtMs', None)
                     model = turn.get('model') or state.get('latestModel')
                     effort = turn.get('reasoningEffort') or state.get('latestReasoningEffort')
                     if model:
@@ -1184,6 +1187,8 @@ class CliSessions:
                 row.update(status=turn.get('status'), error=turn.get('error'))
                 if turn.get('startedAt') is not None:
                     row['turnStartedAtMs'] = turn['startedAt'] * 1000
+                if turn.get('completedAt') is not None:
+                    row['turnCompletedAtMs'] = turn['completedAt'] * 1000
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):

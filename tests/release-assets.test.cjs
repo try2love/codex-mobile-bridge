@@ -66,3 +66,35 @@ test('release workflow prepares a draft and uses the packaged signing identity',
   assert.ok(!workflow.includes('--draft=false'));
   assert.ok(!workflow.includes('inputs.publish'));
 });
+test('release caller grants reusable desktop read permissions and keeps ordinary builds as the default',()=>{
+  const yaml=require('js-yaml'),load=name=>yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/'+name),'utf8'));
+  const release=load('release.yml'),desktop=load('desktop.yml'),build=release.jobs.build;
+  assert.equal(build.uses,'./.github/workflows/desktop.yml');
+  assert.deepEqual(build.permissions,desktop.permissions);
+  assert.deepEqual(build.permissions,{contents:'read',actions:'read'});
+  assert.deepEqual(release.permissions,{contents:'read'});
+  assert.equal(release.jobs.ios.permissions,undefined);
+  assert.deepEqual(release.jobs.release.permissions,{contents:'write'});
+  assert.equal(build.with.acceptance_only,undefined);
+  for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.acceptance_only.default,false);
+  for(const name of ['package','linux'])assert.equal(desktop.jobs[name].if,'inputs.acceptance_only != true');
+});
+test('mobile Intel supplement keeps the same checks and the default ARM build',()=>{
+  const yaml=require('js-yaml'),load=name=>yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/'+name),'utf8'));
+  const mobile=load('mobile.yml'),ci=load('tests.yml');
+  assert.equal(mobile.on.workflow_dispatch.inputs.intel_fallback.default,false);
+  assert.equal(mobile.jobs.ios['runs-on'],"${{ inputs.intel_fallback == true && 'macos-15-intel' || 'macos-15' }}");
+  const supplement=mobile.jobs['mobile-update-tests'];
+  assert.equal(supplement.if,'inputs.intel_fallback == true');assert.equal(supplement['runs-on'],'macos-15-intel');
+  assert.deepEqual(supplement.steps.filter(step=>step.uses==='actions/setup-java@v4'||step.run?.startsWith('python3 scripts/')),
+    ci.jobs['mobile-update-tests'].steps.filter(step=>step.uses==='actions/setup-java@v4'||step.run?.startsWith('python3 scripts/')));
+  for(const job of [mobile.jobs.ios,supplement]){
+    const validation=job.steps[0];assert.equal(validation.name,'Validate frozen Intel supplement source');
+    assert.ok(validation.run.includes('1561a0c82d8eb4f02f02c7a608f94812ba87a75f'));
+    assert.ok(validation.run.includes('exit 1'));
+    const checkout=job.steps.find(step=>step.uses==='actions/checkout@v4');
+    assert.ok(checkout.with.ref.includes('inputs.source_ref'));
+  }
+  assert.ok(mobile.jobs.ios.steps.some(step=>step.run==='python scripts/build-mobile-ios.py'));
+  assert.ok(mobile.jobs.ios.steps.some(step=>step.run?.includes('node --test mobile/tests/*.test.cjs')&&step.run.includes('test_mobile_ios_build.py')));
+});

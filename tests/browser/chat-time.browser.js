@@ -12,9 +12,9 @@ window.runChatTimeChecks=async function(){
     if(Math.abs(before.top-rect.top)<before.height)check(rect.left-before.right<=10,label+' timestamp stays beside buttons');
     check(rect.width>0&&rect.left>=0&&rect.right<=innerWidth,label+' visible clock fits viewport');
   };
-  const messages=[{id:'user',role:'user',text:'Question',timestamp:stamp,editMessageId:'user'},
-    {id:'reply',role:'assistant',text:'Reply',timestamp:stamp+60000,forkMessageId:'reply'},
-    {id:'old',role:'assistant',text:'No native timestamp'}];
+  const messages=[{id:'user',role:'user',turnId:'current-turn',text:'Question',timestamp:stamp,editMessageId:'user'},
+    {id:'reply',role:'assistant',turnId:'current-turn',text:'Reply',timestamp:stamp+60000,forkMessageId:'reply'},
+    {id:'old',role:'assistant',turnId:'historical-turn',text:'No native timestamp'}];
   check(!document.getElementById('notify-button'),'composer notification button removed');
   for(const provider of ['claude','deepseek','zcode']){
     const root=document.createElement('div');root.className='app';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
@@ -37,6 +37,7 @@ window.runChatTimeChecks=async function(){
       actionsFollow(view.messageList.querySelector('[data-key="reply"]'),provider+' assistant','从这里分支');
       for(const time of times){const rect=time.getBoundingClientRect();check(rect.width>0&&rect.left>=0&&rect.right<=innerWidth,provider+' visible clock fits viewport');}
       check(root.scrollWidth<=innerWidth,provider+' no horizontal overflow');
+      await window.captureChatTimeFixture?.(provider);
     }finally{view.clear();root.remove();}
   }
   const viewport=document.createElement('div'),container=document.createElement('div'),older=document.createElement('button'),newer=document.createElement('button');
@@ -44,8 +45,8 @@ window.runChatTimeChecks=async function(){
   viewport.append(container);document.body.append(viewport);
   const timeline=new ChatTimeline({url:()=>'/synthetic',request:()=>{throw Error('Unexpected read');},renderMeta(){},renderText:(node,text)=>node.textContent=text,status(){},elements:{viewport,container,older,newer},onAction(){throw Error('Unexpected mutation');}});
   try{
-    const rows=messages.map((message,order)=>({...message,key:message.id,version:'1',order,turnId:'turn',turnStatus:'completed',editable:message.role==='user',forkable:message.role==='assistant'}));
-    timeline.apply({rows,meta:{latestUserTurnId:'turn'},sequence:1,epoch:'fixture',before:null,hasMore:false},true);
+    const rows=messages.map((message,order)=>({...message,key:message.id,version:'1',order,turnStatus:'completed',editable:message.role==='user',forkable:message.role==='assistant'}));
+    timeline.apply({rows,meta:{latestUserTurnId:'current-turn'},sequence:1,epoch:'fixture',before:null,hasMore:false},true);
     check(container.querySelectorAll('time.message-time').length===2,'Codex shared timestamp rendering');
     check(container.querySelector('time.message-time').dateTime===clock,'Codex exact native instant');
     actionsFollow(container.querySelector('[data-key="user"]'),'Codex live user','编辑并重新发送');

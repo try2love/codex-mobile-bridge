@@ -2,6 +2,19 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+  "编辑了文件，运行了命令": "Edited files and ran commands",
+  "加载更早过程": "Load earlier activity",
+  "已回答问题": "Answered questions",
+  "已运行": "Ran",
+  "已编辑": "Edited",
+  "正在处理": "Working",
+  "用时 {minutes} 分钟 {seconds} 秒": "Took {minutes} min {seconds} sec",
+  "用时 {seconds} 秒": "Took {seconds} sec",
+  "思考与执行过程": "Thoughts and actions",
+  "正在思考与执行…": "Thinking and working…",
+  "运行了命令": "Ran commands",
+  "编辑了文件": "Edited files",
+  "执行了操作": "Performed actions",
 "展开聊天列表":"Expand chat list",
 "收起聊天列表":"Collapse chat list",
 "Codex 会话同步格式已变化，请更新 Bridge；历史和草稿仍可查看。":"The Codex session format has changed. Update Bridge; history and drafts remain available.",
@@ -550,6 +563,7 @@ const en={
 "官方账号登录请在电脑端完成。":"Sign in to official accounts on the computer.",
 "此电脑的 Codex Desktop 与 CLI 共用接入；桌面运行时切换会重启桌面应用。":"Codex Desktop and CLI share access on this computer. Switching restarts Desktop when it is running.",
 "确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑的 Codex 接入？桌面运行时会重启。":"Confirm all tasks, including tasks not shown here, have ended and switch Codex access on this computer? Desktop restarts if running.",
+"确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换时仅在需要时正常退出空闲的共享 CLI 服务，并在桌面应用运行时重启；切换完成前请勿从其他客户端发起任务。":"Confirm all tasks, including tasks not shown here, have ended and switch shared Codex access on this computer? The idle shared CLI service may quit normally when needed, and Desktop restarts if running. Do not start tasks from other clients until the switch finishes.",
 "置顶聊天":"Pinned chats",
 "置顶":"Pin chat",
 "取消置顶":"Unpin chat",
@@ -1940,6 +1954,7 @@ const en={
 "尚未连接共享中继。":"No shared relay registered.",
 "已暂停":"Paused",
 "在线":"Online",
+"离线":"Offline",
 "离线；启用后请重新启动电脑网关。":"Offline; restart the computer gateway after enabling.",
 "暂停中继连接":"Pause relay",
 "启用中继连接":"Enable relay",
@@ -3680,6 +3695,21 @@ const en={
   "普通模式": "Default mode",
   "计划模式": "Plan mode",
   "目标模式": "Goal mode",
+  "工作流": "Workflow",
+  "暂时无法读取 Antigravity 原生指令与 Skill 列表": "Could not load Antigravity native commands and skills.",
+  "原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送": "The session is busy. Queued or steered messages do not support slash commands or Skills; wait for the current reply to finish and send directly.",
+  "所选 Skill 参数无效": "Invalid Skill selection",
+  "Antigravity 工作模式无效": "Invalid Antigravity work mode",
+  "原会话正在等待交互确认，请先回应后再切换工作模式": "The session is waiting for your confirmation. Respond before changing work mode.",
+  "Antigravity 暂不支持此目标状态操作，请在原对话继续交互": "Antigravity does not support this goal status action yet. Continue in the original conversation.",
+  "请输入目标内容": "Enter a goal objective",
+  "目标不能超过 4000 字": "Goal objectives cannot exceed 4,000 characters",
+  "原会话正在等待交互确认，请先回应后再设定目标": "The session is waiting for your confirmation. Respond before setting a goal.",
+  "请等待 Antigravity 原生会话空闲后再设定目标": "Wait for the Antigravity session to become idle before setting a goal.",
+  "当前 Antigravity 原生环境暂未提供 /goal 指令": "The current Antigravity native environment does not provide the /goal command.",
+  "原会话正在等待交互确认，请先回应后再压缩上下文": "The session is waiting for your confirmation. Respond before compacting context.",
+  "请等待 Antigravity 原生会话空闲后再压缩上下文": "Wait for the Antigravity session to become idle before compacting context.",
+  "当前 Antigravity 原生环境暂未提供 /compact 指令": "The current Antigravity native environment does not provide the /compact command.",
   "当前账号 · 重置卡与额度详情": "Current account · Usage and resets",
   "请求处理通知": "Approval notifications",
   "跟随全局设置": "Use global setting",
@@ -4035,7 +4065,188 @@ const en={
   "帮助与测试": "Help & testing",
 "已编辑 {count} 个文件":"Edited {count} files",
 "累计修改":"Recorded edits",
-"请在电脑端完成连接":"Complete the connection on your computer"
+"请在电脑端完成连接":"Complete the connection on your computer",
+"云服务":"Cloud Relay",
+"手机已验证":"Phone verified",
+"等待手机扫码":"Waiting for phone to scan",
+"云配对二维码":"Cloud pairing QR",
+"复制配对码":"Copy pairing code",
+"无法复制配对码。":"Could not copy pairing code.",
+"替换 {name}":"Replaces {name}",
+"替换旧授权":"Replace an old authorization",
+"保留旧授权":"Keep old authorizations",
+"允许并替换":"Allow and replace",
+"没有已配对的手机或待确认请求":"No paired phones or pending requests",
+"获取验证码":"Get code",
+"{seconds} 秒后可重新获取":"Get another code in {seconds}s",
+"设置账号密码":"Set your password",
+"完成注册":"Complete registration",
+"更换邮箱":"Use a different email",
+"邮箱验证":"Email verification",
+"填写邮箱，获取并输入验证码，验证通过后再设置密码。":"Enter your email address, get a code, then verify it before setting a password.",
+"邮箱验证成功，请设置密码完成注册。":"Email verified. Set a password to finish creating your account.",
+"如果该邮箱可以注册，六位验证码将发送到邮箱，10 分钟内有效。":"If this email can be registered, a six-digit code will be sent. It expires after 10 minutes.",
+"账号创建成功，请登录后继续。":"Account created. Sign in to continue.",
+"此服务器尚不支持先验证邮箱再设置密码，请更新服务器后再注册。":"This server does not support email-first registration yet. Update the server before registering.",
+"邮箱验证已过期或已使用，请重新验证邮箱。":"Email verification has expired or already been used. Verify your email again.",
+"无法确认邮箱验证结果，请获取新的验证码后再重试。":"The email verification result could not be confirmed. Request a new code before trying again.",
+"无法确认注册结果，请先尝试登录或重置密码，不要直接重复注册。":"The registration result could not be confirmed. Try signing in or resetting your password before registering again.",
+"邮箱验证码":"Email verification code",
+"验证码错误、已过期或尝试次数已用完，请申请新的验证码。":"The verification code is incorrect, expired or exhausted. Request a new code.",
+"此服务器尚不支持邮箱验证码，请更新服务器后再注册。":"This server does not support email verification codes yet. Update the server before registering.",
+"请输入六位邮箱验证码。":"Enter the six-digit email verification code.",
+"忘记密码？":"Forgot password?",
+"还没有账号？":"Don't have an account?",
+"创建账号":"Create an account",
+"已有账号？":"Already have an account?",
+"返回登录":"Back to sign in",
+"创建云账号":"Create a cloud account",
+"重置账号密码":"Reset your password",
+"验证邮箱":"Verify your email",
+"使用云账号登录，继续使用云服务。":"Sign in with your account to continue using cloud services.",
+"输入邮箱地址，申请密码重置链接。":"Enter your email address to request a password reset link.",
+"发送重置链接":"Send reset link",
+"邮箱地址":"Email address",
+"设置密码":"Create a password",
+"确认密码":"Confirm password",
+"新密码至少需要 12 个字符。":"Use at least 12 characters for your new password.",
+"两次输入的密码不一致。":"Passwords do not match.",
+"如果账号存在，密码重置链接将发送到已验证的邮箱。":"If this account exists, a password reset link will be sent to its verified email address.",
+"无法确认账号请求结果，请检查邮箱和状态后再决定是否重试。":"The account request could not be confirmed. Check your email and status before trying again.",
+"登录不会自动授权手机，配对仍需在本机确认。":"Signing in does not authorize a phone. Pairing still requires approval on this desktop.",
+"登录云服务":"Sign In to Cloud",
+"登录后即可使用云中继，现有直连不受影响。":"Sign in to use the cloud relay. Your direct connections are unchanged.",
+"云服务器":"Cloud server",
+"官方云服务":"Official Cloud",
+"赞助支持":"Sponsor support",
+"手机扫码购买":"Scan with phone",
+"使用手机扫描二维码，打开闲鱼购买页面。":"Scan with your phone to open the Xianyu purchase page.",
+"闲鱼购买二维码":"Xianyu purchase QR code",
+"正在加载二维码…":"Loading QR code...",
+"无法加载二维码，请关闭后重试。":"Could not load the QR code. Close it and try again.",
+"购买官方云服务 30 天激活码（闲鱼）":"Buy a 30-day Official Cloud activation code (Xianyu)",
+"购买后登录官方云账号，在本页兑换激活码。":"After purchasing, sign in to your Official Cloud account and redeem the code on this page.",
+"网页云服务访问地址":"Web cloud address",
+"刷新地址":"Refresh address",
+"正在读取网页云服务地址…":"Loading web cloud address...",
+"在浏览器中打开此地址，并使用同一云账号登录。":"Open this address in a browser and sign in with the same cloud account.",
+"此服务器未提供网页云服务访问地址。":"This server has not provided a web cloud address.",
+"无法读取网页云服务地址，请刷新重试。":"Could not load the web cloud address. Try refreshing it.",
+"自定义服务器（自部署）":"Custom Server",
+"云账号登录已完成，但服务状态刷新失败，请刷新服务状态。":"Cloud sign-in completed, but service status could not be refreshed. Refresh the service status.",
+"已退出云账号。":"Signed out of the cloud account.",
+"已在本机退出，无法确认云端会话是否已注销；现有直连不受影响。":"Signed out locally. Cloud session revocation could not be confirmed; direct connections are unchanged.",
+"已在本机退出，但无法清除保存的云凭据，请检查系统凭据库。":"Signed out locally, but saved cloud credentials could not be cleared. Check the system credential vault.",
+"无法确认云账号退出结果，请刷新状态后再决定是否重试。":"The cloud sign-out result could not be confirmed. Refresh status before trying again.",
+"服务状态已刷新。":"Cloud service status refreshed.",
+"服务天数兑换成功，服务状态已刷新。":"Service days redeemed. Service status refreshed.",
+"服务天数兑换成功，但服务状态刷新失败。请刷新状态，不要再次兑换。":"Service days redeemed, but service status could not be refreshed. Refresh status; do not redeem again.",
+"无法核验云服务状态，请刷新服务状态。":"Cloud service status could not be verified. Refresh the service status.",
+"无法确认兑换结果，请先刷新服务状态再决定是否再次提交。":"The redemption result could not be confirmed. Refresh service status before submitting again.",
+"无法确认云登录结果，请刷新状态后再决定是否重试。":"The cloud sign-in result could not be confirmed. Refresh status before trying again.",
+"服务器地址（HTTPS，不含路径）":"Exact HTTPS server origin",
+"邮箱 / 自部署用户名":"Email / selfhost username",
+"登录云账号":"Log In",
+"刷新服务状态":"Refresh Entitlement",
+"退出云账号":"Log Out",
+"服务天数兑换码":"Service-days redemption code",
+"兑换服务天数":"Redeem",
+"网关 ID：{id}":"Gateway ID: {id}",
+"正在处理云服务操作…":"Working...",
+"服务有效期至 {date}":"Active until {date}",
+"服务已启用（自部署）":"Active (selfhost)",
+"云服务尚未激活或已到期，直连不受影响。":"Cloud entitlement is inactive. Direct connections are unchanged.",
+"操作已完成。若写入超时，请刷新状态确认结果，不要盲目重复提交。":"Done. If a write times out, refresh status; do not blindly replay it.",
+"云中继已停止":"Relay stopped",
+"云中继未启用":"Relay disabled",
+"云中继正在连接":"Relay connecting",
+"云中继已自动启用，启动网关后即可连接。":"Relay enabled automatically. Start the gateway to connect.",
+"云中继已连接":"Relay connected",
+"云中继暂不可用":"Relay unavailable",
+"云服务：{message}":"Cloud service: {message}",
+"云服务本机配置无效。":"Local cloud configuration is invalid.",
+"请先登录云账号。":"Sign in to the cloud account first.",
+"系统凭据库不可用，请检查桌面访问权限。":"The system credential vault is unavailable. Check desktop access permissions.",
+"保存的凭据属于其他服务器或账号，请重新登录。":"Stored credentials belong to a different server or account. Sign in again.",
+"云服务响应超过大小限制。":"The cloud response exceeds the size limit.",
+"云服务器返回了重定向，请使用准确的 HTTPS 源地址。":"The cloud server redirected the request. Use its exact HTTPS origin.",
+"无法连接云服务器，请检查网络和 HTTPS 证书。":"Cannot connect to the cloud server. Check the network and HTTPS certificate.",
+"已注册的网关身份与本机不一致。":"The registered gateway identity does not match this desktop.",
+"云网关尚未连接，请保持网关运行并等待自动连接。":"The cloud gateway is not connected. Keep the gateway running and wait for automatic connection.",
+"云服务连接失败，请检查服务器和网络。":"Cloud connection failed. Check the server and network.",
+"云中继运行依赖缺失，请完善网关运行环境。":"Cloud relay dependencies are missing. Complete the gateway runtime setup.",
+"账号或密码不正确，或账号暂不可用。托管账号请先验证邮箱。":"Incorrect credentials or account unavailable. Hosted accounts must verify their email first.",
+"云登录会话已失效，请重新登录。":"Your cloud session has expired. Sign in again.",
+"云服务尚未激活或已到期，请兑换服务天数；直连不受影响。":"Cloud service is inactive or expired. Redeem service days; direct connections are unchanged.",
+"云服务尝试次数过多，请稍后再试。":"Too many attempts. Wait before trying again.",
+"服务器未开放公开注册，请联系管理员创建账号。":"Public registration is disabled. Ask the server administrator to create an account.",
+"自部署模式不提供服务天数兑换。":"Service-day redemption is not available in self-host mode.",
+"服务天数兑换码无效或已不可用。":"The redemption code is invalid or no longer available.",
+"此账号已使用过这批兑换码，请使用其他批次。":"This account has already redeemed a code from this batch. Use a different batch.",
+"云账号密码长度必须为 12 至 256 字节。":"Use a password containing 12 to 256 bytes.",
+"请输入有效的云账号邮箱地址。":"Enter a valid email address.",
+"密码重置链接无效、已过期或已使用，请重新申请。":"This password reset link is invalid, expired or already used. Request a new link.",
+"没有云服务访问权限。":"Access to the cloud service is denied.",
+"云服务器只接受 HTTPS 连接。":"This cloud server accepts HTTPS connections only.",
+"云记录已变化或用户名已被使用，请刷新状态。":"The cloud record has changed or the username is in use. Refresh the status.",
+"未找到云服务记录。":"The cloud record was not found.",
+"云服务暂不可用，请稍后再试。":"The cloud service is temporarily unavailable.",
+"云服务器返回错误，请检查服务器日志。":"The cloud server returned an error. Check the server logs.",
+"请输入准确的 HTTPS 服务器源地址，不要包含路径、查询参数或片段。":"Enter the exact HTTPS server origin without a path, query or fragment.",
+"请使用规范的服务器源地址，不要添加尾部斜杠或默认 HTTPS 端口。":"Use the canonical server origin; do not add a trailing slash or default HTTPS port.",
+"云服务操作无效。":"Invalid cloud operation.",
+"云中继开关无效。":"Invalid cloud switch.",
+"云手机绑定无效。":"Invalid cloud phone binding.",
+"请输入有效的云账号登录名。":"Enter a valid cloud account login.",
+"请输入有效的服务天数兑换码。":"Enter a valid service-days redemption code.",
+"请先在桌面端明确批准此手机。":"Approve the phone locally on the desktop first.",
+"此手机身份尚未获得本机授权。":"This phone identity is not approved locally.",
+"手机公钥已变化，请重新配对并批准身份。":"The phone keys changed. Pair and approve the identity again.",
+"手机绑定 ID":"Phone binding ID",
+"云服务字段无效：{field}":"Invalid cloud field: {field}"
+,"设备加密证明不可用或身份发生变化，请刷新设备列表并核对安全码。":"The encrypted device proof is unavailable or its identity changed. Refresh the device list and verify the safety code."
+,"本机设备核验记录已达上限，暂时无法添加此设备。":"The local device verification limit has been reached. This device cannot be added."
+,"配对安全码":"Pairing safety code"
+,"手机":"Phone"
+,"安全码：{code}":"Safety code: {code}"
+,"等待设备完成加密验证":"Waiting for encrypted device verification"
+,"允许 {name} 配对前，确认手机安全码与 {code} 一致？":"Allow {name} only if safety code {code} matches the phone?"
+,"云设备":"Cloud Devices"
+,"删除 {name}":"Delete {name}"
+,"从本电脑删除 {name}？此设备将断开连接，再次连接需要重新配对。":"Delete {name} from this computer? The device will be disconnected and must pair again to reconnect."
+,"云设备已删除。":"Cloud device deleted."
+,"无法确认设备是否已删除。请先查看设备列表，再决定是否重试。":"Could not confirm device deletion. Check the device list before trying again."
+,"网页云服务":"Web Cloud Access"
+,"允许当前云账号通过浏览器访问本电脑。关闭后会断开已打开的网页会话；手机权限独立管理。":"Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate."
+,"允许网页访问本电脑":"Allow web access to this computer"
+,"重试保存关闭网页访问":"Retry saving web access as disabled"
+,"已允许当前云账号通过网页访问。":"Web access allowed for this cloud account."
+,"网页访问已关闭。需要使用时请在此开启。":"Web access disabled. Enable it here to connect from a browser."
+,"网页访问已关闭，已打开的网页会话已断开。":"Web access disabled. Open web sessions have been disconnected."
+,"请重启新版网关以管理网页访问权限。":"Restart the updated gateway to manage web access."
+,"本次网关运行已阻止网页访问，但无法保存权限。重启前请修复存储权限。":"Web access is blocked for this gateway run, but its permission could not be saved. Fix storage permissions before restarting."
+,"网页访问权限已变化，请刷新状态后再操作。":"Web access changed. Refresh its status before trying again."
+,"无法读取网页访问状态，请重启新版网关后刷新。":"Web access status is unavailable. Restart the updated gateway and refresh."
+,"无法确认网页访问状态，请刷新后再操作。":"Web access status could not be confirmed. Refresh before trying again."
+,"登录同一账号的手机会自动出现。请在本机分别开启手机的连接权限。":"Phones signed in to this account appear automatically. Allow each phone to connect on this desktop."
+,"请同时更新服务端、桌面端和手机端，以使用自动设备发现。":"Update the server, desktop and phone together to use automatic device discovery."
+,"无法核验云设备目录。":"The cloud device directory could not be verified."
+,"该设备已被永久撤销或不可用，不会自动恢复其身份。":"This device is permanently revoked or unavailable. Its identity is not restored automatically."
+,"本机已阻止连接，但无法确认云端权限变更；请先刷新再操作。":"Connection is blocked locally. The cloud permission change could not be confirmed; refresh before trying again."
+,"该权限变更已被更新的操作替代，本机仍阻止连接。":"This permission change was superseded. Connection remains blocked locally."
+,"云账号登录已完成，同账号手机会自动出现；请在本机允许连接。":"Cloud sign-in completed. Phones on this account appear automatically; allow connections on this desktop."
+,"尚无云手机，请在手机上登录此账号。":"No cloud phones yet. Sign in on your phone with this account."
+,"设备已永久撤销":"Device permanently revoked"
+,"本机已阻止连接，云端权限尚未确认":"Connection blocked locally; cloud permission unconfirmed"
+,"已允许连接":"Connection allowed"
+,"连接已关闭，已验证密钥仍保留":"Connection disabled; verified keys are kept"
+,"等待桌面允许连接":"Waiting for desktop permission"
+,"允许连接":"Allow Connection"
+,"已在本机允许连接。":"Connection allowed on this desktop."
+,"连接已关闭，已验证密钥保留，可稍后重新开启。":"Connection disabled. Verified keys are kept for a later restore."
+,"云连接权限版本无效。":"Invalid cloud access revision"
+,"本次网关运行已阻止连接，但无法保存关闭状态。重启前请修复存储权限。":"Connection is blocked for this gateway run, but its disabled state could not be saved. Fix storage permissions before restarting."
+,"允许 {name} 连接":"Allow connection for {name}"
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}
@@ -4055,6 +4266,8 @@ function translateEnglish(source){
   if(dingtalk)return 'DingTalk did not accept the notification ('+dingtalk[1]+': '+(en[dingtalk[2]]||en['请检查机器人配置'])+').';
   const providerError=/^(飞书|钉钉|Discord|Telegram)\s*(响应格式不正确|未接受通知，请检查地址和网络|未接受通知（HTTP (\d+)）)$/.exec(source);
   if(providerError){const name=({飞书:'Feishu',钉钉:'DingTalk'})[providerError[1]]||providerError[1];return providerError[2]==='响应格式不正确'?'Invalid response from '+name+'.':providerError[3]?name+' did not accept the notification (HTTP '+providerError[3]+').':name+' did not accept the notification. Check the endpoint and network.';}
+  const agyCommand=/^当前 Antigravity 原生环境暂未提供 \/(\S+) (指令|模式)$/.exec(source);
+  if(agyCommand)return 'The current Antigravity native environment does not provide the /'+agyCommand[1]+(agyCommand[2]==='模式'?' mode.':' command.');
   return source;
 }
 function t(source){return lang==='en'?translateEnglish(source):(zh[source]??source);}

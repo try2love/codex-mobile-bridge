@@ -28,3 +28,4 @@ dist/
 /mobile/android-push/local.properties
 /.idea/
 /.venv/
+/native/bridge-p2p/target/

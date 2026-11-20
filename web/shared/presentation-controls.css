@@ -106,4 +106,4 @@ body:has(#app:not([hidden]))>.phone-header{display:none}
 
 .context-usage{display:inline-flex;align-items:center;justify-content:center;flex:none;padding:7px;min-width:32px}
 .context-usage-ring{display:block;width:17px;height:17px;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 46%,#000 50%);-webkit-mask:radial-gradient(circle,transparent 46%,#000 50%)}
-.context-usage-ring.unknown{background:none;border:2px dashed var(--muted);width:13px;height:13px;mask:none;-webkit-mask:none;opacity:.65}
+.context-usage-ring.unknown{background:repeating-conic-gradient(from 10deg,var(--muted) 0deg 40deg,transparent 40deg 60deg);opacity:.65}

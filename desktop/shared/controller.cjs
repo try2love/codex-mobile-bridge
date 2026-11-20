@@ -7,7 +7,7 @@ function runWorker({executable,prefix=[],dataDir},action,payload){
   return new Promise((resolve,reject)=>{
     const child=spawn(executable,[...prefix,action,'--data-dir',dataDir],{stdio:['pipe','pipe','pipe'],windowsHide:true});
     let output='',error='';
-    const timer=setTimeout(()=>{child.kill();reject(Error('本地操作超时，请检查运行日志'));},action==='server-setup'?300000:action==='connection-credentials'?60000:action==='update-prepare'?180000:['account','accounts','cli-access','harness','desktop-sessions'].includes(action)?150000:action==='notification-watches'?45000:25000);
+    const timer=setTimeout(()=>{child.kill();reject(Error('本地操作超时，请检查运行日志'));},action==='server-setup'?300000:action==='connection-credentials'?60000:action==='update-prepare'?180000:['cloud','account','accounts','cli-access','harness','desktop-sessions'].includes(action)?150000:action==='notification-watches'?45000:25000);
     child.stdout.setEncoding('utf8');child.stdout.on('data',data=>{output+=data;});
     child.stderr.setEncoding('utf8');child.stderr.on('data',data=>{error+=data;});
     child.on('error',err=>{clearTimeout(timer);reject(Error('无法启动网关运行时：'+err.message));});

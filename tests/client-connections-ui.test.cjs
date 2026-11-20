@@ -97,6 +97,41 @@ test('desktop fast polling is limited to visible startup states and deduplicates
  ui.panel.clients[0].connectionState='starting';ui.panel.clients[0].connected=false;ui.document.hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);ui.document.hidden=false;ui.nodes['clients-page'].hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
 });
 
+test('desktop pending inventory preserves displayed rows and polls until a ready snapshot',async()=>{
+ const ui=fixture(),cached=[{id:'codex',name:'Codex',enabled:true,connected:true}];ui.panel.clients=cached;ui.panel.renderClients();
+ ui.setHandler(async()=>({clients:[],pending:true}));await ui.panel.refreshClients();
+ assert.equal(ui.panel.clients,cached);assert.match(ui.text(),/Codex/);assert.equal(ui.panel.pollInterval,2000);
+ await ui.panel.pollClients(true);assert.equal(ui.calls.length,2,'pending inventory permits the fast poll even without a waiting client');
+ const ready=[{id:'deepseek',name:'DSH',enabled:true,connected:true}];ui.setHandler(async()=>({clients:ready,pending:false}));await ui.poll();
+ assert.equal(ui.panel.clients,ready);assert.match(ui.text(),/DSH/);assert.doesNotMatch(ui.text(),/Codex/);assert.equal(ui.panel.pollInterval,15000);
+});
+
+test('desktop cold pending inventory starts fast polling without inventing client rows',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({clients:[],pending:true}));await ui.panel.refreshClients();
+ assert.equal(ui.panel.clients.length,0);assert.equal(ui.panel.pollInterval,2000);
+ ui.setHandler(async()=>({clients:[],pending:false}));await ui.poll();assert.equal(ui.panel.pollInterval,15000);
+});
+
+test('desktop inventory failures preserve cached rows and manual refresh can clear the error',async()=>{
+ for(const reject of [false,true]){
+  const ui=fixture(),cached=[{id:'codex',name:'Codex',enabled:true,connected:true}];ui.panel.clients=cached;
+  ui.setHandler(async()=>{if(reject)throw Error('inventory unavailable');return {clients:[],pending:false,refreshError:'inventory unavailable'};});
+  await ui.panel.refreshClients();assert.equal(ui.panel.clients,cached);assert.match(ui.text(),/Codex/);assert.match(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);assert.equal(ui.panel.pollInterval,15000);
+  ui.setHandler(async()=>({clients:cached,pending:true}));await ui.panel.refreshClients(true);assert.equal(ui.calls.at(-1).refresh,true);assert.equal(ui.panel.pollInterval,2000);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+  ui.setHandler(async()=>({clients:cached,pending:false}));await ui.poll();assert.equal(ui.panel.pollInterval,15000);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+ }
+});
+
+test('desktop pending cached inventory cannot confirm an uncertain write but continues its status refresh',async()=>{
+ const ui=fixture(),cached=[{id:'codex',name:'Codex',installed:true,enabled:false,running:false}];ui.panel.clients=cached;
+ ui.panel.operationFailures=new Map([['codex',{action:'disable',uncertain:true,message:'awaiting result'}]]);
+ for(const state of [{pending:true},{pending:false,refreshError:'inventory unavailable'}]){
+  ui.setHandler(async()=>({clients:cached,...state}));await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),true,'cached inventory is not fresh evidence of the write outcome');
+ }
+ ui.setHandler(async()=>({clients:cached,pending:true}));await ui.panel.refreshClients(true);const count=ui.calls.length;
+ ui.setHandler(async()=>({clients:cached,pending:false}));await ui.poll();assert.equal(ui.calls.length,count+1);assert.equal(ui.calls.at(-1).action,'clients');assert.equal(ui.panel.hasUncertain(),false);assert.equal(ui.panel.pollInterval,15000);
+});
+
 test('DSH directory picker and plugin actions never use the account name field',async()=>{
   const ui=fixture({accounts:true}),name=ui.panel.ensureAccountPanel('deepseek').nameInput;name.value='Saved access';
   const selected='F:\\Harness 数据\\profile';ui.setChosen(selected);await ui.choose.onclick();
@@ -550,6 +585,20 @@ test('official settings save independently and connect through the shared client
  await button('disconnect').onclick();assert.equal(state.selected,true);assert.equal(state.configured,true);
  const count=ui.calls.length;ui.confirm(false);await button('forget').onclick();assert.equal(ui.calls.length,count);assert.match(ui.prompts.at(-1),/原 App.*账号和任务会保留/);
  ui.confirm(true);await button('forget').onclick();assert.equal(state.configured,false);assert.equal(input.value,state.link);assert.ok(state.link);
+});
+
+test('system browser login and receipt preserve drafts and refresh status only once',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];
+ const state={configured:false,connected:false,link:'https://zcode.z.ai/remote/v4?sid=fixture&mid=fixture',browserLoginPending:false,canSubmitLoginReceipt:false};
+ ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-browser-login')state.browserLoginPending=true;return {...state};});
+ await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),[linkInput,receipt]=section.querySelectorAll('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ await button('browser-login').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-browser-login',link:state.link});
+ const callback='https://zcode.z.ai/remote/v4?state=fixture&code=fixture';receipt.value=' '+callback+' ';receipt.oninput();assert.equal(button('login-receipt').disabled,false,'pending browser login accepts a receipt despite the initial stale canSubmit value');
+ linkInput.value=state.link+'&name=draft';linkInput.oninput();assert.equal(button('login-receipt').disabled,true);
+ const reads=ui.calls.filter(request=>request.action==='zcode-official-state').length;await ui.panel.zcodeOfficial.refresh();await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(request=>request.action==='zcode-official-state').length,reads+1);assert.equal(linkInput.value,state.link+'&name=draft');assert.equal(receipt.value,' '+callback+' ');
+ linkInput.value=state.link;linkInput.oninput();await button('login-receipt').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-login-receipt',receipt:callback});assert.equal(receipt.value,'');
+ receipt.value=callback;receipt.oninput();state.browserLoginPending=false;await ui.panel.zcodeOfficial.refresh();assert.equal(receipt.value,'');assert.equal(receipt.parent.parent.hidden,true);assert.equal(button('login-receipt').disabled,true);
 });
 
 test('official actions block overlap and reread state after a failed save without losing the draft',async()=>{

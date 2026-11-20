@@ -520,6 +520,13 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(connect.call_count, 2)
             self.assertFalse((self.directory/'scratch').exists())
 
+        # 数据库文件头或页面损坏时，被动列表/子任务查询应安全回退为空，但 strict 空闲核验仍必须报错阻止盲目发送。
+        (self.root/'conversation_summaries.db').write_bytes(b'corrupted bytes not sqlite')
+        self.assertEqual(adapter.store.list_sessions(), [])
+        self.assertEqual(adapter.store.list_tasks(self.root, CID), [])
+        with self.assertRaises(sqlite3.DatabaseError):
+            adapter.store.is_native_busy(self.root, CID)
+
     def test_creation_sends_only_after_exact_project_binding(self):
         adapter = Antigravity(self.directory, home=self.home)
         project = Path(self.temp.name)/'My Project'
@@ -1236,4 +1243,518 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def _sample_slash_commands(self):
+        return [
+            {'id': 'goal', 'name': 'goal', 'title': 'goal', 'description': 'Run goal',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'goal', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'compact', 'name': 'compact', 'title': 'compact', 'description': 'Compact conversation',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'plan', 'name': 'plan', 'title': 'plan', 'description': 'Plan carefully',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'plan', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'boost', 'name': 'boost', 'title': 'boost', 'description': 'Invoke Boost',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'teamwork', 'name': 'teamwork', 'title': 'teamwork', 'description': 'Invoke Team',
+             'category': 'system', 'type': 'SLASH_COMMAND_TYPE_SYSTEM',
+             'info': {'name': 'teamwork', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}},
+            {'id': 'gdrive', 'name': 'gdrive', 'title': 'gdrive', 'description': 'Drive skill',
+             'category': 'skill', 'type': 'SLASH_COMMAND_TYPE_SKILL',
+             'info': {'name': 'gdrive', 'type': 'SLASH_COMMAND_TYPE_SKILL'}},
+            {'id': 'generative_ui', 'name': 'generative_ui', 'title': 'generative_ui', 'description': 'Render widgets',
+             'category': 'skill', 'type': 'SLASH_COMMAND_TYPE_SKILL',
+             'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}},
+            {'id': 'deploy-flow', 'name': 'deploy-flow', 'title': 'deploy-flow', 'description': 'Deploy workflow',
+             'category': 'workflow', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW',
+             'info': {'name': 'deploy-flow', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW'}},
+        ]
 
+    def test_cli_slash_commands_rpc_payload_and_normalization(self):
+        cli = AntigravityCli(self.home)
+        project = (self.directory / 'proj').resolve()
+        project.mkdir(parents=True, exist_ok=True)
+        calls = []
+
+        def fake_rpc(method, payload=None, *, surface='app'):
+            calls.append((method, payload, surface))
+            if method == 'GetUserStatus':
+                return {'userStatus': {'cascadeModelConfigData': {
+                    'defaultOverrideModelConfig': {'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_DEF'}},
+                    'clientModelConfigs': [
+                        {'modelId': 'm-live', 'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_LIVE'}},
+                    ],
+                }}}
+            if method == 'GetSlashCommands':
+                return {'commands': [
+                    {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM', 'icon': 'bolt'},
+                     'title': 'boost', 'description': 'Invoke Boost'},
+                    {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'},
+                     'title': 'generative_ui', 'description': 'HTML widgets'},
+                    {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'},
+                     'title': 'duplicate', 'description': 'Ignore dup'},
+                    {'info': {'name': 'custom-wf', 'type': 'SLASH_COMMAND_TYPE_WORKFLOW'},
+                     'title': 'custom-wf', 'description': 'User workflow'},
+                ]}
+            return {'ok': True}
+
+        with mock.patch.object(cli, 'call_ls_rpc', side_effect=fake_rpc):
+            cmds = cli.slash_commands(surface='app', conversation_id=CID, model='auto', cwd=str(project))
+            self.assertEqual([c['id'] for c in cmds], ['boost', 'generative_ui', 'custom-wf'])
+            self.assertEqual([c['category'] for c in cmds], ['system', 'skill', 'workflow'])
+            slash_call = [p for m, p, _ in calls if m == 'GetSlashCommands'][-1]
+            self.assertEqual(slash_call, {
+                'enablePersonal': True,
+                'cascadeId': CID,
+                'workspaceUris': [project.as_uri()],
+                'cascadeConfig': {'plannerConfig': {'requestedModel': {'model': 'MODEL_PLACEHOLDER_DEF'}}},
+            })
+
+            cli.slash_commands(surface='ide', model='m-live')
+            ide_call = [p for m, p, s in calls if m == 'GetSlashCommands' and s == 'ide'][-1]
+            self.assertEqual(ide_call['cascadeConfig'], {'plannerConfig': {'requestedModel': {'model': 'MODEL_PLACEHOLDER_LIVE'}}})
+
+            items = [{'item': {'slashCommand': {'info': cmds[0]['info']}}}, {'text': ' fix bugs'}]
+            cli.send_user_message(CID, '/boost fix bugs', model='m-live', surface='app', items=items)
+            send_call = [p for m, p, _ in calls if m == 'SendUserCascadeMessage'][-1]
+            self.assertEqual(send_call['items'], items)
+            self.assertEqual(send_call['cascade_config']['planner_config']['requested_model'], {'model': 'MODEL_PLACEHOLDER_LIVE'})
+
+    def test_adapter_live_slash_commands_catalog_skills_compact_and_modes(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        project = (self.directory / 'proj').resolve()
+        project.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds) as slash_mock, \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': [{'id': 'm1', 'name': 'M1', 'nativeModel': 'MODEL_M1'}], 'userStatus': {}, 'notice': ''}), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send_mock, \
+                mock.patch.object(adapter.cli, 'start_cascade', return_value=CID):
+            detail = adapter.call('detail', sid)
+            for cap in ('skills', 'multiSkills', 'slashCommands', 'compact', 'plan', 'goal'):
+                self.assertTrue(detail['capabilities'][cap], cap)
+
+            models_cat = adapter.call('catalog', sid, {'section': 'models'})
+            self.assertEqual(models_cat['skills'], [])
+            slash_mock.assert_not_called()
+
+            cmd_cat = adapter.call('catalog', sid, {'section': 'commands'})
+            self.assertEqual([c['id'] for c in cmd_cat['commands']], [c['id'] for c in cmds])
+            self.assertEqual([s['id'] for s in cmd_cat['skills']], ['gdrive', 'generative_ui'])
+
+            all_cat = adapter.call('catalog', sid, {'section': 'all'})
+            self.assertEqual([s['id'] for s in all_cat['skills']], ['gdrive', 'generative_ui'])
+            self.assertEqual([c['id'] for c in all_cat['commands']], [c['id'] for c in cmds])
+
+            # Gracefully degrade catalog if GetSlashCommands fails
+            with mock.patch.object(adapter.cli, 'slash_commands', side_effect=BridgeUnavailable('ls down')):
+                degraded = adapter.call('catalog', sid, {'section': 'commands'})
+                self.assertEqual(degraded['commands'], [])
+                self.assertEqual(degraded['skills'], [])
+                self.assertIn('pluginError', degraded)
+
+            # Leading slash command + create + skills + path pass-through
+            adapter.call('send', sid, {'text': '/boost refactor auth'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'boost', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' refactor auth'},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/generative_ui chart'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'text': ' chart'},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/compact'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+            ])
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': 'check files', 'plugins': ['gdrive', 'generative_ui']})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'gdrive', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'item': {'slashCommand': {'info': {'name': 'generative_ui', 'type': 'SLASH_COMMAND_TYPE_SKILL'}}}},
+                {'text': ' check files'},
+            ])
+
+            with self.assertRaises(ValueError):
+                adapter.call('send', sid, {'text': 'bad', 'plugins': ['missing-skill']})
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/Users/me/app.py'})
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/unknown-custom arg'})
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            send_mock.reset_mock()
+            adapter.call('create', None, {'firstMessage': '/teamwork audit repo', 'directoryProject': {'surface': 'app', 'cwd': str(project)}})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'teamwork', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' audit repo'},
+            ])
+
+            # Compact, settings + work-mode + goal
+            send_mock.reset_mock()
+            self.assertEqual(adapter.call('compact', sid, {'id': str(uuid.uuid4())})['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'compact', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+            ])
+
+            adapter.call('work-mode', sid, {'mode': 'plan'})
+            adapter.call('settings', sid, {'model': 'm1'})
+            self.assertEqual(adapter._settings[sid], {'workMode': 'plan', 'model': 'm1'})
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': 'design api'})
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'plan', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' design api'},
+            ])
+            send_mock.reset_mock()
+            adapter.call('send', sid, {'text': '/boost bypass plan'})
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'boost')
+            adapter.call('work-mode', sid, {'mode': 'default'})
+            self.assertEqual(adapter._settings[sid], {'model': 'm1'})
+
+            send_mock.reset_mock()
+            self.assertEqual(adapter.call('goal', sid, {'operation': 'set', 'objective': 'ship v2'})['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'], [
+                {'item': {'slashCommand': {'info': {'name': 'goal', 'type': 'SLASH_COMMAND_TYPE_SYSTEM'}}}},
+                {'text': ' ship v2'},
+            ])
+
+    def test_adapter_busy_queue_and_steer_strictly_reject_slash_commands_and_skills(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        adapter.hooks = mock.MagicMock()
+        adapter.hooks.permission_mode.return_value = 'desktop'
+        adapter.hooks.has_pending_approvals.return_value = False
+        adapter.hooks.has_recent_heartbeat.return_value = True
+        adapter.hooks.enqueue_follow_up.return_value = {'id': 'q1'}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, {CID})), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds):
+            for bad_body in (
+                {'text': '/boost now', 'mode': 'queue'},
+                {'text': '/compact', 'mode': 'steer'},
+                {'text': '/deploy-flow prod', 'mode': 'queue'},
+                {'text': 'use skill', 'mode': 'queue', 'plugins': ['gdrive']},
+                {'text': 'plan', 'mode': 'steer', 'workMode': 'plan'},
+            ):
+                with self.assertRaises(BridgeUnavailable):
+                    adapter.call('send', sid, bad_body)
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('compact', sid, {})
+            adapter.hooks.enqueue_follow_up.assert_not_called()
+
+            queued = adapter.call('send', sid, {'text': 'plain follow-up', 'mode': 'queue'})
+            self.assertEqual(queued, {'status': 'queued', 'id': 'q1', 'delivery': 'hook-queue'})
+            adapter.hooks.enqueue_follow_up.assert_called_once_with(sid, 'plain follow-up', mode='queue')
+
+    def test_busy_follow_up_keeps_persisted_mode_and_unknown_command_semantics(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        adapter.hooks = mock.MagicMock()
+        adapter.hooks.permission_mode.return_value = 'desktop'
+        adapter.hooks.has_pending_approvals.return_value = False
+        adapter.hooks.has_recent_heartbeat.return_value = True
+        adapter.hooks.enqueue_follow_up.return_value = {'id': 'q1'}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, {CID})), \
+                mock.patch.object(adapter.cli, 'slash_commands', side_effect=BridgeUnavailable('catalog unavailable')):
+            for mode in ('queue', 'steer'):
+                with self.subTest(mode=mode, case='unknown workflow'):
+                    with self.assertRaises(BridgeUnavailable):
+                        adapter.call('send', sid, {'text': '/deploy-flow prod', 'mode': mode})
+                adapter._settings[sid] = {'workMode': 'plan'}
+                with self.subTest(mode=mode, case='persisted plan'):
+                    with self.assertRaises(BridgeUnavailable):
+                        adapter.call('send', sid, {'text': 'design api', 'mode': mode})
+                adapter._settings.pop(sid)
+            adapter.hooks.enqueue_follow_up.assert_not_called()
+            # A normal prompt or an absolute path needs no command catalog.
+            for prompt in ('plain follow-up', '/usr/bin/python inspect.py'):
+                self.assertEqual(adapter.call('send', sid, {'text': prompt, 'mode': 'queue'})['status'], 'queued')
+            self.assertEqual(adapter.hooks.enqueue_follow_up.call_count, 2)
+
+    def test_plan_mode_requires_current_native_command_before_saving(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        adapter._update_session_settings(sid, model='chosen-model')
+        original = adapter.settings_file.read_bytes()
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter, '_waiting_state', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=[]) as commands:
+            with self.assertRaises(BridgeUnavailable):
+                adapter.call('work-mode', sid, {'mode': 'plan'})
+            self.assertEqual(adapter.settings_file.read_bytes(), original)
+            self.assertEqual(adapter._settings[sid], {'model': 'chosen-model'})
+            commands.return_value = self._sample_slash_commands()
+            self.assertEqual(adapter.call('work-mode', sid, {'mode': 'plan'})['mode'], 'plan')
+            self.assertEqual(commands.call_args.kwargs['model'], 'chosen-model')
+            # Leaving a no-longer-available mode must not require that command.
+            commands.side_effect = BridgeUnavailable('catalog unavailable')
+            self.assertEqual(adapter.call('work-mode', sid, {'mode': 'default'})['mode'], 'default')
+            self.assertEqual(adapter._settings[sid], {'model': 'chosen-model'})
+
+    def test_desktop_sessions_routes_antigravity_compact_goal_and_work_mode(self):
+        _create_surface_db(self.root, [self.row])
+        settings = self.directory / 'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        sid = gateway_id('app', CID)
+        cmds = self._sample_slash_commands()
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds), \
+                mock.patch.object(adapter, 'account_scope', return_value='scope-1'), \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': [], 'userStatus': {}, 'notice': ''}), \
+                mock.patch.object(adapter.cli, 'send_user_message') as send_mock:
+            compact_res = manager.call('antigravity', 'compact', sid, {'id': str(uuid.uuid4())})
+            self.assertEqual(compact_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'compact')
+
+            send_mock.reset_mock()
+            goal_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'finish release', 'workMode': 'goal'})
+            self.assertEqual(goal_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'goal')
+
+            send_mock.reset_mock()
+            plan_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'design schema', 'workMode': 'plan'})
+            self.assertEqual(plan_res['status'], 'accepted')
+            self.assertEqual(send_mock.call_args.kwargs['items'][0]['item']['slashCommand']['info']['name'], 'plan')
+
+            # Reset back to default mode
+            send_mock.reset_mock()
+            def_res = manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'normal message', 'workMode': 'default'})
+            self.assertEqual(def_res['status'], 'accepted')
+            self.assertNotIn('items', send_mock.call_args.kwargs)
+
+            cmd_catalog = manager.call('antigravity', 'catalog', sid, {'section': 'commands'})
+            self.assertIn('teamwork', [row['id'] for row in cmd_catalog['commands']])
+            self.assertEqual([row['id'] for row in cmd_catalog['skills']], ['gdrive', 'generative_ui'])
+            self.assertTrue(cmd_catalog['capabilities']['slashCommands'])
+            full_catalog = manager.call('antigravity', 'catalog', sid, {})
+            self.assertIn('boost', [row['id'] for row in full_catalog['commands']])
+            self.assertEqual([row['id'] for row in full_catalog['skills']], ['gdrive', 'generative_ui'])
+
+    def test_stop_kills_background_tasks_forces_tree_and_clears_hook_heartbeat(self):
+        adapter = self.adapter()
+        self.addCleanup(adapter.close)
+        sid = gateway_id('app', CID)
+        rpc_calls = []
+
+        def fake_rpc(method, payload=None, *, surface='app'):
+            rpc_calls.append((surface, method, payload))
+            if method == 'CancelCascadeInvocation' and payload.get('cascade_id') == CID:
+                # Even if soft cancel raises (e.g., idle root with running descendant), ForceStopCascadeTree stops the tree.
+                raise BridgeUnavailable('root invocation idle')
+            if method == 'ForceStopCascadeTree':
+                return {'stoppedConversationIds': [CID, 'child-1']}
+            return {}
+
+        adapter.ensure_plugin()
+        adapter.hooks.set_permission_mode(sid, 'mobile-ask')
+        transcript = self.root / 'brain' / CID / '.system_generated' / 'logs' / 'transcript.jsonl'
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text('{"step_index":0,"type":"USER_INPUT","content":"hi"}\n', encoding='utf-8')
+        # Also verify _hook_session resolves a new session present in brain/ before DB flush.
+        unflushed_cid = '99999999-8888-4777-8666-555555555555'
+        unflushed_log = self.root / 'brain' / unflushed_cid / '.system_generated' / 'logs' / 'transcript.jsonl'
+        unflushed_log.parent.mkdir(parents=True, exist_ok=True)
+        unflushed_log.write_text('{}\n', encoding='utf-8')
+        self.assertEqual(
+            adapter._hook_session({'conversationId': unflushed_cid, 'transcriptPath': str(unflushed_log)}),
+            gateway_id('app', unflushed_cid),
+        )
+
+        approval_reply = {}
+        def wait_approval():
+            approval_reply['result'] = adapter.hooks.dispatch_hook_event(
+                'pre_tool_use',
+                {'conversationId': CID, 'transcriptPath': str(transcript), 'toolCall': {'name': 'run_command', 'args': {}}},
+            )
+
+        t = threading.Thread(target=wait_approval, daemon=True)
+        t.start()
+        deadline = time.monotonic() + 2.0
+        while not adapter.hooks.pending_approvals_for(sid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(adapter.hooks.has_recent_heartbeat(sid))
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())):
+            res = adapter.call('stop', sid)
+            self.assertEqual(res, {'status': 'accepted'})
+            t.join(timeout=2.0)
+            self.assertEqual(approval_reply['result'].get('decision'), 'deny')
+            self.assertFalse(adapter.hooks.has_recent_heartbeat(sid))
+            self.assertEqual(rpc_calls, [
+                ('app', 'CancelCascadeInvocation', {'cascade_id': CID, 'kill_background_tasks': True}),
+                ('app', 'ForceStopCascadeTree', {'conversationId': CID}),
+            ])
+            detail = adapter.call('detail', sid)
+            self.assertEqual(detail['session']['status'], 'idle')
+            term = adapter.hooks.dispatch_hook_event('post_invocation', {'conversationId': CID, 'transcriptPath': str(transcript)})
+            self.assertEqual(term, {'terminationBehavior': 'terminate'})
+
+            # Normal path where both CancelCascadeInvocation and ForceStopCascadeTree succeed
+            rpc_calls.clear()
+            with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={'stoppedConversationIds': [CID]}) as rpc_ok:
+                stopped = adapter.cli.stop(CID, surface='ide')
+                self.assertEqual(stopped['stoppedConversationIds'], [CID])
+                self.assertEqual([c.args for c in rpc_ok.call_args_list], [
+                    ('CancelCascadeInvocation', {'cascade_id': CID, 'kill_background_tasks': True}),
+                    ('ForceStopCascadeTree', {'conversationId': CID}),
+                ])
+
+    def test_antigravity_groups_effort_variants_by_base_model_and_preserves_legacy_ids(self):
+        _create_surface_db(self.root, [self.row])
+        settings = self.directory / 'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        sid = gateway_id('app', CID)
+        status = {
+            'email': 'user@example.com',
+            'userTier': {'name': 'Google AI Pro'},
+            'planStatus': {'availablePromptCredits': 500, 'availableFlowCredits': 100},
+            'cascadeModelConfigData': {
+                'defaultOverrideModelConfig': {'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M418'}},
+                'clientModelConfigs': [
+                    {'modelId': 'gemini-4-argon-high', 'label': 'Gemini 4 Argon (High)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M417'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-argon-medium', 'label': 'Gemini 4 Argon (Medium)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M418'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-argon-low', 'label': 'Gemini 4 Argon (Low)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M419'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-hydrogen-xhigh', 'label': 'Gemini 4 Hydrogen (XHigh)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M528'},
+                     'quotaInfo': {'remainingFraction': 0.8, 'resetTime': '2026-11-16T13:21:24Z'}},
+                    {'modelId': 'gemini-4-hydrogen-low', 'label': 'Gemini 4 Hydrogen (Low)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M527'},
+                     'quotaInfo': {'remainingFraction': 0.8, 'resetTime': '2026-11-16T13:21:24Z'}},
+                    {'modelId': 'gpt-oss-120b-medium', 'label': 'GPT-OSS 120B (Medium)',
+                     'modelOrAlias': {'model': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'},
+                     'quotaInfo': {'remainingFraction': 1.0, 'resetTime': '2026-11-16T14:07:38Z'}},
+                    {'modelId': 'gemini-4-carbon-disabled', 'label': 'Gemini 4 Carbon',
+                     'disabled': True, 'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M670'}},
+                ],
+            },
+        }
+        rpc_calls = []
+
+        def fake_rpc(method, payload=None, *, surface='app'):
+            rpc_calls.append((method, payload, surface))
+            if method == 'GetUserStatus':
+                return {'userStatus': status}
+            if method == 'GetAllCascadeTrajectories':
+                return {'trajectorySummaries': {}}
+            if method == 'StartCascade':
+                return {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [self.directory.resolve().as_uri()]}}
+            return {}
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
+            cat = manager.call('antigravity', 'catalog', sid, {'section': 'models'})
+            self.assertTrue(cat['capabilities']['effort'])
+            self.assertFalse(cat['capabilities']['manualEffort'])
+            self.assertEqual([m['id'] for m in cat['models']], ['gemini-4-argon', 'gemini-4-hydrogen', 'gpt-oss-120b'])
+            self.assertEqual([m['name'] for m in cat['models']], ['Gemini 4 Argon', 'Gemini 4 Hydrogen', 'GPT-OSS 120B'])
+            self.assertEqual(cat['models'][0]['efforts'], ['low', 'medium', 'high'])
+            self.assertEqual(cat['models'][0]['defaultEffort'], 'medium')
+            self.assertEqual(cat['models'][1]['efforts'], ['low', 'xhigh'])
+            self.assertEqual([item['name'] for item in cat['usageSummary']['items']], ['Gemini 4 Argon', 'Gemini 4 Hydrogen', 'GPT-OSS 120B'])
+
+            # Missing or unsupported effort is rejected
+            with self.assertRaisesRegex(ValueError, '思考强度'):
+                adapter.call('settings', sid, {'model': 'gemini-4-hydrogen'})
+            bad_missing = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(bad_missing['status'], 'unknown')
+            self.assertIn('思考强度', bad_missing['message'])
+            bad_unsupported = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen', 'effort': 'medium',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(bad_unsupported['status'], 'unknown')
+            self.assertIn('不支持此思考强度', bad_unsupported['message'])
+
+            # Grouped model + effort saves canonically & projects modelDisplayName
+            saved = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen', 'effort': 'xhigh',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(saved, {'status': 'accepted', 'model': 'gemini-4-hydrogen', 'effort': 'xhigh'})
+            detail = manager.call('antigravity', 'detail', sid, {})
+            self.assertEqual(detail['session']['model'], 'gemini-4-hydrogen')
+            self.assertEqual(detail['session']['effort'], 'xhigh')
+            self.assertEqual(detail['session']['modelDisplayName'], 'Gemini 4 Hydrogen')
+            self.assertTrue(detail['capabilities']['effort'])
+
+            # Antigravity management control also accepts effort
+            mgmt = manager.control({
+                'action': 'antigravity-management', 'operation': 'settings',
+                'surface': 'app', 'sessionId': sid, 'id': str(uuid.uuid4()),
+                'model': 'gemini-4-argon', 'effort': 'high',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(mgmt, {'status': 'accepted', 'model': 'gemini-4-argon', 'effort': 'high'})
+
+            # Sending resolves grouped (base, effort) -> exact native enum on wire
+            manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'hello grouped'})
+            send_call = [p for m, p, _ in rpc_calls if m == 'SendUserCascadeMessage'][-1]
+            self.assertEqual(send_call['cascade_config']['planner_config']['requested_model'], {'model': 'MODEL_PLACEHOLDER_M417'})
+
+            # Creation with grouped model + effort resolves exact native enum on StartCascade & SendUserCascadeMessage
+            project = (self.directory / 'proj').resolve()
+            project.mkdir(exist_ok=True)
+            with mock.patch.object(adapter.store, 'discover_projects', return_value=[{'key': f'app:{project}', 'surface': 'app', 'cwd': str(project), 'name': 'proj'}]):
+                projects_res = manager.call('antigravity', 'projects')
+                env_key = projects_res['environments'][0]['key']
+                create_cat = manager.call('antigravity', 'create-models', body={'environment': env_key, 'projectKey': f'app:{project}'})
+                self.assertTrue(create_cat['capabilities']['effort'])
+                self.assertFalse(create_cat['capabilities']['manualEffort'])
+                with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, payload=None, *, surface='app': (
+                    {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [project.as_uri()]}} if method == 'StartCascade'
+                    else fake_rpc(method, payload, surface=surface)
+                )) as rpc_create:
+                    created = manager.call('antigravity', 'create', body={
+                        'id': str(uuid.uuid4()), 'projectKey': f'app:{project}', 'environment': env_key,
+                        'firstMessage': 'hi grouped', 'model': 'gemini-4-hydrogen', 'effort': 'xhigh',
+                        'modelCatalogIdentity': create_cat['cache']['identity'],
+                    })
+                    self.assertEqual(created['status'], 'accepted', created)
+                    start_payload = [c.args[1] for c in rpc_create.call_args_list if c.args[0] == 'StartCascade'][-1]
+                    self.assertEqual(start_payload['requested_model'], 'MODEL_PLACEHOLDER_M528')
+
+            # Legacy flat modelId in persisted session-settings.json still projects cleanly & maps to native enum
+            adapter._update_session_settings(sid, model='gemini-4-hydrogen-xhigh', effort='')
+            adapter.cli._variant_cache.clear()
+            adapter.cli._base_cache.clear()
+            legacy_detail = manager.call('antigravity', 'detail', sid, {})
+            self.assertEqual(legacy_detail['session']['model'], 'gemini-4-hydrogen')
+            self.assertEqual(legacy_detail['session']['effort'], 'xhigh')
+            self.assertEqual(legacy_detail['session']['modelDisplayName'], 'Gemini 4 Hydrogen')

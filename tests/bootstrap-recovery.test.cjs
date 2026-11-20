@@ -4,7 +4,7 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const root=path.resolve(__dirname,'..');
 function retried(url,attempt){const value=new URL(url,'https://gateway.test');value.searchParams.set('bridge_retry','0-'+attempt);return value.href;}
 
-function fixture({styles=[],scripts=[],deferred=false,shellSheet,preloadSupported=true,features=[],appearance=null,systemDark=false,connection}={}){
+function fixture({styles=[],scripts=[],deferred=false,shellSheet,preloadSupported=true,features=[],appearance=null,systemDark=false,connection,cloudWeb=false}={}){
   let now=0,id=0,reloads=0;const timers=new Map(),events=new Map(),nodes=new Map(),requests=[],preloads=[],optionalRequests=[];
   function node(tag='div'){
     return {tagName:tag.toUpperCase(),hidden:false,textContent:'',style:{},dataset:{},open:false,relList:{supports:()=>preloadSupported},
@@ -20,7 +20,7 @@ function fixture({styles=[],scripts=[],deferred=false,shellSheet,preloadSupporte
   const document={currentScript:{src:'/bootstrap.js'},documentElement:{dataset:{}},querySelector(){return null;},readyState:deferred?'loading':'complete',getElementById:id=>nodes.get(id),createElement:node,
     addEventListener(name,fn){if(name==='DOMContentLoaded'||name==='readystatechange')domReady=fn;},
     head:{appendChild(n){(n.bridgeOptionalResource?optionalRequests:preloads).push(n);}},querySelectorAll:selector=>selector==='[data-bridge-feature]'?optional:selector.startsWith('link')?[...css,...optional.filter(n=>n.tagName==='LINK')]:[...js,...optional.filter(n=>n.tagName==='SCRIPT')]};
-  const window={matchMedia:()=>({matches:systemDark}),addEventListener(name,fn){if(!events.has(name))events.set(name,new Set());events.get(name).add(fn);},removeEventListener(name,fn){events.get(name)?.delete(fn);}};
+  const window={BridgeCloudWeb:cloudWeb,matchMedia:()=>({matches:systemDark}),addEventListener(name,fn){if(!events.has(name))events.set(name,new Set());events.get(name).add(fn);},removeEventListener(name,fn){events.get(name)?.delete(fn);}};
   const dispatch=(name,event)=>{for(const fn of events.get(name)||[])fn(event);};
   const context=vm.createContext({window,document,navigator:{userAgent:'fixture-no-secrets',connection},location:{href:'https://gateway.test/',hash:'',search:'',reload(){reloads++;}},
     localStorage:{getItem(key){return key==='bridge-appearance'?JSON.stringify(appearance):null;}},AbortController,Promise,URL,fetch(){},Date:class extends Date{static now(){return now;}},
@@ -112,6 +112,44 @@ test('script preloads overlap pending styles and retain their content-version UR
   assert.ok(ui.preloads.every(n=>n.rel==='preload'&&n.as==='script'));
   assert.equal(ui.requests.length,1);assert.equal(ui.requests[0].href,'/pending.css');
   ui.finish(ui.requests[0]);assert.equal(ui.requests[1].src,urls[0]);
+});
+
+test('cloud Web waits for styles and bounds script downloads while execution keeps its dependency order',()=>{
+  const urls=Array.from({length:10},(_,i)=>'/dependency-'+i+'.js?v=content-'+i);
+  const ui=fixture({cloudWeb:true,styles:['/pending.css'],scripts:urls});
+  assert.equal(ui.preloads.length,0);
+  ui.finish(ui.requests[0]);
+  assert.deepEqual(ui.preloads.map(n=>n.href),urls.slice(0,4));
+  assert.equal(ui.requests[1].src,urls[0]);
+  ui.finish(ui.preloads[0]);
+  assert.deepEqual(ui.preloads.map(n=>n.href),urls.slice(0,5));
+  ui.finish(ui.preloads[1],true);
+  assert.deepEqual(ui.preloads.map(n=>n.href),urls.slice(0,6));
+  assert.equal(ui.requests.length,2);
+  ui.finish(ui.requests[1]);
+  assert.equal(ui.requests[2].src,urls[1]);
+});
+
+test('cloud Web does not schedule more downloads after startup is retired',()=>{
+  for(const retire of ['pagehide','failure','complete']){
+    const ui=fixture({cloudWeb:true,scripts:Array.from({length:8},(_,i)=>'/dep-'+i+'.js')});
+    assert.equal(ui.preloads.length,4);
+    const late=ui.preloads[0].onload;
+    if(retire==='pagehide')ui.dispatch('pagehide',{persisted:false});
+    else if(retire==='failure')ui.dispatch('error',{target:ui.window,filename:'https://gateway.test/dep-0.js',error:{name:'SyntaxError'}});
+    else{for(let i=0;i<8;i++)ui.finish(ui.requests[i]);ui.window.BridgeBootstrap.ready();}
+    late();
+    assert.equal(ui.preloads.length,4,retire);
+    assert.ok(ui.preloads.every(n=>n.removed),retire);
+  }
+});
+
+test('cloud Web preserves the sequential fallback without browser preload support',()=>{
+  const ui=fixture({cloudWeb:true,preloadSupported:false,scripts:['/first.js','/app.js']});
+  assert.equal(ui.preloads.length,0);
+  assert.equal(ui.requests[0].src,'/first.js');ui.finish(ui.requests[0]);
+  assert.equal(ui.requests[1].src,'/app.js');ui.finish(ui.requests[1]);
+  ui.window.BridgeBootstrap.ready();assert.equal(ui.nodes.get('bootstrap-status').hidden,true);
 });
 
 test('explicit resource failures get distinct cache keys without changing path, origin or content version',async()=>{
@@ -273,6 +311,7 @@ test('optional math, terminal and file failures cannot prevent the list from sta
 test('lazy components share in-flight work, preserve order and reuse successful downloads after failure',async()=>{
   const ui=fixture({features:[{url:'/xterm.css',group:'terminal'},{url:'/xterm.js',group:'terminal'},{url:'/fit.js',group:'terminal'}]});
   const one=ui.window.BridgeFeatures.load('terminal'),two=ui.window.BridgeFeatures.load('terminal');
+  assert.deepEqual(ui.preloads.filter(node=>node.rel==='preload').map(node=>node.href),['/xterm.js','/fit.js']);
   assert.equal(ui.optionalRequests.length,1);ui.finish(ui.optionalRequests[0]);await ui.flush();
   assert.equal(ui.optionalRequests[1].src,'/xterm.js');ui.finish(ui.optionalRequests[1]);await ui.flush();
   assert.equal(ui.optionalRequests[2].src,'/fit.js');ui.finish(ui.optionalRequests[2],true);

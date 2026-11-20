@@ -48,7 +48,7 @@ if(typeof document!=='undefined')(()=>{
     change();
     requestAnimationFrame(()=>{if(timeline&&timeline===chatTimeline)timeline.restore(anchor,bottom);});
   }
-  function save(){try{localStorage.setItem(key,JSON.stringify(settings));}catch{}}
+  function save(notify=true){try{localStorage.setItem(key,JSON.stringify(settings));}catch{}if(notify)document.dispatchEvent(new CustomEvent('bridge-appearance-change',{detail:{...settings}}));}
   function apply(){
     const dark=settings.theme==='dark'||settings.theme==='system'&&(window.BridgeNativeTheme?.dark??system.matches);
     const colors=ChatAppearance.colors(settings.accent,dark);
@@ -80,9 +80,10 @@ if(typeof document!=='undefined')(()=>{
   function nativeTheme(){
     const value=window.BridgeNativeTheme;
     if(!value||!['system','light','dark'].includes(value.theme)||typeof value.dark!=='boolean')return;
-    preserveReading(()=>{settings=ChatAppearance.normalize({...settings,theme:value.theme});apply();save();});
+    preserveReading(()=>{settings=ChatAppearance.normalize({...settings,theme:value.theme});apply();save(false);});
   }
   document.addEventListener('bridge-native-theme',nativeTheme);
+  document.addEventListener('bridge-appearance-restored',event=>{preserveReading(()=>{settings=ChatAppearance.normalize(event.detail);apply();});});
   function relabel(){
     const text=BridgeI18n.t(collapsed?'展开输入区':'收起输入区');
     toggle.setAttribute('aria-label',text);toggle.title=text;

@@ -99,6 +99,34 @@ class ClaudeContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['session']['contextUsage']['usedTokens'], 67500)
         self.assertEqual(result['session']['lastPromptContextUsage']['usedTokens'], 112973)
 
+    async def legacy_detail(self, transcript):
+        # 无 mobileDetail 能力的旧版渲染器会分别调用 getSession 和 getTranscript；
+        # 非分页返回值可能是列表容器字典，也可能是 null。
+        raw = {'sessionId': 'fixture', 'turnRunning': False}
+        row = session('code', raw)
+        self.adapter.index = {row['id']: row}
+        self.adapter.desktop.capabilities = {'code': []}
+        self.adapter.desktop.call.side_effect = lambda kind, method, *args, **kwargs: (
+            raw if method == 'getSession' else transcript)
+        with patch.object(self.adapter, 'prepare'), patch.object(self.adapter, 'connect'), \
+             patch.object(self.adapter, 'reconnect'):
+            return await self.adapter.dispatch('detail', row['id'], {})
+
+    async def test_container_transcript_keeps_last_prompt_reading(self):
+        event = {'type': 'assistant', 'message': {'id': 'step', 'model': 'desktop-model',
+                 'usage': {'input_tokens': 10, 'cache_read_input_tokens': 5},
+                 'content': [{'type': 'text', 'text': 'ok'}]}}
+        for key in ('messages', 'transcript'):
+            with self.subTest(key=key):
+                result = await self.legacy_detail({key: [event]})
+                self.assertEqual(result['session']['lastPromptContextUsage']['usedTokens'], 15)
+                self.assertEqual([m['role'] for m in result['messages']], ['assistant'])
+
+    async def test_null_transcript_reports_unsupported_structure(self):
+        # 应抛出与 model.transcript() 一致的 ValueError，而非未捕获的 TypeError（HTTP 500）。
+        with self.assertRaisesRegex(ValueError, '不支持的数据结构'):
+            await self.legacy_detail(None)
+
 
 if __name__ == '__main__':
     unittest.main()

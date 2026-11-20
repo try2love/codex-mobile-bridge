@@ -1,3 +1,67 @@
+## v2.2.2-preview.1 · 长会话阅读、Antigravity 操作与稳定性改进
+
+**预览版。** 本次更新重点改善长会话的打开、回看和过程阅读，并补齐 Antigravity 原生操作与多客户端异常处理。
+
+### 新增与改进
+
+- **长会话按需加载。** 对话正文与执行过程分别分页；思考、工具调用和已完成任务可折叠，展开时再读取过程详情。复用按已核验网关和会话隔离的近期历史缓存，保留上翻阅读位置与历史图片引用，避免新消息或过程展开将视图拉走。
+- **Antigravity 原生指令与模式。** 支持原生 `/` 指令、Skill 多选、`/compact` 及经能力核验的计划和目标模式；指令目录随当前模型和账号刷新。结构化操作不进入仅支持文本的忙碌队列。[PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)
+- **模型与思考强度分开选择。** Antigravity 将可确认的同一模型变体归组，保留原生模型标识和所选强度；无法可靠归组的模型仍独立显示。[PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **停止与分屏更直接。** Antigravity 停止操作覆盖原生任务树，发送尚未返回时仍可停止当前会话。宽屏工作台可从聊天直接打开右侧文件或工具分屏，并改善分屏图片缩略图刷新。[PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179) · [PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+
+### 修复与优化
+
+- **客户端更新与登录。** 改善应用升级后的路径发现、原生进程归属与 Codex 启动恢复，修复 SSH 模型目录读取；修复 ZCode 官方远控的 OAuth 弹窗和系统浏览器授权衔接。[#174](https://github.com/try2love/codex-mobile-bridge/issues/174)
+- **模型目录与原生响应。** 修复 Claude 上下文用量拆包、Codex 空值目录、ZCode 未知状态及 Claude/ZCode 问答校验；改善 DeepSeek 传输与错误响应提示。保留有效模型缓存；Fast 策略、账号身份或任务状态未核验时保持明确的受限状态。[#186](https://github.com/try2love/codex-mobile-bridge/issues/186) · [#187](https://github.com/try2love/codex-mobile-bridge/issues/187) · [PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189) · [PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190) · [PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191) · [PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192) · [PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **通知、重连与启动。** 可重建的通知状态损坏不再阻止网关启动或终止通知线程；配置写入不再被遗留临时文件持续阻塞。隔离单个会话维护失败，改善 Antigravity 观察数据库损坏、WebSocket 控制帧与分片处理、桌面数据目录保存及启动失败提示。已保存数据目录不可用时明确报错，避免误用空目录。[#184](https://github.com/try2love/codex-mobile-bridge/issues/184) · [#188](https://github.com/try2love/codex-mobile-bridge/issues/188) · [PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194) · [PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195) · [PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196) · [PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197) · [PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **手机外观与文件阅读。** 修复 Android 深色模式通知面板，按已核验电脑绑定共享外观设置，并改善文件地址栏长路径阅读。[#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+
+### 安装与兼容性
+
+桌面与 Android 版本 **2.2.2-preview.1**；Android/iOS build **61**，iOS marketing version **2.2.2**。这是预发布版本，不替换稳定版 latest。
+
+**Android：** 发布的 **Bridge** 使用与 v2.2.1、v2.2.1-preview.1 **Bridge Preview** 相同的独立应用标识，可覆盖升级并保留该 App 的连接和草稿。旧版 v2.2.0 App 与新版独立安装，不能直接覆盖：先安装新版、重新添加电脑并确认连接正常，保留旧版中需要的草稿后再卸载旧版；旧绑定和草稿不会自动迁移。
+
+更新网关后刷新网页；Android 原生通知外观等改进需要更新手机 App。iOS 源码和未签名 IPA 仍需自行签名。原生功能以当前接入能力为准，无法核验的关键状态不会被视为空闲；结果不明的写操作不会自动重放。本次对 #186 的处理涵盖 Claude 响应和 ZCode 状态读取，不表示已解决其中所有握手兼容问题。
+
+### 贡献
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 PR #173、#178、#179、#180 和 #189–#198 中贡献 Antigravity 原生指令、模型强度、停止、分屏与多客户端稳定性修复，并提交相关问题报告。原作者提交完整保留，整合与后续修正单独提交。
+
+---
+
+### English · Long-chat reading, Antigravity controls and reliability
+
+**Preview release.** This update improves opening and reading long chats, adds native Antigravity controls, and handles more client and background-service failures.
+
+### Features and improvements
+
+- **Load long chats on demand.** Conversation text and execution details use separate pages. Fold reasoning, tool calls and completed tasks, then load process details when expanded. Reuse recent-history caches scoped to verified gateways and chats, preserving reading positions and historical image references while new messages arrive or process groups expand.
+- **Native Antigravity commands and modes.** Use native `/` commands, multiple Skills, `/compact`, and verified plan/goal capabilities. Refresh commands for the current model and account; keep structured operations out of text-only busy queues. [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)
+- **Separate model and thinking effort.** Group identifiable Antigravity variants while retaining native model IDs and selected effort. Models that cannot be grouped reliably remain separate. [PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **Direct stop and split controls.** Stop the native Antigravity task tree, including while a send is still pending for the current chat. Open a right-hand file/tool pane directly from a wide-screen chat and refresh image thumbnails in split views. [PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179) · [PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+
+### Fixes
+
+- **Client updates and sign-in:** improve installation discovery, native process ownership and Codex startup recovery, and fix SSH model-catalog reads; fix ZCode official-remote OAuth popups and system-browser authorization. [#174](https://github.com/try2love/codex-mobile-bridge/issues/174)
+- **Catalogs and native responses:** fix Claude context-usage extraction, nullable Codex catalogs, unknown ZCode states and Claude/ZCode question validation; improve DeepSeek transport and malformed-response errors. Retain valid model caches and restrict controls when Fast policy, account identity or task state is unverified. [#186](https://github.com/try2love/codex-mobile-bridge/issues/186) · [#187](https://github.com/try2love/codex-mobile-bridge/issues/187) · [PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189) · [PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190) · [PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191) · [PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192) · [PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **Notifications, recovery and startup:** corrupt rebuildable notification state no longer blocks startup or kills notification workers; stale temporary files no longer repeatedly block configuration saves. Isolate session-maintenance errors and improve corrupt Antigravity observation databases, WebSocket control/continuation frames, saved data-directory handling and startup errors. Report unavailable saved data directories instead of silently using an empty location. [#184](https://github.com/try2love/codex-mobile-bridge/issues/184) · [#188](https://github.com/try2love/codex-mobile-bridge/issues/188) · [PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194) · [PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195) · [PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196) · [PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197) · [PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **Mobile appearance and file reading:** fix Android notification panels in dark mode, share appearance across verified routes to the same computer, and improve long file-address reading. [#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+
+### Installation and compatibility
+
+Desktop/Android version **2.2.2-preview.1**; Android/iOS build **61**, iOS marketing version **2.2.2**. This prerelease does not replace the stable latest release.
+
+**Android:** the published **Bridge** app retains the separate identity used by v2.2.1 and v2.2.1-preview.1 **Bridge Preview**, allowing in-place upgrades with that app’s connections and drafts retained. The old v2.2.0 app installs separately and cannot be replaced in place. Install Bridge, add your computers and verify connections first; preserve needed old drafts before uninstalling the old app. Old bindings and drafts do not migrate automatically.
+
+Refresh browser pages after updating the gateway; update the mobile app for native changes such as Android notification appearance. iOS sources and the unsigned IPA require your own signing. Native features depend on the current connection’s capabilities; unverified critical state is not treated as idle, and uncertain writes are not replayed automatically. The #186 changes cover Claude responses and ZCode state reads, not every handshake-compatibility issue in that report.
+
+### Contributions
+
+Thanks to [@windowmmk](https://github.com/windowmmk) for native Antigravity commands, model/effort selection, stopping, split views and client reliability fixes in PRs #173, #178, #179, #180 and #189–#198, and for the related issue reports. Original commits are preserved; integration and follow-up corrections are separate.
+
+---
+
 ## v2.2.1 · Antigravity 接入、交互图表与原生会话兼容性改进
 
 **建议更新以适配最新版 Codex APP 原生连接。**

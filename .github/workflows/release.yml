@@ -40,6 +40,9 @@ jobs:
           JS
   build:
     needs: validate
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/desktop.yml
     secrets:
       UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}

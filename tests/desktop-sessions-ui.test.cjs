@@ -61,7 +61,84 @@ function hostPages(ui,handler){
    entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
  });
 }
+test('persistent history is display only and cannot override fresh disconnected history',async()=>{
+ const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
+ ui.run('window.historyReads=[];window.historyWrites=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push({scope,resolve})),write:(...args)=>window.historyWrites.push(args)}');
+ view.prepareChat('a');
+ ui.run('window.historyReads.shift().resolve({session:{id:"a",title:"Cached",readOnly:true,requests:[],capabilities:{}},messages:[{id:"old",role:"assistant",text:"Cached content"}],connected:false})');
+ await Promise.resolve();assert.match(view.messageList.textContent,/Cached content/);assert.equal(view.canMutate(),false);assert.equal(view.canResume(),false);
+ view.prepareChat('b');view.applyDetail({session:{id:'b',title:'Fresh',requests:[{id:'live'}]},messages:[{id:'fresh',role:'assistant',text:'Fresh content'}],connected:false});
+ ui.run('window.historyReads.shift().resolve({session:{id:"b",title:"Old"},messages:[{id:"old",role:"assistant",text:"Obsolete content"}]})');
+ await Promise.resolve();assert.match(view.messageList.textContent,/Fresh content/);assert.doesNotMatch(view.messageList.textContent,/Obsolete/);
+ const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'conversation-recent-v1');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
+});
+test('late persistent history cannot cross a desktop chat or authentication switch',async()=>{
+ const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
+ ui.run('window.historyReads=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push(resolve))}');
+ view.prepareChat('a');view.prepareChat('b');view.listCacheIdentity='auth-b';
+ ui.run('for(const done of window.historyReads)done({session:{id:"a",title:"Private"},messages:[{id:"old",role:"assistant",text:"Private cache"}]})');
+ await Promise.resolve();assert.doesNotMatch(view.messageList.textContent,/Private cache/);
+});
+test('fresh empty desktop history replaces persisted content and account changes invalidate only that client',async()=>{
+ const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
+ ui.run('window.historyWrites=[];window.historyClears=[];window.BridgeChatHistoryCache={write:(...args)=>window.historyWrites.push(args),forgetNamespace:scope=>window.historyClears.push(scope)}');
+ view.applyDetail({session:{id:'a',title:'Now empty'},messages:[],files:[],connected:false});
+ assert.equal(ui.run('window.historyWrites.at(-1)[2].messages.length'),0);
+ await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
+});
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('shared process stays unread until opened and loads only the selected body',async()=>{
+ const ui=await opened(),view=ui.view,reads=[];
+ ui.setHandler(async(url,body,signal)=>{const query=new URL(url,'http://fixture').searchParams;reads.push({query,signal});if(query.has('historyProcess'))return {rows:[{key:'note',version:'v',role:'assistant',kind:'agentMessage',phase:'commentary',text:'Progress explanation',detailCursor:'note-body'},{key:'tool',version:'v',role:'activity',kind:'commandExecution',title:'Run command',text:'',hasDetail:true,detailCursor:'tool-body'},{key:'empty',version:'v',role:'activity',title:'Completed action',text:'',hasDetail:false}],next:null};return {key:'tool',version:'v',text:'Command and output',offset:0,next:null};});
+ const message={id:'process',key:'process',version:'v',role:'activity',kind:'processPage',processCursor:'process-cursor',turnId:'t',turnStatus:'inProgress'};
+ view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:[message],requests:[]});
+ const group=view.messageList.querySelector('.chat-process-page');assert.ok(group);assert.equal(group.open,false);assert.equal(reads.length,0);
+ group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,1);assert.equal(reads[0].query.get('historyProcess'),'process-cursor');assert.match(group.textContent,/Progress explanation/);
+ const tool=group.__records.get('tool').node;assert.equal(tool.open,false);assert.equal(group.__records.get('empty').node.tagName,'SECTION');
+ tool.open=true;tool.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2);assert.equal(reads[1].query.get('historyDetail'),'tool-body');assert.match(tool.textContent,/Command and output/);assert.ok(tool.querySelector('.activity-copy'));
+ group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2,'same directory and body reuse loaded content');
+ view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[{...message,turnStatus:'completed',version:'v2'}],requests:[]});assert.equal(group.open,true,'completion preserves explicit reader intent');
+});
+test('closing process cancels directory reads and ignores late results',async()=>{
+ const ui=await opened(),view=ui.view;let finish,signal;
+ ui.setHandler((url,body,requestSignal)=>{signal=requestSignal;return new Promise(resolve=>finish=resolve);});
+ view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
+ const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await Promise.resolve();group.open=false;group.ontoggle();assert.equal(signal.aborted,true);
+ finish({rows:[{key:'late',role:'activity',text:'Late private body'}],next:null});await new Promise(setImmediate);assert.doesNotMatch(group.textContent,/Late private body/);assert.equal(group.__records.size,0);
+});
+test('completed process cache stays in the component and cannot evict shared conversation history',async()=>{
+ const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
+ ui.run('window.cacheReads=[];window.cacheWrites=[];window.BridgeChatHistoryCache={read:(...args)=>{window.cacheReads.push(args);return null;},write:(...args)=>window.cacheWrites.push(args)}');
+ let reads=0;ui.setHandler(async url=>{reads++;return url.includes('historyProcess')?{rows:[{key:'tool',role:'activity',kind:'commandExecution',version:'v',text:'',hasDetail:true,detailCursor:'body'}],next:null}:{version:'v',offset:0,text:'Loaded command output',next:null};});
+ view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',turnStatus:'completed',processCursor:'cursor'}]});
+ const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);const tool=group.__records.get('tool').node;tool.open=true;tool.ontoggle();await new Promise(setImmediate);
+ group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);
+ assert.equal(reads,2);assert.equal(ui.run('window.cacheReads.length'),0);assert.equal(ui.run('window.cacheWrites.every(entry=>entry[1]==="conversation-recent-v1")'),true);
+});
+test('long commentary preview does not request its body until the reader clicks',async()=>{
+ const ui=await opened(),view=ui.view;let reads=0;
+ ui.setHandler(async url=>{reads++;return {rows:[{key:'note',role:'assistant',phase:'commentary',text:'p'.repeat(8000),version:'v',detailCursor:'full-note'}],next:null};});
+ view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
+ const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads,1);assert.equal(group.__records.get('note').node.querySelector('button').textContent,'展开完整内容');
+});
+test('ordinary long message expands in body pages and copy reads its full text',async()=>{
+ const ui=await opened(),view=ui.view;const full='x'.repeat(20000);let reads=0;
+ ui.setHandler(async url=>{reads++;const query=new URL(url,'http://fixture').searchParams,offset=Number(query.get('historyOffset')||0);return {key:'reply',version:'v',offset,text:full.slice(offset,offset+16000),next:offset+16000<full.length?offset+16000:null};});
+ const message={id:'reply',key:'reply',role:'assistant',text:full.slice(0,8000),truncated:true,version:'v',detailCursor:'scoped-reply'};
+ view.applyDetail({session:{id:'a',title:'A'},messages:[message]});assert.equal(reads,0);
+ const more=view.messageList.querySelector('.detail-more');await more.click();assert.equal(reads,1);assert.equal(view.messageList.querySelector('.message-body').textContent.length,16000);await more.click();assert.equal(view.messageList.querySelector('.message-body').textContent.length,20000);assert.equal(more.hidden,true);
+ assert.equal(await view.fullMessage(message),full);
+});
+test('desktop upward reading 36px from the bottom remains stable during resize',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:'Visible reply'}]});
+ view.messages.scrollHeight=1000;view.messages.clientHeight=100;view.messages.scrollTop=864;view.reading={top:900,following:true};view.rememberReading();assert.equal(view.reading.following,false);
+ view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,864);
+});
+test('desktop process disclosure click disables bottom following before content grows',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'cursor'}]});
+ view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};const group=view.messageList.querySelector('.chat-process-page');
+ view.messages.onclick?.({target:group.firstChild});assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
+});
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
  await view.choose('antigravity');assert.equal(view.surface.hidden,false);assert.deepEqual(view.surface.children.map(n=>n.value),['all','app','cli','ide']);
@@ -101,8 +178,8 @@ test('native context reuses activity folding and retains explicit expansion afte
  const message={id:'context',role:'activity',kind:'context',title:'上下文',text:'Exact native context'};
  const detail={connected:true,session:{id:'a',title:'Chat',status:'idle'},messages:[message]};
  view.applyDetail(detail);const node=view.messageNodes.get('context').node;
- assert.equal(node.tagName,'DETAILS');assert.equal(!!node.open,false);assert.match(node.textContent,/Exact native context/);
- node.open=true;view.applyDetail(detail);assert.equal(view.messageNodes.get('context').node,node);assert.equal(node.open,true);
+ assert.equal(node.tagName,'DETAILS');assert.equal(!!node.open,false);assert.equal(node.querySelector('.activity-body').textContent,'');
+ node.open=true;node.ontoggle();assert.match(node.textContent,/Exact native context/);view.applyDetail(detail);assert.equal(view.messageNodes.get('context').node,node);assert.equal(node.open,true);
 });
 test('native history images use the shared preview markup and survive unchanged refreshes',async()=>{
  const ui=await opened(),view=ui.view,id='a'.repeat(64),message={id:'image',role:'user',text:'',attachments:[{type:'image',name:'photo.png',desktopId:id}]};
@@ -1750,4 +1827,322 @@ test('model picker renders quota badges and structured usageSummary without alte
  assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
  assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
  plainDialog.close();
+});
+
+test('Antigravity live session enables native slash commands, multi-select skills, and context compact without local interception',async()=>{
+ const fs=require('node:fs'),path=require('node:path');
+ const ui=fixture(),view=ui.view;
+ const commands=[
+  {id:'boost',name:'boost',description:'Invoke Boost',category:'system'},
+  {id:'teamwork',name:'teamwork',description:'Invoke Team',category:'system'},
+  {id:'plan',name:'plan',description:'Plan carefully',category:'system'},
+  {id:'goal',name:'goal',description:'Run goal',category:'system'},
+  {id:'compact',name:'compact',description:'Compact now',category:'system'},
+  {id:'gdrive',name:'gdrive',description:'Drive access',category:'skill'},
+  {id:'generative_ui',name:'generative_ui',description:'HTML widgets',category:'skill'},
+  {id:'deploy-flow',name:'deploy-flow',description:'Deploy flow',category:'workflow'},
+ ];
+ const skills=[
+  {id:'gdrive',name:'gdrive',description:'Drive access',selectable:true},
+  {id:'generative_ui',name:'generative_ui',description:'HTML widgets',selectable:true},
+ ];
+ let status='idle';
+ ui.setHandler(async(url,body)=>{
+  if(body)return {status:'accepted',delivery:'native'};
+  if(url.includes('/catalog'))return {
+   commands,skills,currentModel:'m1',
+   capabilities:{skills:true,multiSkills:true,slashCommands:true,compact:true,plan:true,goal:true,send:true},
+  };
+  if(url.includes('/detail'))return {
+   connected:true,
+   session:{id:'a',title:'Agy Chat',cwd:'/repo',backend:'cli',status,model:'m1',collaborationMode:'default'},
+   capabilities:{send:true,models:true,skills:true,multiSkills:true,slashCommands:true,compact:true,plan:true,goal:true,attachments:true},
+   messages:[],
+  };
+  return {sessions:[{id:'a',title:'Agy Chat',cwd:'/repo',backend:'cli',status}]};
+ });
+ await view.choose('antigravity');
+ await view.open('a');
+ await new Promise(setImmediate);
+ assert.ok(ui.calls.some(c=>!c.body&&c.url.includes('/catalog')&&c.url.includes('section=commands')));
+
+ ui.run(fs.readFileSync(path.join(__dirname,'../web/features/chat/composer-commands.js'),'utf8'));
+ if(!view.input.before)view.input.before=()=>{};
+ if(!view.input.setAttribute)view.input.setAttribute=()=>{};
+ if(!view.input.removeAttribute)view.input.removeAttribute=()=>{};
+ const Commands=ui.run('ComposerCommands');
+ const picker=new Commands({input:view.input,scope:()=>view.sid,actions:()=>view.buildCommandActions(),onError:text=>view.notify(text)});
+ view.commands=picker;
+ const actions=view.buildCommandActions();
+ for(const id of ['boost','teamwork','plan','goal','compact','gdrive','generative_ui','deploy-flow']){
+  const matches=actions.filter(row=>row.id===id);
+  assert.equal(matches.length,1,id);
+  assert.equal(matches[0].native,true,id);
+  assert.equal(matches[0].enabled,true,id);
+ }
+
+ // Native /plan and /boost pass straight through consume() to send without switching local workMode dropdown
+ view.input.value='/plan design cache';
+ assert.equal(picker.consume(),false);
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).url.includes('/send'),true);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.text,'/plan design cache');
+ assert.equal(view.workMode.value,'default');
+
+ view.input.value='/boost refactor';
+ assert.equal(picker.consume(),false);
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(c=>c.body).at(-1).body.text,'/boost refactor');
+
+ // Skill picker allows multi-selection even with backend === 'cli' when multiSkills is true
+ await view.skills();
+ const checks=ui.document.querySelector('dialog').querySelectorAll('.skill-option').map(n=>n.querySelector('input'));
+ assert.equal(checks.length,2);
+ checks[0].checked=true;checks[0].onchange();
+ checks[1].checked=true;checks[1].onchange();
+ assert.equal(checks[0].checked,true);
+ assert.equal(checks[1].checked,true);
+ assert.equal(view.skillPills.children.length,2);
+ ui.document.querySelector('dialog').close();
+ view.input.value='summarize doc';
+ await view.submit();
+ await new Promise(setImmediate);
+ assert.deepEqual(Array.from(ui.calls.filter(c=>c.body).at(-1).body.plugins),['gdrive','generative_ui']);
+
+ // Context usage dialog exposes compact button when idle and triggers compact endpoint
+ view.contextUsage.open();
+ await new Promise(setImmediate);
+ assert.equal(view.contextUsage.compactButton.disabled,false);
+ await view.contextUsage.compactButton.onclick();
+ assert.ok(ui.calls.some(c=>c.body&&c.url.includes('/compact')));
+
+ // Active Antigravity session disables native commands & compact button and guards submission
+ status='active';
+ await view.open('a');
+ await new Promise(setImmediate);
+ view.input.value='/boost too soon';
+ assert.equal(picker.consume(),true);
+ assert.equal(view.input.value,'/boost too soon');
+ view.contextUsage.open();
+ assert.equal(view.contextUsage.compactButton.disabled,true);
+ view.contextUsage.dialog.close();
+});
+
+async function nativeCommandFixture(){
+ const ui=await opened(),view=ui.view;
+ view.state={...view.state,cwd:'/repo',model:'model-a',modelCatalogIdentity:'catalog-a',capabilities:{send:true,skills:true,slashCommands:true}};
+ view.draftGateway='gateway-a';view.draftScope={...view.draftScope,account:'account-a'};
+ return ui;
+}
+for(const field of ['model','effort','modelCatalogIdentity'])test('native command cache separates '+field+' and retains the previous scope on return',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,original=view.state[field];let reads=0;
+ ui.setHandler(async()=>({commands:[{id:'command-'+(++reads)}]}));
+ const first=await view.ensureNativeCommands(),firstKey=view.nativeCommandKey();
+ view.state[field]='updated-'+field;
+ assert.notEqual(view.nativeCommandKey(),firstKey);
+ assert.equal(view.nativeCommandActions().some(row=>row.id==='command-1'),false);
+ const second=await view.ensureNativeCommands();assert.equal(reads,2);assert.equal(second.commands[0].id,'command-2');
+ view.state[field]=original;assert.equal(await view.ensureNativeCommands(),first);assert.equal(reads,2);
+ ui.setHandler(async()=>{throw Error('catalog unavailable');});await view.ensureNativeCommands(true);
+ assert.equal(view.nativeCommands.get(firstKey),first);
+ ui.setHandler(async()=>({commands:[],pluginError:'temporarily unavailable'}));await view.ensureNativeCommands(true);
+ assert.equal(view.nativeCommands.get(firstKey),first);
+});
+test('native command cache discards a late model receipt without overwriting either valid scope',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,keyA=view.nativeCommandKey(),cached={commands:[{id:'cached-a'}]},receipts=[];
+ view.nativeCommands.set(keyA,cached);ui.setHandler(()=>new Promise(resolve=>receipts.push(resolve)));
+ const first=view.ensureNativeCommands(true);view.state.model='model-b';const keyB=view.nativeCommandKey(),second=view.ensureNativeCommands();
+ assert.equal(receipts.length,2);
+ receipts[1]({commands:[{id:'current-b'}]});await second;
+ receipts[0]({commands:[{id:'late-a'}]});await first;
+ assert.equal(view.nativeCommands.get(keyA),cached);assert.equal(view.nativeCommands.get(keyB).commands[0].id,'current-b');
+ view.state.model='model-a';assert.equal(await view.ensureNativeCommands(),cached);assert.equal(receipts.length,2);
+});
+for(const action of ['clear','accountChanged'])test('native command cache cannot revive after '+action+' even when its scope returns',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,saved={provider:view.provider,sid:view.sid,state:view.state,draftGateway:view.draftGateway,draftScope:view.draftScope,freshDetail:view.freshDetail};
+ let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=view.ensureNativeCommands();
+ if(action==='clear')view.clear();else{view.refresh=async()=>{};await view.accountChanged(view.provider,{activeId:'old'},{activeId:'new'});}
+ Object.assign(view,saved);finish({commands:[{id:'late-private-command'}]});await pending;
+ assert.equal(view.nativeCommands.size,0);assert.equal(view.nativeCommandsLoading.size,0);
+});
+test('native command cache invalidation starts a new read and rejects the old provider receipt',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,receipts=[];
+ ui.setHandler(()=>new Promise(resolve=>receipts.push(resolve)));const old=view.ensureNativeCommands();
+ view.provider='codex';await view.accountChanged('claude');view.provider='claude';
+ const current=view.ensureNativeCommands();assert.equal(receipts.length,2);
+ receipts[1]({commands:[{id:'fresh-command'}]});await current;
+ receipts[0]({commands:[{id:'stale-command'}]});await old;
+ assert.equal(view.nativeCommands.get(view.nativeCommandKey()).commands[0].id,'fresh-command');
+});
+for(const field of ['model','effort','modelCatalogIdentity','account'])test('native Skill commands never populate a changed '+field+' scope',async()=>{
+ const ui=await nativeCommandFixture(),view=ui.view,oldKey=view.nativeCommandKey(),cached={commands:[{id:'cached-original'}]};
+ view.nativeCommands.set(oldKey,cached);let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));
+ const pending=view.skills(),dialog=ui.document.body.querySelector('dialog');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};else view.state[field]='updated-'+field;
+ const newKey=view.nativeCommandKey();finish({commands:[{id:'old-scope-command'}],skills:[]});await pending;
+ assert.equal(view.nativeCommands.get(newKey),undefined);assert.equal(view.nativeCommands.get(oldKey),cached);assert.equal(dialog.open,false);
+});
+
+test('Workbench refreshes image thumbnails when Files is visible in right split pane',async()=>{
+ const ui=await opened();
+ ui.run('globalThis.IntersectionObserver = class { observe(){} disconnect(){} };');
+ const wb=ui.view.workbench;
+ wb.showThumbnails=true;
+ wb.current={
+  key:'k',provider:'claude',id:'a',host:'local',active:'chat',splitTab:'files',
+  files:[{id:'files',type:'files',loaded:true,thumbnails:[{entry:{name:'a.png',path:'a.png'},box:{},img:{}}]}],
+ };
+ assert.equal(wb.isVisible(wb.current,{id:'files'}),true);
+ wb.refreshThumbnails();
+ assert.ok(wb.thumbnailObserver,'thumbnailObserver should initialize when Files is visible in right split pane');
+ wb.stopThumbnails();
+});
+
+test('split button works directly from chat tab, restores last tool tab, and opens files on fresh chat',async()=>{
+ const ui=await opened(),wb=ui.view.workbench,session=wb.current;
+ hostPages(ui,async()=>({project:'/project',total:1,entries:[{name:'README.md',path:'/project/README.md',kind:'file',size:12}],nextOffset:null}));
+ assert.equal(session.active,'chat');
+ assert.equal(wb.splitButton.hidden,false);
+ assert.equal(wb.splitButton.disabled,false);
+ wb.splitButton.onclick();
+ await new Promise(setImmediate);
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'files');
+ assert.equal(ui.view.conversation.classList.contains('wb-split'),true);
+ wb.splitButton.onclick();
+ assert.equal(wb.splitMode,false);
+ assert.equal(session.active,'files');
+ session.files.push({id:'file:/project/README.md',name:'README.md',body:wb.node('div','wb-preview')});
+ wb.select('file:/project/README.md');
+ wb.select('chat');
+ assert.equal(wb.splitButton.disabled,false);
+ wb.splitButton.onclick();
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'file:/project/README.md');
+ await wb.close('file:/project/README.md');
+ assert.equal(session.splitTab,'files');
+ await wb.close('files');
+ assert.equal(session.active,'chat');
+ assert.equal(session.files.length,0);
+ wb.splitButton.onclick();
+ await new Promise(setImmediate);
+ assert.equal(wb.splitMode,true);
+ assert.equal(session.splitTab,'files');
+ ui.view.conversation.clientWidth=390;wb.paint();
+ assert.equal(wb.splitButton.hidden,true);
+ assert.equal(wb.splitButton.disabled,true);
+});
+
+test('stop stays interactive while another write is in flight',async()=>{
+ const ui=fixture();let resolveSend;
+ ui.setHandler((url)=>{
+  if(url.includes('/send'))return new Promise(resolve=>resolveSend=resolve);
+  if(url.includes('/stop'))return Promise.resolve({status:'accepted'});
+  if(url.includes('/detail'))return Promise.resolve({
+   session:{id:'a',title:'Active Chat',status:'active',model:'',requests:[]},
+   capabilities:{send:true,stop:true,models:true,effort:false,manualModels:true,manualEffort:false},
+   messages:[],
+  });
+  return Promise.resolve({sessions:[{id:'a',title:'Active Chat'}]});
+ });
+ await ui.view.choose('antigravity');
+ await ui.view.open('a');
+ await new Promise(setImmediate);
+ ui.view.input.value='in flight task';
+ const sending=ui.view.submit();
+ await new Promise(setImmediate);
+ assert.equal(ui.view.busy,true);
+ assert.equal(ui.view.send.disabled,true);
+ assert.equal(ui.view.stop.disabled,false);
+ await ui.view.stop.click();
+ assert.ok(ui.calls.some(c=>c.body&&c.url.includes('/stop')));
+ assert.equal(ui.view.busy,true);
+ resolveSend({status:'accepted'});
+ await sending;
+ assert.equal(ui.view.busy,false);
+});
+
+test('Antigravity grouped models submit base id and effort',async()=>{
+ const ui=fixture();
+ ui.setHandler((url,body)=>{
+  if(url.includes('/settings'))return Promise.resolve({status:'accepted',model:body.model,effort:body.effort});
+  if(url.includes('/catalog'))return Promise.resolve({
+   models:[{id:'gemini-4-hydrogen',name:'Gemini 4 Hydrogen',efforts:['low','medium','high','xhigh'],supportsEffort:true,defaultEffort:'medium',quotaTag:'剩余 61.2%',quotaStatus:'good'}],
+   usageSummary:{tier:'Google AI Pro',items:[{name:'Gemini 4 Hydrogen',val:'剩余 61.2%',status:'good'}],credits:'可用 Prompt 点数: 120'},
+   currentModel:'gemini-4-hydrogen',currentEffort:'medium',
+   capabilities:{models:true,effort:true,manualModels:true,manualEffort:false},
+   cache:{identity:'ag-id',updatedAt:1000},
+  });
+  if(url.includes('/detail'))return Promise.resolve({
+   session:{id:'a',title:'Antigravity Chat',status:'idle',model:'gemini-4-hydrogen',modelDisplayName:'Gemini 4 Hydrogen',effort:'medium',requests:[]},
+   capabilities:{send:true,stop:false,models:true,effort:true,manualModels:true,manualEffort:false},
+   messages:[],modelCatalogIdentity:'ag-id',
+  });
+  return Promise.resolve({sessions:[{id:'a',title:'Antigravity Chat'}]});
+ });
+ await ui.view.choose('antigravity');
+ await ui.view.open('a');
+ await new Promise(setImmediate);
+ assert.equal(ui.view.modelName.textContent,'Gemini 4 Hydrogen');
+ assert.equal(ui.view.modelEffort.textContent,'· medium');
+ await ui.view.models();
+ const dialog=ui.document.querySelector('dialog');
+ assert.equal(dialog.querySelectorAll('.model-choice').length,2);
+ const effortOptions=dialog.querySelector('.effort-options');
+ assert.equal(effortOptions.parentElement.hidden,false);
+ const xhighRadio=effortOptions.querySelectorAll('input')[3];
+ assert.equal(xhighRadio.value,'xhigh');
+ xhighRadio.checked=true;xhighRadio.onchange();
+ await dialog.querySelector('.ds-model-form').onsubmit({preventDefault(){}});
+ const settingsWrite=ui.calls.filter(c=>c.body&&c.url.includes('/settings')).at(-1);
+ assert.equal(settingsWrite.body.model,'gemini-4-hydrogen');
+ assert.equal(settingsWrite.body.effort,'xhigh');
+});
+
+async function stopConcurrencyFixture({status='idle',stop=true}={}){
+ const ui=await opened(),view=ui.view,receipts={};
+ view.bindDraftGateway('gateway-a');view.draftScope={gateway:'gateway-a',provider:'claude',account:'account-a',host:'local',session:'a'};
+ view.state={...view.state,status,capabilities:{...view.state.capabilities,send:true,stop}};view.freshDetail=true;view.refresh=async()=>{};view.updateComposer();
+ ui.setHandler((url,body)=>new Promise(resolve=>{receipts[new URL(url,'http://fixture').pathname.split('/').at(-1)]=resolve;}));
+ return {ui,view,receipts};
+}
+test('idle first send exposes stop only for a supported send in the current scope',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture();view.input.value='first task';
+ const sending=view.submit();assert.equal(view.freshDetail,false);assert.equal(view.stop.hidden,false);assert.equal(view.stop.disabled,false);
+ const stopping=view.stop.click();assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,1);
+ await view.stop.click();assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,1);
+ receipts.stop({status:'accepted'});await stopping;receipts.send({status:'accepted'});await sending;
+ assert.equal(view.busy,false);
+});
+for(const field of ['session','provider','gateway','account','generation'])test('pending send never authorizes stop after changing '+field,async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({status:'active'});
+ const sending=view.mutate('send',{text:'old task'});
+ if(field==='session')view.prepareChat('b');
+ if(field==='provider'){await view.choose('deepseek',{loadList:false});view.prepareChat('a');}
+ if(field==='gateway')view.bindDraftGateway('gateway-b');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};
+ if(field==='generation')view.generation++;
+ view.state={id:view.sid,status:'active',capabilities:{send:true,stop:true}};view.freshDetail=false;view.updateComposer();
+ assert.equal(view.canMutate(true),false);assert.equal(view.stop.disabled,true);
+ assert.equal(await view.mutate('stop',{}),null);assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,0);
+ receipts.send({status:'accepted'});await sending;
+});
+for(const action of ['settings','access'])test('idle pending '+action+' does not expose stop as if it were a send',async()=>{
+ const {view,receipts}=await stopConcurrencyFixture();const writing=view.mutate(action,{});
+ assert.equal(view.stop.hidden,true);assert.equal(view.stop.disabled,true);
+ const stopping=view.mutate('stop',{});assert.equal(receipts.stop,undefined);assert.equal(await stopping,null);receipts[action]({status:'accepted'});await writing;
+});
+test('explicit unsupported stop remains hidden and cannot be sent during a first send',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({stop:false});view.input.value='first task';const sending=view.submit();
+ assert.equal(view.stop.hidden,true);assert.equal(view.stop.disabled,true);const stopping=view.mutate('stop',{});
+ assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/stop')).length,0);assert.equal(await stopping,null);receipts.send({status:'accepted'});await sending;
+});
+test('ordinary writes and duplicate stop stay blocked while stop is pending even after fresh detail',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture({status:'active'}),stopping=view.mutate('stop',{});
+ view.freshDetail=true;view.input.value='must not send';view.updateComposer();assert.equal(view.send.disabled,true);
+ assert.equal(await view.mutate('settings',{}),null);await view.submit();await view.mutate('stop',{});
+ assert.equal(ui.calls.filter(c=>c.body&&/\/(send|settings|stop)(?:\?|$)/.test(c.url)).length,1);
+ receipts.stop({status:'accepted'});await stopping;
 });

@@ -119,9 +119,32 @@ class CliSessionTests(unittest.TestCase):
         emit('item/started', turnId='turn-1', item=user)
         emit('item/started', turnId='turn-1', item={**reply, 'timestamp': stamp + 1000})
         emit('item/completed', turnId='turn-1', item=reply)
-        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': [reply]})
-        rows = normalize_state(self.states[-1][1])['turns'][0]['messages']
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': [reply],
+                                     'completedAt': stamp / 1000 + 125})
+        turn = normalize_state(self.states[-1][1])['turns'][0]
+        self.assertEqual(turn['startedAt'], stamp)
+        self.assertEqual(turn['completedAt'], stamp + 125000)
+        rows = turn['messages']
         self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
+
+    def test_thread_snapshot_turn_clocks_convert_native_seconds_without_inventing_completion(self):
+        stamp = 1794211440000
+        self.fake.thread['turns'] = [
+            {'id': 'done', 'status': 'completed', 'startedAt': stamp / 1000, 'completedAt': stamp / 1000 + 125},
+            {'id': 'active', 'status': 'inProgress', 'startedAt': stamp / 1000 + 126}]
+        self.sessions.attach('thread-a', explicit=True)
+        turns = normalize_state(self.states[-1][1])['turns']
+        self.assertEqual((turns[0]['startedAt'], turns[0]['completedAt']), (stamp, stamp + 125000))
+        self.assertIsNone(turns[1]['completedAt'])
+
+    def test_resuming_same_native_turn_clears_previous_completion_clock(self):
+        self.sessions.attach('thread-a', explicit=True)
+        for method, turn in (
+                ('turn/completed', {'id': 'turn-1', 'status': 'completed', 'completedAt': 1794211565}),
+                ('turn/started', {'id': 'turn-1', 'status': 'inProgress', 'startedAt': 1794211566})):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', 'turn': turn}})
+        self.assertNotIn('turnCompletedAtMs', self.states[-1][1]['turns'][0])
+        self.assertIsNone(normalize_state(self.states[-1][1])['turns'][0]['completedAt'])
 
     def test_passive_attach_does_not_connect_or_resume(self):
         self.sessions._start_daemon = Mock()
@@ -819,6 +842,9 @@ class CliSessionTests(unittest.TestCase):
         self.sessions.attach('thread-a', explicit=True)
         self.sessions.metadata['thread-a']['modelProvider'] = 'custom'
         self.fake.thread['modelProvider'] = 'custom'
+        original = self.fake.request
+        self.fake.request = lambda method, params, **kwargs: ({'config': {'model_provider': 'custom'}}
+            if method == 'config/read' else original(method, params, **kwargs))
         result = self.sessions.get_kind('thread-a', 'models')
         self.assertEqual(result['modelSource'], 'api')
         self.assertEqual(result['models'], [])

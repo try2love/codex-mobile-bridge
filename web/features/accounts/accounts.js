@@ -261,9 +261,9 @@ class AccountsPanel {
     if(receipt?.operation==='cliAuth'&&receipt.phase==='authUnknown'&&receipt.targetId===row.id){
       await this.perform({action:'switch',id:row.id,requestId:receipt.requestId,confirmed:true,tasksConfirmed:true});this.refresh();return;
     }
-    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出并重启桌面运行时。')+'\n'+row.name))return;
+    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换时仅在需要时正常退出空闲的共享 CLI 服务，并在桌面应用运行时重启；切换完成前请勿从其他客户端发起任务。')+'\n'+row.name))return;
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true,
-      syncLocalCli:true});this.refresh();}
+      syncLocalCli:true,sharedDaemonConfirmed:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
   }
   renderTools(){

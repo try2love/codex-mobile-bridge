@@ -72,7 +72,7 @@ def main():
                 try:
                     value = json.loads(line)
                     action = value.get('action')
-                    if action not in ('accounts', 'account', 'cli-access', 'desktop-sessions', 'start', 'stop', 'save'):
+                    if action not in ('accounts', 'account', 'cli-access', 'desktop-sessions', 'cloud', 'start', 'stop', 'save'):
                         raise ValueError('不支持的本机管理操作')
                     method = getattr(desktop, action.replace('-', '_'))
                     result = method() if action == 'stop' else method(value.get('payload') or {})
@@ -111,7 +111,7 @@ def main():
             result = apply(args.plan)
         elif args.action == 'test-notification':
             result = desktop.test_notification(json.loads(sys.stdin.read(100000) or '{}'))
-        elif args.action in ('start', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'save', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation'):
+        elif args.action in ('start', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'save', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'cloud'):
             result = getattr(desktop, args.action.replace('-', '_'))(json.loads(sys.stdin.read(100000) or '{}'))
         else:
             method = getattr(desktop, args.action.replace('-', '_'))

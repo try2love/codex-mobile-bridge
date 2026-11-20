@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.features.notifications.channels import Notifications, publish, publish_bark, publish_pushplus, publish_webhook, settings, save_settings, save_webhook_endpoint, channels, write_json, read_json, visible_webhook, destination, resolved_webhook_provider
+from bridge.features.notifications.channels import Notifications, publish, publish_bark, publish_pushplus, publish_webhook, settings, save_settings, save_webhook_endpoint, channels, write_json, read_json, read_status_json, visible_webhook, destination, resolved_webhook_provider
 from bridge.app.service import LiveSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1049,3 +1049,53 @@ class NotificationTests(unittest.TestCase):
             self.assertNotIn('token', captured[0][0])
         finally:
             server.shutdown();server.server_close()
+
+    def test_corrupt_notification_status_never_kills_workers_or_breaks_desktop_snapshot(self):
+        # 通知状态文件损坏或为非字典时，后台扫描/投递/推送线程与桌面端快照都必须保持存活，
+        # 同时 server-host-keys 等安全文件使用的严格 read_json() 契约维持不变。
+        status_path = self.directory/'notification-status.json'
+        for raw in ('{corrupt', '[]'):
+            with self.subTest(raw=raw):
+                status_path.write_text(raw, encoding='utf-8')
+                self.assertEqual(read_status_json(status_path, {}), {})
+                self.manager._report_worker_error(error='扫描异常')
+                saved = read_json(status_path, {})
+                self.assertEqual(saved['error'], '扫描异常')
+
+        # 模拟扫描/投递/推送线程各自进入异常处理后再进入下一轮循环，确认状态文件损坏
+        # 或写入 I/O 失败均不会导致守护线程提前退出。
+        status_path.write_text('{corrupt', encoding='utf-8')
+        scan_calls = []
+        deliver_calls = []
+        push_calls = []
+        with patch.object(self.manager, 'scan', side_effect=lambda **kw: (scan_calls.append(kw), (_ for _ in ()).throw(RuntimeError('boom')))[1]), \
+             patch.object(self.manager, 'deliver_pending', side_effect=lambda: (deliver_calls.append(1), (_ for _ in ()).throw(RuntimeError('boom')))[1]), \
+             patch.object(self.manager.mobile_push, 'drain', side_effect=lambda *a: (push_calls.append(a), (_ for _ in ()).throw(RuntimeError('boom')))[1]):
+            orig_closed, orig_wakeup, orig_delivery = self.manager.closed, self.manager.wakeup, self.manager.delivery_wakeup
+            def run_two_passes(method, tracker):
+                def is_closed():
+                    return len(tracker) >= 2
+                self.manager.closed = type('C', (), {
+                    'is_set': staticmethod(is_closed),
+                    'wait': staticmethod(lambda timeout: is_closed()),
+                    'set': staticmethod(lambda: None),
+                })()
+                self.manager.wakeup = type('W', (), {'wait': staticmethod(lambda t: True), 'clear': staticmethod(lambda: None)})()
+                self.manager.delivery_wakeup = type('D', (), {'wait': staticmethod(lambda t: True), 'clear': staticmethod(lambda: None)})()
+                getattr(self.manager, method)()
+                self.assertGreaterEqual(len(tracker), 2)
+
+            try:
+                run_two_passes('_run', scan_calls)
+                run_two_passes('_delivery_run', deliver_calls)
+                run_two_passes('_push_run', push_calls)
+            finally:
+                self.manager.closed, self.manager.wakeup, self.manager.delivery_wakeup = orig_closed, orig_wakeup, orig_delivery
+
+        with patch('bridge.features.notifications.channels.write_json', side_effect=OSError('disk full')):
+            self.manager._report_worker_error('nativePush', error='不可用')
+
+        status_path.write_text('{corrupt', encoding='utf-8')
+        self.assertEqual(read_status_json(status_path, {}), {})
+        with self.assertRaises(ValueError):
+            read_json(status_path, {})

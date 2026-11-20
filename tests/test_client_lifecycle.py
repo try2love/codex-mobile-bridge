@@ -4,11 +4,13 @@ import json
 import threading
 import time
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.manager import DesktopSessions, DesktopWorkspace
+from bridge.clients.discovery import DISCOVERY_REVISION, inventory_fingerprint, inventory_preferences
 from bridge.clients.errors import BridgeUnavailable
 from bridge.features.accounts.operation_gate import OperationGate
 
@@ -122,6 +124,18 @@ class ClientLifecycleTests(unittest.TestCase):
                                     'dataDirectory': str(self.root), 'desktopProfileReady': True}
         self.accounts.index['desktopExecutable'] = discovered['codex']['executable']
         self.manager.config.update(discovered=discovered, enabled=dict.fromkeys(discovered, True))
+        # Installation discovery stays inside the synthetic lifecycle fixture.
+        # Upgrade handoffs are covered separately in test_installation_updates.
+        for target, options in (
+            ('bridge.app.desktop.Desktop.preferences', {'return_value': {'codexHome': str(self.root)}}),
+            ('bridge.clients.discovery.discover_clients', {'side_effect': lambda _: deepcopy(self.manager.config['discovered'])}),
+        ):
+            patcher = patch(target, **options)
+            patcher.start(); self.addCleanup(patcher.stop)
+        preferences = self.manager._discovery_preferences()
+        self.manager.config.update(discoveryRevision=DISCOVERY_REVISION,
+            discoveryPreferences=inventory_preferences(preferences),
+            discoveryFingerprint=inventory_fingerprint(discovered, preferences))
         self.running = True
         self.inspect = self.patch('inspect_client', side_effect=lambda _: {'running': self.running,
             'pids': [11, 12] if self.running else [], 'mainPids': [11] if self.running else [], 'runtimePids': [12] if self.running else [], 'unknown': False})
@@ -177,6 +191,38 @@ class ClientLifecycleTests(unittest.TestCase):
         ready = manager.clients_status()
         self.assertFalse(ready['pending'])
         self.assertEqual(len(ready['clients']), 3)
+
+    def test_running_desktop_control_reuses_snapshot_while_lifecycle_holds_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        entered, release = threading.Event(), threading.Event()
+        previous = self.manager.client_snapshot
+        def hold():
+            with self.manager.client_lock:
+                entered.set()
+                release.wait(3)
+        holder = threading.Thread(target=hold)
+        holder.start()
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            self.assertTrue(entered.wait(1))
+            future = executor.submit(self.manager.control, {'action': 'clients', 'refresh': True})
+            result = future.result(timeout=.3)
+            self.assertTrue(result['pending'])
+            self.assertEqual(result['clients'], previous['clients'])
+        finally:
+            release.set(); holder.join(1); executor.shutdown(wait=True)
+        deadline = time.monotonic() + 1
+        while self.manager.client_refreshing and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(self.manager.control({'action': 'clients'})['pending'])
+        self.launch.assert_not_called(); self.stop.assert_not_called()
+
+    def test_offline_desktop_control_keeps_synchronous_inventory(self):
+        self.manager.gateway_running = False
+        with patch.object(self.manager, 'clients', return_value={'clients': [], 'inventoryAvailable': False}) as read:
+            result = self.manager.control({'action': 'clients', 'refresh': True})
+        read.assert_called_once_with(refresh=True)
+        self.assertFalse(result['inventoryAvailable'])
 
     def test_client_status_failed_refresh_is_visible_and_can_retry(self):
         manager = self.manager
@@ -240,7 +286,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.running = False
         with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=''), \
              patch.object(self.manager, '_prepare_codex_runtime') as prepare:
-            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True})['clients']
+            rows = self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)['clients']
         descriptor = prepare.call_args.args[0]
         self.assertEqual(descriptor['executable'], self.manager.config['discovered']['codex']['executable'])
         self.assertTrue(descriptor['installed'])
@@ -555,9 +601,44 @@ class ClientLifecycleTests(unittest.TestCase):
         self.claude.reconnect.assert_called_once_with()
         self.claude.connect.assert_not_called()
 
+    def test_codex_explicit_enable_launches_without_waiting_for_side_chat_preparation(self):
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        # A stale preparation receipt or unavailable task audit must not consume
+        # an explicit App launch as a successful background scheduling request.
+        self.accounts.prepare_desktop_runtime.return_value = True
+        with patch.object(self.manager, '_prepare_codex_runtime') as prepare:
+            self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.launch.assert_called_once()
+        self.assertEqual(self.launch.call_args.kwargs, {'allow_unprepared_codex': True})
+        self.assertTrue(self.running)
+        self.assertTrue(self.manager.enabled('codex'))
+        prepare.assert_not_called()
+        self.accounts.idle.assert_not_called()
+
+    def test_codex_explicit_enable_cancels_preparation_and_keeps_shared_launch_lock(self):
+        from bridge.clients.codex.desktop_runtime import initialization_lock
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        with initialization_lock(self.accounts.home):
+            with self.assertRaisesRegex(ValueError, '共享接入仍在使用'):
+                self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertTrue(self.manager.runtime_preparation_cancel.is_set())
+        self.launch.assert_not_called()
+        self.assertFalse(self.manager.enabled('codex'))
+
+    def test_codex_explicit_failed_launch_does_not_persist_enabled(self):
+        self.running = False
+        self.manager.config['enabled']['codex'] = False
+        self.launch.side_effect = None
+        self.launch.return_value = {'running': False, 'launched': True}
+        with self.assertRaisesRegex(ValueError, '客户端尚未启动'):
+            self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.assertFalse(self.manager.enabled('codex'))
+
     def test_codex_background_preparation_waits_for_enabled_selection(self):
         self.manager.config['enabled']['codex'] = False
-        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.manager.runtime_preparation_thread.join(3)
         self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
         self.accounts.prepare_desktop_runtime.assert_called_once()
@@ -577,7 +658,7 @@ class ClientLifecycleTests(unittest.TestCase):
                     cancelled.set()
             return False
         self.accounts.prepare_desktop_runtime.side_effect = held_prepare
-        self.manager.toggle_client({'provider': 'codex', 'enabled': True})
+        self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.assertTrue(entered.wait(2))
         self.manager.toggle_client({'provider': 'codex', 'enabled': False, 'quitDesktop': False})
         self.manager.runtime_preparation_thread.join(3)
@@ -921,6 +1002,41 @@ class ClientLifecycleTests(unittest.TestCase):
         self.accounts.assert_editable.assert_called_once()
         self.stop.assert_called_once()
         self.assertFalse(self.manager.enabled('codex'))
+
+    def test_codex_lifecycle_never_runs_late_after_waiting_for_display_or_account_locks(self):
+        from concurrent.futures import Future
+        self.accounts.gate = OperationGate()
+        force_stop = self.patch('force_stop_client')
+        for lock in (self.manager.client_lock, self.manager.locks['codex'], self.accounts.lock, self.accounts.gate):
+            for action in ('quit', 'force', 'enable'):
+                enabled = action == 'enable'
+                with self.subTest(lock=type(lock).__name__, action=action):
+                    entered, release = threading.Event(), threading.Event()
+                    result = Future()
+                    self.launch.reset_mock(); self.stop.reset_mock()
+                    def hold():
+                        with lock:
+                            entered.set()
+                            release.wait(3)
+                    def change():
+                        try:
+                            result.set_result(self.manager.toggle_client({'provider': 'codex', 'enabled': enabled,
+                                **({} if enabled else {'quitDesktop': True}),
+                                **({'forceDesktop': True, 'forceConfirmed': True} if action == 'force' else {})}))
+                        except BaseException as error:
+                            result.set_exception(error)
+                    holder, operation = threading.Thread(target=hold), threading.Thread(target=change)
+                    holder.start()
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        with patch('bridge.clients.manager.LIFECYCLE_GATE_WAIT', .03):
+                            operation.start()
+                            with self.assertRaisesRegex(ValueError, '操作正在进行'):
+                                result.result(timeout=.3)
+                    finally:
+                        release.set(); holder.join(1); operation.join(1)
+                    self.assertFalse(operation.is_alive())
+                    self.launch.assert_not_called(); self.stop.assert_not_called(); force_stop.assert_not_called()
 
     def test_codex_close_does_not_queue_behind_an_unresponsive_connection(self):
         from concurrent.futures import Future
