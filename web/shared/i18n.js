@@ -7,7 +7,7 @@ const en={
   "已完成，用时 {minutes} 分钟 {seconds} 秒": "Completed in {minutes} min {seconds} sec",
   "已完成，用时 {seconds} 秒": "Completed in {seconds} sec",
   "完成后发送 · 输入 / 查看指令": "Send when done · / commands",
-  "继续这条聊天 · 输入 / 查看指令": "Continue this chat · / commands",
+  "继续这条聊天 · 输入 / 查看指令": "Continue chat · / commands",
   "编辑了文件，运行了命令": "Edited files and ran commands",
   "加载更早过程": "Load earlier activity",
   "已回答问题": "Answered questions",
