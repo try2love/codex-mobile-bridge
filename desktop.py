@@ -58,7 +58,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-apply'])
+    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-backup', 'update-apply'])
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
@@ -106,6 +106,9 @@ def main():
         elif args.action == 'update-prepare':
             from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
+        elif args.action == 'update-backup':
+            from bridge.features.updates.gateway import backup_configuration
+            result = backup_configuration(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
         elif args.action == 'update-apply':
             from bridge.features.updates.gateway import apply
             result = apply(args.plan)

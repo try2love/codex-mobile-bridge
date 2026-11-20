@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 
 APP = 'Codex Mobile Bridge'
@@ -23,6 +24,194 @@ APP_ID = 'io.github.try2love.codexmobilebridge'
 RESULT = 'desktop-update-result.json'
 PENDING_TRANSACTION_TIMEOUT = 15*60
 STOP_RETRY_SECONDS = 8
+DATA_FORMAT = 'bridge-data-v1'
+# Only this source family has been reviewed against the pre-format stable app.
+RETURN_STABLE_SOURCE = re.compile(r'2\.2\.2-preview\.\d+')
+CONFIG_FILES = ('config.json', 'desktop.json', 'auth-sessions.json', 'connection-vault.json',
+                'notifications.json', 'notification-watches.json', 'notification-policies.json',
+                'network-adaptation.json', 'desktop-sessions/settings.json',
+                'client-instances/entries.json', 'codex-entries/entries.json', 'cli-access/index.json',
+                'account-drafts.json')
+ACCOUNT_FILES = ('index.json', 'switch.json', 'shared-daemon-stop.json', 'reset-dynamic.json',
+                 'reminders.json', 'global-reset-watch.json')
+
+
+def version_key(value):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?', value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError('更新版本格式无效。')
+    pre = match[4]
+    return (*map(int, match.group(1, 2, 3)), pre is None,
+            tuple((0, int(part)) if part.isdigit() else (1, part) for part in (pre or '').split('.')))
+
+
+def validate_transition(target, payload):
+    transition = payload.get('transition')
+    if transition is None:
+        return None  # Existing, upgrade-only controllers keep their wire contract.
+    if (not isinstance(transition, dict) or set(transition) != {'intent', 'from', 'to', 'dataFormat'}
+            or transition['dataFormat'] != DATA_FORMAT or transition['to'] != payload.get('version')):
+        raise ValueError('此版本的数据兼容性尚未核验，已取消安装。')
+    installed = read_record(locations(Path(target))[2] / 'update-version.json')
+    if not installed or installed.get('version') != transition['from']:
+        raise ValueError('当前安装版本已变化，请重新检查更新。')
+    if installed.get('dataFormat', DATA_FORMAT) != DATA_FORMAT:
+        raise ValueError('当前资料格式尚未核验，已取消安装。')
+    before, after = version_key(transition['from']), version_key(transition['to'])
+    if after < before:
+        if (transition['intent'] != 'return-stable' or transition['to'] != '2.2.1'
+                or not RETURN_STABLE_SOURCE.fullmatch(transition['from'])):
+            raise ValueError('此回退版本尚未核验资料兼容性。')
+    elif (after <= before or transition['intent'] not in ('update', 'opt-in-preview', 'return-stable')
+          or transition['intent'] == 'return-stable' and '-' in transition['to']):
+        raise ValueError('更新方向与已确认的操作不一致。')
+    return transition
+
+
+def configuration_files(data):
+    """Only Bridge settings and saved credentials; never walk native chat stores."""
+    roots = [data]
+    for folder in ('client-instances', 'codex-entries'):
+        parent = data / folder
+        if parent.is_symlink():
+            raise ValueError('资料登记目录不能使用符号链接。')
+        if parent.is_dir():
+            roots.extend(child for child in parent.iterdir() if child.is_dir())
+    for root in roots:
+        if root.is_symlink():
+            raise ValueError('资料登记目录不能使用符号链接。')
+        yield from (root / name for name in CONFIG_FILES)
+        accounts = root / 'accounts'
+        if accounts.is_symlink():
+            raise ValueError('账号目录不能使用符号链接。')
+        yield from (accounts / name for name in ACCOUNT_FILES)
+        yield accounts / 'rollback.json'
+        if accounts.is_dir():
+            for folder in accounts.iterdir():
+                if re.fullmatch(r'[0-9a-f]{32}', folder.name) and folder.is_dir():
+                    yield from (folder / name for name in ('auth.json', 'api.json', 'config.toml'))
+        for family in ('claude', 'deepseek', 'zcode', 'antigravity'):
+            directory = root / 'desktop-sessions' / ('antigravity/accounts' if family == 'antigravity' else family + '-accounts')
+            if directory.is_symlink():
+                raise ValueError('账号目录不能使用符号链接。')
+            if directory.is_dir():
+                yield from directory.glob('*.json')
+                if family == 'claude':
+                    yield from directory.glob('profiles/*/manifest.json')
+                    yield from directory.glob('profiles/*/auth.json')
+                    yield from directory.glob('profiles/*/gateway.json')
+        yield from (root / 'cli-access').glob('claude/*/api.json')
+
+
+def configuration_snapshot(data, *, rollback=False):
+    files, total = {}, 0
+    for path in configuration_files(data):
+        if not path.exists() and not path.is_symlink():
+            continue
+        relative = path.relative_to(data)
+        if any(data.joinpath(*relative.parts[:index]).is_symlink()
+               for index in range(1, len(relative.parts) + 1)):
+            raise ValueError('更新备份的配置路径不能使用符号链接。')
+        if not path.is_file() or path.stat().st_size > 16*1024**2 or len(files) >= 10000:
+            raise ValueError('更新配置备份超出限制。')
+        raw = path.read_bytes()
+        total += len(raw)
+        if total > 64*1024**2:
+            raise ValueError('更新配置备份超出限制。')
+        try:
+            value = json.loads(raw.decode('utf-8-sig')) if path.suffix == '.json' else None
+        except (UnicodeError, ValueError):
+            raise ValueError('现有配置无法读取，已取消安装；请先检查本机配置。') from None
+        if path.suffix == '.json' and not isinstance(value, (dict, list)):
+            raise ValueError('现有配置格式无法识别，已取消安装。')
+        if rollback and path.name in ('config.json', 'desktop.json', 'settings.json') and not isinstance(value, dict):
+            raise ValueError('现有配置格式不兼容，已取消回退。')
+        if rollback and path.name == 'config.json':
+            auth = value.get('auth')
+            if (not isinstance(auth, dict) or auth.get('mode') not in ('none', 'password')
+                    or auth['mode'] == 'password' and (not isinstance(auth.get('username'), str)
+                        or not isinstance(auth.get('salt'), str) or not isinstance(auth.get('hash'), str)
+                        or type(auth.get('iterations')) is not int)):
+                raise ValueError('网关认证格式不兼容，已取消回退。')
+        if rollback and path.name == 'entries.json' and (not isinstance(value, dict)
+                or value.get('version') != 1 or not isinstance(value.get('entries'), list)):
+            raise ValueError('接入登记格式不兼容，已取消回退。')
+        if rollback and path.name == 'entries.json' and path.parent.name == 'client-instances':
+            from bridge.features.clients.instances import Instances
+            Instances(path.parent.parent)._load()  # Existing structural reader; no native profile activation.
+        if rollback and path.name == 'entries.json' and path.parent.name == 'codex-entries':
+            from bridge.features.endpoints.registry import entry_id, local_entry_id
+            try:
+                for row in value['entries']:
+                    expected = (local_entry_id(row['home']) if row.get('kind') == 'codex-local'
+                                else entry_id(row['distribution'], row['user'], row['home']))
+                    if row.get('id') != expected:
+                        raise ValueError()
+            except (AttributeError, KeyError, TypeError, ValueError):
+                raise ValueError('Codex 接入登记格式不兼容，已取消回退。') from None
+        if rollback and path.name == 'switch.json' and (not isinstance(value, dict)
+                or value.get('phase') not in ('idle', 'complete', 'restored')):
+            raise ValueError('账号操作尚未完成，请恢复原接入后再回退。')
+        if rollback and path.name == 'rollback.json':
+            raise ValueError('账号恢复尚未完成，请恢复原接入后再回退。')
+        if rollback and path.name == 'index.json' and path.parent.name == 'accounts' and 'desktop-sessions' not in relative.parts:
+            if (not isinstance(value, dict) or not isinstance(value.get('accounts'), list)
+                    or any(not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                           or not re.fullmatch(r'[0-9a-f]{32}', row['id'])
+                           or row.get('kind') not in ('api', 'chatgpt') for row in value['accounts'])):
+                raise ValueError('账号登记格式不兼容，已取消回退。')
+        if rollback and path.name == 'auth-sessions.json':
+            if (not isinstance(value, dict) or not isinstance(value.get('identity'), str)
+                    or not isinstance(value.get('cookieName'), str) or not isinstance(value.get('policy'), dict)
+                    or not isinstance(value.get('sessions'), dict)
+                    or any(not isinstance(row, dict) or type(row.get('expires')) not in (int, float)
+                           for row in value['sessions'].values())):
+                raise ValueError('设备授权格式不兼容，已取消回退。')
+            from bridge.features.auth.auth import access_policy
+            try:
+                access_policy(value['policy'])
+            except (TypeError, ValueError):
+                raise ValueError('设备授权规则不兼容，已取消回退。') from None
+        files[path.relative_to(data).as_posix()] = raw
+    return files
+
+
+def private_directory(path):
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import directory
+        return directory(path, create=True)  # Protected owner-only Windows DACL.
+    path.mkdir(mode=0o700, exist_ok=True)
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise ValueError('更新备份目录不属于当前用户。')
+    path.chmod(0o700)
+    return path
+
+
+def backup_configuration(data_dir, payload):
+    """Durable safety copy only. User rollback always opens current live data."""
+    data = Path(data_dir).resolve()
+    transition = validate_transition(payload['target'], payload)
+    if transition is None:
+        raise ValueError('备份缺少已确认的版本操作。')
+    files = configuration_snapshot(data, rollback=transition['intent'] == 'return-stable')
+    parent = private_directory(data / 'update-backups')
+    backup = private_directory(parent / uuid.uuid4().hex)
+    try:
+        records = {}
+        for name, raw in files.items():
+            destination = backup / name
+            for folder in reversed(destination.parent.relative_to(backup).parents):
+                private_directory(backup / folder)
+            private_directory(destination.parent)
+            with destination.open('xb') as stream:
+                os.chmod(destination, 0o600)
+                stream.write(raw)
+            records[name] = {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        write_json(backup / 'backup.json', {'schema': 1, 'transition': transition, 'files': records})
+        return {'backup': str(backup), 'files': len(files)}
+    except Exception:
+        shutil.rmtree(backup)
+        raise
 
 
 def write_json(path, value):
@@ -212,6 +401,8 @@ def locations(target):
         return (target / 'Contents/MacOS' / APP,
                 target / 'Contents/Resources/gateway/codex-mobile-gateway',
                 target / 'Contents/Resources')
+    if sys.platform == 'linux':
+        return target / 'codex-mobile-bridge-desktop', target / 'resources/gateway/codex-mobile-gateway', target / 'resources'
     return target / (APP + '.exe'), target / 'resources/gateway/codex-mobile-gateway.exe', target / 'resources'
 
 
@@ -236,6 +427,9 @@ def prepare(data_dir, payload):
     if not old_app.is_file() or not old_worker.is_file():
         raise ValueError('未找到完整的应用安装目录。')
     preflight(target)
+    transition = validate_transition(target, payload)
+    if transition:
+        configuration_snapshot(data, rollback=transition['intent'] == 'return-stable')
     digest = hashlib.sha256()
     with open(payload['archive'], 'rb') as stream:
         for chunk in iter(lambda: stream.read(1024*1024), b''):
@@ -255,7 +449,9 @@ def prepare(data_dir, payload):
         staged = stage / (APP + '.app') if sys.platform == 'darwin' else stage
         new_app, new_worker, resources = locations(staged)
         metadata = json.loads((resources / 'update-version.json').read_text(encoding='utf-8'))
-        if metadata != {'version': payload['version'], 'platform': payload['platform'], 'arch': payload['arch']}:
+        expected = {'version': payload['version'], 'platform': payload['platform'], 'arch': payload['arch']}
+        if (any(metadata.get(key) != value for key, value in expected.items())
+                or set(metadata) - {*expected, 'dataFormat'} or metadata.get('dataFormat', DATA_FORMAT) != DATA_FORMAT):
             raise ValueError('更新包版本或平台不匹配。')
         if not new_app.is_file() or not new_worker.is_file():
             raise ValueError('更新包缺少应用程序。')
@@ -281,6 +477,8 @@ def prepare(data_dir, payload):
         plan = {'target': str(target), 'staged': str(staged), 'backup': str(transaction / 'previous'),
                 'dataDir': str(data), 'version': payload['version'], 'parentPid': payload['parentPid'],
                 'token': payload['token'], 'runtime': runtime}
+        if transition:
+            plan['transition'] = transition
         write_json(transaction / 'plan.json', plan)
         return {'plan': str(transaction / 'plan.json'), 'helper': str(helper / old_worker.name)}
     except Exception:
@@ -472,6 +670,11 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
             if os.name == 'nt' and verified_pid:
                 wait_parent(verified_pid, timeout=20)
         preflight(target)
+        if plan.get('transition'):
+            # Take the final copy after the old controller and managed gateway
+            # have stopped. It is independent of replaceable app transactions.
+            plan['configurationBackup'] = backup_configuration(plan['dataDir'], plan)['backup']
+            write_json(Path(plan_file), plan)
         move_app(target, backup)
         try:
             move_app(staged, target)
@@ -507,6 +710,8 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
                   'recovered': recovery_error is None, 'backup': str(backup)}
         if recovery_error:
             result['recoveryError'] = recovery_error
+    if plan.get('configurationBackup'):
+        result['configurationBackup'] = plan['configurationBackup']
     record_update(plan['dataDir'], result, plan.get('target'))
     write_json(Path(plan['dataDir']) / RESULT, result)
     write_json(transaction / 'result.json', result)
