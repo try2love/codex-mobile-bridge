@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Codex Mobile Bridge HarmonyOS Client"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Codex Mobile Bridge"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Codex Bridge"
+    }
+  ]
+}
