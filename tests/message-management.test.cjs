@@ -4,7 +4,7 @@ const {MessageManagement}=require('../web/features/chat/message-management.js');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(){
  const m=Object.create(MessageManagement.prototype),saved=[],sent=[];
- Object.assign(m,{target:{id:'chat',host:'ssh'},t:x=>x,uuid:()=> 'fresh-id',busy:false,drag:null,generation:1,dialog:{open:true},content:{inert:false},status:{textContent:''},closeButton:{},refreshButton:{},data:{version:'v1',draftAccountIdentity:'account',queue:[{id:'a'},{id:'b'},{id:'c'}]},queue:[{id:'a'},{id:'b'},{id:'c'}],render(){this.renders=(this.renders||0)+1;},refresh:async()=>{m.refreshes=(m.refreshes||0)+1;},onChanged(){},saveEditor:async(scope,editor)=>saved.push({scope,editor}),edit:async(scope,body)=>{sent.push({scope,body});return {queue:[{id:body.id,editId:body.editId,text:body.text}]};}});
+ Object.assign(m,{target:{id:'chat',host:'ssh'},t:x=>x,uuid:()=> 'fresh-id',busy:false,drag:null,generation:1,dialog:{open:true},content:{inert:false,replaceChildren(){}},status:{textContent:''},closeButton:{},refreshButton:{},data:{version:'v1',draftAccountIdentity:'account',queue:[{id:'a'},{id:'b'},{id:'c'}]},queue:[{id:'a'},{id:'b'},{id:'c'}],render(){this.renders=(this.renders||0)+1;},refresh:async()=>{m.refreshes=(m.refreshes||0)+1;},onChanged(){},saveEditor:async(scope,editor)=>saved.push({scope,editor}),edit:async(scope,body)=>{sent.push({scope,body});return {queue:[{id:body.id,editId:body.editId,text:body.text}]};}});
  return {m,saved,sent};
 }
 test('up/down order is persisted with exact version and all queue IDs',async()=>{
@@ -107,6 +107,7 @@ test('open, persistEditor and editRow work without structuredClone',async()=>{
   const {m,saved}=fixture();let shown=0;
   m.scope=()=>({id:'chat',host:'local'});m.doc={activeElement:null};m.beforeOpen=()=>{};m.loadEditor=async()=>undefined;m.dialog.showModal=()=>shown++;
   await m.open();assert.equal(shown,1);assert.deepEqual(m.target,{id:'chat',host:'local'});assert.equal(m.persistedEditor,undefined);
+  m.data={version:'v1',draftAccountIdentity:'account',queue:[{id:'queued',text:'old'}]};
   await m.editRow({id:'queued',text:'hello'});assert.equal(m.editor.body.text,'hello');
   m.editor.body.text='mutated-after';await settle();assert.equal(saved[0].editor.body.text,'hello');
  }finally{
