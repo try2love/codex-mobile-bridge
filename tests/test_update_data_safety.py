@@ -54,7 +54,7 @@ class UpdateDataSafetyTests(unittest.TestCase):
         tools = self.data / 'tools/run'
         tools.parent.mkdir()
         tools.write_text('not update data')
-        before = {str(path.relative_to(self.data)): path.read_bytes()
+        before = {path.relative_to(self.data).as_posix(): path.read_bytes()
                   for path in self.data.rglob('*') if path.is_file()}
         result = self.backup()
         backup = Path(result['backup'])
