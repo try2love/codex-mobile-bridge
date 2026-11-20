@@ -37,33 +37,36 @@ async function rewriteAsar(asarPath,mutate){
   try{asar.extractAll(asarPath,source);await mutate(source);await fs.rm(asarPath);await asar.createPackage(source,asarPath);}
   finally{await fs.rm(source,{recursive:true,force:true,maxRetries:20,retryDelay:100});}
 }
+function stubUpdaterSource(targetVersion){
+  return `'use strict';
+const production=require('./updater-production.cjs');
+const {generateKeyPairSync,sign}=require('node:crypto'),{Readable}=require('node:stream'),fs=require('node:fs');
+class Updater extends production.Updater {
+  constructor(options){
+    const version=${JSON.stringify(targetVersion)},platform=options.platform||process.platform,arch=options.arch||process.arch;
+    const name=production.assetName(version,platform,arch),archive=process.env.CMB_TEST_UPDATE_ARCHIVE;
+    const {publicKey,privateKey}=generateKeyPairSync('ed25519');
+    const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',notes:'Isolated controller fixture',
+      assets:{[platform+'-'+arch]:{name,size:Number(process.env.CMB_TEST_UPDATE_SIZE),sha256:process.env.CMB_TEST_UPDATE_SHA256}}}));
+    const envelope=JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,privateKey).toString('base64')});
+    super({...options,key:publicKey,fetch:async url=>{
+      if(url===production.RELEASES)return new Response(JSON.stringify([{tag_name:'v'+version,prerelease:version.includes('-'),assets:[{name:'bridge-update.json'}]}]));
+      if(url===production.releaseUrl(version,'bridge-update.json'))return new Response(envelope);
+      if(url===production.releaseUrl(version,name))return new Response(Readable.toWeb(fs.createReadStream(archive)));
+      throw Error('Unexpected controller fixture update URL');
+    }});
+  }
+}
+module.exports={...require('./updater-production.cjs'),Updater};
+`;
+}
 async function makeStubUpdater(asarPath){
   await rewriteAsar(asarPath,async source=>{
     const file=path.join(source,'desktop/features/updates/updater.cjs');
     await fs.rename(file,path.join(path.dirname(file),'updater-production.cjs'));
-    // Only release discovery/download is stubbed. installUpdate, helper spawn,
-    // ready polling, app.exit, gateway ownership and swap remain production.
-    await fs.writeFile(file,`'use strict';
-class Updater {
-  constructor({current,install}){this.current=current;this.apply=install;this.state={state:'idle',current};}
-  status(){return {...this.state};}
-  get busy(){return ['downloading','preparing','restarting'].includes(this.state.state);}
-  set(state,extra={}){this.state={current:this.current,...extra,state};return this.status();}
-  async check(){
-    this.candidate={version:${JSON.stringify(nextVersion)},archive:process.env.CMB_TEST_UPDATE_ARCHIVE,
-      asset:{name:'update.zip',size:Number(process.env.CMB_TEST_UPDATE_SIZE),sha256:process.env.CMB_TEST_UPDATE_SHA256}};
-    return this.set('available',{version:this.candidate.version});
-  }
-  async install(){
-    if(this.busy)return this.status();
-    const candidate=this.candidate;
-    this.set('downloading',{version:candidate.version,received:candidate.asset.size,total:candidate.asset.size});
-    try{this.set('preparing',{version:candidate.version});await this.apply(candidate);return this.set('restarting',{version:candidate.version});}
-    catch(error){return this.set('error',{message:error.message,version:candidate.version});}
-  }
-}
-module.exports={...require('./updater-production.cjs'),Updater};
-`);
+    // Only the release transport and its isolated signing key are fixtures.
+    // Candidate identity, signatures, downloads, confirmation and handoff use production code.
+    await fs.writeFile(file,stubUpdaterSource(nextVersion));
   });
 }
 async function bumpCandidate(appRoot,asarPath,resources,version){
@@ -191,7 +194,9 @@ async function runScenario(gatewayRunning){
     console.log('Initial client management',JSON.stringify(management));
     await cdp.call('Runtime.evaluate',{expression:`document.querySelector('[data-tab="advanced"]').click();document.querySelector('[data-maintenance-tab="updates"]').click()`});
     await cdp.call('Runtime.evaluate',{expression:"document.getElementById('check-update').click()"});
-    await until(async()=>{const value=await windowBridgeSnapshot(cdp);return value.update?.state==='available';},'stub update check',30000);
+    const checked=await until(async()=>{const value=await windowBridgeSnapshot(cdp);return value.update?.state==='available'?value.update:null;},'fixture update check',30000);
+    assert.ok(checked.candidateId,'production check must bind the candidate identity');
+    assert.equal(checked.intent,'update');assert.equal(checked.requiresConfirmation,false);
     await until(async()=>{
       const value=await cdp.call('Runtime.evaluate',{returnByValue:true,expression:"(()=>{const button=document.getElementById('install-update');return {hidden:button.hidden,visible:button.getClientRects().length>0,disabled:button.disabled,handler:typeof button.onclick==='function'}})()"}).then(value=>value.result.value);
       return value.hidden===false&&value.visible===true&&value.disabled===false&&value.handler===true?value:null;
@@ -209,6 +214,7 @@ async function runScenario(gatewayRunning){
     },'ready update transaction',20000);
     const plan=JSON.parse(await fs.readFile(path.join(transaction,'plan.json'),'utf8'));
     assert.equal(plan.parentPid,appChild.pid,'helper parent must be the real Electron controller');
+    assert.deepEqual(plan.transition,{intent:'update',from:currentVersion,to:nextVersion,dataFormat:'bridge-data-v1'});
     await until(async()=>{try{process.kill(plan.parentPid,0);return false;}catch(error){return error.code==='ESRCH';}},'old controller self-exit',45000);
     oldControllerExited=true;
     let oldExitValue=null;
@@ -270,4 +276,5 @@ async function main(){
     await runScenario(gatewayRunning);
   }
 }
-main().catch(error=>{console.error(error.stack||error);process.exitCode=1;});
+if(require.main===module)main().catch(error=>{console.error(error.stack||error);process.exitCode=1;});
+module.exports={stubUpdaterSource};
