@@ -2,6 +2,7 @@
 import copy
 import os
 from pathlib import Path
+import posixpath
 import sys
 import tempfile
 import unittest
@@ -205,13 +206,18 @@ class LinuxIdentityTests(unittest.TestCase):
         root = MagicMock()
         root.stat.return_value = SimpleNamespace(st_uid=1000)
         root.__truediv__.side_effect = lambda name: stat if name == 'stat' else exe
+        readlink = Mock(return_value='/tmp/extracted/language_server (deleted)')
         with patch('bridge.platforms.linux.force_exit.Path') as path, \
-             patch('bridge.platforms.linux.force_exit.os.readlink', return_value='/tmp/extracted/language_server (deleted)'):
+             patch('bridge.platforms.linux.force_exit.os', SimpleNamespace(path=posixpath, readlink=readlink)):
             path.return_value.__truediv__.return_value = root
             native = Native.__new__(Native)
             with self.assertRaises(FileNotFoundError):
                 native.identity(701)
             identity = native.identity(701, allow_deleted=True)
+            for image in ('tmp/extracted/language_server (deleted)', '/tmp/extracted/language_server'):
+                readlink.return_value = image
+                with self.assertRaises(FileNotFoundError):
+                    native.identity(701, allow_deleted=True)
         self.assertEqual(identity['pid'], 701)
         self.assertEqual(identity['image'], '/tmp/extracted/language_server (deleted)')
 
