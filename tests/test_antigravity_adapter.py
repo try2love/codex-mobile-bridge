@@ -1485,6 +1485,16 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def test_send_while_active_without_hook_dispatches_natively(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        with mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, {CID})), \
+                mock.patch.object(adapter, '_send_prompt_or_items') as send:
+            res = adapter.call('send', sid, {'text': 'follow up while running', 'mode': 'send'})
+        self.assertEqual(res, {'status': 'accepted', 'delivery': 'native'})
+        send.assert_called_once()
+
     def _sample_slash_commands(self):
         return [
             {'id': 'goal', 'name': 'goal', 'title': 'goal', 'description': 'Run goal',

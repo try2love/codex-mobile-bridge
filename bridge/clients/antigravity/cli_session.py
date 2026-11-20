@@ -1,5 +1,6 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
 import json
+import logging
 import re
 import math
 from datetime import datetime
@@ -606,6 +607,11 @@ class AntigravityCli:
     def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
+        is_write = method in (
+            'SendUserCascadeMessage', 'StartCascade', 'CancelCascadeInvocation',
+            'ForceStopCascadeTree', 'HandleCascadeUserInteraction',
+        )
+        rpc_timeout = 30.0 if is_write else 10.0
         # Native cancellation must reach the LS while SendUserCascadeMessage is
         # still waiting for its response. Other writes retain their serialization.
         with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree', 'CancelCascadeSteps',
@@ -619,7 +625,7 @@ class AntigravityCli:
                     target['address'] + '/exa.language_server_pb.LanguageServerService/' + method,
                     data=json.dumps(payload or {}).encode('utf-8'),
                     headers={'Content-Type': 'application/json', 'x-codeium-csrf-token': target['token']})
-                with self._opener.open(request, timeout=8) as response:
+                with self._opener.open(request, timeout=rpc_timeout) as response:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 if len(raw) > 8 * 1024 * 1024:
                     raise ValueError('Antigravity 原生回复过大')
@@ -642,10 +648,14 @@ class AntigravityCli:
                         raise ResumePreflightBlocked('不支持对子代理会话创建分支') from None
                     if 'end of a turn' in detail:
                         raise ResumePreflightBlocked('只能从已完成回复的轮次末尾创建分支') from None
+                logging.getLogger(__name__).warning('Antigravity LS RPC failed method=%s err=HTTPError HTTP %s', method, exc.code)
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
-            except (OSError, ValueError, urllib.error.URLError):
+            except (OSError, ValueError, urllib.error.URLError) as exc:
                 # Do not expose native error bodies, tokens or retry a write.
+                if is_write or not isinstance(exc, ValueError):
+                    detail = type(exc).__name__
+                    logging.getLogger(__name__).warning('Antigravity LS RPC failed method=%s err=%s', method, detail)
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
 
     def _invalidate_trajectories_cache(self, surface=None):
