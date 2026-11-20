@@ -400,6 +400,13 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None,
                 continue
             else:
                 message = normalize_item(item, image_cache=image_cache, include_body=process_bodies)
+            if (kind in ('agentMessage', 'assistantMessage') and message.get('role') == 'assistant'
+                    and not str(message.get('text') or '').strip() and not message.get('attachments')):
+                # Codex can persist whitespace-only assistant items around a
+                # real answer (for example an auxiliary item before the final
+                # card). They have no phone-visible content; omit them before
+                # timeline projection so they cannot render model/action/time rows.
+                continue
             first_user = (item.get('id') == turn['_firstUserItemId']
                           if '_firstUserItemId' in turn else id(item) == first_user_id)
             if message['role'] == 'user' and message.get('timestamp') is None and first_user and started_at is not None:
