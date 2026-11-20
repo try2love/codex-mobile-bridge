@@ -635,10 +635,10 @@ class DesktopSessionsView {
   renderMessages(messages){
     this.rememberReading();this.lastMessages=messages;const nodes=[],next=new Map();
     for(const [index,message] of messages.entries()){
-      const key=String(message.id??index),stamp=JSON.stringify([message,BridgeI18n.language(),this.sessionFiles,this.state?.capabilities?.fork,this.state?.capabilities?.editMessage,this.freshDetail]);const prior=this.messageNodes.get(key);let node=prior?.stamp===stamp?prior.node:null;
+      const key=String(message.id??index),stamp=JSON.stringify([message,BridgeI18n.language(),this.sessionFiles,this.state?.capabilities?.fork,this.state?.capabilities?.editMessage,this.state?.capabilities?.revert,this.freshDetail]);const prior=this.messageNodes.get(key);let node=prior?.stamp===stamp?prior.node:null;
       if(!node){const activity=['activity','reasoning'].includes(message.role)||!!message.fileSummary;node=this.node(activity?'details':'article',activity?'activity timeline-row':'message timeline-row '+message.role);if(message.fileSummary){node.append(this.node('summary'));renderChatFileSummary(node,message);}else if(activity){const heading=this.node('summary');renderChatActivityLabel(heading,message);node.append(heading);const body=this.node('pre','activity-body');node.append(body);deferChatActivityBody(node,body,message.text||'');}
         else{const who=message.role==='user'?BridgeI18n.t('你'):message.role==='error'?BridgeI18n.t('执行错误'):[this.clientStates?.find(client=>client.id===this.provider)?.name||this.provider,message.model&&[message.model,message.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');node.append(this.node('span','who',who));const body=this.node('div','message-body');body.__mermaidScope=this.mermaidScope;body.__mermaidIdentity=key;renderMarkdown(body,message.text||'',this.sessionFiles||[],file=>this.workbench.url(this.workbench.current,'download',file.path));node.append(body);
-          const actions=this.node('div','message-actions');const copy=this.button('复制',()=>window.BridgeClipboard.copy(()=>message.text||'',copy));copy.classList.add('message-copy');actions.append(copy);if(['user','assistant'].includes(message.role))actions.append(this.button('引用',()=>{this.quotes?.quoteMessage(()=>message.text||'',message.id||key,node);this.resizeInput();}));if(message.role==='assistant'&&message.forkMessageId&&this.state?.capabilities?.fork===true){const branch=this.button('从这里分支',()=>this.fork(message.forkMessageId));branch.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(branch);}if(message.role==='user'&&message.editMessageId&&this.state?.capabilities?.editMessage===true){const edit=this.button('编辑并重新发送',()=>this.editMessage(message));edit.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(edit);}renderChatMessageTime(actions,message.timestamp);node.append(actions);}
+          const actions=this.node('div','message-actions');const copy=this.button('复制',()=>window.BridgeClipboard.copy(()=>message.text||'',copy));copy.classList.add('message-copy');actions.append(copy);if(['user','assistant'].includes(message.role))actions.append(this.button('引用',()=>{this.quotes?.quoteMessage(()=>message.text||'',message.id||key,node);this.resizeInput();}));if(message.role==='assistant'&&message.forkMessageId&&this.state?.capabilities?.fork===true){const branch=this.button('从这里分支',()=>this.fork(message.forkMessageId));branch.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(branch);}if(message.role==='user'&&message.editMessageId&&this.state?.capabilities?.editMessage===true){const edit=this.button('编辑并重新发送',()=>this.editMessage(message));edit.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(edit);}if(message.role==='user'&&Number.isInteger(message.revertStepIndex)&&this.state?.capabilities?.revert===true){const revert=this.button('撤回',()=>this.revert(message));revert.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(revert);}renderChatMessageTime(actions,message.timestamp);node.append(actions);}
       }
       if(!prior||prior.node!==node)renderChatAttachments(node,message.attachments,{fileUrl:item=>{const file=(this.sessionFiles||[]).find(file=>file.reference===item.path||file.references?.includes(item.path));return file?this.workbench.url(this.workbench.current,'download',file.path):null;},url:item=>{if(!/^[0-9a-f]{64}$/.test(item.desktopId||''))return null;const source=this.path('images/'+item.desktopId,this.sid,this.provider);return {preview:source,original:source};}});
       node.dataset.key=key;
@@ -654,6 +654,26 @@ class DesktopSessionsView {
       nodes.push(this.historyNewer);
     }
     syncChatMessageNodes(this.messageList,nodes);this.restoreReading();
+  }
+  revert(message){
+    const sid=this.sid,stepIndex=message?.revertStepIndex;
+    if(!sid||!this.freshDetail||!this.canMutate()||this.state?.capabilities?.revert!==true||this.busy||!Number.isInteger(stepIndex)||stepIndex<0)return;
+    const dialog=this.dialog('撤回到此消息'),form=this.node('form','ds-model-form'),tip=this.translated('p','将撤销这条消息及之后的对话内容。默认同时撤销对应文件改动，不可恢复。','muted');
+    const option=this.node('label','skill-option'),check=this.node('input'),label=this.node('span','',BridgeI18n.t('仅撤回对话（保留文件改动）'));
+    check.type='checkbox';option.append(check,label);
+    const footer=this.node('div','ds-model-actions'),cancel=this.button('取消',()=>dialog.close()),confirm=this.button('确认撤回',()=>{});
+    cancel.type='button';confirm.type='submit';confirm.className='primary';footer.append(cancel,confirm);
+    form.append(tip,option,footer);dialog.append(form);dialog.showModal();
+    form.onsubmit=async e=>{
+      e.preventDefault();const conversationOnly=!!check.checked;dialog.close();
+      const result=await this.mutate('revert',{stepIndex,conversationOnly},sid);
+      if(!result)return;
+      this.notify(BridgeI18n.t('已撤回到此消息'));
+      if(!this.input.value.trim()&&typeof message.text==='string'&&message.text.trim()){
+        this.restoringDraft=true;this.input.value=message.text;this.restoringDraft=false;
+        this.draftTouched=true;this.saveDraft();this.resizeInput();this.updateComposer();
+      }
+    };
   }
   editMessage(message){
     if(!this.messageActions||!this.freshDetail||!this.canMutate()||this.state?.capabilities?.editMessage!==true||this.busy)return;

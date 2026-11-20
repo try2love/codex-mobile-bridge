@@ -270,7 +270,7 @@ def normalize_steps(steps, *, session_active=False, turn_fork_points=None):
             pending_tool_msgs.clear()
             text = extract_user_text(step.get('content') or '')
             attachments = _media_attachments(step_index, step.get('media'))
-            msg = {'id': f'step-{step_index}-user', 'role': 'user', 'text': text, 'timestamp': step_ts}
+            msg = {'id': f'step-{step_index}-user', 'role': 'user', 'text': text, 'timestamp': step_ts, 'revertStepIndex': step_index}
             if attachments:
                 msg['attachments'] = attachments
             current_turn = {'turnId': f'turn-{step_index}', 'status': 'completed', 'messages': [msg], '_startStep': step_index}

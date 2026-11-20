@@ -216,7 +216,7 @@ class Antigravity:
                 'capabilities': {'send': live, 'stop': live, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
-                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live, 'tasks': True,
+                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live, 'revert': live, 'tasks': True,
                                  'plan': live, 'goal': live, 'archive': live, 'unarchive': live}}
 
     def management(self):
@@ -894,6 +894,18 @@ class Antigravity:
             self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
                                        items=items, media=media, turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
+        if action == 'revert':
+            step_index = body.get('stepIndex')
+            conversation_only = body.get('conversationOnly', False)
+            if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0 or not isinstance(conversation_only, bool):
+                raise ValueError('撤回参数无效')
+            native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
+            waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
+            if native_busy or cid in active_cids or waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key)):
+                raise BridgeUnavailable('原会话正在运行或等待确认；请先停止或回应后再撤回')
+            result = self.cli.revert_to_step(cid, step_index, conversation_only=conversation_only, surface=surface)
+            reverted = (result or {}).get('metadata', {}).get('revertedUris') if isinstance(result, dict) else None
+            return {'status': 'accepted', 'stepIndex': step_index, 'revertedUris': reverted or []}
         raise ValueError('此 Antigravity 操作尚不支持')
 
     def close(self):

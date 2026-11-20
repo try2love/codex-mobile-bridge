@@ -1485,6 +1485,38 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def test_revert_to_step_rpc_and_guards(self):
+        messages, _, _ = normalize_steps([
+            {'step_index': 4, 'type': 'USER_INPUT', 'content': 'undo target'},
+            {'step_index': 5, 'type': 'PLANNER_RESPONSE', 'content': 'reply'},
+        ])
+        self.assertEqual(messages[0]['revertStepIndex'], 4)
+
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        with mock.patch.object(adapter.store, 'is_native_busy', return_value=False), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={'metadata': {'revertedUris': ['file:///a.py']}}) as rpc:
+            res = adapter.call('revert', sid, {'stepIndex': 4, 'conversationOnly': True})
+        self.assertEqual(res, {'status': 'accepted', 'stepIndex': 4, 'revertedUris': ['file:///a.py']})
+        rpc.assert_called_once_with(
+            'RevertToCascadeStep',
+            {'cascadeId': CID, 'stepIndex': 4, 'conversationOnly': True},
+            surface='app',
+        )
+
+        with mock.patch.object(adapter.store, 'is_native_busy', return_value=True), \
+                mock.patch.object(adapter.cli, 'waiting_state_by_cid', return_value=({}, set())), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc') as rpc:
+            with self.assertRaisesRegex(BridgeUnavailable, '撤回'):
+                adapter.call('revert', sid, {'stepIndex': 4})
+        rpc.assert_not_called()
+
+        with self.assertRaises(ValueError):
+            adapter.call('revert', sid, {'stepIndex': -1})
+        with self.assertRaises(ValueError):
+            adapter.call('revert', sid, {'stepIndex': True})
+
     def _sample_slash_commands(self):
         return [
             {'id': 'goal', 'name': 'goal', 'title': 'goal', 'description': 'Run goal',
