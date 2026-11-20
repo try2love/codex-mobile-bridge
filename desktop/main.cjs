@@ -128,8 +128,8 @@ function worker(action,payload){
 }
 async function installUpdate(candidate){
   if(process.platform==='linux'){
-    if(candidate.manualRelease){await shell.openExternal(candidate.releasePage);return {state:'manual-release'};}
     await worker('update-backup',{target:updateTarget(),version:candidate.version,transition:candidate.transition});
+    if(candidate.manualRelease){await shell.openExternal(candidate.releasePage);return {state:'manual-release'};}
     if(candidate.asset.name.endsWith('.AppImage')){
       shell.showItemInFolder(candidate.archive);return {state:'downloaded'};
     }

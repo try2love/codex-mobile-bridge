@@ -102,10 +102,27 @@ test('Linux verified DEB handoff backs up first and never exits or claims comple
   const appimage=controller({platform:'linux'});candidate.asset.name='Bridge.AppImage';assert.equal((await appimage.context.installUpdate(candidate)).state,'downloaded');
   assert.deepEqual(appimage.calls.opened,[]);assert.deepEqual(appimage.calls.revealed,[candidate.archive]);
 });
-test('legacy Linux release fallback only opens its fixed release page without backup or system install',async()=>{
-  const f=controller({platform:'linux'}),candidate={manualRelease:true,releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1'};
-  assert.equal((await f.context.installUpdate(candidate)).state,'manual-release');assert.deepEqual(f.calls.opened,[candidate.releasePage]);
-  assert.deepEqual(f.calls.workers,[]);assert.deepEqual(f.calls.exit,[]);
+test('legacy Linux manual release requires confirmation and a successful backup before opening the official page',async()=>{
+  let response=0,finishBackup;
+  const f=controller({platform:'linux',confirm:async()=>({response})}),candidate={manualRelease:true,version:'2.2.1',
+    releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1',
+    transition:{intent:'return-stable',from:'2.2.2-preview.2',to:'2.2.1',dataFormat:'bridge-data-v1'}};
+  const value={candidateId:'checked',current:candidate.transition.from,version:candidate.version,intent:'return-stable',manualRelease:true,requiresConfirmation:true};
+  f.register({status:()=>value,install:async options=>{assert.equal(options.candidateId,'checked');assert.equal(options.confirmed,true);return f.context.installUpdate(candidate);}});
+  f.context.backupPending=new Promise(resolve=>{finishBackup=resolve;});
+  vm.runInContext("worker=async(action,payload)=>{if(action!=='update-backup')throw Error('Unexpected action');globalThis.backupPayload=payload;return backupPending;}",f.context);
+  await f.invoke('bridge:install-update',{candidateId:'checked'});assert.equal(f.context.backupPayload,undefined);assert.deepEqual(f.calls.opened,[]);
+  response=1;const installing=f.invoke('bridge:install-update',{candidateId:'checked'});await new Promise(setImmediate);
+  assert.deepEqual(f.calls.opened,[]);assert.equal(f.context.backupPayload.version,candidate.version);assert.equal(f.context.backupPayload.transition,candidate.transition);
+  finishBackup({backup:'/private/backup',files:3});assert.equal((await installing).state,'manual-release');
+  assert.deepEqual(f.calls.opened,[candidate.releasePage]);assert.deepEqual(f.calls.exit,[]);assert.equal(f.calls.closed,0);
+});
+test('Linux manual release backup failure blocks the official page and any system installer',async()=>{
+  const f=controller({platform:'linux',confirm:async()=>({response:1})}),candidate={manualRelease:true,version:'2.2.1',releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1',transition:{intent:'return-stable'}};
+  f.register({status:()=>({candidateId:'checked',current:'2.2.2-preview.2',version:'2.2.1',intent:'return-stable',manualRelease:true,requiresConfirmation:true}),install:()=>f.context.installUpdate(candidate)});
+  vm.runInContext("worker=async()=>{throw Error('backup failed');}",f.context);
+  await assert.rejects(f.invoke('bridge:install-update',{candidateId:'checked'}),/backup failed/);
+  assert.deepEqual(f.calls.opened,[]);assert.deepEqual(f.calls.revealed,[]);assert.deepEqual(f.calls.exit,[]);
 });
 
 test('verified helper exits immediately even with a stalled snapshot and cancellable quit',async()=>{

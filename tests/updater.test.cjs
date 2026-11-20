@@ -231,6 +231,14 @@ test('preview automatic checks still promote to a newer stable release',async t=
   const f=await channelFixture(t,{current:'2.2.2-preview.2',versions:['2.2.2','2.2.2-preview.3']});
   const result=await f.updater.check();assert.equal(result.version,'2.2.2');assert.equal(result.intent,'update');assert.equal(result.requiresConfirmation,false);
 });
+test('explicit stable selection offers a newer stable with return intent and exact-candidate confirmation',async t=>{
+  const f=await channelFixture(t,{current:'2.2.2-preview.2',versions:['2.2.3-preview.1','2.2.2']});
+  const result=await f.updater.check({manual:true,channel:'stable'});
+  assert.equal(result.channel,'stable');assert.equal(result.currentChannel,'preview');assert.equal(result.version,'2.2.2');
+  assert.equal(result.intent,'return-stable');assert.equal(result.requiresConfirmation,true);
+  await assert.rejects(f.updater.install({candidateId:result.candidateId}),/确认/);
+  await f.updater.install({candidateId:result.candidateId,confirmed:true});assert.equal(f.applied.transition.intent,'return-stable');
+});
 test('skip persistence cannot race installation or replace the selected channel',async t=>{
   const f=await channelFixture(t);await f.updater.check({manual:true,channel:'preview'});
   let release;f.updater.skippedVersions=()=>new Promise(resolve=>{release=resolve;});
