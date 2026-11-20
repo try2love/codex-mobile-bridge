@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download verified real v2.2.1 packages for a hosted-runner acceptance job."""
+"""Bind hosted acceptance to one build and verified official baseline packages."""
 import hashlib
 import json
 import os
@@ -8,7 +8,15 @@ import re
 import subprocess
 import urllib.request
 
-BASE = 'bf69297fd21776991d1faed419f9ab1b89bce671'
+BASE = '7672f49605a972c3d6b2e79dcde780ede1ee1642'
+VERSION = '2.2.2-preview.2'
+BASELINES = (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True))
+ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
+                    '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
+                    '.github/workflows/mobile.yml', '.github/workflows/tests.yml',
+                    'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
+                    'tests/test_ci_test_scope.py',
+                    '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
 
 
 def api(route):
@@ -25,43 +33,54 @@ def main():
         raise SystemExit('Product source must be an exact 40-character commit SHA')
     subprocess.run(['git', 'merge-base', '--is-ancestor', BASE, source], check=True)
     product = json.loads(subprocess.check_output(['git', 'show', source + ':package.json']))
-    if product['version'] != '2.2.2-preview.1':
+    if product['version'] != VERSION:
         raise SystemExit('Unexpected frozen product version')
     run = api('/actions/runs/' + str(int(os.environ['CANDIDATE_RUN_ID'])))
     if (run['head_sha'] != source or run['path'] != '.github/workflows/desktop.yml'
             or run['status'] != 'completed' or run['conclusion'] != 'success'):
         raise SystemExit('Candidate must be a successful Desktop builds run of the frozen product commit')
     changed = subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines()
-    allowed = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
-               '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml', '.github/workflows/release.yml',
-               'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py', 'tests/test_runtime_refresh.py',
-               'tests/browser/chat-time.browser.js', 'tests/browser/send-feedback.spec.cjs', 'tests/release-assets.test.cjs',
-               '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
-    if set(changed) - allowed:
+    if set(changed) - ACCEPTANCE_FILES:
         raise SystemExit('Workflow checkout differs from product beyond acceptance-only files: ' + repr(changed))
-    release = api('/releases/tags/v2.2.1')
-    if release['draft'] or release['prerelease']:
-        raise SystemExit('Expected the real stable v2.2.1 release')
     work = Path('.tmp/published-upgrade')
-    old = work / 'old'
-    old.mkdir(parents=True, exist_ok=True)
     suffix = os.environ['OLD_ASSET_SUFFIX']
-    name = 'Codex-Mobile-Bridge-2.2.1-' + suffix
-    assets = {row['name']: row for row in release['assets']}
-    for filename in ['SHA256SUMS.txt', name]:
-        urllib.request.urlretrieve(assets[filename]['browser_download_url'], old / filename)
-    checksums = {}
-    for line in (old / 'SHA256SUMS.txt').read_text().splitlines():
-        digest, filename = line.split(maxsplit=1)
-        checksums[filename.lstrip('*')] = digest
-    with (old / name).open('rb') as stream:
-        actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-    if actual != checksums[name]:
-        raise SystemExit('Old release checksum mismatch')
+    baselines = []
+    for version, folder, prerelease in BASELINES:
+        release = api('/releases/tags/v' + version)
+        if release['draft'] or release['prerelease'] != prerelease:
+            raise SystemExit('Expected the official baseline release v' + version)
+        directory = work / folder
+        directory.mkdir(parents=True, exist_ok=True)
+        assets = {row['name']: row for row in release['assets']}
+        names = {'Codex-Mobile-Bridge-' + version + '-' + suffix}
+        # Windows uses NSIS for manual bootstrap, ZIP for the genuine Updater.
+        if suffix == 'Windows-x64-Setup.exe' and version == '2.2.1':
+            names.add('Codex-Mobile-Bridge-' + version + '-Windows-x64.zip')
+        filenames = ['SHA256SUMS.txt', 'bridge-update.json', *sorted(names)]
+        for filename in filenames:
+            asset = assets[filename]
+            expected_url = ('https://github.com/' + os.environ['GITHUB_REPOSITORY']
+                            + '/releases/download/v' + version + '/' + filename)
+            if asset['browser_download_url'] != expected_url:
+                raise SystemExit('Unexpected official release asset URL')
+            urllib.request.urlretrieve(expected_url, directory / filename)
+        checksums = {}
+        for line in (directory / 'SHA256SUMS.txt').read_text().splitlines():
+            digest, filename = line.split(maxsplit=1)
+            checksums[filename.lstrip('*')] = digest
+        digests = {}
+        for filename in ['bridge-update.json', *sorted(names)]:
+            with (directory / filename).open('rb') as stream:
+                actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if actual != checksums[filename]:
+                raise SystemExit('Official baseline checksum mismatch: ' + filename)
+            digests[filename] = actual
+        baselines.append({'version': version, 'release': release['html_url'], 'sha256': digests})
     (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
-        'oldRelease': release['html_url'], 'oldAsset': name, 'oldSha256': actual,
-        'acceptanceOnlyChanges': changed, 'mode': 'manual-install-upgrade-and-rollback'}, indent=2) + '\n')
-    print('Verified real v2.2.1 asset and frozen candidate run provenance')
+        'baselines': baselines, 'acceptanceOnlyChanges': changed,
+        'mode': 'manual-bootstrap-then-production-updater-return-stable',
+        'catalogue': 'fixture release directory; original official signed manifests and packages'}, indent=2) + '\n')
+    print('Verified official stable/preview1 packages and exact candidate build provenance')
 
 
 if __name__ == '__main__':

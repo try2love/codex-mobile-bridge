@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       acceptance_only:
-        description: Validate an existing build against real v2.2.1 packages without rebuilding
+        description: Validate an existing build from official stable and preview1 packages without rebuilding
         type: boolean
         default: false
       candidate_run_id:
