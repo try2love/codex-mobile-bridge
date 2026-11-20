@@ -1236,4 +1236,138 @@ class AntigravitySafetyTests(unittest.TestCase):
         reloaded = json.loads(server.queues_file.read_text(encoding='utf-8'))
         self.assertEqual([item['id'] for item in reloaded['scoped-cid']], [q_queue['id']])
 
+    def test_antigravity_groups_effort_variants_by_base_model_and_preserves_legacy_ids(self):
+        _create_surface_db(self.root, [self.row])
+        settings = self.directory / 'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        sid = gateway_id('app', CID)
+        status = {
+            'email': 'user@example.com',
+            'userTier': {'name': 'Google AI Pro'},
+            'planStatus': {'availablePromptCredits': 500, 'availableFlowCredits': 100},
+            'cascadeModelConfigData': {
+                'defaultOverrideModelConfig': {'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M418'}},
+                'clientModelConfigs': [
+                    {'modelId': 'gemini-4-argon-high', 'label': 'Gemini 4 Argon (High)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M417'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-argon-medium', 'label': 'Gemini 4 Argon (Medium)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M418'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-argon-low', 'label': 'Gemini 4 Argon (Low)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M419'},
+                     'quotaInfo': {'remainingFraction': 0.5, 'resetTime': '2026-11-21T05:35:17Z'}},
+                    {'modelId': 'gemini-4-hydrogen-xhigh', 'label': 'Gemini 4 Hydrogen (XHigh)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M528'},
+                     'quotaInfo': {'remainingFraction': 0.8, 'resetTime': '2026-11-16T13:21:24Z'}},
+                    {'modelId': 'gemini-4-hydrogen-low', 'label': 'Gemini 4 Hydrogen (Low)',
+                     'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M527'},
+                     'quotaInfo': {'remainingFraction': 0.8, 'resetTime': '2026-11-16T13:21:24Z'}},
+                    {'modelId': 'gpt-oss-120b-medium', 'label': 'GPT-OSS 120B (Medium)',
+                     'modelOrAlias': {'model': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'},
+                     'quotaInfo': {'remainingFraction': 1.0, 'resetTime': '2026-11-16T14:07:38Z'}},
+                    {'modelId': 'gemini-4-carbon-disabled', 'label': 'Gemini 4 Carbon',
+                     'disabled': True, 'modelOrAlias': {'model': 'MODEL_PLACEHOLDER_M670'}},
+                ],
+            },
+        }
+        rpc_calls = []
 
+        def fake_rpc(method, payload=None, *, surface='app'):
+            rpc_calls.append((method, payload, surface))
+            if method == 'GetUserStatus':
+                return {'userStatus': status}
+            if method == 'GetAllCascadeTrajectories':
+                return {'trajectorySummaries': {}}
+            if method == 'StartCascade':
+                return {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [self.directory.resolve().as_uri()]}}
+            return {}
+
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
+            cat = manager.call('antigravity', 'catalog', sid, {'section': 'models'})
+            self.assertTrue(cat['capabilities']['effort'])
+            self.assertFalse(cat['capabilities']['manualEffort'])
+            self.assertEqual([m['id'] for m in cat['models']], ['gemini-4-argon', 'gemini-4-hydrogen', 'gpt-oss-120b'])
+            self.assertEqual([m['name'] for m in cat['models']], ['Gemini 4 Argon', 'Gemini 4 Hydrogen', 'GPT-OSS 120B'])
+            self.assertEqual(cat['models'][0]['efforts'], ['low', 'medium', 'high'])
+            self.assertEqual(cat['models'][0]['defaultEffort'], 'medium')
+            self.assertEqual(cat['models'][1]['efforts'], ['low', 'xhigh'])
+            self.assertEqual([item['name'] for item in cat['usageSummary']['items']], ['Gemini 4 Argon', 'Gemini 4 Hydrogen', 'GPT-OSS 120B'])
+
+            # Missing or unsupported effort is rejected
+            with self.assertRaisesRegex(ValueError, '思考强度'):
+                adapter.call('settings', sid, {'model': 'gemini-4-hydrogen'})
+            bad_missing = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(bad_missing['status'], 'unknown')
+            self.assertIn('思考强度', bad_missing['message'])
+            bad_unsupported = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen', 'effort': 'medium',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(bad_unsupported['status'], 'unknown')
+            self.assertIn('不支持此思考强度', bad_unsupported['message'])
+
+            # Grouped model + effort saves canonically & projects modelDisplayName
+            saved = manager.call('antigravity', 'settings', sid, {
+                'id': str(uuid.uuid4()), 'model': 'gemini-4-hydrogen', 'effort': 'xhigh',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(saved, {'status': 'accepted', 'model': 'gemini-4-hydrogen', 'effort': 'xhigh'})
+            detail = manager.call('antigravity', 'detail', sid, {})
+            self.assertEqual(detail['session']['model'], 'gemini-4-hydrogen')
+            self.assertEqual(detail['session']['effort'], 'xhigh')
+            self.assertEqual(detail['session']['modelDisplayName'], 'Gemini 4 Hydrogen')
+            self.assertTrue(detail['capabilities']['effort'])
+
+            # Antigravity management control also accepts effort
+            mgmt = manager.control({
+                'action': 'antigravity-management', 'operation': 'settings',
+                'surface': 'app', 'sessionId': sid, 'id': str(uuid.uuid4()),
+                'model': 'gemini-4-argon', 'effort': 'high',
+                'modelCatalogIdentity': cat['cache']['identity'],
+            })
+            self.assertEqual(mgmt, {'status': 'accepted', 'model': 'gemini-4-argon', 'effort': 'high'})
+
+            # Sending resolves grouped (base, effort) -> exact native enum on wire
+            manager.call('antigravity', 'send', sid, {'id': str(uuid.uuid4()), 'text': 'hello grouped'})
+            send_call = [p for m, p, _ in rpc_calls if m == 'SendUserCascadeMessage'][-1]
+            self.assertEqual(send_call['cascade_config']['planner_config']['requested_model'], {'model': 'MODEL_PLACEHOLDER_M417'})
+
+            # Creation with grouped model + effort resolves exact native enum on StartCascade & SendUserCascadeMessage
+            project = (self.directory / 'proj').resolve()
+            project.mkdir(exist_ok=True)
+            with mock.patch.object(adapter.store, 'discover_projects', return_value=[{'key': f'app:{project}', 'surface': 'app', 'cwd': str(project), 'name': 'proj'}]):
+                projects_res = manager.call('antigravity', 'projects')
+                env_key = projects_res['environments'][0]['key']
+                create_cat = manager.call('antigravity', 'create-models', body={'environment': env_key, 'projectKey': f'app:{project}'})
+                self.assertTrue(create_cat['capabilities']['effort'])
+                self.assertFalse(create_cat['capabilities']['manualEffort'])
+                with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, payload=None, *, surface='app': (
+                    {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [project.as_uri()]}} if method == 'StartCascade'
+                    else fake_rpc(method, payload, surface=surface)
+                )) as rpc_create:
+                    created = manager.call('antigravity', 'create', body={
+                        'id': str(uuid.uuid4()), 'projectKey': f'app:{project}', 'environment': env_key,
+                        'firstMessage': 'hi grouped', 'model': 'gemini-4-hydrogen', 'effort': 'xhigh',
+                        'modelCatalogIdentity': create_cat['cache']['identity'],
+                    })
+                    self.assertEqual(created['status'], 'accepted', created)
+                    start_payload = [c.args[1] for c in rpc_create.call_args_list if c.args[0] == 'StartCascade'][-1]
+                    self.assertEqual(start_payload['requested_model'], 'MODEL_PLACEHOLDER_M528')
+
+            # Legacy flat modelId in persisted session-settings.json still projects cleanly & maps to native enum
+            adapter._save_session_model(sid, 'gemini-4-hydrogen-xhigh', '')
+            adapter.cli._variant_cache.clear()
+            adapter.cli._base_cache.clear()
+            legacy_detail = manager.call('antigravity', 'detail', sid, {})
+            self.assertEqual(legacy_detail['session']['model'], 'gemini-4-hydrogen')
+            self.assertEqual(legacy_detail['session']['effort'], 'xhigh')
+            self.assertEqual(legacy_detail['session']['modelDisplayName'], 'Gemini 4 Hydrogen')
