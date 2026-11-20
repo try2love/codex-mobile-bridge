@@ -164,6 +164,7 @@ function nativeClick(pid,label,platform=process.platform){
   throw Error('Linux native confirmation is covered by controller integration; installer handoff is verified separately');
 }
 async function checkStable(ui){
+  await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','initial background check completion');
   await ui.evaluate(`tab('updates');document.getElementById('update-channel').value='stable';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));`);
   const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value;},'signed stable candidate');
   assert.equal(value.current,candidateVersion);assert.equal(value.version,oldVersion);assert.equal(value.intent,'return-stable');assert.equal(value.requiresConfirmation,true);assert.ok(value.candidateId);
@@ -246,7 +247,7 @@ async function main(){
       const work=path.join(directory,folder+'-bootstrap'),data=path.join(work,'data'),profile=path.join(work,'browser');
       await fs.mkdir(data,{recursive:true});assert.deepEqual(await fs.readdir(data),[],'Never reuse earlier fixture data');
       const target=process.platform==='linux'?'/opt/Codex Mobile Bridge':path.join(work,process.platform==='darwin'?'Codex Mobile Bridge.app':'installed');
-      let files=paths(target),worker,originals,scope;const phones=[],accounts=[],drafts=[];
+      let files=paths(target),worker,originals,scope;const phones=[],accounts=[],drafts=[],accountBytes=new Map();
       const preserved=['config.json','desktop.json','notifications.json','notification-watches.json'],checks=[];
       const port=await freePort(),draftText='Synthetic original draft — 未发送',previewText='Synthetic preview-created draft — 保留';
       const useRuntime=async()=>{
@@ -270,6 +271,7 @@ async function main(){
           await pair();
           const before=new Set(accounts),value=await worker('accounts',{action:'addApi',name:preview?'Synthetic preview account':'Synthetic original account',baseUrl:'https://fixture.invalid/v1',apiKey:preview?'synthetic-preview-key':'synthetic-original-key',model:'gemini-fixture'});
           const added=value.accounts.filter(row=>!before.has(row.id));assert.equal(added.length,1);accounts.push(added[0].id);
+          accountBytes.set(added[0].id,await fs.readFile(path.join(data,'accounts',added[0].id,'api.json')));
         }
         for(const phone of phones){
           const response=await fetch(new URL('/api/auth',phone.entry),{headers:{Cookie:phone.cookie,'User-Agent':'BridgeMobile/0.1-Android'}});assert.equal(response.status,200);
@@ -280,6 +282,7 @@ async function main(){
           assert.equal(auth.draftIdentity,scope.gateway,'same verified draft gateway');
         }
         assert.deepEqual((await worker('accounts',{action:'list'})).accounts.map(row=>row.id).sort(),[...accounts].sort());
+        for(const [id,bytes] of accountBytes)assert.deepEqual(await fs.readFile(path.join(data,'accounts',id,'api.json')),bytes,'saved synthetic account credential bytes');
         if(seed)drafts.push({scope,text:draftText});
         if(preview)drafts.push({scope:{...scope,session:'synthetic-preview-created-chat'},text:previewText});
         const browser=await chromium.launchPersistentContext(profile,{headless:true,userAgent:'BridgeMobile/0.1-Android'});
@@ -306,7 +309,9 @@ async function main(){
         const settings=await worker('snapshot');Object.assign(settings.preferences,{port,lan:true,localAccess:true,autoStart:false,tunnel:false,connections:[],codexHome:path.join(data,'synthetic-codex'),ipcPath:path.join(data,'fixture.sock')});
         Object.assign(settings.auth,{username:'admin',password:randomUUID(),sessionHours:0});await worker('save',settings);await fs.writeFile(path.join(data,'notification-watches.json'),'[]\n');
         await inspectDesktop(files.app,data,baseline,work,'baseline',async({ui,main})=>{
-          await main.evaluate(transportScript(directory,true));await ui.evaluate("tab('updates')");await click(ui,'check-update');
+          await main.evaluate(transportScript(directory,true));await ui.evaluate("tab('updates')");
+          await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','baseline background check completion');
+          await click(ui,'check-update');
           const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');return !['idle','checking'].includes(value.state)&&value;},'legacy stable filtering');
           assert.equal(value.state,'current','old packages must not discover a preview from the release directory');
         });
