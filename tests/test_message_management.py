@@ -1,4 +1,5 @@
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import tempfile
@@ -67,7 +68,7 @@ class MessageManagementTests(unittest.TestCase):
         payload = json.dumps({'UserInput': {'content': [
             {'type': 'text', 'text': 'queued in Codex'},
             {'type': 'localImage', 'path': '/private/folder/photo.png'}], 'client_id': self.ids[4]}})
-        with sqlite3.connect(b.codex_home / 'queue_1.sqlite') as native:
+        with closing(sqlite3.connect(b.codex_home / 'queue_1.sqlite')) as native, native:
             native.execute('CREATE TABLE queued_items (id TEXT PRIMARY KEY, thread_id TEXT, payload_json TEXT, queue_order INTEGER, created_at_ms INTEGER)')
             native.execute('INSERT INTO queued_items VALUES (?,?,?,?,?)', (native_id, self.thread, payload, 0, 1000))
             native.execute('INSERT INTO queued_items VALUES (?,?,?,?,?)', (self.ids[4], str(uuid.uuid4()), payload, 0, 0))

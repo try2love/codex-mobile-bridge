@@ -203,7 +203,7 @@ class LinuxIdentityTests(unittest.TestCase):
         exe = Mock()
         exe.resolve.side_effect = FileNotFoundError()
         root = MagicMock()
-        root.stat.return_value = SimpleNamespace(st_uid=os.getuid())
+        root.stat.return_value = SimpleNamespace(st_uid=1000)
         root.__truediv__.side_effect = lambda name: stat if name == 'stat' else exe
         with patch('bridge.platforms.linux.force_exit.Path') as path, \
              patch('bridge.platforms.linux.force_exit.os.readlink', return_value='/tmp/extracted/language_server (deleted)'):

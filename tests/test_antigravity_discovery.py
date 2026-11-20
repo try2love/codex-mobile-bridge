@@ -63,8 +63,9 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             return value, listeners.call_args.args[1]
 
     def test_darwin_identity_keeps_the_existing_native_signature(self):
-        identity = {'pid': 123, 'uid': os.getuid(), 'image': '/Applications/Antigravity.app/Contents/MacOS/Antigravity', 'zombie': False}
+        identity = {'pid': 123, 'uid': 1000, 'image': '/Applications/Antigravity.app/Contents/MacOS/Antigravity', 'zombie': False}
         with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(native.os, 'getuid', return_value=1000, create=True), \
                 mock.patch('bridge.platforms.macos.force_exit.Native') as force_exit:
             force_exit.return_value.identity.return_value = identity
             self.assertIs(native._identity(123), identity)
@@ -277,6 +278,7 @@ class AntigravityDiscoveryTests(unittest.TestCase):
                         self.assertEqual(discover.call_count, 3)
                 manager.close()
 
+    @unittest.skipUnless(os.name == 'posix', 'synthetic POSIX /proc ownership and symlinks')
     @mock.patch('bridge.platforms.antigravity.sys.platform', 'linux')
     def test_linux_appimage_installation_and_extract_runtime_verification(self):
         from bridge.platforms.linux import appimage as linux_appimage
@@ -396,6 +398,7 @@ class AntigravityDiscoveryTests(unittest.TestCase):
                 self.assertTrue(native._trusted_image(f'{fuse_dir}/resources/bin/language_server', pid=14))
                 self.assertFalse(native._trusted_image(f'{fuse_dir}/resources/bin/language_server', pid=13))
 
+    @unittest.skipUnless(os.name == 'posix', 'synthetic POSIX /proc ownership and symlinks')
     @mock.patch('bridge.platforms.antigravity.sys.platform', 'linux')
     def test_extract_and_run_without_unsquashfs_requires_bound_image_and_verified_payload(self):
         from bridge.platforms.linux import appimage as linux_appimage
