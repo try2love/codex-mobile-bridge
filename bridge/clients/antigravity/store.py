@@ -1,11 +1,15 @@
 """Read-only SQLite summary index and JSONL transcript reader for Antigravity."""
 import base64
+from collections import OrderedDict
+import copy
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 from bridge.features.workspace.uploads import MAX_FILE, image_type
@@ -155,6 +159,8 @@ class AntigravityStore:
     def __init__(self, scratch_dir, home=None):
         self.scratch_dir = Path(scratch_dir)
         self.home = Path(home).expanduser().resolve() if home else Path.home().resolve()
+        self._transcript_cache = OrderedDict()
+        self._transcript_lock = threading.Lock()
 
     def surfaces(self):
         """Return existing surface directories in priority order (2.0 -> IDE -> CLI)."""
@@ -183,7 +189,13 @@ class AntigravityStore:
             conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.5)
             try:
                 conn.row_factory = sqlite3.Row
-                return [dict(row) for row in conn.execute(sql, params).fetchall()]
+                for attempt in range(3):
+                    try:
+                        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+                    except sqlite3.OperationalError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(0.15)
             finally:
                 conn.close()
         except sqlite3.DatabaseError:
@@ -294,8 +306,22 @@ class AntigravityStore:
         for item in self.list_sessions():
             if item['id'] == sid:
                 return item
-        # Also check brain/<cid> directory if session was just created before summary flush
+        # Also check conversation_summaries without LIMIT 300, then brain/<cid> directory
         for surface in self.surfaces():
+            db_path = surface['root'] / 'conversation_summaries.db'
+            rows = self._query_db(
+                db_path,
+                'SELECT conversation_id, title, preview, step_count, last_modified_time, '
+                'workspace_uris, status, source, project_id, parent_conversation_id, '
+                'nesting_depth, not_fully_idle, killed '
+                'FROM conversation_summaries',
+            )
+            for row in rows:
+                cid = str(row.get('conversation_id') or '').strip()
+                if cid and gateway_id(surface['key'], cid) == sid:
+                    summary = self._row_to_summary(surface['key'], surface['root'], row)
+                    if summary is not None:
+                        return summary
             for candidate_dir in (surface['root'] / 'brain').glob('*') if (surface['root'] / 'brain').is_dir() else ():
                 cid = candidate_dir.name
                 if not re.fullmatch(r'[0-9a-fA-F-]{36}', cid) or candidate_dir.is_symlink():
@@ -437,6 +463,22 @@ class AntigravityStore:
             except ValueError as exc:
                 raise ValueError('历史游标格式无效') from exc
 
+        compact_stat = compact_path.stat()
+        full_stat = full_path.stat() if full_path.is_file() else None
+        stat_sig = (
+            compact_stat.st_mtime_ns,
+            compact_stat.st_size,
+            full_stat.st_mtime_ns if full_stat else 0,
+            full_stat.st_size if full_stat else 0,
+        )
+        effective_active = bool(session_active and before_index is None)
+        cache_key = (str(compact_path), int(limit or 40), before_index, bool(session_active))
+        with self._transcript_lock:
+            cached = self._transcript_cache.get(cache_key)
+            if cached and cached[0] == stat_sig:
+                self._transcript_cache.move_to_end(cache_key)
+                return copy.deepcopy(cached[1])
+
         all_steps = self._load_reconciled_steps(compact_path)
         turn_fork_points = compute_turn_fork_points(all_steps, session_active=session_active)
         steps = [s for s in all_steps if before_index is None or s['step_index'] < before_index]
@@ -488,15 +530,21 @@ class AntigravityStore:
 
         messages, turns, usage = normalize_steps(
             page,
-            session_active=session_active and before_index is None,
+            session_active=effective_active,
             turn_fork_points=turn_fork_points,
         )
-        return {
+        payload = {
             'messages': messages,
             'turns': turns,
             'history': {'hasMore': has_more, 'before': next_before},
             'contextUsage': usage,
         }
+        with self._transcript_lock:
+            self._transcript_cache[cache_key] = (stat_sig, copy.deepcopy(payload))
+            self._transcript_cache.move_to_end(cache_key)
+            while len(self._transcript_cache) > 16:
+                self._transcript_cache.popitem(last=False)
+        return payload
 
     @staticmethod
     def _extract_image_uri(jsonl_path, target_step, target_media):

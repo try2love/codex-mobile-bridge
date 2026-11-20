@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sqlite3
 import threading
 
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
@@ -862,7 +863,12 @@ class Antigravity:
                 raise ValueError('排队消息已发送或移除')
             return {'status': 'accepted', **({'text': item['text']} if operation == 'edit' else {})}
         if action == 'send':
-            native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
+            try:
+                native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
+            except sqlite3.OperationalError:
+                # SQLite WAL may be temporarily unopenable under launchd/checkpoint;
+                # fall back to live GetAllCascadeTrajectories active_cids below.
+                native_busy = False
             media, _ = self._build_media(body)
             scope_items, _ = self._build_scope_items(body)
             prompt = self._prompt(body, exclude_scoped_references=True)
@@ -874,17 +880,18 @@ class Antigravity:
             if (waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key))) and mode == 'send':
                 raise BridgeUnavailable('原会话正在等待交互确认，请先回应后再发送')
             if native_busy or cid in active_cids:
-                if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
-                    raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
-                if media:
-                    raise BridgeUnavailable('原会话运行中，排队或插话暂不支持图片附件，请等待当前回复结束后直接发送')
-                queued_prompt = self._prompt(body, exclude_scoped_references=False)
-                self._reject_busy_structured_follow_up(
-                    queued_prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
-                    surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
-                )
-                item = self.hooks.enqueue_follow_up(key, queued_prompt, mode=mode)
-                return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
+                if mode in ('queue', 'steer') and self.hooks and self.hooks.has_recent_heartbeat(key):
+                    if media:
+                        raise BridgeUnavailable('原会话运行中，排队或插话暂不支持图片附件，请等待当前回复结束后直接发送')
+                    queued_prompt = self._prompt(body, exclude_scoped_references=False)
+                    self._reject_busy_structured_follow_up(
+                        queued_prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
+                        surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
+                    )
+                    item = self.hooks.enqueue_follow_up(key, queued_prompt, mode=mode)
+                    return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
+                if mode in ('queue', 'steer'):
+                    raise BridgeUnavailable('原会话未载入网关 Hook，请使用“发送新消息”直接插入或重新载入 Hook 后排队')
             default_command = 'plan' if session.get('collaborationMode') == 'plan' else None
             items = self._build_message_items(
                 prompt, plugins=plugins, default_command=default_command, scope_items=scope_items,
