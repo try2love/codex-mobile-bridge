@@ -1,0 +1,56 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/aplier/.ohos/config/default_harmony-build-test_MmLygRyRANC_2On_RMoWSfv6hh1R0tuL2uNXv0lzPJg=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001A077A60C89CC629111DBFAFB33CA775BF3D959718329BB8EADA34259B565A02C0518872C089E1",
+          "profile": "/Users/aplier/.ohos/config/Codex_Bridge_Push_DebugDebug.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/aplier/.ohos/config/default_harmony-build-test_MmLygRyRANC_2On_RMoWSfv6hh1R0tuL2uNXv0lzPJg=.p12",
+          "storePassword": "0000001A574AC3D007531FA676BBD0787A2573CB8A05AB868C76B50C67B96B618CD091F1FF97CE8F5EDB"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "6.0.1(21)",
+        "compatibleSdkVersion": "6.0.1(21)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        },
+        "signingConfig": "default"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "app": {
+    "bundleName": "cn.aplier.codexbridge",
+    "vendor": "aplier",
+    "versionCode": 1000001,
+    "versionName": "2.2.1-harmony",
+    "icon": "$media:layered_image",
+    "label": "$string:app_name"
+  }
+}
