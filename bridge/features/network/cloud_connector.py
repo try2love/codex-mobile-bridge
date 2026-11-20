@@ -84,14 +84,14 @@ class Channel:
         if not isinstance(authorize, dict):
             raise ValueError('invalid authorization record')
         if authorize.get('kind') == 'pair':
-            if not await o.pair(self, authorize):
-                return
+            await o.pair(self, authorize)
+            return
         elif set(authorize) != {'kind', 'preview_public_key'} or authorize.get('kind') != 'authorize':
             raise PermissionError('local desktop approval required')
         pin = o.pin(self.binding)
         if not pin or not hmac.compare_digest(decode_key(pin['mobile_public_key']), self.mobile):
             raise PermissionError('unapproved mobile identity')
-        if authorize.get('kind') == 'authorize' and authorize.get('preview_public_key') != pin['preview_public_key']:
+        if authorize.get('preview_public_key') != pin['preview_public_key']:
             raise PermissionError('preview key replacement requires re-pairing')
         await self.send({'kind': 'authorized', 'desktop_preview_public_key': o.preview_public_key(),
                          'p2p': bool(not self.p2p and o.p2p.enabled)})
@@ -244,9 +244,12 @@ class Connector:
                     if device['sync_state'] == 'confirmed':
                         device['sync_state'] = 'unconfirmed'
             return result
-        if action == 'access':
-            binding = str(uuid.UUID(value['binding_id']))
-            config = self.accounts.config()
+        if action in ('access', 'delete-device'):
+            if action == 'delete-device':
+                config, binding = self.accounts.binding_delete_target(value)
+            else:
+                binding = str(uuid.UUID(value['binding_id']))
+                config = self.accounts.config()
             identity = (self.account_identity(config), binding)
             with self.access_lock:
                 generation = self.access_generations.get(identity, 0) + 1
@@ -258,9 +261,18 @@ class Connector:
             # The in-memory fence also holds if writing the durable fence fails.
             block(binding)
             try:
-                result = self.accounts.set_binding_access(value)
+                result = self.accounts.control(value)
             except OSError:
                 raise CloudError('device_access_storage_error') from None
+            if action == 'delete-device':
+                return result
+            retired = result.get('replaced_binding_id')
+            if retired and config == self.accounts.config():
+                with self.access_lock:
+                    old_identity = (self.account_identity(config), retired)
+                    self.blocked_bindings.add(old_identity)
+                    self.access_generations[old_identity] = self.access_generations.get(old_identity, 0) + 1
+                block(retired)
             if result['allowed'] and result['remote_access_confirmed']:
                 with self.access_lock:
                     if self.access_generations.get(identity) == generation and config == self.accounts.config():
@@ -282,14 +294,11 @@ class Connector:
                 self.loop.call_soon_threadsafe(reconcile)
 
     async def pair(self, channel, value):
-        if set(value) != {'kind', 'request_id', 'device_name', 'preview_public_key'} or value['request_id'] != channel.binding:
+        if set(value) - {'scan_token'} != {'kind', 'device_name', 'preview_public_key'}:
             raise ValueError('invalid pairing record')
         result = await asyncio.to_thread(self.record_proof, channel.binding, channel.mobile, value)
-        if result['status'] == 'active':
-            return True
         await channel.send({'kind': 'pair_pending', 'desktop_preview_public_key': self.preview_public_key(),
-                            'safety_code': result['safety_code']})
-        return False
+                            'safety_code': result['safety_code'], 'scan_verified': result['scan_verified']})
 
     def saved_proofs(self):
         key = scope(self.config['origin'], self.config['account_id']) + ':' + self.config['gateway_id']
@@ -311,21 +320,19 @@ class Connector:
             if not self.relay_current():
                 raise CloudError('gateway_not_connected')
             record = self.accounts.device_request('/v1/gateway/bindings/' + binding)
-            if record.get('gateway_id') != self.config['gateway_id'] or record.get('mobile_public_key') != base64.b64encode(mobile).decode('ascii') or record.get('status') not in ('pending', 'active'):
+            if (record.get('gateway_id') != self.config['gateway_id'] or record.get('id') != binding
+                    or record.get('mobile_public_key') != base64.b64encode(mobile).decode('ascii')
+                    or record.get('status') != 'pending' or record.get('device_revoked')):
                 raise PermissionError('invalid pairing proof')
             private = decode_key(self.secret['control_private'])
             desktop = public_key(private)
             code = pairing_safety_code(self.config['origin'], self.config['gateway_id'], binding,
                                        private, mobile, desktop, mobile, decode_key(self.preview_public_key()), preview)
-            pin = self.pin(binding)
             trusted = self.accounts.trusted_pin(self.config, binding)
             if trusted and (trusted.get('mobile_public_key') != record['mobile_public_key'] or trusted.get('preview_public_key') != value['preview_public_key']):
                 raise PermissionError('device proof identity changed')
-            if record['status'] == 'active' and pin:
-                if pin.get('mobile_public_key') != record['mobile_public_key'] or pin.get('preview_public_key') != value['preview_public_key']:
-                    raise PermissionError('device proof identity changed')
-                return {'status': 'active', 'safety_code': code}
-            saved = self.saved_proofs()
+            now = time.time()
+            saved = {key: proof for key, proof in self.saved_proofs().items() if proof.get('expires_at', 0) > now}
             candidate = {'binding_id': binding, 'installation_id': record['installation_id'], 'device_name': name,
                          'mobile_public_key': record['mobile_public_key'], 'preview_public_key': value['preview_public_key'],
                          'safety_code': code}
@@ -334,9 +341,18 @@ class Connector:
                 raise PermissionError('device proof identity changed')
             if len(saved) >= 200 and binding not in saved:
                 raise CloudError('device_proof_capacity_reached')
+            if old:
+                candidate = old
+            else:
+                candidate.update(scan_token=secrets.token_hex(16), scan_verified=False, expires_at=now + 600)
+            if 'scan_token' in value:
+                token = value['scan_token']
+                if not old or not isinstance(token, str) or not token.isascii() or not hmac.compare_digest(candidate['scan_token'], token):
+                    raise PermissionError('invalid pairing scan')
+                candidate['scan_verified'] = True
             saved[binding] = candidate
             self.save_proofs(saved)
-            return {'status': 'pending', 'safety_code': code}
+            return candidate
 
     async def send_frame(self, kind, binding, channel, payload=b''):
         async with self.send_lock:
@@ -638,6 +654,10 @@ class Connector:
                         and config == self.accounts.config()
                         and generations.get((self.account_identity(config), binding['id']), 0)
                             == self.access_generations.get((self.account_identity(config), binding['id']), 0)):
+                    if binding.get('status') == 'revoked':
+                        with session_file_lock(self.accounts.lock_path):
+                            if self.authority_matches((config, token, policy_generation)):
+                                self.accounts.retire_local_binding(config, binding['id'])
                     asyncio.run_coroutine_threadsafe(self.block_if_current(
                         binding['id'], (config, token, policy_generation),
                         generations.get((self.account_identity(config), binding['id']), 0)), self.loop).result(timeout=10)

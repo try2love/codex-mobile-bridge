@@ -1954,6 +1954,7 @@ const en={
 "尚未连接共享中继。":"No shared relay registered.",
 "已暂停":"Paused",
 "在线":"Online",
+"离线":"Offline",
 "离线；启用后请重新启动电脑网关。":"Offline; restart the computer gateway after enabling.",
 "暂停中继连接":"Pause relay",
 "启用中继连接":"Enable relay",
@@ -4066,6 +4067,16 @@ const en={
 "累计修改":"Recorded edits",
 "请在电脑端完成连接":"Complete the connection on your computer",
 "云服务":"Cloud Relay",
+"手机已验证":"Phone verified",
+"等待手机扫码":"Waiting for phone to scan",
+"云配对二维码":"Cloud pairing QR",
+"复制配对码":"Copy pairing code",
+"无法复制配对码。":"Could not copy pairing code.",
+"替换 {name}":"Replaces {name}",
+"替换旧授权":"Replace an old authorization",
+"保留旧授权":"Keep old authorizations",
+"允许并替换":"Allow and replace",
+"没有已配对的手机或待确认请求":"No paired phones or pending requests",
 "获取验证码":"Get code",
 "{seconds} 秒后可重新获取":"Get another code in {seconds}s",
 "设置账号密码":"Set your password",
@@ -4201,6 +4212,10 @@ const en={
 ,"等待设备完成加密验证":"Waiting for encrypted device verification"
 ,"允许 {name} 配对前，确认手机安全码与 {code} 一致？":"Allow {name} only if safety code {code} matches the phone?"
 ,"云设备":"Cloud Devices"
+,"删除 {name}":"Delete {name}"
+,"从本电脑删除 {name}？此设备将断开连接，再次连接需要重新配对。":"Delete {name} from this computer? The device will be disconnected and must pair again to reconnect."
+,"云设备已删除。":"Cloud device deleted."
+,"无法确认设备是否已删除。请先查看设备列表，再决定是否重试。":"Could not confirm device deletion. Check the device list before trying again."
 ,"网页云服务":"Web Cloud Access"
 ,"允许当前云账号通过浏览器访问本电脑。关闭后会断开已打开的网页会话；手机权限独立管理。":"Allow this cloud account to access this computer from a browser. Turning this off disconnects open web sessions; phone permissions are separate."
 ,"允许网页访问本电脑":"Allow web access to this computer"

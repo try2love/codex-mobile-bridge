@@ -101,40 +101,28 @@ point, not a claim that the gateway is connected or the account is entitled.
    links in the mobile app** remain separate settings. The
    [upstream integration decision](../.agents/notes/implemented/process/2026-11-08-upstream-v2.2.0-integration.md)
    records removal of the former cloud-specific inbox initialization.
-4. Sign in on the phone. Device enrollment creates stable pending relationships
-   with every non-revoked same-account desktop, regardless of login order. There
-   is no **Request pairing** button, target selection, QR, camera request or expiry.
-   Discovery is a cloud directory sync, not LAN broadcasting or a background phone service.
-   The phone saves its keys before sending encrypted identity proof automatically.
-5. The desktop displays a unified **Cloud Devices** list with a default-off
-   **Allow Connection** switch. Discovery never opens an approval dialog automatically.
-   Compare the eight-group safety fingerprint on the phone and desktop before enabling it.
-   The code binds the exact origin, computer/request IDs, both control keys and
-   both preview keys to an X25519 shared secret. Server membership alone is not
-   approval; the phone must demonstrate its key through the encrypted channel.
-6. Connections remain pending until the desktop explicitly allows them.
-   Closing a view, disconnecting or restarting does not expire the relationship.
-   Network attempts have bounded transport waits, not a pairing deadline. An
-   unavailable account/service cannot authorize access but does not silently grant
-   or expire discovery. Closing **Allow Connection** blocks just that phone locally,
-   cancels its channels and queued notifications, and then updates the server.
-   `disabled` retains verified keys; restoring the switch needs no phone request.
-   Permanent `revoked` records are not revived. A lost opening response leaves
-   local access blocked, and stale openings cannot overwrite a later close.
-   Discovery/approval does not start or switch a coding-client session.
+4. Sign in on the phone and select the computer. Login lists same-account desktops
+   without creating requests. Saved, verified phones reconnect directly.
+5. For a new connection, scan the QR in the desktop's **Cloud Devices** list and
+   click **Allow Connection** there. The app verifies the full encrypted fingerprint
+   and sends the QR challenge over Noise. A copied pairing code uses the same check.
+   Unapproved requests expire after ten minutes and are not permissions.
+6. **Pair again** replaces the damaged binding for this computer, not the whole
+   phone. A different installation can select one exact old authorization on the
+   desktop before confirming. The selected old binding is revoked only when the
+   new approval commits; other phones and desktops are unchanged.
+7. To remove an old phone without pairing a replacement, click **Delete** in its
+   **Cloud Devices** row and confirm the name and short code. This disconnects
+   the phone from this computer and revokes only this pairing, even if the
+   phone is offline. It must pair again to reconnect. If the cloud result is
+   uncertain, check the device list before retrying.
 
-This prerelease protocol requires coordinated desktop/mobile/server sources and
-fresh development storage. Server capabilities advertise
-`device_discovery: account_directory_v1` and `binding_access: desktop_switch_v1`.
-The old manual request/approve/reject/revoke IPC and HTTP paths, pairing tables
-and migration adapters are removed. PostgreSQL initializes from `001_current.sql`;
-old migration histories fail explicitly. App SQLite creates the current schema
-directly, and saved cloud credentials must use the complete current format.
-There is no automatic data deletion or upgrade from an older development database.
-Current devices retain their verified keys through ordinary close/restore, and
-session cleanup cannot delete their identities simply because a session is old.
-The [prerelease contract decision](../.agents/notes/implemented/simplification/2026-11-04-prerelease-cloud-contract-cleanup.md)
-records the removal boundary and verification.
+Upgrade the server, desktop application/gateway and mobile app together. The new
+flow requires `device_discovery: account_directory_v2` and `pairing_method: desktop_qr_v1`.
+Server migration `007_explicit_pairing.sql` retires only unapproved legacy rows;
+existing approved keys, accounts and app data do not need a reset. Closing the
+existing access switch is reversible. A permanent revocation is different: the old
+binding never regains authority, and its connections and queued notifications stop.
 
 The cloud API verifies TLS and does not follow redirects. Similar hosts, another
 account or a changed origin cannot reuse stored credentials or local approval.

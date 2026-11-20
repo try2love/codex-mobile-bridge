@@ -174,7 +174,15 @@ function showWindow(){
 function register(){
   ipcMain.handle('bridge:cloud',async(event,payload)=>{
     authorize(event);
-    return worker('cloud',validateCloud(payload));
+    const request=validateCloud(payload);
+    const result=await worker('cloud',request);
+    if(request.action==='devices')for(const device of result.devices||[]){
+      const code=device.pairing_code;
+      if(typeof code==='string'&&/^bridge-pair:v1:[0-9a-f-]{36}:[0-9A-F]{64}:[0-9a-f]{32}$/.test(code)){
+        device.pairing_image=(await pairingImage({url:code})).image;
+      }
+    }
+    return result;
   });
   ipcMain.handle('bridge:check-update',event=>{authorize(event);return updater.check({manual:true});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});

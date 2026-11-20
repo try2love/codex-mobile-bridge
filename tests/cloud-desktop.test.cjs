@@ -27,10 +27,12 @@ test('cloud IPC exposes only explicit scoped operations',()=>{
   assert.deepEqual(validateCloud({action:'entitlement'}),{action:'entitlement'});
   for(const action of ['pairing','cancel-pairing','candidates','approve','reject','revoke','verification','verify-code'])assert.throws(()=>validateCloud({action}));
   const binding='11111111-1111-4111-8111-111111111111';
-  const opening={action:'access',binding_id:binding,allowed:true,expected_revision:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'};
+  const opening={action:'access',binding_id:binding,allowed:true,expected_revision:0,confirm_pairing:true,replace_binding_id:'22222222-2222-4222-8222-222222222222'};
   assert.deepEqual(validateCloud(opening),opening);
   assert.throws(()=>validateCloud({...opening,safety_code:'invalid'}));
-  for(const action of ['approve','reject','revoke'])assert.throws(()=>validateCloud({action,binding_id:binding,safety_code:opening.safety_code}));
+  assert.throws(()=>validateCloud({...opening,replace_binding_id:binding}));
+  assert.throws(()=>validateCloud({...opening,confirm_pairing:undefined}));
+  for(const action of ['approve','reject','revoke'])assert.throws(()=>validateCloud({action,binding_id:binding}));
   assert.equal(validateCloud({action:'login',origin:'https://relay.example.test',login:'local',password:'test-only'}).origin,'https://relay.example.test');
   for(const value of [{action:'exec'},[],{action:'status',token:'leak'},
     {action:'enabled',enabled:false},{action:'enabled',enabled:true},{action:'enabled',enabled:'true'},{action:'approve',binding_id:'anything'},
@@ -48,6 +50,14 @@ test('device discovery is read-only and access switches require an explicit bool
   const value={action:'access',binding_id:'11111111-1111-4111-8111-111111111111',allowed:false,expected_revision:7};
   assert.deepEqual(validateCloud(value),value);
   for(const change of [{allowed:'false'},{allowed:undefined},{expected_revision:-1},{expected_revision:'7'},{expected_revision:Number.MAX_SAFE_INTEGER+1},{expected_revision:undefined},{token:'leak'}]){
+    assert.throws(()=>validateCloud({...value,...change}));
+  }
+});
+
+test('deleting a cloud device requires one binding and its exact account and gateway scope',()=>{
+  const value={action:'delete-device',origin:'https://relay.example.test',account_id:'11111111-1111-4111-8111-111111111111',gateway_id:'22222222-2222-4222-8222-222222222222',binding_id:'33333333-3333-4333-8333-333333333333'};
+  assert.deepEqual(validateCloud(value),value);
+  for(const change of [{origin:value.origin+'/'},{account_id:undefined},{gateway_id:'any'},{binding_id:'../bindings'},{binding_id:[value.binding_id]},{installation_id:value.binding_id},{allowed:false}]){
     assert.throws(()=>validateCloud({...value,...change}));
   }
 });
@@ -89,7 +99,7 @@ test('entitlement refresh participates in the application update write guard',()
   const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
   const source=fs.readFileSync(path.join(__dirname,'../desktop/main.cjs'),'utf8');
   const expression=source.match(/const writes=([^\n]+);/)[1];
-  for(const action of ['entitlement','login','logout','redeem','access','web-access'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),true,action);
+  for(const action of ['entitlement','login','logout','redeem','access','delete-device','web-access'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),true,action);
   for(const action of ['status','capabilities','sponsorship','devices'])assert.equal(vm.runInNewContext(expression,{action:'cloud',payload:{action}}),false,action);
 });
 

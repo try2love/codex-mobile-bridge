@@ -38,6 +38,10 @@ test.beforeEach(async({page,context,baseURL,request})=>{
         window.cloudStatus={configured:false,enabled:false,entitlement:null,runtime:{state:'stopped'},bindings:[]};
         return {...window.cloudStatus,logged_out:true,remote_logout_confirmed:true,logout_error:'',credential_clear_error:'',...window.cloudResponses.logout};
       }
+      if(payload.action==='delete-device'){
+        window.cloudResponses.devices.devices=window.cloudResponses.devices.devices.filter(item=>item.binding_id!==payload.binding_id);
+        return {deleted_binding_id:payload.binding_id};
+      }
       if(payload.action==='access'){
         const item=window.cloudResponses.devices.devices.find(item=>item.binding_id===payload.binding_id)||window.cloudStatus.bindings.find(item=>item.binding_id===payload.binding_id);
         const result=window.cloudResponses.access||{remote_access_confirmed:true,access_error:'',allowed:payload.allowed};
@@ -377,6 +381,32 @@ test('an unverified discovered phone cannot connect and has no rejection or dele
   await expect(page.locator('#cloud-pairing-dialog')).toHaveCount(0);
   await expect(page.locator('[data-cloud-devices] button')).toHaveCount(0);
   expect(await page.evaluate(()=>window.cloudCalls.filter(call=>['approve','reject','access'].includes(call.action)))).toEqual([]);
+});
+
+test('cloud device deletion confirms the selected offline phone and preserves the online phone',async({page},testInfo)=>{
+  await page.evaluate(()=>{
+    const phone={binding_id:'offline-phone',device_name:'iPhone',trusted:true,allowed:true,online:false,remote_status:'active',safety_code:'12345678 9ABCDEF0'};
+    window.cloudResponses.devices={devices:[phone,{...phone,binding_id:'online-phone',online:true,safety_code:'12345678 ABCDEF90'}]};
+    return window.cloudTick();
+  });
+  const panel=page.locator('[data-cloud-devices]'),button=panel.getByRole('button',{name:'删除 iPhone · 9ABCDEF0'});
+  await expect(button).toBeVisible();await expect(button).toHaveText('删除');
+  expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+  await panel.screenshot({path:testInfo.outputPath('cloud-device-delete.png')});
+  await button.click();
+  expect(await page.evaluate(()=>window.cloudConfirmation)).toMatch(/从本电脑删除 iPhone · 9ABCDEF0.*重新配对/);
+  expect(await page.evaluate(()=>window.cloudAllCalls.filter(call=>call.action==='delete-device'))).toEqual([]);
+
+  await language(page,'en');
+  await page.evaluate(()=>window.confirm=()=>true);
+  await panel.getByRole('button',{name:'Delete iPhone · 9ABCDEF0'}).click();
+  await expect(panel.locator('[data-cloud-device="offline-phone"]')).toHaveCount(0);
+  await expect(panel.locator('[data-cloud-allow="online-phone"]')).toBeChecked();
+  await expect(page.locator('[data-cloud-result]')).toHaveText('Cloud device deleted.');
+  expect(await page.evaluate(()=>window.cloudAllCalls.filter(call=>call.action==='delete-device'))).toEqual([
+    {action:'delete-device',origin:'https://relay.example.test',account_id:'account-original',gateway_id:'gateway-original',binding_id:'offline-phone'}
+  ]);
+  expect(await page.evaluate(()=>window.settingsSubmissions)).toBe(0);
 });
 
 test('switching language keeps pending operations disabled and never retries failed writes',async({page})=>{

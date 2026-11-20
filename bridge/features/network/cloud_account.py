@@ -1,7 +1,6 @@
 """Exact-origin cloud accounts and device keys, exclusively in the native OS vault."""
 import base64
 import hashlib
-import hmac
 import json
 import math
 import socket
@@ -374,11 +373,61 @@ class Controller:
         pin = pins.get(scope(config['origin'], config['account_id']), {}).get(binding)
         return pin if isinstance(pin, dict) and pin.get('gateway_id') == config['gateway_id'] else None
 
+    def retire_local_binding(self, config, binding):
+        key = scope(config['origin'], config['account_id'])
+        pins_path = self.directory / 'cloud-bindings.json'
+        pins = read_json(pins_path, {})
+        entries = pins.get(key, {})
+        if self.trusted_pin(config, binding):
+            del entries[binding]
+            write_json(pins_path, pins)
+        self.access.forget(key, config['gateway_id'], binding)
+
+    def binding_delete_target(self, value):
+        if set(value) != {'action', 'origin', 'account_id', 'gateway_id', 'binding_id'} or not isinstance(value['binding_id'], str):
+            raise ValueError('invalid cloud operation')
+        binding = str(uuid.UUID(value['binding_id']))
+        if binding != value['binding_id']:
+            raise ValueError('invalid cloud binding')
+        config = self.config()
+        if not config or any(value[key] != config[key] for key in ('origin', 'account_id', 'gateway_id')):
+            raise CloudError('credential_scope_mismatch')
+        return config, binding
+
+    def delete_binding(self, value):
+        with session_file_lock(self.lock_path):
+            config, binding = self.binding_delete_target(value)
+            key, gateway = scope(config['origin'], config['account_id']), config['gateway_id']
+            revision = self.access.state(key, gateway, binding)['remote_revision']
+            generation = self.access.begin(key, gateway, binding, False, revision)
+        try:
+            self._disable_binding_notifications(config, binding)
+            token = self.secret(config)['device_token']
+            record = self.request(config['origin'], '/v1/gateway/bindings/' + binding, token=token)
+            if (not isinstance(record, dict) or record.get('id') != binding or record.get('gateway_id') != gateway
+                    or record.get('status') not in ('active', 'disabled', 'revoked')):
+                raise CloudError('device_access_unavailable')
+            with session_file_lock(self.lock_path):
+                if self.config() != config or self.secret(config).get('device_token') != token:
+                    raise CloudError('credential_scope_mismatch')
+                if record['status'] != 'revoked':
+                    if self.access.state(key, gateway, binding)['generation'] != generation:
+                        raise CloudError('device_access_superseded')
+                    result = self._account_request_locked('/v1/bindings/' + binding, 'DELETE')
+                    if not isinstance(result, dict) or result.get('revoked') is not True:
+                        raise CloudError('device_delete_unconfirmed')
+                self.retire_local_binding(config, binding)
+        except (OSError, KeyError, TypeError, ValueError):
+            with session_file_lock(self.lock_path):
+                self.access.finish(key, gateway, binding, generation)
+            raise
+        return {'deleted_binding_id': binding}
+
     def device_directory(self):
         config = self.config()
         secret = self.secret(config)
         caps = self.request(config['origin'], '/v1/capabilities')
-        if caps.get('device_discovery') != 'account_directory_v1' or caps.get('binding_access') != 'desktop_switch_v1':
+        if caps.get('device_discovery') != 'account_directory_v2' or caps.get('pairing_method') != 'desktop_qr_v1':
             raise CloudError('automatic_discovery_unsupported')
         result = self.request(config['origin'], '/v1/gateway/bindings', token=secret['device_token'])
         records = result.get('bindings') if isinstance(result, dict) else None
@@ -405,27 +454,40 @@ class Controller:
                 mobile = base64.b64decode(record['mobile_public_key'], validate=True)
                 if len(mobile) != 32 or not any(mobile):
                     raise CloudError('invalid_device_directory')
+                if record['status'] == 'revoked' or record.get('device_revoked') is True:
+                    self.retire_local_binding(config, binding)
+                    continue
                 pin = self.trusted_pin(config, binding)
-                proof = pin or proofs.get(binding, {})
+                pending = record['status'] == 'pending'
+                proof = proofs.get(binding, {}) if pending else pin or {}
                 matches = not pin or pin.get('mobile_public_key') == record['mobile_public_key']
                 verified = bool(proof.get('mobile_public_key') == record['mobile_public_key']
-                                and (pin or proof.get('installation_id') == installation)
+                                and (not pending or proof.get('installation_id') == installation and proof.get('expires_at', 0) > time.time())
                                 and proof.get('safety_code') and proof.get('preview_public_key'))
-                access = self.access.observe(key, config['gateway_id'], binding, record, matches)
+                if pending and not verified:
+                    continue
+                access = (self.access.state(key, config['gateway_id'], binding) if pending else
+                          self.access.observe(key, config['gateway_id'], binding, record, matches))
+                scanned = pending and verified and proof.get('scan_verified') is True
+                challenge = (f"bridge-pair:v1:{binding}:{proof['safety_code'].replace(' ', '')}:{proof['scan_token']}"
+                             if pending and verified and not scanned else '')
                 devices.append({'binding_id': binding, 'installation_id': installation,
                                 'device_name': record['device_name'], 'mobile_public_key': record['mobile_public_key'],
                                 'preview_public_key': proof.get('preview_public_key', '') if verified else '',
                                 'safety_code': proof.get('safety_code', '') if verified else '', 'proof_verified': verified,
+                                'pairing_code': challenge, 'scan_verified': scanned,
+                                'replaces_binding_id': record.get('replaces_binding_id', ''),
                                 'trusted': bool(pin) and matches, 'online': record.get('mobile_online') is True,
                                 'device_revoked': record.get('device_revoked') is True, **access})
-            write_json(self.directory / 'cloud-device-directory.json', {
-                'scope': key, 'gateway_id': config['gateway_id'], 'devices': devices})
             return {'devices': devices}
 
     def set_binding_access(self, value, block=None):
         binding = str(uuid.UUID(value['binding_id']))
         allowed, expected = value.get('allowed'), value.get('expected_revision')
-        if type(allowed) is not bool or type(expected) is not int or not 0 <= expected < 2**63:
+        confirm = value.get('confirm_pairing', False)
+        replace = str(uuid.UUID(value['replace_binding_id'])) if value.get('replace_binding_id') else ''
+        if (type(allowed) is not bool or type(expected) is not int or not 0 <= expected < 2**63
+                or type(confirm) is not bool or confirm and not allowed or replace and not confirm):
             raise ValueError('invalid cloud access revision')
         with session_file_lock(self.lock_path):
             config = self.config()
@@ -437,11 +499,7 @@ class Controller:
         # Fence disk authority and running channels before waiting on cloud I/O.
         if block is not None:
             block(binding)
-        notifications = CloudNotifications(self.directory)
-        try:
-            notifications.disable(config, binding)
-        finally:
-            notifications.close()
+        self._disable_binding_notifications(config, binding)
         error, confirmed = '', False
         try:
             secret = self.secret(config)
@@ -449,13 +507,19 @@ class Controller:
             if (record.get('gateway_id') != config['gateway_id'] or record.get('id') != binding
                     or record.get('status') == 'revoked' or record.get('device_revoked')):
                 raise CloudError('device_access_unavailable')
+            if (record.get('status') == 'pending') != confirm:
+                raise CloudError('device_proof_unavailable')
+            required = record.get('replaces_binding_id') if confirm else None
+            if required and required != replace:
+                raise CloudError('device_identity_mismatch')
             mobile = record['mobile_public_key']
             if allowed:
-                proof = pin or read_json(self.directory / 'cloud-device-proofs.json', {}).get(key + ':' + config['gateway_id'], {}).get(binding)
+                proof = (read_json(self.directory / 'cloud-device-proofs.json', {}).get(key + ':' + config['gateway_id'], {}).get(binding)
+                         if confirm else pin)
                 if (not proof or proof.get('mobile_public_key') != mobile
-                        or not pin and (proof.get('installation_id') != record.get('installation_id')
-                                       or not proof.get('safety_code') or not proof.get('preview_public_key')
-                                       or not hmac.compare_digest(proof['safety_code'], str(value.get('safety_code', ''))))):
+                        or confirm and (proof.get('installation_id') != record.get('installation_id')
+                                       or proof.get('scan_verified') is not True or proof.get('expires_at', 0) <= time.time()
+                                       or not proof.get('safety_code') or not proof.get('preview_public_key'))):
                     raise CloudError('device_proof_unavailable')
                 with session_file_lock(self.lock_path):
                     if self.config() != config or self.access.state(key, config['gateway_id'], binding)['generation'] != generation:
@@ -471,13 +535,17 @@ class Controller:
             elif pin and pin.get('mobile_public_key') != mobile:
                 raise CloudError('device_identity_mismatch')
             result = self.request(config['origin'], '/v1/gateway/bindings/' + binding + '/access', 'POST', {
-                'allowed': allowed, 'expected_revision': expected, 'mobile_public_key': mobile}, secret['device_token'])
+                'allowed': allowed, 'expected_revision': expected, 'mobile_public_key': mobile,
+                **({'confirm_pairing': True, 'replace_binding_id': replace} if confirm else {})}, secret['device_token'])
             if (result.get('id') != binding or result.get('gateway_id') != config['gateway_id']
                     or result.get('mobile_public_key') != mobile or result.get('status') != ('active' if allowed else 'disabled')
-                    or type(result.get('access_revision')) is not int or result['access_revision'] <= expected):
+                    or type(result.get('access_revision')) is not int or result['access_revision'] <= expected
+                    or confirm and result.get('replaces_binding_id', '') != replace):
                 raise CloudError('device_access_unconfirmed')
             with session_file_lock(self.lock_path):
                 if self.config() == config and self.secret(config).get('device_token') == secret['device_token']:
+                    if replace:
+                        self.retire_local_binding(config, replace)
                     confirmed = self.access.finish(key, config['gateway_id'], binding, generation, result)
             if not confirmed:
                 error = 'device_access_superseded'
@@ -487,7 +555,15 @@ class Controller:
             error = exc.code if isinstance(exc, CloudError) else 'device_access_unconfirmed'
             with session_file_lock(self.lock_path):
                 self.access.finish(key, config['gateway_id'], binding, generation)
-        return {'allowed': allowed and confirmed, 'remote_access_confirmed': confirmed, 'access_error': error}
+        return {'allowed': allowed and confirmed, 'remote_access_confirmed': confirmed, 'access_error': error,
+                **({'replaced_binding_id': replace} if confirmed and replace else {})}
+
+    def _disable_binding_notifications(self, config, binding):
+        notifications = CloudNotifications(self.directory)
+        try:
+            notifications.disable(config, binding)
+        finally:
+            notifications.close()
 
     def control(self, value):
         if not isinstance(value, dict):
@@ -499,6 +575,8 @@ class Controller:
             return self.device_directory()
         if action == 'access':
             return self.set_binding_access(value)
+        if action == 'delete-device':
+            return self.delete_binding(value)
         if action == 'web-access':
             return self.set_web_access(value)
         if action == 'login':

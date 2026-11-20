@@ -71,6 +71,13 @@ class BindingAccess:
         self.save(key, gateway, binding, record)
         return record['generation']
 
+    def forget(self, key, gateway, binding):
+        values = self._records()
+        records = values.get(key + ':' + gateway, {})
+        if binding in records:
+            del records[binding]
+            write_json(self.path, values)
+
     def finish(self, key, gateway, binding, generation, response=None):
         record = self.state(key, gateway, binding)
         if record['generation'] != generation:

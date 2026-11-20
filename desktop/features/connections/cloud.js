@@ -20,7 +20,7 @@
     <div class="cloud-web-address" data-cloud-web-address-panel hidden><label data-cloud-web-address-field hidden><span data-i18n="Web cloud address">Web cloud address</span><input data-cloud-web-address type="url" readonly spellcheck="false"></label>
     <p class="hint" data-cloud-web-address-status role="status"></p><button type="button" data-cloud-web-address-refresh hidden data-i18n="Refresh address">Refresh address</button></div>
     <button type="button" data-cloud-web-disable hidden data-i18n="Retry saving web access as disabled">Retry saving web access as disabled</button></div>
-    <h3 data-i18n="Cloud Devices">Cloud Devices</h3><p class="hint" data-i18n="Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.">Phones signed in to this account appear automatically. Allow each phone to connect on this desktop.</p>
+    <h3 data-i18n="Cloud Devices">Cloud Devices</h3>
     <p data-cloud-directory-error class="hint" role="status"></p><div data-cloud-devices></div></div>
     <p data-cloud-result role="status"></p>`;
   dialog.id='cloud-login-dialog';dialog.className='cloud-login-dialog';
@@ -69,6 +69,7 @@
     automatic_discovery_unsupported:'Update the server, desktop and phone together to use automatic device discovery.',
     invalid_device_directory:'The cloud device directory could not be verified.',
     device_access_unavailable:'This device is permanently revoked or unavailable. Its identity is not restored automatically.',
+    device_delete_unconfirmed:'Could not confirm device deletion. Check the device list before trying again.',
     device_access_unconfirmed:'Connection is blocked locally. The cloud permission change could not be confirmed; refresh before trying again.',
     device_access_superseded:'This permission change was superseded. Connection remains blocked locally.',
     device_access_storage_error:'Connection is blocked for this gateway run, but its disabled state could not be saved. Fix storage permissions before restarting.',
@@ -147,6 +148,7 @@
   const codeRetries=new Map();
   let state={},busy=false,authView='login',registrationProof=null,originEdited=false,draftOrigin=officialOrigin,devices=[],directoryPolling=false,entitlement=null,resultMessage='',resultIsError=false,directoryError='';
   let directoryRevision=0;
+  const replacementSelection=new Map();
   let sponsorQrBusy=false,sponsorQrImage='',sponsorQrError=false;
   let webAddress={scope:'',origin:'',status:'loading'},webAddressRequest=0;
   function accountScope(value=state){return value.configured?value.origin+'\0'+value.account_id+'\0'+value.gateway_id:'';}
@@ -166,7 +168,7 @@
   }
   function renderResult(){const text=resultIsError?errorText(resultMessage):t(resultMessage);$('result').textContent=text;$('login-result').textContent=text;$('login-result').classList.toggle('is-error',resultIsError);}
   function setResult(message,error=false){resultMessage=message;resultIsError=error;renderResult();}
-  function resetDirectory(){directoryRevision++;devices=[];directoryError='';$('devices').replaceChildren();}
+  function resetDirectory(){directoryRevision++;devices=[];replacementSelection.clear();directoryError='';$('devices').replaceChildren();}
   function completeLogout(value){
     resetDirectory();clearRegistration();authView='login';$('code').value='';update(value);
     const uncleared=!!value.credential_clear_error,unconfirmed=value.remote_logout_confirmed!==true;
@@ -248,35 +250,82 @@
     authView=view;render();$('login').focus();
   }
   function renderDirectory(){
-    const directory=new Map(devices.map(item=>[item.binding_id,item]));
-    for(const pin of state.bindings||[]){
-      const item=directory.get(pin.binding_id);
-      if(!item||pin.generation>item.generation)directory.set(pin.binding_id,{...item,...pin,trusted:true,proof_verified:!!pin.safety_code});
-    }
     $('directory-error').textContent=directoryError?errorText(directoryError):'';
-    renderDevices($('devices'),[...directory.values()]);
+    const visible=devices.filter(item=>item.remote_status!=='revoked'&&!item.device_revoked&&
+      (item.remote_status!=='pending'||item.proof_verified));
+    for(const id of replacementSelection.keys())if(!visible.some(item=>item.binding_id===id&&item.remote_status==='pending'))replacementSelection.delete(id);
+    renderDevices($('devices'),visible.sort((first,second)=>Number(second.remote_status==='pending')-Number(first.remote_status==='pending')));
+  }
+  function deviceLabel(item){
+    const name=item.device_name||t('Phone'), suffix=item.safety_code?.split(' ').at(-1)||item.binding_id.slice(-8);
+    return `${name} · ${suffix}`;
+  }
+  function renderPairing(row,item,devices){
+    const status=document.createElement('p');status.className='hint';
+    status.textContent=t(item.scan_verified?'Phone verified':'Waiting for phone to scan');row.append(status);
+    if(!item.scan_verified){
+      if(!item.pairing_image)return;
+      const image=document.createElement('img');image.src=item.pairing_image;image.alt=t('Cloud pairing QR');image.width=176;image.height=176;
+      const copy=document.createElement('button');copy.type='button';copy.textContent=t('Copy pairing code');
+      copy.onclick=async()=>{try{await navigator.clipboard.writeText(item.pairing_code);copy.textContent=t('Copied');}catch{setResult('Could not copy pairing code.',true);}};
+      row.append(image,copy);return;
+    }
+    const previous=devices.filter(entry=>entry.binding_id!==item.binding_id&&entry.trusted&&['active','disabled'].includes(entry.remote_status));
+    const required=item.replaces_binding_id;
+    let replacement=required||replacementSelection.get(item.binding_id)||'';
+    const selectionMissing=!required&&!!replacement&&!previous.some(entry=>entry.binding_id===replacement);
+    if(required){
+      const old=previous.find(entry=>entry.binding_id===required);
+      const summary=document.createElement('p');summary.className='hint';
+      summary.textContent=format('Replaces {name}',{name:old?deviceLabel(old):required.slice(-8)});row.append(summary);
+    }else if(previous.length||selectionMissing){
+      const select=document.createElement('select');select.setAttribute('aria-label',t('Replace an old authorization'));
+      for(const entry of [{binding_id:'',device_name:t('Keep old authorizations')},...previous]){
+        const option=document.createElement('option');option.value=entry.binding_id;
+        option.textContent=entry.binding_id?deviceLabel(entry):entry.device_name;select.append(option);
+      }
+      select.value=selectionMissing?'':replacement;
+      select.onchange=()=>{replacementSelection.set(item.binding_id,select.value);renderDirectory();};
+      row.append(select);
+    }
+    const confirm=document.createElement('button');confirm.type='button';confirm.className='primary';
+    confirm.textContent=t(replacement?'Allow and replace':'Allow Connection');
+    confirm.disabled=busy||!state.enabled||!!directoryError||selectionMissing;
+    confirm.onclick=()=>call('access',{binding_id:item.binding_id,allowed:true,expected_revision:item.remote_revision,
+      confirm_pairing:true,...(replacement?{replace_binding_id:replacement}:{})});
+    row.append(confirm);
   }
   function renderDevices(container,devices){
     container.replaceChildren();
-    if(!devices.length){const empty=document.createElement('p');empty.className='hint';empty.textContent=t('No cloud phones yet. Sign in on your phone with this account.');container.append(empty);}
+    if(!devices.length){const empty=document.createElement('p');empty.className='hint';empty.textContent=t('No paired phones or pending requests');container.append(empty);}
+    const {origin,account_id,gateway_id}=state,expectedAccount=accountScope();
     for(const item of devices){
-      const row=document.createElement('div'),name=document.createElement('strong'),code=document.createElement('p'),label=document.createElement('label'),toggle=document.createElement('input'),caption=document.createElement('span');
+      const row=document.createElement('div'),name=document.createElement('strong'),label=document.createElement('label'),toggle=document.createElement('input'),caption=document.createElement('span');
       row.className='cloud-device';row.setAttribute('data-cloud-device',item.binding_id);
-      name.textContent=item.device_name||t('Phone');
+      name.textContent=deviceLabel(item);row.append(name);
+      if(item.remote_status==='pending'){renderPairing(row,item,devices);container.append(row);continue;}
+      const remove=document.createElement('button');
+      remove.type='button';remove.textContent=t('Delete');remove.setAttribute('data-cloud-delete',item.binding_id);
+      remove.setAttribute('aria-label',format('Delete {name}',{name:name.textContent}));
+      remove.disabled=busy||!expectedAccount||!!directoryError;
+      remove.onclick=()=>{
+        if(busy||remove.disabled||expectedAccount!==accountScope())return;
+        if(!window.confirm(format('Delete {name} from this computer? The device will be disconnected and must pair again to reconnect.',{name:name.textContent})))return;
+        return call('delete-device',{origin,account_id,gateway_id,binding_id:item.binding_id});
+      };
+      row.append(remove);
       const allowed=item.allowed===true&&item.remote_status==='active'&&item.trusted&&!item.device_revoked;
       const revoked=item.remote_status==='revoked'||item.device_revoked;
-      code.textContent=item.safety_code?format('Safety code: {code}',{code:item.safety_code}):t('Waiting for encrypted device verification');
-      const status=document.createElement('p');status.className='hint';status.textContent=t(revoked?'Device permanently revoked':item.sync_state==='unconfirmed'?'Connection blocked locally; cloud permission unconfirmed':allowed?'Connection allowed':item.trusted?'Connection disabled; verified keys are kept':'Waiting for desktop permission')+' / '+t(item.online?'Online':'Offline');
+      const status=document.createElement('p');status.className='hint';status.textContent=t(revoked?'Device permanently revoked':item.sync_state==='unconfirmed'?'Connection blocked locally; cloud permission unconfirmed':allowed?'Connection allowed':item.trusted?'Connection disabled; verified keys are kept':'Waiting for desktop permission')+' / '+t(item.online?'在线':'离线');
       toggle.type='checkbox';toggle.setAttribute('role','switch');toggle.setAttribute('data-cloud-allow',item.binding_id);toggle.checked=allowed;
       toggle.setAttribute('aria-label',format('Allow connection for {name}',{name:item.device_name||t('Phone')}));
-      toggle.disabled=busy||revoked||item.sync_state==='identity_changed'||(!allowed&&(!state.enabled||!item.proof_verified));
+      toggle.disabled=busy||revoked||item.sync_state==='identity_changed'||(!allowed&&(!state.enabled||!item.trusted));
       caption.textContent=t('Allow Connection');label.className='cloud-device-allow';label.append(toggle,caption);
       toggle.onchange=async()=>{
         const next=toggle.checked;toggle.checked=allowed;
-        if(next&&!item.trusted&&!window.confirm(format('Allow {name} only if safety code {code} matches the phone?',{name:item.device_name||t('Phone'),code:item.safety_code})))return;
-        await call('access',{binding_id:item.binding_id,allowed:next,expected_revision:item.remote_revision||0,...(next&&!item.trusted?{safety_code:item.safety_code}:{})});
+        await call('access',{binding_id:item.binding_id,allowed:next,expected_revision:item.remote_revision||0});
       };
-      row.append(name,code,status,label);
+      row.append(status,label);
       container.append(row);
     }
   }
@@ -298,11 +347,11 @@
       if(!$('login-form').reportValidity())return;
     }
     let signedIn=false,redeemed=false,refreshError='';
-    const expectedAccount=accountScope();
-    if(action==='access')directoryRevision++;
+    const expectedAccount=accountScope(),deleting=action==='delete-device';
+    if(action==='access'||deleting)directoryRevision++;
+    const expectedDirectory=directoryRevision;
     if(action==='access'){
       devices=devices.map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item);
-      state={...state,bindings:(state.bindings||[]).map(item=>item.binding_id===extra.binding_id?{...item,allowed:false,sync_state:'unconfirmed'}:item)};
     }
     busy=true;setResult('Working...');render();
     try{
@@ -317,6 +366,12 @@
       if(action==='redeem'){payload.code=$('code').value.trim();$('code').value='';}
       const result=await api.cloud(payload);
       if(expectedAccount&&action!=='login'&&expectedAccount!==accountScope()&&(action!=='logout'||state.configured))return;
+      if(deleting){
+        if(expectedDirectory!==directoryRevision)return;
+        if(result?.deleted_binding_id!==extra.binding_id)throw Error(errors.device_delete_unconfirmed);
+        devices=devices.filter(item=>item.binding_id!==extra.binding_id);
+        setResult('Cloud device deleted.');return;
+      }
       if(action==='web-access'){
         if(accountScope(result)!==expectedAccount||result.web_access?.allowed!==extra.allowed||result.web_access?.revision!==extra.expected_revision+1)throw Error('Web access status could not be confirmed. Refresh before trying again.');
         update(result);setResult(extra.allowed?'Web access allowed for this cloud account.':'Web access disabled. Open web sessions have been disconnected.');return;
@@ -363,6 +418,7 @@
       if(action==='login'&&!signedIn)throw Error('The cloud sign-in result could not be confirmed. Refresh status before trying again.');
       setResult(action==='access'?refreshError?errors.device_access_unconfirmed:extra.allowed?'Connection allowed on this desktop.':'Connection disabled. Verified keys are kept for a later restore.':action==='signup-verify'?'':action==='register'?'Account created. Sign in to continue.':Object.hasOwn(completionMessages,action)?completionMessages[action]:action==='redeem'&&refreshError?serviceMessages.redeemRefreshFailed:action==='login'&&refreshError?serviceMessages.loginRefreshFailed:Object.hasOwn(serviceMessages,action)?serviceMessages[action]:'Done. If a write times out, refresh status; do not blindly replay it.',!!refreshError);
     }catch(error){
+      if(deleting&&expectedDirectory!==directoryRevision)return;
       if(action==='register'){clearRegistration();authView='login';}
       if(action==='logout')try{
         const current=await api.cloud({action:'status'});

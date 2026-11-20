@@ -36,7 +36,7 @@ class DeviceProofs(unittest.TestCase):
         self.record = {'id': self.binding, 'gateway_id': self.config['gateway_id'], 'installation_id': str(uuid.uuid4()),
                        'gateway_public_key': base64.b64encode(public_key(base64.b64decode(self.connector.secret['control_private']))).decode(),
                        'mobile_public_key': base64.b64encode(self.mobile).decode(), 'status': 'pending', 'device_name': 'Test phone', 'access_revision': 0}
-        self.proof = {'kind': 'pair', 'request_id': self.binding, 'device_name': 'Test phone',
+        self.proof = {'kind': 'pair', 'device_name': 'Test phone',
                       'preview_public_key': base64.b64encode(public_key(new_key())).decode()}
         self.connector.accounts.request = Mock(side_effect=self.request)
         self.connector.accounts.device_request = Mock(side_effect=lambda path, method='GET', value=None:
@@ -44,7 +44,7 @@ class DeviceProofs(unittest.TestCase):
 
     def request(self, origin, path, method='GET', value=None, token=''):
         if path == '/v1/capabilities':
-            return {'device_discovery': 'account_directory_v1', 'binding_access': 'desktop_switch_v1'}
+            return {'device_discovery': 'account_directory_v2', 'pairing_method': 'desktop_qr_v1'}
         if path == '/v1/gateway/bindings':
             return {'bindings': [copy.deepcopy(self.record)]}
         if method == 'GET':
@@ -54,9 +54,9 @@ class DeviceProofs(unittest.TestCase):
             return copy.deepcopy(self.record)
         raise AssertionError('unexpected cloud operation')
 
-    def allow(self, code):
+    def allow(self):
         return self.connector.control({'action': 'access', 'binding_id': self.binding, 'allowed': True,
-                                       'expected_revision': self.record['access_revision'], 'safety_code': code})
+                                       'expected_revision': self.record['access_revision'], 'confirm_pairing': True})
 
     def test_verified_proofs_are_durable_but_are_not_permission(self):
         result = self.connector.record_proof(self.binding, self.mobile, self.proof)
@@ -64,7 +64,9 @@ class DeviceProofs(unittest.TestCase):
         devices = self.connector.control({'action': 'devices'})['devices']
         self.assertTrue(devices[0]['proof_verified'])
         self.assertFalse(devices[0]['allowed'])
-        self.assertNotIn('deadline', self.connector.saved_proofs()[self.binding])
+        self.assertIn('expires_at', self.connector.saved_proofs()[self.binding])
+        self.assertFalse(devices[0]['scan_verified'])
+        self.assertTrue(devices[0]['pairing_code'].endswith(result['scan_token']))
         restored = Connector(self.directory, None)
         self.addCleanup(restored.notifications.close)
         restored.config, restored.secret = self.config, self.connector.secret
@@ -81,14 +83,20 @@ class DeviceProofs(unittest.TestCase):
         self.connector.accounts.device_request = Mock(return_value={**self.record, 'mobile_public_key': base64.b64encode(public_key(new_key())).decode()})
         with self.assertRaises(PermissionError):
             self.connector.record_proof(self.binding, self.mobile, self.proof)
-        self.assertFalse(self.allow('incorrect')['allowed'])
+        self.assertFalse(self.allow()['allowed'])
         self.assertEqual(self.connector.accounts.status()['bindings'], [])
 
-    def test_approval_rechecks_the_exact_device_and_safety_code(self):
+    def test_approval_rechecks_the_exact_device_and_scan(self):
         result = self.connector.record_proof(self.binding, self.mobile, self.proof)
-        self.assertFalse(self.allow('incorrect')['allowed'])
+        self.assertFalse(self.allow()['allowed'])
+        with self.assertRaises(PermissionError):
+            self.connector.record_proof(self.binding, self.mobile, {**self.proof, 'scan_token': 'incorrect'})
         self.assertEqual(self.connector.accounts.status()['bindings'], [])
-        self.assertTrue(self.allow(result['safety_code'])['allowed'])
+        self.connector.record_proof(self.binding, self.mobile, {**self.proof, 'scan_token': result['scan_token']})
+        device = self.connector.control({'action': 'devices'})['devices'][0]
+        self.assertTrue(device['scan_verified'])
+        self.assertEqual(device['pairing_code'], '')
+        self.assertTrue(self.allow()['allowed'])
         self.assertEqual(self.connector.accounts.status()['bindings'][0]['device_name'], 'Test phone')
 
     def test_retired_cloud_actions_are_rejected_without_network_or_data_changes(self):
@@ -109,7 +117,7 @@ class DeviceProofs(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.connector.record_proof(self.binding, self.mobile, {**self.proof, 'preview_public_key': base64.b64encode(public_key(new_key())).decode()})
         self.record['status'] = 'revoked'
-        self.assertFalse(self.allow(result['safety_code'])['allowed'])
+        self.assertFalse(self.allow()['allowed'])
 
     def test_saved_keys_without_an_access_grant_never_authorize(self):
         key = scope(self.config['origin'], self.config['account_id'])

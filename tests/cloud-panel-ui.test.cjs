@@ -67,6 +67,10 @@ function fixture(){
         item.remote_status=payload.allowed?'active':'disabled';item.sync_state=result.remote_access_confirmed?'confirmed':'unconfirmed';
         status.bindings=status.bindings.filter(pin=>pin.binding_id!==item.binding_id);status.bindings.push(copy(item));
       }
+      if(result.remote_access_confirmed&&payload.replace_binding_id){
+        const old=responses.devices?.devices?.find(entry=>entry.binding_id===payload.replace_binding_id);
+        if(old)old.remote_status='revoked';
+      }
       return copy(result);
     }
     return copy(responses[payload.action]||{});
@@ -81,6 +85,22 @@ function fixture(){
 }
 
 async function signedIn(ui,value=account){ui.update(value);await ui.flush();ui.calls.length=0;}
+
+test('cloud device presence uses the selected language for both states',async()=>{
+  const ui=fixture();await signedIn(ui);
+  ui.responses.devices={devices:[true,false].map(online=>({
+    binding_id:online?'online-id':'offline-id',device_name:'iPhone',trusted:true,allowed:true,
+    remote_status:'active',online,
+  }))};
+  await ui.tick(2000);
+  ui.language('zh');
+  assert.match(ui.node('devices').textContent,/已允许连接 \/ 在线/);
+  assert.match(ui.node('devices').textContent,/已允许连接 \/ 离线/);
+  assert.doesNotMatch(ui.node('devices').textContent,/Online|Offline/);
+  ui.language('en');
+  assert.match(ui.node('devices').textContent,/Connection allowed \/ Online/);
+  assert.match(ui.node('devices').textContent,/Connection allowed \/ Offline/);
+});
 
 test('web access starts off and writes only explicit account-scoped permission',async()=>{
   const ui=fixture();await signedIn(ui);ui.language('en');
@@ -369,45 +389,115 @@ test('timers after logout cannot restore entitlement or retry cloud work',async(
   await ui.tick(60000);assert.deepEqual(ui.calls.filter(call=>!['devices'].includes(call.action)).map(call=>call.action),['logout']);
 });
 
-test('account phones appear automatically without a popup and default to no connection',async()=>{
+test('pairing shows a QR before scan and confirms only the selected replacement after scan',async()=>{
   const ui=fixture();await signedIn(ui);
-  ui.responses.devices={devices:[{binding_id:'request-one',device_name:'Test phone',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:true,mobile_public_key:'mobile',preview_public_key:'preview',allowed:false,remote_status:'pending',remote_revision:0,generation:0}]};
+  const candidate={binding_id:'request-one',device_name:'Test phone',proof_verified:true,allowed:false,remote_status:'pending',remote_revision:0,generation:0,pairing_image:'data:image/png;base64,AAAA'};
+  const old={binding_id:'old-phone',device_name:'Old phone',trusted:true,allowed:true,remote_status:'active',remote_revision:1};
+  const other={...old,binding_id:'other-phone',device_name:'Other phone'};
+  ui.responses.devices={devices:[candidate,old,other]};
   await ui.tick(2000);
   assert.equal(ui.context.document.querySelector('#cloud-pairing-dialog'),null);
-  const toggle=ui.node('devices').querySelector('[data-cloud-allow]');assert.equal(toggle.checked,false);assert.equal(toggle.disabled,false);
-  assert.equal(ui.root().querySelector('[data-cloud-qr]'),null);assert.equal(ui.root().querySelector('[data-cloud-action="pairing"]'),null);
-  await ui.tick(365*24*60*60*1000);
-  assert.match(ui.node('devices').textContent,/Test phone/);
-  assert.equal(ui.calls.some(call=>['approve','reject','access'].includes(call.action)),false);
+  const row=()=>ui.node('devices').querySelector('[data-cloud-device="request-one"]');
+  assert.ok(row().querySelector('img'));
+  assert.equal(row().querySelector('[data-cloud-allow]'),null);
+  assert.equal(ui.calls.some(call=>call.action==='access'),false);
+  candidate.scan_verified=true;
+  await ui.tick(2000);
+  assert.equal(row().querySelector('img'),null);
+  const select=row().querySelector('select');select.value=old.binding_id;select.onchange();
+  await ui.tick(2000);
+  assert.equal(row().querySelector('select').value,old.binding_id);
+  await row().querySelector('button').onclick();await ui.flush();
+  assert.deepEqual(ui.calls.filter(call=>call.action==='access'),[{action:'access',binding_id:'request-one',allowed:true,expected_revision:0,confirm_pairing:true,replace_binding_id:'old-phone'}]);
+  assert.equal(row().querySelector('[data-cloud-allow]').checked,true);
+  assert.equal(ui.node('devices').querySelector('[data-cloud-device="old-phone"]'),null);
+  assert.ok(ui.node('devices').querySelector('[data-cloud-device="other-phone"]'));
+});
+
+test('deleting a paired phone confirms its identity and never removes another row or accepts a late directory',async()=>{
+  const ui=fixture();await signedIn(ui);
+  const target={binding_id:'target-phone',device_name:'iPhone',trusted:true,allowed:false,online:false,remote_status:'disabled',safety_code:'12345678 9ABCDEF0'};
+  const other={...target,binding_id:'other-phone',allowed:true,online:true,remote_status:'active',safety_code:'12345678 ABCDEF90'};
+  ui.responses.devices={devices:[copy(target),other]};await ui.tick(2000);ui.calls.length=0;
+  const button=()=>ui.node('devices').querySelector('[data-cloud-delete="target-phone"]');
+  let prompt;
+  ui.language('zh');assert.equal(button().textContent,'删除');
+  ui.context.window.confirm=message=>{prompt=message;return false;};
+  await button().onclick();
+  assert.match(prompt,/从本电脑删除 iPhone · 9ABCDEF0.*重新配对/);
+  assert.deepEqual(ui.calls,[]);
+
+  let read,complete;
+  ui.setRequest(payload=>{
+    if(payload.action==='devices')return new Promise(resolve=>read=resolve);
+    if(payload.action==='delete-device')return new Promise(resolve=>complete=resolve);
+    return ui.respond(payload);
+  });
+  const polling=ui.tick(2000);
   ui.context.window.confirm=()=>true;
-  const allow=ui.node('devices').querySelector('[data-cloud-allow]');allow.checked=true;await allow.onchange();await ui.flush();
-  assert.deepEqual(ui.calls.filter(call=>call.action==='access'),[{action:'access',binding_id:'request-one',allowed:true,expected_revision:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'}]);
-  assert.equal(ui.node('devices').querySelector('[data-cloud-allow]').checked,true);
+  const deleting=button().onclick();
+  ui.language('en');assert.equal(button().textContent,'Delete');assert.equal(button().disabled,true);
+  assert.deepEqual(ui.calls,[{action:'devices'},{action:'delete-device',origin:account.origin,account_id:account.account_id,gateway_id:account.gateway_id,binding_id:target.binding_id}]);
+  complete({deleted_binding_id:target.binding_id});await deleting;
+  read({devices:[target,other]});await polling;
+  assert.equal(button(),null);
+  assert.ok(ui.node('devices').querySelector('[data-cloud-allow="other-phone"]').checked);
+  assert.equal(ui.node('result').textContent,'Cloud device deleted.');
+});
+
+test('an unconfirmed deletion keeps the row and does not retry on refresh or language change',async()=>{
+  const ui=fixture();await signedIn(ui);ui.language('en');
+  const phone={binding_id:'target-phone',device_name:'iPhone',trusted:true,allowed:true,remote_status:'active'};
+  ui.responses.devices={devices:[phone]};await ui.tick(2000);
+  ui.context.window.confirm=()=>true;
+  ui.responses['delete-device']={deleted_binding_id:'someone-else'};
+  await ui.node('devices').querySelector('[data-cloud-delete]').onclick();
+  assert.equal(ui.node('result').textContent,'Could not confirm device deletion. Check the device list before trying again.');
+  ui.language('zh');await ui.tick(2000);
+  assert.match(ui.node('result').textContent,/无法确认设备是否已删除/);
+  assert.ok(ui.node('devices').querySelector('[data-cloud-delete]'));
+  assert.equal(ui.calls.filter(call=>call.action==='delete-device').length,1);
+});
+
+test('a late deletion result cannot change a different account directory',async()=>{
+  const ui=fixture();await signedIn(ui);ui.language('en');
+  const phone={binding_id:'target-phone',device_name:'First phone',trusted:true,allowed:true,remote_status:'active'};
+  ui.responses.devices={devices:[phone]};await ui.tick(2000);
+  let complete;
+  ui.context.window.confirm=()=>true;
+  ui.setRequest(payload=>payload.action==='delete-device'?new Promise(resolve=>complete=resolve):ui.respond(payload));
+  const deleting=ui.node('devices').querySelector('[data-cloud-delete]').onclick();
+  ui.update({...account,account_id:'other-account'});
+  complete({deleted_binding_id:phone.binding_id});await deleting;
+  assert.equal(ui.node('result').textContent,'');
+  assert.equal(ui.node('devices').querySelector('[data-cloud-delete]'),null);
 });
 
 test('a discovered phone without encrypted proof cannot be enabled or deleted',async()=>{
   const ui=fixture();await signedIn(ui);
   ui.responses.devices={devices:[{binding_id:'unverified',device_name:'Unknown phone',proof_verified:false,mobile_public_key:'unknown',allowed:false,remote_status:'pending'}]};
   await ui.tick(2000);
-  assert.equal(ui.node('devices').querySelector('[data-cloud-allow]').disabled,true);
+  assert.equal(ui.node('devices').querySelector('[data-cloud-device]'),null);
   assert.equal(ui.context.document.querySelector('#cloud-pairing-dialog'),null);
   assert.equal(ui.node('devices').querySelector('button'),null);
-  assert.equal(ui.calls.some(call=>['approve','reject','access'].includes(call.action)),false);
+  assert.equal(ui.calls.some(call=>['approve','reject','access','delete-device'].includes(call.action)),false);
 });
 
 test('a late directory response cannot undo a confirmed permission change',async()=>{
   const ui=fixture();await signedIn(ui);
-  const candidate={binding_id:'late-request',device_name:'Test phone',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:true,mobile_public_key:'mobile',preview_public_key:'preview',allowed:false,remote_status:'pending',remote_revision:0,generation:0};
+  const candidate={binding_id:'late-request',device_name:'Test phone',proof_verified:true,scan_verified:true,allowed:false,remote_status:'pending',remote_revision:0,generation:0};
   ui.responses.devices={devices:[copy(candidate)]};await ui.tick(2000);let finish,first=true;
   ui.setRequest(payload=>payload.action==='devices'&&first?(first=false,new Promise(resolve=>finish=resolve)):ui.respond(payload));
-  const pending=ui.tick(2000);ui.context.window.confirm=()=>true;
-  const toggle=ui.node('devices').querySelector('[data-cloud-allow]');toggle.checked=true;await toggle.onchange();await ui.flush();
+  const pending=ui.tick(2000);
+  await ui.node('devices').querySelector('button').onclick();await ui.flush();
   finish({devices:[candidate]});await pending;
   assert.equal(ui.node('devices').querySelector('[data-cloud-allow]').checked,true);
 });
 
 test('a trusted phone can be disabled while offline and remote uncertainty stays explicit',async()=>{
-  const ui=fixture();await signedIn(ui,{...account,runtime:{state:'unavailable'},bindings:[{binding_id:'offline-phone',device_name:'Offline phone',allowed:true,remote_status:'active',remote_revision:7,generation:1,safety_code:'verified'}]});
+  const ui=fixture();
+  ui.responses.devices={devices:[{binding_id:'offline-phone',device_name:'Offline phone',trusted:true,allowed:true,remote_status:'active',remote_revision:7,generation:1,safety_code:'verified'}]};
+  await signedIn(ui,{...account,runtime:{state:'unavailable'}});await ui.tick(2000);
   const toggle=ui.node('devices').querySelector('[data-cloud-allow]');assert.equal(toggle.disabled,false);assert.equal(toggle.checked,true);
   ui.responses.access={allowed:false,remote_access_confirmed:false,access_error:'network_or_certificate_error'};
   toggle.checked=false;await toggle.onchange();await ui.flush();ui.language('en');
