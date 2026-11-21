@@ -44,6 +44,9 @@ def _forward_native_output(stream, router, stopped):
         router.from_native(json.loads(line))
 
 
+HISTORY_TURN_LIMIT = 40
+
+
 class _NativeClient:
     def __init__(self, router):
         self.router = router
@@ -89,13 +92,14 @@ class _NativeClient:
                     raise AppServerUnavailable('原生聊天历史分页游标重复')
                 seen.add(cursor)
 
-        # Older turns are already available through the gateway's saved-history
-        # projection. Only the current turn is needed to follow its native owner.
+        # Headers prove which previously observed turns still belong to this
+        # tail. Only the current turn needs its potentially large items fetched.
         page = self.request('thread/turns/list', {'threadId': params['threadId'],
-            'cursor': None, 'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout)
+            'cursor': None, 'limit': HISTORY_TURN_LIMIT, 'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout)
         turns = page.get('data')
-        if not isinstance(turns, list) or len(turns) > 1:
+        if not isinstance(turns, list) or len(turns) > HISTORY_TURN_LIMIT:
             raise AppServerUnavailable('原生聊天历史分页格式已变化')
+        headers = turns
         if turns:
             turn = turns[0]
             items = []
@@ -104,7 +108,7 @@ class _NativeClient:
                     raise AppServerUnavailable('原生聊天历史回合归属已变化')
                 items.append(row['item'])
             turns = [{**turn, 'items': items}]
-        return {**value, 'thread': {**thread, 'turns': turns,
+        return {**value, 'thread': {**thread, 'turns': turns, '_historyHeaders': headers,
             'turnsPagination': {'hasLoadedOldest': not page.get('nextCursor')}}}
 
     def is_loaded(self, thread_id):
@@ -158,11 +162,34 @@ class HostedSessions(CliSessions):
                 if value.get('params', {}).get('threadId') == thread_id}
         return self.refresh(thread_id)
 
-    @staticmethod
-    def _state(thread, requests, metadata):
+    def _state(self, thread, requests, metadata):
         state = CliSessions._state(thread, requests, metadata)
         if 'turnsPagination' in thread:
-            state['turnsPagination'] = thread['turnsPagination']
+            state['turnsPagination'] = dict(thread['turnsPagination'])
+        if '_historyHeaders' in thread:
+            previous = {turn['turnId']: turn for turn in
+                        (self.states.get(thread['id']) or {}).get('turns', [])}
+            retained = []
+            size = len(json.dumps(state, ensure_ascii=False).encode())
+            # Reuse only the contiguous, native-confirmed tail on this connection.
+            # Saved history never supplies items, runtime status or approvals here.
+            for header in thread['_historyHeaders'][1:]:
+                prior = previous.get(header['id'])
+                if prior is None:
+                    break
+                row = {**copy.deepcopy(prior), 'status': header.get('status'), 'error': header.get('error')}
+                if header.get('startedAt') is not None:
+                    row['turnStartedAtMs'] = header['startedAt'] * 1000
+                if header.get('completedAt') is not None:
+                    row['turnCompletedAtMs'] = header['completedAt'] * 1000
+                if header.get('model'):
+                    row['params'] = {'model': header['model'], 'effort': header.get('reasoningEffort')}
+                size += len(json.dumps(row, ensure_ascii=False).encode()) + 1
+                if size > MAX_LINE:
+                    break
+                retained.append(row)
+            state['turns'] = list(reversed(retained)) + state['turns']
+            state['turnsPagination']['hasLoadedOldest'] &= len(state['turns']) == len(thread['_historyHeaders'])
         return state
 
     def _check_joined_identity(self, thread_id):

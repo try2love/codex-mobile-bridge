@@ -135,6 +135,7 @@ class CliSessions:
         self.metadata = {}
         self.release_receipts = {}
         self.states = {}
+        self.turn_revisions = {}
         self.requests = {}
         self.consumed_requests = {}
         self.refreshing = set()
@@ -602,6 +603,7 @@ class CliSessions:
             starting_effort = starting.get('latestReasoningEffort')
             starting_turn_status = {turn.get('turnId'): turn.get('status')
                                     for turn in starting.get('turns', [])}
+            starting_revisions = dict(self.turn_revisions.get(thread_id, {}))
         result = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': True},
                                      replay_safe=True)
         thread = result.get('thread') or {}
@@ -627,20 +629,21 @@ class CliSessions:
                 previous_turns = {turn.get('turnId'): turn for turn in previous.get('turns', [])
                                   if turn.get('turnId')}
                 read_turn_ids = {turn.get('turnId') for turn in state['turns']}
-                newer_turn_event = any(turn_id not in starting_turn_status or
-                                       prior.get('status') != starting_turn_status[turn_id]
-                                       for turn_id, prior in previous_turns.items())
+                revisions = self.turn_revisions.get(thread_id, {})
+                updated_turns = {turn_id for turn_id, prior in previous_turns.items()
+                    if turn_id not in starting_turn_status or prior.get('status') != starting_turn_status[turn_id]
+                    or revisions.get(turn_id, 0) != starting_revisions.get(turn_id, 0)}
+                newer_turn_event = bool(updated_turns)
                 for index, turn in enumerate(state['turns']):
                     turn_id = turn.get('turnId')
                     prior = previous_turns.get(turn_id) or {}
-                    if turn_id in previous_turns and (turn_id not in starting_turn_status or
-                            prior.get('status') != starting_turn_status[turn_id]):
+                    if turn_id in updated_turns:
                         state['turns'][index] = copy.deepcopy(prior)
                         continue
                     if not (turn.get('params') or {}).get('model') and (prior.get('params') or {}).get('model'):
                         turn['params'] = copy.deepcopy(prior['params'])
                 for turn_id, prior in previous_turns.items():
-                    if turn_id not in starting_turn_status and turn_id not in read_turn_ids:
+                    if turn_id in updated_turns and turn_id not in read_turn_ids:
                         state['turns'].append(copy.deepcopy(prior))
                 if newer_turn_event:
                     state['threadRuntimeStatus'] = copy.deepcopy(previous['threadRuntimeStatus'])
@@ -660,6 +663,8 @@ class CliSessions:
                     state['latestThreadSettings']['model'] = state['latestModel']
                     state['latestThreadSettings']['effort'] = state['latestReasoningEffort']
                 self.states[thread_id] = state
+                self.turn_revisions[thread_id] = {turn['turnId']: revisions.get(turn['turnId'], 0)
+                                                  for turn in state['turns']}
         if invalid_reason is not None:
             self._invalidate(thread_id, expected_process=process)
             raise AppServerUnavailable(invalid_reason)
@@ -1283,6 +1288,10 @@ class CliSessions:
                     parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
+            turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
+            if turn_id and any(turn['turnId'] == turn_id for turn in state['turns']):
+                revisions = self.turn_revisions.setdefault(thread_id, {})
+                revisions[turn_id] = revisions.get(turn_id, 0) + 1
             snapshot = copy.deepcopy(state)
         self.on_state(thread_id, snapshot)
 
@@ -1364,6 +1373,7 @@ class CliSessions:
             self.attaching.clear()
             self.metadata.clear()
             self.states.clear()
+            self.turn_revisions.clear()
             self.requests.clear()
             self.consumed_requests.clear()
             self.refresh_pending.clear()
@@ -1382,6 +1392,7 @@ class CliSessions:
             self.attaching.discard(thread_id)
             self.metadata.pop(thread_id, None)
             self.states.pop(thread_id, None)
+            self.turn_revisions.pop(thread_id, None)
             self.requests.pop(thread_id, None)
             self.consumed_requests.pop(thread_id, None)
         self.on_disconnect(thread_id)

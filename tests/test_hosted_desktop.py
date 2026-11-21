@@ -159,7 +159,8 @@ class HostedSessionTests(unittest.TestCase):
             if method == 'initialize': value = {'codexHome': self.temp.name}
             elif method == 'thread/loaded/list': value = {'data': ['t'], 'nextCursor': None}
             elif method == 'thread/read': value = {'thread': copy.deepcopy(self.thread)}
-            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(self.turns[-1:]), 'nextCursor': 'older' if len(self.turns) > 1 else None}
+            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(list(reversed(self.turns[-params['limit']:]))),
+                'nextCursor': 'older' if len(self.turns) > params['limit'] else None}
             elif method == 'thread/items/list': value = {'data': [copy.deepcopy(row) for row in self.items
                 if params.get('turnId', row['turnId']) == row['turnId']], 'nextCursor': None}
             elif method == 'turn/start':
@@ -184,6 +185,105 @@ class HostedSessionTests(unittest.TestCase):
         self.assertNotIn('thread/start', methods)
         self.assertNotIn('turn/start', methods)
         with self.assertRaises(AppServerRequestNotSent): self.sessions.attach('saved-only')
+
+    def test_new_paginated_turn_keeps_visible_history_before_any_output(self):
+        from bridge.app.service import LiveSession
+        before = self.sessions.attach('t')
+        display = LiveSession('t')
+        with display.condition:
+            display.set_history(before)
+            display.connected = True
+            display.state = before
+        self.assertEqual(display.view()['turns'][0]['messages'][0]['text'], 'history')
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        self.items.append({'turnId': 'new-turn', 'item': {
+            'type': 'userMessage', 'id': 'input', 'content': [{'type': 'inputText', 'text': 'new input'}]}})
+        self.thread['status'] = {'type': 'active'}
+        display.state = self.sessions.refresh('t')
+        visible = display.view()
+        self.assertEqual([turn['id'] for turn in visible['turns']], ['turn', 'new-turn'])
+        self.assertEqual(visible['turns'][0]['messages'][0]['text'], 'history')
+        self.assertEqual(visible['turns'][1]['messages'][0]['text'], 'new input')
+
+    def test_paginated_tail_uses_only_observed_native_confirmed_items(self):
+        self.sessions.attach('t')
+        for i in range(45):
+            tid = 'next-' + str(i)
+            self.turns.append({'id': tid, 'status': 'completed', 'items': []})
+            self.items.append({'turnId': tid, 'item': {'id': tid, 'type': 'agentMessage', 'text': tid}})
+            state = self.sessions.refresh('t')
+            self.assertEqual([t['turnId'] for t in state['turns']], [t['id'] for t in self.turns[-40:]])
+        queries = [m['params'] for m in self.writes if m.get('method') == 'thread/items/list']
+        self.assertEqual([p['turnId'] for p in queries], ['turn'] + ['next-' + str(i) for i in range(45)])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_rollback_and_complete_snapshots_discard_removed_cached_turns(self):
+        self.sessions.attach('t')
+        self.turns.append({'id': 'new-turn', 'status': 'completed', 'items': []})
+        self.sessions.refresh('t')
+        # Native headers no longer confirm the old turn, even if the tail id stays.
+        self.turns = self.turns[-1:]
+        state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertTrue(state['turnsPagination']['hasLoadedOldest'])
+        self.thread.update(historyMode='full', turns=[])
+        self.assertEqual(self.sessions.refresh('t')['turns'], [])
+
+    def test_reconnect_does_not_reuse_previous_connection_history(self):
+        self.sessions.attach('t')
+        self.sessions._invalidate('t')
+        self.turns.append({'id': 'new-turn', 'status': 'completed', 'items': []})
+        state = self.sessions.attach('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_cached_tail_respects_byte_limit_without_loading_old_items(self):
+        self.items[0]['item']['text'] = 'a' * 4096
+        self.sessions.attach('t')
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        with patch('bridge.clients.codex.desktop_host.MAX_LINE', 2048):
+            state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+        queries = [m['params']['turnId'] for m in self.writes if m.get('method') == 'thread/items/list']
+        self.assertEqual(queries, ['turn', 'new-turn'])
+
+    def test_cached_tail_status_comes_from_current_native_headers(self):
+        self.turns[0]['status'] = 'inProgress'
+        self.sessions.attach('t')
+        self.turns[0].update(status='completed', completedAt=123)
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        state = self.sessions.refresh('t')
+        self.assertEqual(state['turns'][0]['status'], 'completed')
+        self.assertEqual(state['turns'][0]['turnCompletedAtMs'], 123000)
+
+    def test_same_status_delta_during_read_is_not_overwritten(self):
+        self.turns[0]['status'] = 'inProgress'
+        self.sessions.attach('t')
+        original = self.sessions.client.request
+        def request(method, params=None, *args, **kwargs):
+            result = original(method, params, *args, **kwargs)
+            if method == 'thread/read' and (params or {}).get('includeTurns'):
+                self.router.from_native({'method': 'item/agentMessage/delta', 'params': {
+                    'threadId': 't', 'turnId': 'turn', 'itemId': 'answer', 'delta': ' fresh'}})
+            return result
+        with patch.object(self.sessions.client, 'request', side_effect=request):
+            state = self.sessions.refresh('t')
+        self.assertEqual(state['turns'][0]['items'][0]['text'], 'history fresh')
+
+    def test_newer_turn_event_wins_over_paginated_read(self):
+        self.sessions.attach('t')
+        original = self.sessions.client.request
+        def request(method, params=None, *args, **kwargs):
+            result = original(method, params, *args, **kwargs)
+            if method == 'thread/read' and (params or {}).get('includeTurns'):
+                self.router.from_native({'method': 'turn/started', 'params': {'threadId': 't',
+                    'turn': {'id': 'event-turn', 'status': 'inProgress', 'items': []}}})
+            return result
+        with patch.object(self.sessions.client, 'request', side_effect=request):
+            state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['turn', 'event-turn'])
+        self.assertEqual(state['threadRuntimeStatus']['type'], 'active')
 
     def test_attach_with_an_oversized_older_turn_only_reads_current_turn(self):
         self.turns.insert(0, {'id': 'old', 'status': 'completed', 'items': []})
