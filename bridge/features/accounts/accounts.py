@@ -40,6 +40,10 @@ def private_bytes(path, content):
     path = Path(path)
     if path.is_symlink():
         raise ValueError('账号文件不能是符号链接')
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, content)
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix='.account-', dir=path.parent)
     try:
@@ -47,18 +51,7 @@ def private_bytes(path, content):
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        deadline = time.monotonic() + 2 if os.name == 'nt' else 0
-        while True:
-            try:
-                os.replace(name, path)
-                break
-            except PermissionError as exc:
-                if os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33):
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                time.sleep(min(.05, remaining))
+        os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
 

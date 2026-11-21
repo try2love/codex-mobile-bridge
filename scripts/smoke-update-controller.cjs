@@ -211,7 +211,8 @@ async function runScenario(gatewayRunning){
         if(sync.existsSync(path.join(candidateDir,'ready.json'))&&sync.existsSync(path.join(candidateDir,'plan.json')))return candidateDir;
       }
       return null;
-    },'ready update transaction',20000);
+    // Preparation may use the controller's 180s worker budget, plus helper readiness.
+    },'ready update transaction',210000);
     const plan=JSON.parse(await fs.readFile(path.join(transaction,'plan.json'),'utf8'));
     assert.equal(plan.parentPid,appChild.pid,'helper parent must be the real Electron controller');
     assert.deepEqual(plan.transition,{intent:'update',from:currentVersion,to:nextVersion,dataFormat:'bridge-data-v1'});

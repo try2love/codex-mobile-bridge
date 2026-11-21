@@ -66,6 +66,33 @@ class OfflineManagement(unittest.TestCase):
         self.assertTrue((self.root/'desktop-sessions/settings.json').exists())
         self.assertFalse((self.root/'gateway-control.json').exists())
 
+    def test_gateway_uses_user_settings_sidecar_when_legacy_settings_are_unreadable(self):
+        from bridge.clients.manager import DesktopSessions
+        settings = self.root/'desktop-sessions/settings.json'
+        settings.parent.mkdir()
+        settings.write_text('{"enabled": {"codex": true}}')
+        original = settings.read_bytes()
+        open_file = Path.open
+        def deny_primary(path, *args, **kwargs):
+            if path == settings:
+                raise PermissionError()
+            return open_file(path, *args, **kwargs)
+        with patch.object(Path, 'open', autospec=True, side_effect=deny_primary):
+            sessions = DesktopSessions(self.root, gateway_running=True)
+            self.addCleanup(sessions.close)
+            self.assertEqual(sessions.config_path, settings.parent/'settings.user.json')
+            self.assertFalse(sessions.settings_unavailable)
+            result = sessions.control({'action': 'scan'})
+            self.assertEqual({row['id'] for row in result['clients']}, {'codex', 'claude', 'deepseek'})
+            sessions._save_client_settings({'enabled': {'codex': False}})
+        self.assertEqual(settings.read_bytes(), original)
+        self.assertEqual(json.loads((settings.parent/'settings.user.json').read_text()), {'enabled': {'codex': False}})
+        self.assertTrue(settings.exists())
+        reopened = DesktopSessions(self.root, gateway_running=True)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.config_path, settings.parent/'settings.user.json')
+        self.assertEqual(reopened.config, {'enabled': {'codex': False}})
+
     def test_private_stdio_stream_handles_sequential_requests_without_public_gateway(self):
         requests = [
             {'action': 'accounts', 'payload': {'action': 'addApi', 'name': 'Stream fixture',
@@ -76,7 +103,7 @@ class OfflineManagement(unittest.TestCase):
         result = subprocess.run([sys.executable, '-B', str(ROOT/'desktop.py'), 'management-stream',
                                  '--data-dir', str(self.root)],
                                 input=''.join(json.dumps(request)+'\n' for request in requests),
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, encoding='utf-8', timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         responses = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(len(responses), 3)

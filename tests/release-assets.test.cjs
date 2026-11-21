@@ -84,7 +84,15 @@ test('release caller grants reusable desktop read permissions and keeps ordinary
   assert.deepEqual(release.jobs.release.permissions,{contents:'write'});
   assert.equal(build.with.acceptance_only,undefined);
   for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.acceptance_only.default,false);
-  for(const name of ['package','linux'])assert.equal(desktop.jobs[name].if,'inputs.acceptance_only != true');
+  assert.equal(desktop.jobs.package.if,'inputs.acceptance_only != true');
+  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.build_target != 'intel'");
+  assert.equal(desktop.on.workflow_dispatch.inputs.build_target.default,'all');
+  assert.deepEqual(desktop.on.workflow_dispatch.inputs.build_target.options,['all','intel']);
+  assert.equal(desktop.on.workflow_call.inputs.build_target.default,'all');
+  const matrix=desktop.jobs.package.strategy.matrix.include;
+  assert.ok(matrix.includes("inputs.build_target == 'intel'"));
+  assert.equal(matrix.match(/macos-15-intel/g).length,2);
+  assert.ok(matrix.includes('macos-15')&&matrix.includes('windows-latest'));
 });
 test('mobile Intel supplement keeps the same checks and the default ARM build',()=>{
   const yaml=require('js-yaml'),load=name=>yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/'+name),'utf8'));

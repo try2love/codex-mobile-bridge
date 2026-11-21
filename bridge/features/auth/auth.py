@@ -37,6 +37,10 @@ def session_file_lock(path):
 
 
 def replace_session_file(path, contents):
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, contents)
+        return
     temporary = path.with_name(path.name + '.' + secrets.token_hex(8) + '.tmp')
     try:
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:

@@ -186,10 +186,12 @@ test('only the matching unfinished update binds the GUI data directory and ackno
   const foreign=launch();assert.equal(directory(foreign),explicit);assert.equal(foreign.updateManaged(),false);
   fs.unlinkSync(path.join(transaction,'launched.json'));
   const valid=launch();assert.equal(directory(valid),data);assert.equal(valid.updateManaged(),true);
+  let cleanupCount=0;valid.cleanupVerifiedPackages=()=>cleanupCount++;
+  vm.runInContext('updater={cleanupVerifiedPackages:async()=>cleanupVerifiedPackages()}',valid);
   write('launched.json',{pid:123});await valid.acknowledgeUpdate();
-  assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});fs.unlinkSync(ack);
+  assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});assert.equal(cleanupCount,1);fs.unlinkSync(ack);
   valid.worker=async()=>write('result.json',{state:'failed'});
-  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);
+  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);assert.equal(cleanupCount,1);
   const finished=launch();assert.equal(directory(finished),explicit);assert.equal(finished.updateManaged(),false);
   const saved=path.join(root,'saved-test');
   fs.writeFileSync(path.join(root,'bridge-location.json'),JSON.stringify({dataDir:saved}));

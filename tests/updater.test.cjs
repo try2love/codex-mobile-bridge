@@ -109,16 +109,18 @@ test('network allowlist rejects external destinations, credentials and non-HTTPS
   assert.ok(allowedUrl(releaseUrl(next,'bridge-update.json')));
   for(const url of ['http://github.com/try2love/codex-mobile-bridge/releases/download/v1/x','https://evil.example/update','https://user@github.com/try2love/codex-mobile-bridge/releases/download/v1/x','https://github.com/other/repo/releases/download/v1/x'])assert.throws(()=>allowedUrl(url));
 });
-async function fixture(t,{packageBytes=bytes,releases,key=keys.publicKey,apply=async()=>{}}={}){
+async function fixture(t,{packageBytes=bytes,releases,key=keys.publicKey,apply=async()=>{},platform:targetPlatform=platform,arch:targetArch=arch}={}){
   await fs.mkdir(path.join(__dirname,'../.tmp'),{recursive:true});const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/update-test-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));const requests=[];let installed=0;
-  const fetch=async url=>{requests.push(url);return new Response(url===RELEASES?JSON.stringify(releases||[{tag_name:'v'+next,assets:[{name:'bridge-update.json'}]}]):url.endsWith('.json')?signed(info()):packageBytes);};
-  const updater=new Updater({current,platform,arch,key,fetch,directory,install:async value=>{installed++;assert.equal(await fs.readFile(value.archive,'utf8'),bytes.toString());await apply(value);}});
+  const data=info();data.assets={[`${targetPlatform}-${targetArch}`]:{...data.assets[`${platform}-${arch}`],name:assetName(next,targetPlatform,targetArch)}};
+  const fetch=async url=>{requests.push(url);return new Response(url===RELEASES?JSON.stringify(releases||[{tag_name:'v'+next,assets:[{name:'bridge-update.json'}]}]):url.endsWith('.json')?signed(data):packageBytes);};
+  const updater=new Updater({current,platform:targetPlatform,arch:targetArch,key,fetch,directory,install:async value=>{installed++;assert.equal(await fs.readFile(value.archive,'utf8'),bytes.toString());await apply(value);}});
   return {updater,requests,directory,installed:()=>installed};
 }
 test('checking never installs and installation only receives verified bytes',async t=>{
   const f=await fixture(t);assert.equal((await f.updater.check()).state,'available');assert.equal(f.installed(),0);
-  assert.equal((await f.updater.install()).state,'restarting');assert.equal(f.installed(),1);assert.deepEqual(await fs.readdir(f.directory),[]);
+  assert.equal((await f.updater.install()).state,'restarting');assert.equal(f.installed(),1);
+  assert.equal((await fs.readdir(f.directory)).filter(name=>name.startsWith('verified-')).length,1);
 });
 test('a live local holder blocks installation before package download and permits retry after exit',async t=>{
   const f=await fixture(t);await f.updater.check();
@@ -166,6 +168,78 @@ test('a signature failure leaves no installable candidate',async t=>{
 test('failed preparation reports an error and preserves the candidate for retry',async t=>{
   let tries=0;const f=await fixture(t,{apply:async()=>{if(!tries++)throw Error('unwritable directory');}});await f.updater.check();
   assert.equal((await f.updater.install()).message,'unwritable directory');assert.equal((await f.updater.install()).state,'restarting');
+});
+
+for(const [targetPlatform,targetArch] of [['darwin','arm64'],['win32','x64']])test(`${targetPlatform} reuses a verified package after a failed install instead of downloading again`,async t=>{
+  let attempts=0,tries=0;const f=await fixture(t,{platform:targetPlatform,arch:targetArch,apply:async()=>{if(!tries++)throw Error('installer failed');}});
+  await f.updater.check();
+  assert.equal((await f.updater.install()).state,'error');
+  assert.equal((await f.updater.install()).state,'restarting');
+  attempts=f.requests.filter(url=>url.endsWith('.zip')).length;
+  assert.equal(attempts,1);
+  assert.equal((await fs.readdir(f.directory)).filter(name=>name.startsWith('verified-')).length,1);
+});
+
+test('a package survives a failed post-handoff update and is removed only after acknowledgement',async t=>{
+  const f=await fixture(t);
+  await f.updater.check();
+  assert.equal((await f.updater.install()).state,'restarting');
+  const retry=new Updater({current,platform,arch,key:keys.publicKey,fetch:f.updater.fetch,directory:f.directory,install:async value=>{
+    assert.equal(await fs.readFile(value.archive,'utf8'),bytes.toString());
+  }});
+  await retry.check();
+  assert.equal((await retry.install()).state,'restarting');
+  assert.equal(f.requests.filter(url=>url.endsWith('.zip')).length,1);
+  assert.equal((await fs.readdir(f.directory)).filter(name=>name.startsWith('verified-')).length,1);
+  await retry.cleanupVerifiedPackages();
+  assert.deepEqual(await fs.readdir(f.directory),[]);
+});
+
+test('a changed cached package fails its signed digest and is downloaded again',async t=>{
+  let tries=0;const f=await fixture(t,{apply:async()=>{if(!tries++)throw Error('installer failed');}});
+  await f.updater.check();await f.updater.install();
+  const verified=(await fs.readdir(f.directory)).find(name=>name.startsWith('verified-'));
+  assert.ok(verified);
+  await fs.writeFile(path.join(f.directory,verified),'modified');
+  await f.updater.install();
+  assert.equal(f.requests.filter(url=>url.endsWith('.zip')).length,2);
+  assert.equal((await fs.readdir(f.directory)).filter(name=>name.startsWith('verified-')).length,1);
+});
+
+test('successful update acknowledgement removes stale verified archives',async t=>{
+  const f=await fixture(t),old=path.join(f.directory,'verified-1.0.0-darwin-arm64-'+'a'.repeat(64)+'.zip');
+  await fs.writeFile(old,'old verified package');
+  await f.updater.cleanupVerifiedPackages();
+  assert.deepEqual(await fs.readdir(f.directory),[]);
+});
+
+test('startup cleanup removes the installed archive but retains upgrade and downgrade retries',async t=>{
+  const f=await fixture(t),installed=path.join(f.directory,'verified-0.2.0-beta.5-darwin-arm64-'+'a'.repeat(64)+'.zip');
+  const older=path.join(f.directory,'verified-0.1.0-darwin-arm64-'+'c'.repeat(64)+'.zip');
+  const newer=path.join(f.directory,'verified-0.2.0-beta.7-darwin-arm64-'+'b'.repeat(64)+'.zip');
+  await fs.writeFile(installed,'installed');await fs.writeFile(newer,'retry');await fs.writeFile(older,'return-stable');
+  await f.updater.cleanupVerifiedPackages({startup:true});
+  assert.equal(await fs.access(installed).then(()=>true).catch(()=>false),false);
+  assert.equal(await fs.readFile(newer,'utf8'),'retry');
+  assert.equal(await fs.readFile(older,'utf8'),'return-stable');
+});
+
+test('startup handoff cleanup keeps the current verified archive until acknowledgement',async t=>{
+  const f=await fixture(t),current=path.join(f.directory,'verified-0.2.0-beta.6-darwin-arm64-'+'a'.repeat(64)+'.zip');
+  await fs.writeFile(current,'handoff');
+  const retry=new Updater({current:'0.2.0-beta.6',platform,arch,key:keys.publicKey,directory:f.directory,install:async()=>{}});
+  await retry.cleanupVerifiedPackages({startup:true,preserveCurrent:true});
+  assert.equal(await fs.readFile(current,'utf8'),'handoff');
+  await retry.cleanupVerifiedPackages();
+  assert.equal(await fs.access(current).then(()=>true).catch(()=>false),false);
+});
+
+test('stale download staging is removed without touching verified package cache',async t=>{
+  const f=await fixture(t);await fs.mkdir(path.join(f.directory,'download-stale'));await fs.writeFile(path.join(f.directory,'download-stale','update.zip'),'partial');
+  const verified=path.join(f.directory,'verified-keep.zip');await fs.writeFile(verified,'keep');
+  const {cleanDownloadStaging}=require('../desktop/features/updates/updater.cjs');await cleanDownloadStaging(f.directory);
+  assert.equal(await fs.access(verified).then(()=>true).catch(()=>false),true);
+  assert.equal(await fs.access(path.join(f.directory,'download-stale')).then(()=>true).catch(()=>false),false);
 });
 
 async function channelFixture(t,{current='2.2.1',versions=['2.2.2-preview.2','2.2.1'],metadata={},fetchRelease}={}){
@@ -256,7 +330,7 @@ test('Linux signed packages select the installed format and retain verified down
       install:async value=>{applied=value;return {state:format==='deb'?'installer-handoff':'downloaded'};}});
     const checked=await updater.check({manual:true,channel:'preview'});assert.equal(checked.manualInstall,true);
     const result=await updater.install({candidateId:checked.candidateId,confirmed:true});
-    assert.equal(result.state,format==='deb'?'installer-handoff':'downloaded');assert.equal(path.basename(result.path),name);
+    assert.equal(result.state,format==='deb'?'installer-handoff':'downloaded');assert.ok(result.path.endsWith(name));
     assert.equal(await fs.readFile(applied.archive,'utf8'),bytes.toString());assert.equal(updater.busy,false);
   }
 });

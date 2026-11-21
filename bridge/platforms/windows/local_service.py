@@ -5,6 +5,7 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 from .zcode_pipe import _identity, _native, identity, local_connect, local_listener, peer_pid
@@ -156,6 +157,47 @@ def write_record(path, value):
                 if handle is not None:_native().close(handle)
         os.replace(temp, path)
     finally:temp.unlink(missing_ok=True)
+
+
+def write_private(path, content):
+    """Atomically write a file owned by the current Windows user.
+
+    A process launched elevated can otherwise inherit an Administrators-owned
+    file from a protected data directory. The normal desktop token for the same
+    user then receives ERROR_ACCESS_DENIED when it opens that file.
+    """
+    import msvcrt
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError('私有文件不能使用符号链接')
+    if path.parent.is_symlink():
+        raise ValueError('私有文件目录不能使用符号链接')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name('.' + uuid.uuid4().hex)
+    try:
+        with private_security() as security:
+            handle = _open(temporary, write=True, security=security)
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+                handle = None
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                if handle is not None:
+                    _native().close(handle)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in (5, 32, 33) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def require_peer(conn, *, server, expected=None):

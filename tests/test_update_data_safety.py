@@ -145,6 +145,84 @@ class UpdateDataSafetyTests(unittest.TestCase):
             self.backup()
         self.assertFalse((self.data / 'update-backups').exists())
 
+    def test_unreadable_legacy_settings_is_preserved_and_sidecar_is_backed_up(self):
+        legacy = self.data/'desktop-sessions/settings.json'
+        fallback = self.data/'desktop-sessions/settings.user.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{"legacy": true}')
+        fallback.write_text('{"enabled": {"codex": false}}')
+        original = legacy.read_bytes()
+        real_read = Path.read_bytes
+        def deny_legacy(path):
+            if path == legacy:
+                raise PermissionError()
+            return real_read(path)
+        with patch.object(Path, 'read_bytes', autospec=True, side_effect=deny_legacy):
+            result = self.backup()
+        manifest = json.loads((Path(result['backup'])/'backup.json').read_text())
+        self.assertNotIn('desktop-sessions/settings.json', manifest['files'])
+        self.assertIn('desktop-sessions/settings.user.json', manifest['files'])
+        self.assertEqual(json.loads((Path(result['backup'])/'desktop-sessions/settings.user.json').read_text()),
+                         {'enabled': {'codex': False}})
+        self.assertEqual(legacy.read_bytes(), original)
+        self.assertTrue(legacy.exists())
+
+    def test_return_stable_restores_sidecar_for_legacy_gateway_after_backing_it_up(self):
+        legacy = self.data/'desktop-sessions/settings.json'
+        fallback = self.data/'desktop-sessions/settings.user.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{"legacy": true}')
+        fallback.write_text('{"enabled": {"codex": false}, "discoveryRevision": 1}')
+        original = legacy.read_bytes()
+        recovered = fallback.read_bytes()
+        real_read = Path.read_bytes
+
+        def deny_legacy(path):
+            if path == legacy:
+                raise PermissionError()
+            return real_read(path)
+
+        with patch.object(Path, 'read_bytes', autospec=True, side_effect=deny_legacy):
+            result = self.backup()
+            updater.restore_legacy_client_settings(self.data, self.payload['transition'])
+        backup = Path(result['backup'])
+        manifest = json.loads((backup/'backup.json').read_text())
+        self.assertNotIn('desktop-sessions/settings.json', manifest['files'])
+        self.assertIn('desktop-sessions/settings.user.json', manifest['files'])
+        self.assertEqual(json.loads(legacy.read_bytes()), json.loads(recovered))
+        self.assertFalse(fallback.exists())
+        self.assertNotEqual(legacy.read_bytes(), original)
+        self.assertEqual(json.loads(legacy.read_text()), {'enabled': {'codex': False}, 'discoveryRevision': 1})
+        legacy.write_text('{"enabled": {"codex": true}}')
+        from bridge.clients.manager import settings_path, read_client_settings
+        self.assertEqual(settings_path(legacy.parent), legacy)
+        self.assertTrue(read_client_settings(settings_path(legacy.parent))['enabled']['codex'])
+
+    def test_return_stable_blocks_when_unreadable_legacy_settings_have_no_sidecar(self):
+        legacy = self.data/'desktop-sessions/settings.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{"enabled": {"codex": true}}')
+        real_read_bytes, real_open = Path.read_bytes, Path.open
+
+        def deny_legacy_read(path):
+            if path == legacy:
+                raise PermissionError()
+            return real_read_bytes(path)
+
+        def deny_legacy_open(path, *args, **kwargs):
+            if path == legacy and args and args[0] == 'rb':
+                raise PermissionError()
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'read_bytes', autospec=True, side_effect=deny_legacy_read), \
+                patch.object(Path, 'open', autospec=True, side_effect=deny_legacy_open):
+            result = self.backup()
+            with self.assertRaisesRegex(ValueError, '没有可供旧版使用的恢复副本'):
+                updater.restore_legacy_client_settings(self.data, self.payload['transition'])
+        update_backups = self.data/'update-backups'
+        self.assertTrue((Path(result['backup'])/'backup.json').exists())
+        self.assertTrue(legacy.exists())
+
     def test_empty_linked_account_directory_is_rejected_without_walking_it(self):
         outside = self.root / 'outside-accounts'
         outside.mkdir()

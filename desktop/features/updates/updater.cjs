@@ -131,6 +131,34 @@ async function transfer(fetch,url,{limit,signal,file,onProgress=()=>{}}){
     return {size,sha256:hash.digest('hex'),bytes:file?undefined:Buffer.concat(chunks)};
   }finally{await handle?.close();await reader.cancel();}
 }
+function cacheName(candidate,platform,arch,format){
+  if(platform==='linux')return `verified-${candidate.asset.sha256}-${candidate.asset.name}`;
+  return `verified-${candidate.version}-${platform}-${arch}-${candidate.asset.sha256}.zip`;
+}
+async function digestFile(file){
+  const hash=createHash('sha256');let size=0;
+  const handle=await fs.open(file,'r');
+  try{
+    for(;;){const {bytesRead,buffer}=await handle.read({buffer:Buffer.allocUnsafe(1024*1024),length:1024*1024,position:null});
+      if(!bytesRead)break;size+=bytesRead;hash.update(buffer.subarray(0,bytesRead));}
+  }finally{await handle.close();}
+  return {size,sha256:hash.digest('hex')};
+}
+async function validCache(file,asset){
+  try{
+    const info=await fs.lstat(file);
+    if(!info.isFile()||info.isSymbolicLink())return false;
+    const value=await digestFile(file);
+    return value.size===asset.size&&value.sha256===asset.sha256;
+  }catch{return false;}
+}
+async function cleanDownloadStaging(directory){
+  try{
+    for(const entry of await fs.readdir(directory,{withFileTypes:true}))
+      if(entry.isDirectory()&&/^download-[A-Za-z0-9]+$/.test(entry.name))
+        await fs.rm(path.join(directory,entry.name),{recursive:true,force:true});
+  }catch(error){if(error.code!=='ENOENT')throw error;}
+}
 class Updater{
   constructor({current,platform=process.platform,arch=process.arch,format='deb',key,fetch,directory,install,preflight,supported=true,skipFile}){
     Object.assign(this,{current,platform,arch,format,key,fetch,directory,apply:install,preflight,supported,skipFile});
@@ -161,6 +189,17 @@ class Updater{
       else this.skipped=skipped;
       return this.candidate===candidate?this.set('skipped',this.details(candidate)):this.status();
     }finally{this.skipping=false;}
+  }
+  async cleanupVerifiedPackages({startup=false,preserveCurrent=false}={}){
+    try{
+      for(const entry of await fs.readdir(this.directory,{withFileTypes:true})){
+        if(!entry.isFile())continue;
+        const match=entry.name.match(/^verified-(\d+\.\d+\.\d+(?:-(?:alpha|beta|preview|rc)\.\d+)?)-(?:darwin|win32)-(?:x64|arm64)-[a-f0-9]{64}\.zip$/)||
+          entry.name.match(/^verified-[a-f0-9]{64}-Codex-Mobile-Bridge-(\d+\.\d+\.\d+(?:-(?:alpha|beta|preview|rc)\.\d+)?)-Linux-(?:amd64|x86_64|arm64)\.(?:deb|AppImage)$/);
+        if(match&&(!startup||!preserveCurrent&&match[1]===this.current))
+          await fs.rm(path.join(this.directory,entry.name),{force:true});
+      }
+    }catch(error){if(error.code!=='ENOENT')throw error;}
   }
   async check({manual=false,channel}={}){
     if(channel!==undefined&&(!manual||!['stable','preview'].includes(channel)))throw Error('更新渠道无效。');
@@ -199,7 +238,7 @@ class Updater{
     if(this.busy)return this.status();
     if(!this.candidate||this.checking||this.skipping||candidateId!==undefined&&candidateId!==this.candidate.id)throw Error('请先检查更新。');
     if(this.candidate.transition.intent!=='update'&&(!confirmed||candidateId!==this.candidate.id))throw Error('请确认所选版本后再安装。');
-    const candidate=this.candidate;let staging,retained=false;
+    const candidate=this.candidate;let staging,archive,retained=false;
     const details=this.details(candidate);
     this.set('preparing',details);
     try{
@@ -207,18 +246,30 @@ class Updater{
       await this.preflight?.();
       this.set('downloading',{...details,received:0,total:candidate.asset.size});
       await fs.mkdir(this.directory,{recursive:true,mode:0o700});
-      staging=await fs.mkdtemp(path.join(this.directory,'download-'));
-      const archive=path.join(staging,this.platform==='linux'?candidate.asset.name:'update.zip');
-      const downloaded=await transfer(this.fetch,candidate.asset.url,{signal:AbortSignal.timeout(15*60*1000),limit:candidate.asset.size,file:archive,
-        onProgress:received=>this.set('downloading',{...details,received,total:candidate.asset.size})});
-      if(downloaded.size!==candidate.asset.size||downloaded.sha256!==candidate.asset.sha256)throw Error('更新包校验失败，已取消安装。');
+      archive=path.join(this.directory,cacheName(candidate,this.platform,this.arch,this.format));
+      if(await validCache(archive,candidate.asset)){
+        this.set('downloading',{...details,received:candidate.asset.size,total:candidate.asset.size,cached:true});
+      }else{
+        await fs.rm(archive,{force:true});
+        staging=await fs.mkdtemp(path.join(this.directory,'download-'));
+        const temporary=path.join(staging,'package.tmp');
+        const downloaded=await transfer(this.fetch,candidate.asset.url,{signal:AbortSignal.timeout(15*60*1000),limit:candidate.asset.size,file:temporary,
+          onProgress:received=>this.set('downloading',{...details,received,total:candidate.asset.size})});
+        if(downloaded.size!==candidate.asset.size||downloaded.sha256!==candidate.asset.sha256)throw Error('更新包校验失败，已取消安装。');
+        await fs.rename(temporary,archive);
+        await fs.rm(staging,{recursive:true,force:true});
+        staging=undefined;
+      }
       this.set('preparing',details);
       if(this.platform==='linux')retained=true;
+      // Keep the verified archive until the replacement process has started the
+      // new application and written its acknowledgement. A failed swap or
+      // rollback must be able to retry without downloading the same bytes.
       const outcome=await this.apply({...candidate,archive});
       if(this.platform==='linux')return this.set(outcome?.state==='installer-handoff'?'installer-handoff':'downloaded',{...details,path:archive});
       return this.set('restarting',details);
-    }catch(error){return this.set('error',{...details,message:error.message,...(retained?{path:path.join(staging,candidate.asset.name)}:{})});}
+    }catch(error){return this.set('error',{...details,message:error.message,...(retained?{path:archive}:{})});}
     finally{if(staging&&!retained)await fs.rm(staging,{recursive:true,force:true});}
   }
 }
-module.exports={Updater,activeUpdateHandoff,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer};
+module.exports={Updater,activeUpdateHandoff,version,compare,manifest,assetName,allowedUrl,allowedMirrorUrl,mirrorUrl,releaseUrl,RELEASES,MIRROR,transfer,cacheName,validCache,cleanDownloadStaging};
