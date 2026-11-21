@@ -20,6 +20,7 @@ def build():
         cache.mkdir(parents=True, exist_ok=True)
         for native_source, output_name in [(source/'macos/claude-helper.swift', 'claude-bridge-helper'),
                                            (source/'macos/zcode-helper.swift', 'zcode-bridge-helper'),
+                                           (source/'macos/codex-launcher.swift', 'codex-launcher'),
                                            (source/'macos/update-launcher.swift', 'update-launcher')]:
             helper = str(target/output_name)
             subprocess.run([compiler, '-O', '-module-cache-path', str(cache), str(native_source), '-o', helper], check=True)

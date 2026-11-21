@@ -14,6 +14,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1110,6 +1111,15 @@ class Accounts:
             from bridge.platforms.macos.desktop import commands
         descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
 
+        def ordinary_launch():
+            from bridge.clients.codex.desktop_runtime import enable_ordinary_launch
+            try:
+                return {'ordinaryLaunch': enable_ordinary_launch(self.home, app.executable)}
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                # A launch-environment conflict must not discard a healthy
+                # connection or cause another desktop restart.
+                return {'ordinaryLaunch': False, 'ordinaryLaunchError': str(exc)}
+
         def observed():
             state = inspect_client(descriptor)
             main = state.get('mainPids', [])
@@ -1152,7 +1162,7 @@ class Accounts:
                         prior = preparation(self.home)
                         if prior and prior['state'] == 'pending':
                             record_preparation(self.home, prior['requestId'], complete=True)
-                        self.desktop_preparation = {'state': 'ready'}
+                        self.desktop_preparation = {'state': 'ready', **ordinary_launch()}
                         return False
                     prior = preparation(self.home)
                     if prior and prior['state'] == 'pending':
@@ -1229,7 +1239,7 @@ class Accounts:
                 record_preparation(self.home, self.state['requestId'], complete=True)
                 self.phase('complete', error=None)
                 self.desktop_preparation = ({'state': 'failed', 'reason': str(preparation_error)}
-                                            if preparation_error else {'state': 'ready'})
+                                            if preparation_error else {'state': 'ready', **ordinary_launch()})
                 return False
         except Exception as exc:
             # Keep a successfully saved configuration available for an explicit

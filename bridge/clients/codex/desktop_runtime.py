@@ -12,6 +12,7 @@ import hashlib
 import subprocess
 import time
 import uuid
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -278,6 +279,55 @@ def launch_environment(home, application):
         raise ValueError('共享接入启动器身份无法确认')
     return {'CODEX_CLI_PATH': str(launcher), 'CODEX_APP_SERVER_WS_URL': '',
             'CODEX_APP_SERVER_FORCE_CLI': '0'}
+
+
+def ordinary_launch_helper():
+    root = project_root()
+    if not getattr(sys, 'frozen', False):
+        root = root / 'dist'
+    return root / 'client-helpers' / 'codex-launcher'
+
+
+def enable_ordinary_launch(home, application):
+    """Prepare normal GUI opening without changing the App or restarting it."""
+    if sys.platform != 'darwin':
+        return False
+    value = settings(home)
+    if value is None:
+        return False
+    if value['application'] != str(Path(application).resolve()):
+        raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
+    from bridge.platforms.macos import codex_launch
+    root = private_directory(directory(home))
+    helper = ordinary_launch_helper()
+    if not helper.is_file():
+        raise ValueError('普通启动接入组件尚未编译')
+    with exclusive_lock(home, 'ordinary-launch'):
+        previous = codex_launch.get_environment()
+        gui = private_directory(root / 'gui')
+        if previous and not (Path(previous).parent.parent == gui and Path(previous).name == 'codex-launcher'):
+            raise ValueError('已有其他 Codex 启动配置，保留原配置；当前连接不受影响')
+        digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+        generation = private_directory(gui / digest)
+        launcher = generation / 'codex-launcher'
+        if launcher.is_symlink():
+            raise ValueError('普通启动接入组件身份已变化')
+        if not launcher.exists():
+            shutil.copyfile(helper, launcher, follow_symlinks=False)
+            launcher.chmod(0o700)
+        elif launcher.is_symlink() or hashlib.sha256(launcher.read_bytes()).hexdigest() != digest:
+            raise ValueError('普通启动接入组件身份已变化')
+        command = ([sys.executable] if getattr(sys, 'frozen', False) else
+                   [sys.executable, str(project_root() / 'desktop.py')])
+        command += ['codex-desktop-runtime', '--configuration', str(root / 'settings.json'), '--']
+        record = {**value, 'command': command}
+        target = root / 'ordinary-launch.json'
+        if not target.exists() or _read(target) != record:
+            _write(target, json.dumps(record))
+        if previous != str(launcher):
+            codex_launch.set_environment(launcher)
+        codex_launch.install_login_environment(launcher)
+        return True
 
 
 def process_identity(pid):

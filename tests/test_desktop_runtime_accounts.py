@@ -35,6 +35,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             'validate_runtime': patch.object(desktop_runtime, 'validate_runtime'),
             'launcher_settings': patch.object(desktop_runtime, 'launcher_settings', return_value={}),
             'configure': patch.object(desktop_runtime, 'configure'),
+            'ordinary_launch': patch.object(desktop_runtime, 'enable_ordinary_launch', return_value=True),
             'connect': patch.object(desktop_runtime, 'connect', return_value=Mock()),
             'initialize_lock': patch.object(desktop_runtime, 'initialization_lock', side_effect=lambda home: nullcontext()),
             'identity': patch.object(desktop_runtime, 'process_identity', return_value=self.identity),
@@ -126,6 +127,15 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
         self.assertEqual(self.manager.state, original)
+        self.mocks['ordinary_launch'].assert_called_once_with(self.home, self.app.executable)
+
+    def test_ordinary_launch_conflict_keeps_current_connection_and_does_not_restart(self):
+        self.mocks['ordinary_launch'].side_effect = ValueError('其他启动配置')
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.assertIn('其他启动配置', self.manager.desktop_preparation['ordinaryLaunchError'])
+        self.mocks['stop'].assert_not_called()
+        self.app.start.assert_not_called()
 
     def test_startup_cold_launch_refreshes_configuration_before_start(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
