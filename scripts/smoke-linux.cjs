@@ -64,7 +64,7 @@ async function main(){
   await checkElf(executable);await checkElf(runtime);
   const metadata=JSON.parse(await fs.readFile(path.join(resources,'update-version.json'),'utf8'));
   assert.equal(metadata.platform,'linux');assert.equal(metadata.arch,process.arch);
-  assert.equal(metadata.version,require('../package.json').version);
+  assert.equal(metadata.version,require('../package.json').version);assert.equal(metadata.dataFormat,'bridge-data-v1');
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const data=await fs.mkdtemp(path.join(root,'.tmp','linux-app-'));
   const port=await freePort(),debugPort=await freePort(),env={...process.env,CMB_DATA_DIR:data};

@@ -682,10 +682,13 @@ test('packaging rejects a gateway from another architecture, OS or version',asyn
   try{
     await fs.mkdir(path.join(root,'dist/gateway'),{recursive:true});
     const write=value=>fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify(value));
-    const valid={platform:'linux',arch:'arm64',version:'1.2.2'};
+    const valid={platform:'linux',arch:'arm64',version:'1.2.2',dataFormat:'bridge-data-v1'};
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway'),'fixture');
     for(const wrong of [{arch:'x64'},{platform:'darwin'},{version:'1.2.1'}]){
       await write({...valid,...wrong});await assert.rejects(verify(context),/does not match/);
+    }
+    for(const dataFormat of [undefined,'unknown-format']){
+      await write({...valid,dataFormat});await assert.rejects(verify(context),/data format/);
     }
     await write(valid);
     const bundled=path.join(root,'dist/gateway/_internal/cloudflared');
@@ -712,7 +715,7 @@ test('Windows packaging requires the complete locked ConPTY pair',async()=>{
     await fs.mkdir(path.join(runtime,'cloudflared'),{recursive:true});
     await fs.mkdir(path.join(runtime,'conpty'),{recursive:true});
     await fs.mkdir(path.join(root,'scripts'));
-    await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2'}));
+    await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2',dataFormat:'bridge-data-v1'}));
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway.exe'),'fixture');
     for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe'])
       await fs.writeFile(path.join(runtime,'client-helpers',name),'fixture');
