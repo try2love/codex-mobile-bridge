@@ -46,6 +46,8 @@ macOS 只接受主 App 或其应用包 Frameworks 内、直接隶属于该主 Ap
 
 首次接入仍需通过现有原生连接准备流程正常重启一次；任务状态未知时沿用现有的人工确认入口，不能为恢复连接自动绕过任务保护。已经普通启动且未使用适配器的主 App 不会被悄悄接管。新路径针对本机默认 Codex Desktop；远端桌面 owner、完整界面操作（包括原地编辑）及 Windows 成品/真机仍需各自适配与验收，不能由 macOS 本机链路通过推断。
 
+Magpie 等外部账号管理下，桌面显式准备与自动准备的边界见[外部账号原生连接准备](2026-11-21-external-codex-transport-preparation.md)。
+
 ## 历史笔记核对
 
 [共享运行时数据删除](../architecture/2026-11-08-codex-shared-runtime-data-deletion.md)、[Windows 原生 stdio](2026-11-12-windows-native-side-chat-writer.md)、[自动准备](../feature/2026-11-12-native-runtime-startup-preparation.md)与本篇部分重叠，保留其原决定并互链；[桌面状态结构兼容](2026-11-14-desktop-stream-v13.md)继续约束旧通道。旧[共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)仍保留其独有标签同步缺口，本次未实现该目标，不删除或归档。

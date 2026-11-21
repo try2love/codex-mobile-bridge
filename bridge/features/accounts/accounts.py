@@ -1047,7 +1047,7 @@ class Accounts:
         if not valid_id:
             raise ValueError('初始化请求标识无效')
         with self.gate, self.bridge.account.lock, self.lock:
-            self.require_managed_writes()
+            # Explicit transport preparation retains external auth/provider files.
             if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
                 return self.public()
             self.assert_editable()
