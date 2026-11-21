@@ -7,14 +7,16 @@
 ### 新增与改进
 
 - **新版 Codex 原生连接。** 支持新版 hosted Desktop 的原生聊天读取、发送、停止与审批，并兼容旧版连接。首次正常准备连接时，可能需要重启 Codex 一次。
-- **长会话读取与列表响应。** 实时连接优先跟随当前回合，较早历史按需读取；改善大回执和并发刷新时的等待，并补齐原生编辑前保留历史的读取。
+- **连接恢复与长会话读取。** 改善 Codex 重开后的接入恢复，冷聊天和单聊天重建不再连带断开其他聊天；实时连接优先跟随当前回合，较早历史按需读取，编辑重发后仍可查看保留的前文。
+- **运行状态展示。** 修正历史时间单位混用导致的异常超大用时；自动重试警告不再反复作为终止错误置底，真实失败和工具错误继续显示。
+- **手机应用图标。** Android 和 iOS 同步新版图标，补齐此前只更新桌面与网页的遗漏。[#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
 - **更新失败后重试。** 重用已通过签名与完整性校验的更新包，减少重复下载；新版本成功启动并确认后再清理更新包。
 - **Windows 配置与恢复。** 改善配置文件权限处理，保留恢复副本；返回稳定版时恢复兼容配置。
 - **卸载数据保留。** 默认保留数据，可选择仅清理 Bridge 自有目录。
 
 ### 更新说明
 
-这是预览版，v2.2.1 仍为最新稳定版。v2.2.1 的既有更新器不会发现预览版，首次体验需手动安装；preview.1 和 preview.2 用户可通过检查更新升级。
+这是预览版，v2.2.1 仍为最新稳定版。v2.2.1 的既有更新器不会发现预览版，首次体验需手动安装；preview.1 的 Mac/Windows 用户及 preview.2 用户可通过检查更新升级；Linux preview.1 需手动安装。
 
 Android 版本为 **2.2.2-preview.3**，build **63**，沿用 v2.2.1、preview.1 和 preview.2 的应用标识与持久签名，可覆盖升级。iOS marketing version 为 **2.2.2**、build **63**；未签名 IPA 需要自行签名。原生操作以客户端实际能力为准。
 
@@ -29,14 +31,16 @@ This preview supports newer Codex Desktop native connections and improves gatewa
 ### Features and improvements
 
 - **Newer Codex native connections.** Read native chats, send messages, stop turns and handle approvals through newer hosted Desktop connections while retaining older connection support. Initial connection setup may require one Codex restart.
-- **Responsive lists and long chats.** Follow the current native turn first and read older history on demand. Reduce delays from large replies and concurrent list refreshes, and read retained history across native edit boundaries.
+- **Connection recovery and long chats.** Improve recovery after Codex reopens. Joining a cold chat or rebuilding one chat no longer disconnects other chats. Follow the current native turn first, load older history on demand, and retain readable history after editing and resending.
+- **Runtime status.** Fix excessively large elapsed times caused by mixed timestamp units. Automatic retry warnings no longer recur as terminal errors; actual failures and tool errors remain visible.
+- **Mobile app icons.** Update Android and iOS icons to match the new artwork previously shipped on desktop and web. [#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
 - **Retry failed updates.** Reuse update packages that passed signature and integrity checks to avoid repeated downloads; clean them up after the new version starts successfully and is confirmed.
 - **Windows configuration and recovery.** Improve configuration file permissions and retain recovery copies; restore compatible settings when returning to stable.
 - **Keep data during uninstall.** Preserve data by default, with an option to remove only Bridge-owned directories.
 
 ### Installation
 
-v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 and preview.2 users can check for updates.
+v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 users on macOS/Windows and preview.2 users can check for updates. Linux preview.1 requires a manual install.
 
 Android version **2.2.2-preview.3**, build **63**, keeps the application and persistent signing identities used by v2.2.1, preview.1 and preview.2 for in-place upgrades. iOS marketing version is **2.2.2**, build **63**; the unsigned IPA requires your own signing. Native operations depend on the connected client's capabilities.
 
