@@ -1466,6 +1466,36 @@ class ClientLifecycleTests(unittest.TestCase):
         row = next(r for r in self.manager.clients(refresh=True)['clients'] if r['id'] == 'codex')
         self.assertTrue(row['configured']); self.assertFalse(row['connected'])
 
+    def test_running_codex_without_prepared_runtime_is_not_reported_connected(self):
+        from bridge.clients.codex.app_server import AppServerUnavailable
+        with patch('bridge.clients.codex.desktop_runtime.connect', side_effect=AppServerUnavailable('runtime not ready')):
+            row = self.manager.clients(refresh=True)['clients'][0]
+        self.assertTrue(row['configured'])
+        self.assertTrue(row['nativeRunning'])
+        self.assertFalse(row['connected'])
+        self.assertFalse(row['nativeConnected'])
+        self.assertFalse(row['entries'][0]['connected'])
+        self.assertEqual(row['setupStatus'], 'needs-initialization')
+        self.assertIn('重新初始化连接', row['reason'])
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_codex_connection_status_verifies_and_closes_shared_follower(self):
+        follower = Mock()
+        with patch('bridge.clients.codex.desktop_runtime.connect', return_value=follower) as connect:
+            row = self.manager.clients(refresh=True)['clients'][0]
+        self.assertTrue(row['nativeConnected'])
+        connect.assert_called_once_with(self.accounts.home, self.accounts.runtime)
+        follower.close.assert_called_once_with()
+        self.launch.assert_not_called()
+        self.stop.assert_not_called()
+
+    def test_codex_without_shared_configuration_keeps_legacy_connection_status(self):
+        with patch('bridge.clients.codex.desktop_runtime.connect', return_value=None):
+            row = self.manager.clients(refresh=True)['clients'][0]
+        self.assertTrue(row['nativeConnected'])
+        self.assertTrue(row['entries'][0]['connected'])
+
     def test_pending_gateway_send_cannot_escape_the_shutdown_lock(self):
         import uuid
         entered, finish = threading.Event(), threading.Event()
