@@ -63,7 +63,7 @@ const QuotaDisplay=(()=>{
     if(value?.tier)root.append(node('strong','quota-tier',value.tier));
     if(value?.groups?.length)root.append(pools(value.groups,{slots,stale:value.status==='stale'}));
     else for(const item of value?.items||[])if(!models.some(row=>row.name===item.name&&row.quotaTag))root.append(node('p','quota-legacy',[item.name,item.val,item.note].filter(Boolean).join(' · ')));
-    if(value?.credits)root.append(node('p','quota-credits',value.credits));
+    if(value?.credits&&!value?.groups?.length)root.append(node('p','quota-credits',value.credits));
     if(value?.status==='stale')root.append(node('p','quota-status',t('保留上次结果，数据尚未更新')));
     if(value?.checkedAt)root.append(node('small','quota-updated',t('额度更新于：')+time(value.checkedAt)));
     for(const row of root.querySelectorAll?.('.quota-pool')||[])row.open=opened.has(row.dataset.quotaKey);

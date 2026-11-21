@@ -37,3 +37,12 @@ test('failed refresh preserves same-account time, throttles retry, and discards 
   indicator.read=async()=>{calls++;return quota();};await indicator.refresh();assert.equal(calls,1);now+=60001;await indicator.refresh();assert.equal(calls,2);
   indicator.read=async()=>({error:'offline',accountKey:'b'});await indicator.refresh(true);assert.equal(Q.accountWindows(indicator.value).length,0);
 });
+
+test('native quota pools replace legacy credits while no-pool accounts keep their fallback',()=>{
+  const root=new Node('div');
+  Q.summary(root,{groups:[{name:'Shared',windows}],credits:'Prompt: 100 / Flow: 200'});
+  assert.equal(flatten(root).some(row=>row.className==='quota-credits'),false);
+  assert.equal(flatten(root).filter(row=>row.className==='quota-detail').length,2);
+  Q.summary(root,{groups:[],credits:'Prompt: 100 / Flow: 200'});
+  assert.equal(flatten(root).find(row=>row.className==='quota-credits').textContent,'Prompt: 100 / Flow: 200');
+});
