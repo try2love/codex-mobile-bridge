@@ -17,6 +17,7 @@ ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-publ
                     'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
                     'tests/test_ci_test_scope.py', 'tests/test_bridge.py',
                     'scripts/reuse-desktop-artifacts.py', 'tests/test_desktop_reuse.py', 'tests/test_desktop_idle.py',
+                    'tests/release-assets.test.cjs',
                     '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
 
 
