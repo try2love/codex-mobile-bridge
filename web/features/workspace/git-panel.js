@@ -6,7 +6,7 @@ class GitPanel {
     this.node = (...args) => workbench.node(...args);
     this.button = (...args) => workbench.button(...args);
   }
-  dispose() { this.floating?.destroy(); this.floating = null; this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
+  dispose() { this.diffFont?.dispose(); this.diffFont=null; this.floating?.destroy(); this.floating = null; this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
   async load() {
     this.dispose(); const controller = this.tab.controller = new AbortController();
     const head = this.node('div', 'wb-git-head'), title = this.node('div', 'wb-git-heading');
@@ -76,11 +76,13 @@ class GitPanel {
     } catch (error) { if (!controller.signal.aborted) { status.hidden = false; status.textContent=BridgeI18n.t(error.message); status.classList.add('error'); } }
   }
   openDetail(title) {
+    this.diffFont?.dispose();this.diffFont=null;
     this.floating?.destroy();
     this.detail = this.node('div', 'wb-git-detail');
     this.floating = new FloatingPanel({host:this.tab.body, content:this.detail, title,
       state:this.windowStates[this.mode] ||= {}, node:this.node, button:this.button,
       close:() => {
+        this.diffFont?.dispose();this.diffFont=null;
         this.diffController?.abort(); this.historyDiffController?.abort();
         this.selected = this.selectedCommit = null; this.floating = null;
         for (const row of this.layoutHost.querySelectorAll('.selected')) { row.classList.remove('selected'); row.setAttribute('aria-pressed', 'false'); }
@@ -104,6 +106,18 @@ class GitPanel {
   }
   renderDiff(result, content, header) {
       content.replaceChildren();
+      this.diffFont?.dispose();
+      header.querySelector('.wb-git-reading')?.remove();
+      const settings=this.node('details','wb-git-reading'),label=this.node('summary','',BridgeI18n.t('阅读设置'));
+      this.diffFont=FileFont.control(this.workbench);
+      let wrapped=false;try{wrapped=localStorage.getItem('bridge-git-wrap')==='true';}catch{}
+      const wrap=this.button('',()=>{
+        const top=content.scrollTop,left=content.scrollLeft;
+        wrapped=!wrapped;paint();try{localStorage.setItem('bridge-git-wrap',String(wrapped));}catch{}
+        content.scrollTop=top;content.scrollLeft=left;
+      });
+      const paint=()=>{content.dataset.wrap=String(wrapped);wrap.textContent=BridgeI18n.t(wrapped?'原始行宽':'自动换行');wrap.setAttribute('aria-pressed',String(wrapped));};
+      paint();settings.append(label,this.diffFont.element,wrap);header.append(settings);
       const messages = {binary: BridgeI18n.t('二进制或非 UTF-8 文件，暂不提供文本差异。'), large: BridgeI18n.t('文件超过差异预览限制，请在电脑上查看。'), submodule: BridgeI18n.t('此项为子模块，请在电脑上查看子模块内部的改动。')};
       if (messages[result.kind]) { content.append(this.node('p', 'wb-status', messages[result.kind])); return; }
       if (result.kind === 'conflict') { const pre = this.node('pre', 'wb-git-conflict', result.text); content.append(pre); return; }

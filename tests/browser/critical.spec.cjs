@@ -18,6 +18,38 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Git diff reading controls change rendered text and persist in historical diffs',async({page})=>{
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(()=>{
+    const node=(tag,cls='',text)=>{const element=document.createElement(tag);element.className=cls;if(text!==undefined)element.textContent=text;return element;};
+    const body=node('div');body.id='diff-reading-fixture';body.style.cssText='position:fixed;inset:0;background:white;z-index:99999;overflow:auto';document.body.append(body);
+    const workbench={node,button(text,action,label){const element=node('button','',text);element.onclick=action;if(label)element.setAttribute('aria-label',label);return element;},
+      url:()=>'/fixture?diff=1',request:async()=>window.__readingDiff};
+    window.__readingDiff={kind:'text',text:'@@ -1,40 +1,40 @@\n'+Array.from({length:40},(_,i)=>'+'+'changed '+i+' '+('long_content_'.repeat(50))).join('\n')};
+    window.__readingPanel=new GitPanel(workbench,{}, {body});
+    const header=node('div','wb-git-diff-head'),content=node('div','wb-git-diff');content.style.height='240px';content.style.flex='none';body.append(header,content);
+    window.__readingPanel.renderDiff(window.__readingDiff,content,header);
+  });
+  const fixture=page.locator('#diff-reading-fixture'),diff=fixture.locator('.wb-git-diff'),code=diff.locator('code').nth(1);
+  const original=await diff.textContent();
+  expect(await diff.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
+  await fixture.locator('summary').click();
+  const before=await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize));
+  await fixture.getByRole('button',{name:'增大所有文件字号',exact:true}).click();
+  expect(await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBe(before+1);
+  await diff.evaluate(el=>el.scrollTop=90);
+  await fixture.getByRole('button',{name:'自动换行',exact:true}).click();
+  expect(await diff.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+  expect(await diff.evaluate(el=>el.scrollTop)).toBe(90);
+  expect(await diff.textContent()).toBe(original);
+  await expect(diff.locator('.added .wb-diff-number').nth(1)).toHaveText('1');
+  await page.evaluate(async()=>{const area=document.createElement('div');document.getElementById('diff-reading-fixture').replaceChildren(area);await window.__readingPanel.showHistoricalDiff('fixture','file.txt',area);});
+  await expect(diff).toHaveAttribute('data-wrap','true');
+  expect(await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBe(before+1);
+  expect(await diff.textContent()).toBe(original);
+  await page.evaluate(()=>{window.__readingPanel.dispose();document.getElementById('diff-reading-fixture').remove();});
+});
+
 test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
   await ready(page);
   await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));
