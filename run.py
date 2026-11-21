@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the desktop bridge with Python 3.9+; no package installation required."""
 import argparse
+import ipaddress
 import getpass
 import json
 import logging
@@ -44,6 +45,8 @@ def main(connections=None, connection_secrets=None):
     parser = argparse.ArgumentParser(description="Codex App 手机网关")
     parser.add_argument("--config", type=Path, default=ROOT / ".local/config.json")
     parser.add_argument("--lan", action="store_true", help="监听局域网；默认只监听本机")
+    parser.add_argument('--listen-ipv6', action='append', default=[], metavar='ADDRESS',
+                        help='额外监听指定 IPv6 地址，例如 ::1 或 ::；仅 IPv6，公网入口仍须 --origin')
     parser.add_argument("--tunnel", action="store_true", help="同时启动 Cloudflare 临时 HTTPS 外网入口")
     parser.add_argument("--ssh-target", help="自有服务器的已有 SSH Host 别名或 user@hostname")
     parser.add_argument("--ssh-remote-port", type=int, default=18787, help="SSH 服务器回环监听端口")
@@ -60,6 +63,12 @@ def main(connections=None, connection_secrets=None):
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("端口必须为 1–65535")
+    try:
+        ipv6_addresses = list(dict.fromkeys(str(ipaddress.IPv6Address(value)) for value in args.listen_ipv6))
+        if any('%' in value for value in ipv6_addresses):
+            raise ValueError('不支持带区域标识的 IPv6 地址')
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.ssh_target:
         from bridge.features.network.access import validate
         validate({'sshTarget': args.ssh_target, 'sshRemotePort': args.ssh_remote_port})
@@ -89,6 +98,8 @@ def main(connections=None, connection_secrets=None):
         parser.error("auth.mode 只能为 password 或 none")
     if args.no_auth:
         config["auth"]["mode"] = "none"
+    if config['auth']['mode'] == 'none' and any(not ipaddress.IPv6Address(value).is_loopback for value in ipv6_addresses):
+        parser.error('非回环 IPv6 监听需要启用网关登录验证')
     from bridge.features.network.access import origin as normalize_origin, validate_connections, public_urls, public_url
     legacy_addresses = config.get('lanAddresses')
     raw_interfaces = config.get('lanInterfaces',
@@ -118,6 +129,8 @@ def main(connections=None, connection_secrets=None):
     else:
         hosts = ['127.0.0.1', 'localhost']
     config["origins"] = sorted(set(origins + [f"http://{host}:{args.port}" for host in hosts]))
+    if '::1' in ipv6_addresses:
+        config['origins'].append(f'http://[::1]:{args.port}')
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin)
     servers = []
@@ -126,6 +139,7 @@ def main(connections=None, connection_secrets=None):
         # Auto-LAN and selected adapters are owned by the runtime monitor, so
         # DHCP changes replace listeners without a gateway restart.
         startup_bindings = ['127.0.0.1'] if args.lan else network.bindings(preferences, rows)
+        startup_bindings += ipv6_addresses
         for address in startup_bindings:
             servers.append(GatewayServer((address, args.port), bridge, config, ROOT / 'web', args.config.parent,
                                          **({'shared': servers[0]} if servers else {})))

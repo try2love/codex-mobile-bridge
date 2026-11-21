@@ -81,6 +81,7 @@ class GatewayServer(ThreadingHTTPServer):
     request_queue_size = 128
 
     def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None):
+        self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         self.transfer_directory = data_dir if shared is None else shared.transfer_directory
         self.mobile_updates_owner = shared is None and data_dir is not None
         self.mobile_updates = MobileUpdates(data_dir) if self.mobile_updates_owner else getattr(shared, 'mobile_updates', None)
@@ -133,6 +134,10 @@ class GatewayServer(ThreadingHTTPServer):
         super().server_close()
 
     def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            # Explicit IPv6 listeners stay IPv6-only on every OS; do not silently
+            # expand a configured bind to IPv4-mapped clients.
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         # HTTPServer resolves the listening IP with getfqdn(), which can stall
         # startup on machines without working reverse DNS. Origins are explicit.
         TCPServer.server_bind(self)
@@ -324,8 +329,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(self.headers.get_all("Host", [])) != 1 or self.headers.get("Host") not in self.server.hosts:
             raise PermissionError("此访问地址未在网关配置中允许")
         host = self.headers.get('Host', '')
-        local_host = urlsplit('http://' + host).hostname in ('127.0.0.1', 'localhost')
-        if not self.server.local_access and (local_host or (self.connection.getsockname()[0] == '127.0.0.1' and host not in self.server.secure_hosts)):
+        local_host = urlsplit('http://' + host).hostname in ('127.0.0.1', '::1', 'localhost')
+        if not self.server.local_access and (local_host or (self.connection.getsockname()[0] in ('127.0.0.1', '::1') and host not in self.server.secure_hosts)):
             raise PermissionError('本机网页访问已关闭')
         origin = self.headers.get("Origin")
         expected_origin = ('https://' if host in self.server.secure_hosts else 'http://') + host
