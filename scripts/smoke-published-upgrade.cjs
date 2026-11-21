@@ -194,7 +194,16 @@ async function stopLaunchedGui(planFile){
   try{process.kill(pid);}catch(error){if(error.code!=='ESRCH')throw error;}
   await until(()=>{try{process.kill(pid,0);return false;}catch(error){if(error.code==='ESRCH')return true;throw error;}},'helper-owned GUI exit');
 }
-async function returnThroughUpdater(files,data,work,phase,directory,{failure=false,native=false,manual=false}={}){
+async function verifiedArchiveProof(archive,asset,requests,expectedDownloads){
+  const url=`https://github.com/try2love/codex-mobile-bridge/releases/download/v${oldVersion}/${asset.name}`;
+  const downloads=requests.filter(value=>value===url).length;
+  assert.equal(downloads,expectedDownloads,'official stable ZIP downloads in this attempt');
+  assert.ok(path.isAbsolute(archive));
+  const bytes=await fs.readFile(archive),sha256=createHash('sha256').update(bytes).digest('hex');
+  assert.equal(sha256,asset.sha256,'actual retained archive matches signed package digest');
+  return {archive,sha256,downloads};
+}
+async function returnThroughUpdater(files,data,work,phase,directory,{failure=false,native=false,manual=false,retryCache}={}){
   let planFile;
   const evidence=await inspectDesktop(files.app,data,candidateVersion,work,phase,async({ui,main,child})=>{
     await main.evaluate(transportScript(directory));
@@ -218,6 +227,9 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
     const dialog=await confirmation(main,ui,child,1,native);
     const pause=await paused,frame=pause.callFrames.find(value=>value.functionName==='installUpdate');assert.ok(frame);
     const value=await main.call('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression:'prepared.plan',returnByValue:true});planFile=value.result.value;
+    const archiveValue=await main.call('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression:'candidate.archive',returnByValue:true});
+    const cache=await verifiedArchiveProof(archiveValue.result.value,packageProof,await main.evaluate('acceptance.requests'),retryCache?0:1);
+    if(retryCache){assert.equal(cache.archive,retryCache.archive);assert.equal(cache.sha256,retryCache.sha256);}
     const plan=JSON.parse(await fs.readFile(planFile,'utf8'));
     const target=process.platform==='darwin'?path.dirname(path.dirname(path.dirname(files.app))):path.dirname(files.app);
     assert.equal(plan.target,target);
@@ -227,7 +239,7 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
     await main.call('Debugger.resume');
     main.close();ui.close();
     await until(()=>child.exitCode!==null||child.signalCode!==null,'candidate-owned installer handoff',30000);
-    return {dialog,planFile,package:packageProof,failureInjected:failure};
+    return {dialog,planFile,package:packageProof,cache,failureInjected:failure};
   });
   if(manual)return evidence;
   const result=await until(async()=>JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'result.json'),'utf8')),'actual update helper result',180000);
@@ -239,7 +251,11 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
     assert.deepEqual(await fs.readFile(path.join(result.configurationBackup,name)),await fs.readFile(path.join(data,name)),'current live data safety copy: '+name);
   }
   await stopLaunchedGui(planFile);
-  return {...evidence,helper:{state:result.state,recovered:result.recovered,configurationBackupRetained:true}};
+  if(failure){
+    const retained=await verifiedArchiveProof(evidence.cache.archive,evidence.package,[],0);
+    assert.equal(retained.sha256,evidence.cache.sha256);
+  }else await assert.rejects(fs.access(evidence.cache.archive),{code:'ENOENT'});
+  return {...evidence,cache:{...evidence.cache,retainedAfterFailure:failure,removedAfterSuccess:!failure},helper:{state:result.state,recovered:result.recovered,configurationBackupRetained:true}};
 }
 async function main(){
   assert.equal(process.env.GITHUB_ACTIONS,'true','Only run against an ephemeral GitHub-hosted runner');
@@ -358,7 +374,7 @@ async function main(){
         }else{
           failure=await returnThroughUpdater(files,data,work,'failed-return',directory,{failure:true,native});await verifyVersion(candidateVersion);
           await inspectDesktop(files.app,data,candidateVersion,work,'recovered-candidate');await verifyData('recovered-candidate');
-          returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native});await useRuntime();
+          returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native,retryCache:failure.cache});await useRuntime();
         }
         await verifyVersion(oldVersion);await inspectDesktop(files.app,data,oldVersion,work,'returned-stable');await verifyData('returned-stable');
         const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,checks,
@@ -369,5 +385,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick};
+module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});

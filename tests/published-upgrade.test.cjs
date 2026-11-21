@@ -4,7 +4,7 @@ const {spawn,spawnSync}=require('node:child_process'),path=require('node:path');
 const {EventEmitter,once}=require('node:events');
 const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm');
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
-const {stopOwnedGui,transportScript,baselinePolicy}=require('../scripts/smoke-published-upgrade.cjs');
+const {stopOwnedGui,transportScript,baselinePolicy,verifiedArchiveProof}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
 test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
   const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
@@ -106,4 +106,19 @@ test('acceptance transport runs production signed selection and archive hashes w
   assert.equal((await updater.install({candidateId:updater.status().candidateId,confirmed:true})).state,'error');assert.equal(installed,2);
   await fs.writeFile(path.join(directory,'old','bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:Buffer.alloc(64).toString('base64')}));
   assert.equal((await updater.check({manual:true,channel:'stable'})).state,'error');assert.match(updater.status().message,/签名/);
+});
+
+test('real archive evidence requires the signed digest and exact per-attempt ZIP request count',async t=>{
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-cache-proof-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const archive=path.join(directory,'verified.zip'),bytes=Buffer.from('Retained actual archive bytes');
+  const asset={name:'Codex-Mobile-Bridge-2.2.1-Windows-x64.zip',sha256:createHash('sha256').update(bytes).digest('hex')};
+  const url='https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.1/'+asset.name;
+  await fs.writeFile(archive,bytes);
+  const first=await verifiedArchiveProof(archive,asset,[url],1),retry=await verifiedArchiveProof(archive,asset,[],0);
+  assert.equal(first.archive,retry.archive);assert.equal(first.sha256,retry.sha256);
+  await assert.rejects(verifiedArchiveProof(archive,asset,[url],0),/ZIP downloads/);
+  await fs.writeFile(archive,Buffer.alloc(bytes.length));
+  await assert.rejects(verifiedArchiveProof(archive,asset,[],0),/signed package digest/);
+  await fs.unlink(archive);await assert.rejects(verifiedArchiveProof(archive,asset,[],0),{code:'ENOENT'});
 });
