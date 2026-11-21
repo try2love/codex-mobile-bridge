@@ -4,8 +4,27 @@ const {spawn,spawnSync}=require('node:child_process'),path=require('node:path');
 const {EventEmitter,once}=require('node:events');
 const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm');
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
-const {stopOwnedGui,debuggerClient,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine}=require('../scripts/smoke-published-upgrade.cjs');
+const {click,stopOwnedGui,debuggerClient,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
+test('acceptance mouse click scrolls an offscreen history action into view and verifies its hit target',async()=>{
+  let y=1280,clicks=0,pressed=false,covered=false,disabled=false;
+  const button={hidden:false,get disabled(){return disabled;},
+    scrollIntoView(options){assert.deepEqual(JSON.parse(JSON.stringify(options)),{block:'center',inline:'center',behavior:'instant'});y=394;},
+    getBoundingClientRect:()=>({x:400,y,width:180,height:35}),contains:element=>element===button};
+  const context={innerWidth:1100,innerHeight:823,document:{
+    getElementById:id=>{assert.equal(id,'update-versions-install');return button;},
+    elementFromPoint:(x,pointY)=>!covered&&x===490&&pointY===411.5?button:null}};
+  const events=[],ui={evaluate:expression=>vm.runInNewContext(expression,context),call:async(method,event)=>{
+    assert.equal(method,'Input.dispatchMouseEvent');events.push(event.type);
+    if(event.type==='mousePressed')pressed=event.x===490&&event.y===411.5;
+    if(event.type==='mouseReleased'&&pressed)clicks++;
+  }};
+  await click(ui,'update-versions-install');assert.equal(clicks,1);
+  assert.deepEqual(events,['mousePressed','mouseReleased']);
+  covered=true;await assert.rejects(click(ui,'update-versions-install'),/not reachable/);
+  disabled=true;await assert.rejects(click(ui,'update-versions-install'),/unavailable/);
+  assert.equal(clicks,1);assert.equal(events.length,2);
+});
 test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
   const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
   for(const current of ['2.2.1','2.2.2-preview.3']){

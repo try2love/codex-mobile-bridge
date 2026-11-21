@@ -83,7 +83,7 @@ async function debuggerClient(port,select){
   return {call,evaluate,event,events,close:()=>socket.close()};
 }
 async function click(ui,id){
-  const point=await ui.evaluate(`(()=>{const e=document.getElementById(${JSON.stringify(id)});if(!e||e.hidden||e.disabled)throw Error('UI action unavailable');const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+  const point=await ui.evaluate(`(()=>{const e=document.getElementById(${JSON.stringify(id)});if(!e||e.hidden||e.disabled)throw Error('UI action unavailable');e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;if(!r.width||!r.height||x<0||y<0||x>=innerWidth||y>=innerHeight||!e.contains(document.elementFromPoint(x,y)))throw Error('UI action is not reachable');return {x,y};})()`);
   await ui.call('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...point});
   await ui.call('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...point});
 }
@@ -452,5 +452,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
+module.exports={click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
