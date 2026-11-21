@@ -1,4 +1,6 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
+import copy
+import hashlib
 import json
 import logging
 import re
@@ -16,6 +18,7 @@ from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
 from .store import SURFACE_DIRS, local_file_path
+from .quota import quota_groups, model_windows, overlay as overlay_quota
 
 _CONFIRM_INTERACTION_LABELS = {
     'openBrowserUrl': '开启网页确认',
@@ -558,6 +561,7 @@ def _split_model_variant(model_id, label):
 class AntigravityCli:
     _ALLOWED_METHODS = (
         'GetUserStatus',
+        'RetrieveUserQuotaSummary',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
         'GetCascadeTrajectoryGeneratorMetadata',
@@ -589,6 +593,7 @@ class AntigravityCli:
         self._waiting_cache = {}
         self._variant_cache = {}
         self._base_cache = {}
+        self._quota_cache = {}
 
     def available(self, surface='app'):
         try:
@@ -899,6 +904,60 @@ class AntigravityCli:
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
 
+    def quota_snapshot(self, surface='app', *, refresh=False):
+        """Bounded, account/process-scoped display reads; never used to authorize writes."""
+        def scope():
+            identity = self.source_identity(surface)
+            user = self.user_status(surface)
+            account = user.get('email') or user.get('userId')
+            if not isinstance(account, str) or not account:
+                raise BridgeUnavailable('Antigravity 账号状态暂不可用')
+            return identity, hashlib.sha256(account.encode()).hexdigest()
+
+        with self._lock:
+            try:
+                identity = scope()
+            except (OSError, ValueError, BridgeUnavailable):
+                self._quota_cache.pop(surface, None)
+                return {'groups': [], 'status': 'unavailable'}
+            cached = self._quota_cache.get(surface)
+            if cached and cached[0] != identity:
+                self._quota_cache.pop(surface, None)
+                cached = None
+            if cached and not refresh and time.monotonic() - cached[1] < 60:
+                return copy.deepcopy(cached[2])
+            try:
+                response = self.call_ls_rpc('RetrieveUserQuotaSummary', {'forceRefresh': refresh},
+                                            surface=surface, expected_identity=identity[0])
+                raw = response.get('response')
+                if not isinstance(raw, dict) or not isinstance(raw.get('groups'), list):
+                    raise ValueError('额度回复无效')
+                value = {'groups': quota_groups(raw), 'status': 'ready', 'checkedAt': time.time()}
+            except (OSError, ValueError, BridgeUnavailable):
+                value = {**copy.deepcopy(cached[2]), 'status': 'stale'} if cached and cached[2].get('groups') else {'groups': [], 'status': 'unavailable'}
+            try:
+                if scope() != identity:
+                    raise BridgeUnavailable('Antigravity 账号或进程已变化')
+            except (OSError, ValueError, BridgeUnavailable):
+                self._quota_cache.pop(surface, None)
+                return {'groups': [], 'status': 'unavailable'}
+            self._quota_cache[surface] = (identity, time.monotonic(), value)
+            return copy.deepcopy(value)
+
+    def current_model_quota(self, surface, model_id, model_name=''):
+        snapshot = self.quota_snapshot(surface)
+        return {'quotaWindows': model_windows(snapshot['groups'], model_id, model_name),
+                'quotaStatus': snapshot['status'], 'quotaUpdatedAt': snapshot.get('checkedAt')}
+
+    def overlay_live_quota(self, surface, catalog):
+        if surface is not None:
+            return overlay_quota(catalog, self.quota_snapshot(surface))
+        value = copy.deepcopy(catalog)
+        value['groups'] = [overlay_quota(group, self.quota_snapshot(group['surface']))
+                           if group.get('surface') in SURFACE_LABELS else group
+                           for group in value.get('groups', [])]
+        return value
+
     def assert_idle(self, surface, expected_identity):
         # Request every trajectory, including children. Saved history is neither
         # complete nor synchronous enough to authorize an account restart.
@@ -1019,7 +1078,6 @@ class AntigravityCli:
 
         models = []
         usage_items = []
-        notice_lines = []
         variant_cache = {}
         base_cache = {}
 
@@ -1069,10 +1127,6 @@ class AntigravityCli:
                         'note': quota['resetNote'],
                         'status': quota['quotaStatus'],
                     })
-                    line = f"• {entry['name']}: {quota['quotaTag']}"
-                    if quota['resetNote']:
-                        line += f" ({quota['resetNote']})"
-                    notice_lines.append(line)
             models.append(entry)
 
         with self._lock:
@@ -1084,11 +1138,7 @@ class AntigravityCli:
         credits_line = ''
         if isinstance(status.get('planStatus'), dict):
             credits_line = f'可用 Prompt 点数: {p_credits or 0} · Flow 点数: {f_credits or 0}'
-            notice_lines.append(credits_line)
-
-        if notice_lines and tier_name:
-            notice_lines.insert(0, f'账号等级 · {tier_name}')
-        notice = '\n'.join(notice_lines) if notice_lines else ('' if models else '原客户端暂未提供可用模型列表')
+        notice = '' if models else '原客户端暂未提供可用模型列表'
         result = {'models': models, 'userStatus': status, 'notice': notice}
         if usage_items or credits_line:
             result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
@@ -1211,7 +1261,8 @@ class AntigravityCli:
 
     def catalog_models(self, *, refresh=False, surface='app'):
         status = self.user_status(surface)
-        return self._build_catalog_from_status(status, surface=surface)
+        catalog = self._build_catalog_from_status(status, surface=surface)
+        return overlay_quota(catalog, self.quota_snapshot(surface, refresh=refresh)) if catalog['models'] else catalog
 
     @staticmethod
     def _is_enabled_model_row(row):

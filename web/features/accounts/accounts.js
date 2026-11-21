@@ -167,13 +167,7 @@ class AccountsPanel {
       else if(!usage)box.append(this.node('span','正在读取额度…','account-muted'));
       else if(usage.status==='error')box.append(this.node('span',usage.error,'account-muted'));
       if(usage?.limits){
-        for(const bucket of usage.limits||[])for(const window of bucket.windows||[]){
-          const line=this.node('div',undefined,'accounts-window'),minutes=window.windowDurationMins;
-          const label=minutes?minutes%1440===0?minutes/1440+this.text(' 天'):minutes%60===0?minutes/60+this.text(' 小时'):minutes+this.text(' 分钟'):this.text('额度窗口');
-          line.append(this.node('span',bucket.name+' · '+label),this.node('strong',window.remainingPercent==null?this.text('暂未提供'):this.text('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
-          if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
-          if(window.resetsAt){const reset=this.node('small',undefined,'account-reset-time');reset.textContent=this.resetTime(window.resetsAt);line.append(reset);}box.append(line);
-        }
+        box.append(QuotaDisplay.pools(usage.limits,{stale:usage.status==='error'}));
         if(!usage.limits?.length)box.append(this.node('span','暂未提供额度信息','account-muted'));
         for(const bucket of usage.limits||[])if(bucket.credits){const credit=bucket.credits;if(credit.unlimited||credit.balance!=null&&String(credit.balance).trim()!=='')box.append(this.node('p',bucket.name+' · Credits: '+(credit.unlimited?this.text('不限量'):credit.balance),'account-muted'));}
         if(usage.status==='error')box.append(this.node('small','保留上次结果，数据尚未更新','account-muted'));

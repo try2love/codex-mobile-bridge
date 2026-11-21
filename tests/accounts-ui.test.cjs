@@ -9,7 +9,7 @@ function fixture(desktop=false){
   class Clock extends Date{static now(){return now;}}
   const context=vm.createContext({document:{createElement:node,body:node('body'),hidden:false,activeElement:null,addEventListener:(name,fn)=>listeners.set(name,[...(listeners.get(name)||[]),fn])},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].cancelled=true;},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},prompt:()=>null}});
-  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
+  for(const f of ['web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
   const Class=vm.runInContext('AccountsPanel',context),panel=new Class({root,desktop,read:force=>{readCalls++;return read(force);},request:v=>{requests.push(v);return request(v);}});
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   return {panel,root,requests,prompts,all,timers,readCalls:()=>readCalls,focus:node=>context.document.activeElement=node,blur:()=>context.document.activeElement=context.document.body,active:()=>context.document.activeElement,now:()=>now,advance:ms=>now+=ms,hidden:value=>{context.document.hidden=value;for(const fn of listeners.get('visibilitychange')||[])fn();},configHidden:value=>{configHidden=value;for(const fn of listeners.get('bridge-client-config')||[])fn();},ancestorHidden:value=>{ancestorHidden=value;},fireTimer:async ms=>{const timer=timers.find(row=>!row.cancelled&&row.ms===ms);assert.ok(timer,`expected ${ms}ms timer`);timer.cancelled=true;await timer.fn();},noRandomUUID:()=>{context.crypto={getRandomValues:bytes=>require("node:crypto").randomFillSync(bytes)};},text:()=>all().map(n=>n.textContent).join('\n'),setValue:v=>value=v,value:()=>value,setRequest:v=>request=v,setRead:v=>read=v,confirm:v=>confirmed=v,
@@ -71,7 +71,7 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} merges import
  assert.equal(cards.length,3);assert.equal(ui.all(cards[0]).find(n=>n.tag==='h3').textContent,login.name);
  assert.equal(ui.all().filter(n=>n.textContent==='已登录').length,1);
  assert.equal(ui.all().filter(n=>n.textContent==='当前接入').length,1);
- assert.equal(ui.all().filter(n=>n.tag==='progress').length,2);
+ assert.equal(ui.all().filter(n=>n.className?.includes('quota-pie-ring')).length,2);
  assert.equal(ui.all().filter(n=>n.tag==='button'&&n.textContent==='使用重置卡').length,2);
  const transient={...login,id:'current-login',transient:true};
  ui.panel.accept({...ui.value(),accounts:[],activeId:null,loginAccount:transient});
@@ -206,7 +206,7 @@ test('actual current account is named and cannot be selected again',async()=>{
 });
 test('official rows show compact quota and reset count, while API rows only offer models',async()=>{
  const ui=fixture();ui.setValue({...ui.value(),accounts:[...ui.value().accounts,{id:'official',kind:'chatgpt',name:'Official',details:{usage:{status:'ready',checkedAt:Date.now()/1000,limits:[{name:'Codex',windows:[{remainingPercent:75,windowDurationMins:300}]}],resetCredits:{availableCount:2}},models:{status:'ready',models:[{id:'model-1',name:'Model one'}]}}}]});
- await ui.panel.refresh();assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.equal(ui.all().filter(n=>n.tag==='progress').length,1);
+ await ui.panel.refresh();assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.equal(ui.all().filter(n=>n.className?.includes('quota-pie-ring')).length,1);
  assert.equal(ui.all().filter(n=>n.textContent==='查看可用模型').length,2);
  ui.panel.expandedModels.add('official');ui.panel.render();assert.match(ui.text(),/Model one · model-1/);
 });

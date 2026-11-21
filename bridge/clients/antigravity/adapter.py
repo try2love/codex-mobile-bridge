@@ -707,6 +707,7 @@ class Antigravity:
                             'contextWindow': ctx_meta['contextWindow'],
                             'measurement': 'session',
                         }
+                session.update(self.cli.current_model_quota(surface, session.get('model'), session.get('modelDisplayName')))
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
                     'readOnly': session['readOnly'],

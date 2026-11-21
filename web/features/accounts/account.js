@@ -81,24 +81,8 @@ class AccountPanel {
     if(!this.resetOnly){
       root.append(this.node('p',t('此电脑 · 账号共享额度')+(value.planType?' · '+value.planType:''),'account-muted'));
       if(!value.limits.length&&!value.error)root.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
-      for(const bucket of value.limits){
-        const card=this.node('section',undefined,'account-quota');card.append(this.node('h3',bucket.name));
-        if(!bucket.windows.length)card.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
-        for(const window of bucket.windows){
-          const row=this.node('div',undefined,'account-window');
-          row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',window.remainingPercent==null?t('暂未提供'):t('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
-          card.append(row);
-          if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',t('剩余额度'));card.append(progress);}
-          let reset=t('恢复时间：')+this.time(window.resetsAt);
-          if(typeof window.resetsAt==='number'){
-            const minutes=Math.ceil((window.resetsAt*1000-Date.now())/60000);
-            reset+=' · '+(minutes>0?t('约 ')+this.countdown(minutes)+t('后恢复'):t('等待刷新'));
-          }
-          card.append(this.node('p',reset,'account-muted'));
-        }
-        if(bucket.credits)card.append(this.node('p','Credits: '+(bucket.credits.unlimited?t('不限量'):bucket.credits.balance??t('暂未提供')),'account-muted'));
-        root.append(card);
-      }
+      root.append(QuotaDisplay.pools(value.limits,{stale:!!value.error}));
+      for(const bucket of value.limits)if(bucket.credits)root.append(this.node('p','Credits: '+(bucket.credits.unlimited?t('不限量'):bucket.credits.balance??t('暂未提供')),'account-muted'));
       const period=value.subscription?.periodEndsAt,online=value.subscription?.source==='online';
       if(Number.isFinite(period)&&(online||period>Date.now()/1000))root.append(this.node('p',t(online?'查询到的订阅周期截止日期：':'登录记录中的订阅日期（非实时）：')+this.time(period),'account-subscription'));
       else root.append(this.node('p',t('订阅有效期暂未确认'),'account-subscription'));

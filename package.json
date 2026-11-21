@@ -45,6 +45,8 @@
       "web/shared/brand-icons.js",
       "web/shared/dialog-dismiss.js",
       "web/shared/creation-model-picker.js",
+      "web/features/accounts/quota-display.js",
+      "web/features/accounts/quota-display.css",
       "web/features/accounts/account.js",
       "web/features/accounts/api-editor.js",
       "web/features/accounts/accounts.js",

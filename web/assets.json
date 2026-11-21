@@ -57,8 +57,8 @@
     "features/chat/permissions.js"
   ],
   "/timeline.js": "features/chat/timeline.js",
-  "/account.css": "features/accounts/account.css",
-  "/account.js": "features/accounts/account.js",
+  "/account.css": ["features/accounts/account.css", "features/accounts/quota-display.css"],
+  "/account.js": ["features/accounts/quota-display.js", "features/accounts/account.js"],
   "/accounts.js": ["features/accounts/api-editor.js", "features/accounts/accounts.js"],
   "/client-accounts.js": "features/accounts/client-accounts.js",
   "/cli-access.js": "features/accounts/cli-access.js",

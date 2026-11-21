@@ -58,7 +58,7 @@ class ModelStore:
                   ('models', 'groups', 'modelSource', 'source', 'modelSourcesVersion', 'fastMode', 'usageSummary') if key in value}
         if isinstance(result.get('groups'), list):
             result['groups'] = [{key: item for key, item in group.items()
-                if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion')}
+                if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion', 'usageSummary')}
                 for group in result['groups'] if isinstance(group, dict)]
         return result
 

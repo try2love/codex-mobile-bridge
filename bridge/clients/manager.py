@@ -994,8 +994,10 @@ class DesktopSessions:
     def _account_model_identity(self, provider, surface=None):
         adapter = self.adapters[provider]
         if provider == 'antigravity' and surface is not None:
-            return ModelStore.key('antigravity-model-directory-v1', str(adapter.home), surface, adapter.account_scope(surface))
-        if provider in ('zcode', 'antigravity'):
+            return ModelStore.key('antigravity-model-directory-v2', str(adapter.home), surface, adapter.account_scope(surface))
+        if provider == 'antigravity':
+            return ModelStore.key('antigravity-account-directory-v2', str(adapter.home), adapter.account_scope())
+        if provider == 'zcode':
             return ModelStore.key('desktop-model-directory-v2', provider, str(adapter.home),
                                   adapter.account_scope())
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
@@ -1065,6 +1067,8 @@ class DesktopSessions:
                           'updatedAt': persisted[0], 'identity': identity}
         if error:
             value['modelError'] = error
+        elif provider == 'antigravity' and self._account_model_live(provider, surface=surface):
+            value = self.adapters[provider].cli.overlay_live_quota(surface, value)
         if self._account_model_identity(provider, surface) != identity:
             raise BridgeUnavailable('客户端账号或配置已变化，请重试')
         return value

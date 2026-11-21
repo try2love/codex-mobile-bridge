@@ -82,6 +82,33 @@ function clearListSnapshot(){
 function authLost(){hideWebhookUrl();clearListSnapshot();if(!$('app').hidden)document.dispatchEvent(new Event('bridge-auth-lost'));showLogin();}
 async function api(path,body,signal,authCurrent){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}let response;try{response=await fetch(hostUrl(path),options);}catch(error){if(!signal?.aborted&&error.name!=='AbortError')window.BridgeMobileHandoff?.unreachable();throw error;}if([502,503,504,522,523,524,530].includes(response.status))window.BridgeMobileHandoff?.unreachable();let data;try{data=await response.json();}catch(error){throw Object.assign(error,{status:response.status});}if(!response.ok){if(response.status===401&&(!authCurrent||authCurrent()))authLost();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status,code:data.code});}return data;}
 const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:authLost,openChat,composer:$('message'),onReference:()=>window.BridgePresentation?.openChat()});
+// Account quota is shared display data; automatic continuation has its own fresh preflight.
+const codexQuota=new AccountQuotaIndicator({
+  context:()=>{
+    if($('app').hidden||!isCodexClient(clientNavigation.provider)||!workbench.current||window.BridgeSharedRelay)return null;
+    const host=workbench.current.host;
+    if(host!=='local'&&!host?.startsWith('codex:'))return null;
+    return {key:JSON.stringify([draftGateway,host,codexActiveAccountId||'']),host};
+  },
+  visible:()=>!document.hidden&&!$('app').hidden&&$('app').classList.contains('chat-open'),
+  read:(context,force)=>api('/api/account?cached='+(force?'0':'1')+(context.host==='local'?'':'&entry='+encodeURIComponent(context.host))),
+  onChange:()=>{if($('model-dialog').open)renderCodexQuota();}
+});
+$('model-button').append(codexQuota.root);
+function renderCodexQuota(){
+  const root=$('model-quota-summary'),value=codexQuota.value;
+  QuotaDisplay.summary(root,{groups:value?.visible?value.limits:[],checkedAt:value?.updatedAt,status:codexQuota.error?'stale':'ready'});
+  if(codexQuota.error)root.append(el('p','error',codexQuota.error));
+  if(value?.visible){const refresh=el('button','tool-button',t('刷新额度'));refresh.type='button';refresh.disabled=codexQuota.loading;refresh.onclick=()=>codexQuota.refresh(true);root.append(refresh);}
+}
+{
+  const refresh=()=>codexQuota.refresh();
+  if(workbench.tabs)new MutationObserver(refresh).observe(workbench.tabs,{childList:true});
+  new MutationObserver(refresh).observe($('app'),{attributes:true,attributeFilter:['class','hidden']});
+  document.addEventListener('bridge-authenticated',refresh);document.addEventListener('visibilitychange',refresh);
+  document.addEventListener('bridge-language',()=>codexQuota.render());window.addEventListener('focus',refresh);setInterval(refresh,60000);
+}
+
 async function sendSessionPin(identity,body,token){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
   try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):ClientIdentity.path(identity.provider,'pin'),identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}
@@ -1488,6 +1515,7 @@ async function openModelDialog(forceRefresh=false){
     const updated=catalog.cache?.updatedAt;$('model-updated').textContent=[catalog.modelError?t(catalog.modelError):'',Number.isFinite(updated)&&updated>0?t('更新于：')+new Date(updated*1000).toLocaleString(BridgeI18n.locale()):''].filter(Boolean).join(' · ');
     renderModelChoices();fastModeControl.open(catalog,state,$('model-select').value);renderEfforts({effort:retained?retained.effort:state?.effort});
   };
+  renderCodexQuota();codexQuota.refresh();
   $('model-error').textContent='';if(cached?.models?.length)showCatalog(cached);else{$('model-updated').textContent='';$('model-select').replaceChildren(new Option(t('读取模型列表…'),''));$('model-options').textContent=t('读取模型列表…');$('effort-options').replaceChildren();$('model-save').disabled=true;}if(!$('model-dialog').open)$('model-dialog').showModal();
   try{
     const catalog=await loadCatalogKind('models',forceRefresh);

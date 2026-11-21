@@ -6,7 +6,7 @@ function fixture({desktop=false,provider='deepseek',toolbar=false}={}){
   const document={hidden:false,body:node('body'),activeElement:null,documentElement:{},createElement:node,querySelectorAll:()=>[],addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),removeEventListener:(type,fn)=>listeners[type]=listeners[type].filter(row=>row!==fn),dispatchEvent(event){for(const fn of listeners[event.type]||[])fn(event);}};
   class Clock extends Date{static now(){return time;}}
   const context=vm.createContext({document,Date:Clock,CustomEvent:class{constructor(type){this.type=type;}},localStorage:{getItem(){return null;},setItem(){}},window:{confirm(message){prompts.push(message);return confirmed;}},setTimeout(fn,ms){timers.set(++tid,{fn,due:time+ms});return tid;},clearTimeout:id=>timers.delete(id)});
-  for(const path of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
+  for(const path of ['web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/clients/client-lifecycle.js','web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js'])vm.runInContext(fs.readFileSync(path,'utf8'),context);
   const Panel=vm.runInContext('DesktopClientAccountsPanel',context),panel=new Panel({root,provider,desktop,toolbar:outerToolbar,read:()=>{calls.push({action:'list'});return readHandler();},request:body=>{calls.push(body);return handler(body);},readModels:(refresh=false)=>handler({action:'models',refresh}),visible:()=>visible,onUpdate:result=>updates.push(result)});
   const all=node=>[node,...node.children.flatMap(all)];
   return {panel,root,outerToolbar,calls,prompts,updates,timers,focus:node=>document.activeElement=node,blur:()=>document.activeElement=document.body,active:()=>document.activeElement,setValue:next=>value=next,setHandler:next=>handler=next,setRead:next=>readHandler=next,setVisible:next=>visible=next,confirm:next=>confirmed=next,advance:async ms=>{time+=ms;for(const [id,timer]of [...timers])if(timer.due<=time){timers.delete(id);await timer.fn();}},tick:ms=>time+=ms,now:()=>time,all:()=>all(root),text:()=>all(root).map(row=>row.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
@@ -341,4 +341,19 @@ test('current ZCode daily model quota shows exact native token quantities and ch
  await ui.panel.resume();assert.deepEqual(ui.calls.map(c=>c.action),['list','details']);assert.equal(ui.calls[1].id,'current');
  assert.match(ui.text(),/今日剩余额度/);assert.match(ui.text(),/GLM-5.3/);assert.match(ui.text(),/GLM-5.3-Flash/);
  assert.match(ui.text(),/0 \/ 10 tokens/);assert.match(ui.text(),/9 \/ 20 tokens/);assert.match(ui.text(),/原 App 查询时间/);
+});
+
+test('model quota pools and aligned windows use shared display for every provider',async()=>{
+ for(const provider of ['antigravity','claude','zcode','deepseek']){
+  const ui=fixture({provider});ui.panel.accept(snapshot([row('current')]));
+  const windows=[{windowDurationMins:300,remainingPercent:60},{windowDurationMins:10080,remainingPercent:0}];
+  ui.setHandler(async()=>({models:[{id:'a',name:'Model A',quotaWindows:windows},{id:'b',name:'Model B',quotaWindows:[windows[1]]}],usageSummary:{tier:'Plan',groups:[{name:'Shared pool',models:['Model A'],windows}],checkedAt:100}}));
+  await ui.panel.toggleModels();
+  assert.match(ui.text(),/Shared pool/);assert.match(ui.text(),/共用模型：Model A/);assert.match(ui.text(),/已用 100%/);
+  assert.equal(ui.all().filter(node=>node.className==='quota-chip is-placeholder').length,1);
+  const model=ui.all().find(node=>node.tag==='details'&&node.dataset.quotaKey===':a');assert.ok(model);
+  const pending=[...ui.timers.values()].find(row=>row.due===ui.now()+60000);assert.ok(pending);
+  let reads=0;ui.setHandler(async()=>{reads++;return {};});ui.setVisible(false);await ui.advance(60000);assert.equal(reads,0);
+  ui.panel.dispose();
+ }
 });

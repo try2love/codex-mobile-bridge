@@ -46,7 +46,7 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{send:true,queue:true,steer:true}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
  const context=vm.createContext({ComposerToolbar:class{addChoices(){return [];}requestSync(){}resizeInput(){}actionMode(){return this.sendState?.().running?this.controls.sendMode.value:'send';}constructor({input,controls,sendState}){this.input=input;this.controls=controls;this.sendState=sendState;}sync(){}setCollapsed(value){this.input.closest('.ds-composer-body').hidden=value;}anchor(id){return this.controls[id];}},document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
- for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
@@ -1857,17 +1857,17 @@ test('model picker renders quota badges and structured usageSummary without alte
  assert.equal(badges.length,2);
  assert.equal(badges[0].classList.contains('badge-warning'),true);
  assert.equal(badges[1].classList.contains('badge-exhausted'),true);
- const card=dialog.querySelector('.ds-usage-card');
+ const card=dialog.querySelector('.quota-summary');
  assert.ok(card);
- assert.equal(card.querySelector('.ds-usage-title').textContent,'Google AI Pro');
- assert.equal(card.querySelector('.ds-usage-row').querySelector('.ds-usage-name').textContent,'Low Model');
- assert.equal(card.querySelector('.ds-usage-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
+ assert.equal(card.querySelector('.quota-tier').textContent,'Google AI Pro');
+ assert.equal(card.querySelector('.quota-legacy'),null);
+ assert.equal(card.querySelector('.quota-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
  dialog.close();
 
  ui.setHandler(async()=>({models:[{id:'m-plain',name:'Plain',efforts:[]}],currentModel:'m-plain',notice:'plain notice',capabilities:{models:true,effort:false}}));
  await ui.view.models();
  const plainDialog=ui.view.modelDialog;
- assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
+ assert.equal(plainDialog.querySelector('.quota-summary'),null);
  assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
  plainDialog.close();
 });
@@ -2208,4 +2208,13 @@ test('ordinary writes and duplicate stop stay blocked while stop is pending even
  assert.equal(await view.mutate('settings',{}),null);await view.submit();await view.mutate('stop',{});
  assert.equal(ui.calls.filter(c=>c.body&&/\/(send|settings|stop)(?:\?|$)/.test(c.url)).length,1);
  receipts.stop({status:'accepted'});await stopping;
+});
+
+test('native model toolbar shares quota windows without depending on the provider name',async()=>{
+ for(const provider of ['antigravity','claude','zcode']){
+  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',model:'model-a',status:'idle',quotaWindows:[{windowDurationMins:300,remainingPercent:60},{windowDurationMins:10080,remainingPercent:0}],capabilities:{send:true,models:true}},messages:[]}:{sessions:[]});
+  await ui.view.choose(provider);await ui.view.open('a');
+  assert.equal(ui.view.modelQuotaRings.hidden,false);assert.equal(ui.view.modelQuotaRings.querySelectorAll('.quota-pie-ring').length,2);
+  assert.match(ui.view.modelButton.title,/60%.*0%/);
+ }
 });
