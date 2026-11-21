@@ -31,3 +31,37 @@ button{font-size:12px;padding:8px 12px;color:#444;border-color:#dedede;border-ra
 #dirty-fields{position:absolute;bottom:calc(100% + 10px);left:0;min-width:230px;max-width:50vw;max-height:45vh;overflow:auto;padding:6px;background:white;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 18px #0002}
 #dirty-fields button{display:block;width:100%;text-align:left;border:0;white-space:normal;overflow-wrap:anywhere}
 [data-unsaved="true"]{outline:2px solid #b56a14;outline-offset:2px}
+
+/* Follow the OS without rebuilding the shell or resetting edited settings. */
+@media (prefers-color-scheme:dark){
+  :root{color-scheme:dark;--page:#171a21;--raised:#222731;--soft:#2b3240;--text:#edf0f5;--line:#424b5b;--border:var(--line);--muted:#b2bbcb;--accent:#91b8ff;--accent-ink:#102340;--success:#8cddb0;--green:var(--success);--error:#ffb4ad;--warning:#efc57e;color:var(--text);background:var(--page)}
+  body>aside{background:#1c212a}
+  aside nav button,.nav-group,.eyebrow,.module-description,#language,.gateway-banner small,.gateway-banner p,.connection-table td small,.connection-table th,.cap-row small,.client-config-back,.module-setting>summary:after,.maintenance-tabs button,.connection-table .quota-link,body .account-muted{color:var(--muted)}
+  aside nav button.active{background:#2a3b5a;color:#c1d7ff}
+  button,input,textarea,select,.address,article,.connection-table,.module-setting,.module-group,#dirty-fields{color:var(--text);background:var(--raised);border-color:var(--line)}
+  button:hover{background:var(--soft)}
+  .primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .primary:hover{background:#b1ceff}
+  input:disabled,select:disabled,textarea:disabled{background:#292f3b;color:#a2adbf}
+  .badge,.connection-table th,pre,.connection-target code{background:var(--soft)}
+  .badge.running{color:var(--success);background:#203d31}
+  .hero,.gateway-banner{background:#25334b;border-color:#405576}
+  .gateway-indicator,.hero-icon{color:var(--accent);background:#2a3b5a}
+  .connection-card{background:#1d232e}
+  .watch-info strong,.guide-more summary{color:var(--text)}
+  .error,.toast.is-error{background:#442b30;color:var(--error);border-color:#925b60}
+  .watch-remove,.client-scan-status.error,.connection-table .state-error{color:var(--error)}
+  .feedback{background:#283a59;color:#c1d7ff}
+  .toast{background:#2a3547;color:var(--text);border-color:#586981;box-shadow:0 8px 30px #0006}
+  .save-bar{background:#171a21ee}
+  .client-logo.claude{color:#dcb6a2}
+  .client-logo.deepseek{color:#b5cdef;border-color:#7791b6}
+  .client-toggle{background:#606c80}
+  .client-toggle[aria-checked="true"]{background:var(--accent)}
+  .state-ready{color:var(--success)}
+  .connection-table progress,.account-quota progress,.accounts-window progress{accent-color:var(--success)}
+  .connection-table .state-pending{color:var(--warning)}
+  body .account-card{border-color:var(--line)}
+  #dirty-fields{box-shadow:0 4px 18px #0006}
+  [data-unsaved="true"]{outline-color:var(--warning)}
+}
