@@ -54,7 +54,7 @@ def validate_stream_state(version, state):
     require(isinstance(state.get('modelProvider'), str) and bool(state['modelProvider']))
     require(isinstance(state.get('cwd'), str) and bool(state['cwd']))
     runtime = state.get('threadRuntimeStatus')
-    require(isinstance(runtime, dict) and runtime.get('type') in ('idle', 'active', 'running', 'waiting', 'busy'))
+    require(isinstance(runtime, dict) and runtime.get('type') in ('idle', 'active', 'running', 'waiting', 'busy', 'systemError'))
     requests = state.get('requests')
     require(isinstance(requests, list))
     for request in requests:

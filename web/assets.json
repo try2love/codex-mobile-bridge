@@ -11,6 +11,8 @@
   "/app.js": [
     "shared/dialog-dismiss.js",
     "features/chat/session-menu.js",
+    "shared/quota-continuation.js",
+    "features/accounts/quota-rings.js",
     "shell/app.js"
   ],
   "/bootstrap.js": "shared/bootstrap.js",
@@ -82,7 +84,8 @@
   "/workbench.css": [
     "features/workspace/workbench.css",
     "layouts/medium/workbench.css",
-    "features/workspace/workbench-input.css"
+    "features/workspace/workbench-input.css",
+    "features/accounts/quota-rings.css"
   ],
   "/workbench.js": "features/workspace/workbench.js",
   "/source-view.js": "features/workspace/source-view.js",

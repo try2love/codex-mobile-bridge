@@ -1,0 +1,12 @@
+.account-quota-rings{display:flex;align-items:center;gap:7px;flex:none;margin-left:4px}
+.workbench-tabs .account-quota-button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;flex:none;min-width:38px;min-height:42px;padding:1px 2px;color:var(--text);background:transparent;border:0;border-radius:8px}
+.account-quota-gauge{position:relative;display:grid;place-items:center;flex:none;width:31px;height:31px;border-radius:50%;background:conic-gradient(var(--quota-color,var(--accent)) var(--quota-percent,0%),var(--line) 0)}
+.account-quota-gauge::before{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--page)}
+.account-quota-percent{position:relative;z-index:1;font-size:9px;line-height:1;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.account-quota-label{max-width:42px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;line-height:10px;color:var(--muted)}
+.account-quota-button.low{--quota-color:var(--error,#b84343)}
+.account-quota-button.unknown .account-quota-gauge{background:none;border:2px dashed var(--muted);opacity:.65}
+.account-quota-button.unknown .account-quota-gauge::before{inset:0}
+.account-quota-rings.stale .account-quota-gauge{opacity:.55}
+.account-quota-dialog{max-width:380px}.account-quota-dialog h2{font-size:17px}.account-quota-detail-value{display:block;margin:14px 0 8px;font-size:38px;font-variant-numeric:tabular-nums;color:var(--accent)}
+.account-quota-dialog p{margin-bottom:10px;font-size:13px;overflow-wrap:anywhere}.account-quota-dialog small{display:block;margin-bottom:16px}.account-quota-dialog .primary{width:100%}
