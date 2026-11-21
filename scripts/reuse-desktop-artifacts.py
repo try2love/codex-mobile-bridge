@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location('prepare', Path(__file__).with_nam
 prepare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prepare)
 PLATFORMS = {
+    'desktop-macOS-arm64': ('package (macos-15, arm64, mac-arm64)', ('macOS-arm64.dmg', 'macOS-arm64.zip')),
     'desktop-macOS-x64': ('package (macos-15-intel, x64, mac)', ('macOS-x64.dmg', 'macOS-x64.zip')),
     'desktop-Linux-x64': ('linux (ubuntu-22.04, x64, amd64, x86_64)', ('Linux-amd64.deb', 'Linux-x86_64.AppImage')),
     'desktop-Linux-arm64': ('linux (ubuntu-22.04-arm, arm64, arm64, arm64)', ('Linux-arm64.deb', 'Linux-arm64.AppImage')),
@@ -78,13 +79,24 @@ def extract(archive, artifact, name, directory):
     return {filename: sha256(directory/filename) for filename in sorted(expected)}
 
 
+def reuse_source(name, run_id, source, mac_run='', mac_source=''):
+    if bool(mac_run) != bool(mac_source):
+        raise SystemExit('Mac ARM override requires both run and source')
+    if mac_run and not re.fullmatch('[0-9a-f]{40}', mac_source):
+        raise SystemExit('Mac ARM override source must be an exact commit SHA')
+    return (mac_run, mac_source) if name == 'desktop-macOS-arm64' and mac_run else (run_id, source)
+
+
 def main():
-    source, checkout = os.environ['REUSE_SOURCE_REF'], os.environ['SOURCE_REF']
+    name = os.environ['REUSE_ARTIFACT']
+    selected_run, selected_source = reuse_source(name, os.environ['REUSE_RUN_ID'], os.environ['REUSE_SOURCE_REF'],
+        os.environ.get('REUSE_MAC_ARM_RUN_ID', ''), os.environ.get('REUSE_MAC_ARM_SOURCE_REF', ''))
+    source, checkout = selected_source, os.environ['SOURCE_REF']
     if not all(re.fullmatch('[0-9a-f]{40}', value) for value in (checkout, source)):
         raise SystemExit('Build and reuse sources must be exact commit SHAs')
     if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != checkout:
         raise SystemExit('Build checkout differs from requested source')
-    run_id, name = int(os.environ['REUSE_RUN_ID']), os.environ['REUSE_ARTIFACT']
+    run_id = int(selected_run)
     changed = subprocess.check_output(['git', 'diff', '--name-only', source, checkout], text=True).splitlines()
     run = api(f'/actions/runs/{run_id}')
     artifact, job = validate(run, source, pages(f'/actions/runs/{run_id}/jobs?filter=all', 'jobs'),

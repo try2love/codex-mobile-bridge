@@ -29,13 +29,24 @@ class DesktopReuseTests(unittest.TestCase):
 
     def test_workflow_scopes_rebuild_and_keeps_default_all(self):
         workflow = (ROOT/'.github/workflows/desktop.yml').read_text()
-        self.assertIn('options: [all, intel, mac-windows-reuse]', workflow)
+        self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse]', workflow)
         self.assertIn('default: all', workflow)
         self.assertIn('jobs?filter=all', (ROOT/'scripts/reuse-desktop-artifacts.py').read_text())
         self.assertIn('Verify exact selected rebuild source', workflow)
-        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})
-        self.assertIn('artifact: [desktop-macOS-x64, desktop-Linux-x64, desktop-Linux-arm64]', workflow)
+        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})
+        self.assertIn('inputs.reuse_mac_arm_source_ref', workflow)
         self.assertIn('name: reuse-provenance-${{ matrix.artifact }}', workflow)
+
+    def test_mac_override_is_atomic_and_applies_only_to_original_mac_job(self):
+        source = 'b'*40
+        self.assertEqual(reuse.reuse_source('desktop-macOS-arm64', '1', self.source, '2', source), ('2', source))
+        self.assertEqual(reuse.reuse_source('desktop-Linux-x64', '1', self.source, '2', source), ('1', self.source))
+        for run, sha in [('2', ''), ('', source), ('2', 'branch')]:
+            with self.assertRaises(SystemExit):
+                reuse.reuse_source('desktop-macOS-arm64', '1', self.source, run, sha)
+        with self.assertRaisesRegex(SystemExit, 'did not succeed'):
+            reuse.validate(self.run, self.source, [{**self.job, 'name':'reuse (desktop-macOS-arm64)'}],
+                           [self.artifact], 'desktop-macOS-arm64', [])
 
     def test_product_diff_is_rejected(self):
         with self.assertRaisesRegex(SystemExit, 'product changes'):
