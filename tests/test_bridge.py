@@ -119,6 +119,11 @@ class DesktopFixture:
 
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
+        # Reconnection may navigate even in approval tests; never invoke the
+        # runner's registered codex:// handler from an isolated IPC fixture.
+        navigation = patch('bridge.app.service.open_in_desktop')
+        self.opened_desktop = navigation.start()
+        self.addCleanup(navigation.stop)
         self.temp = tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp'), prefix='t')
         self.root = Path(self.temp.name)
         # Path must fit macOS's 104-byte Unix socket limit; bind via relative path.
@@ -553,15 +558,14 @@ class IntegrationTests(unittest.TestCase):
                 self.assertTrue(session.condition.wait_for(lambda: session.connected, timeout=2))
 
     def test_explicit_activation_recovers_cold_chat_without_a_model_request(self):
-        from unittest.mock import patch
         self.fixture.loaded = False
         self.bridge.store.history = lambda tid, **kwargs: state()
-        with patch('bridge.app.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
-            session = self.bridge.activate(THREAD)
-            self.assertTrue(session.connected)
-            opened.assert_called_once_with(THREAD, 'local')
-            self.bridge.activate(THREAD)
-            self.assertEqual(opened.call_count, 1)
+        self.opened_desktop.side_effect = lambda *args: setattr(self.fixture, 'loaded', True)
+        session = self.bridge.activate(THREAD)
+        self.assertTrue(session.connected)
+        self.opened_desktop.assert_called_once_with(THREAD, 'local')
+        self.bridge.activate(THREAD)
+        self.assertEqual(self.opened_desktop.call_count, 1)
         self.assertFalse(any(r['method'].startswith('thread-follower-') for r in self.fixture.requests))
 
     def test_existing_owner_needs_no_desktop_navigation(self):
