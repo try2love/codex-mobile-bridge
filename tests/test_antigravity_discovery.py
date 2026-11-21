@@ -136,6 +136,59 @@ class AntigravityDiscoveryTests(unittest.TestCase):
         value, port = self.target(image, args)
         self.assertEqual(port, 33333)
 
+    def test_env_token_discovery_keeps_listener_and_process_generation_checks(self):
+        _, image = self.bundle()
+        log = self.home/'Library/Logs/Antigravity/language_server.log'
+        log.parent.mkdir(parents=True)
+        log.write_text('Language server listening on random port at 24568 for HTTP\n')
+        args = ['--standalone', '--app_data_dir', 'antigravity']
+        with mock.patch('bridge.platforms.macos.codex_daemon_env._environment',
+                        return_value={'ANTIGRAVITY_SERVER_CSRF_TOKEN': 'm'*36}) as environment:
+            value, port = self.target(image, args)
+            self.assertEqual(value['token'], 'm'*36)
+            self.assertEqual(port, 24568)
+            environment.assert_called_once_with(123, ('ANTIGRAVITY_SERVER_CSRF_TOKEN',))
+            for options in ({'changed': True}, {'listener': False}):
+                with self.assertRaises(ValueError):
+                    self.target(image, args, **options)
+            environment.return_value = {'ANTIGRAVITY_SERVER_CSRF_TOKEN': 'short!'}
+            with self.assertRaises(ValueError):
+                self.target(image, args)
+            environment.reset_mock()
+            value, _ = self.target(image, args + ['--csrf_token', 'a'*32])
+            self.assertEqual(value['token'], 'a'*32)
+            environment.assert_not_called()
+
+    def test_linux_env_token_reads_only_selected_values_from_stable_same_user(self):
+        proc = self.home/'proc'
+        process = proc/'123'
+        process.mkdir(parents=True)
+        uid = process.stat().st_uid
+        stat = '123 (language_server) S 1 ' + ' '.join(['0']*17) + ' 999 0'
+        (process/'stat').write_text(stat)
+        (process/'environ').write_bytes(b'OTHER=private\0ANTIGRAVITY_SERVER_CSRF_TOKEN=' + b'c'*36 + b'\0')
+        def path(value):
+            return proc if str(value) == '/proc' else Path(value)
+        with mock.patch.object(native, 'Path', path), \
+                mock.patch.object(native.sys, 'platform', 'linux'), \
+                mock.patch.object(native.os, 'getuid', return_value=uid, create=True):
+            self.assertEqual(native._csrf_token(123, []), 'c'*36)
+            self.assertEqual(native._proc_env(123), {})
+            with mock.patch.object(native.os, 'getuid', return_value=uid+1):
+                self.assertIsNone(native._csrf_token(123, []))
+            (process/'environ').write_bytes(b'x'*65537)
+            self.assertIsNone(native._csrf_token(123, []))
+            (process/'environ').write_bytes(b'ANTIGRAVITY_SERVER_CSRF_TOKEN=' + b'c'*36 + b'\0')
+            with mock.patch.object(Path, 'read_text', side_effect=[stat, stat.replace('999', '1000')]):
+                self.assertIsNone(native._csrf_token(123, []))
+
+    def test_windows_missing_argument_does_not_read_an_unverified_environment(self):
+        with mock.patch.object(native.sys, 'platform', 'win32'), \
+                mock.patch.object(native, '_proc_env') as environment:
+            self.assertIsNone(native._csrf_token(123, []))
+            self.assertEqual(native._csrf_token(123, ['--csrf_token', 'w'*32]), 'w'*32)
+            environment.assert_not_called()
+
     def test_log_growth_after_size_check_stays_within_snapshot(self):
         initial = b'Language server listening on random port at 12345 for HTTP\n'
         appended = b'x' * (2 * 1024 * 1024) + b'\nLanguage server listening on random port at 22222 for HTTP\n'

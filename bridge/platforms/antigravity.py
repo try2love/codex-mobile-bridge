@@ -310,7 +310,7 @@ def profile_lease(path):
     return stream
 
 
-def _proc_env(pid):
+def _proc_env(pid, keys=(b'APPIMAGE', b'APPDIR')):
     """Read only bounded launcher evidence from a stable same-user process."""
     result = {}
     root = Path('/proc')/str(pid)
@@ -331,7 +331,7 @@ def _proc_env(pid):
         if b'=' not in entry:
             continue
         key, value = entry.split(b'=', 1)
-        if key in (b'APPIMAGE', b'APPDIR'):
+        if key in keys:
             result[key.decode('ascii')] = value.decode('utf-8', 'surrogateescape')
     return result
 
@@ -623,6 +623,22 @@ def _log_ports(log):
     return ports
 
 
+def _csrf_token(pid, args):
+    """Use legacy arguments or the same native process's 2.34 launch token."""
+    token = _flag(args, '--csrf_token')
+    if token:
+        return token
+    if sys.platform == 'linux':
+        return _proc_env(pid, keys=(b'ANTIGRAVITY_SERVER_CSRF_TOKEN',)).get('ANTIGRAVITY_SERVER_CSRF_TOKEN')
+    if sys.platform == 'darwin':
+        from bridge.platforms.macos.codex_daemon_env import _environment
+        try:
+            return _environment(pid, ('ANTIGRAVITY_SERVER_CSRF_TOKEN',)).get('ANTIGRAVITY_SERVER_CSRF_TOKEN')
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def endpoint(surface, home):
     """Return one same-user, same-surface server, or fail without contacting it."""
     if Path(home).resolve() != Path.home().resolve():
@@ -640,7 +656,7 @@ def endpoint(surface, home):
             continue
         if not _trusted_image(before['image'], pid=before['pid']):
             continue
-        token = _flag(args, '--csrf_token')
+        token = _csrf_token(before['pid'], args)
         if not token or not re.fullmatch(r'[A-Za-z0-9_-]{16,256}', token):
             continue
         # Read only the matching product's log. A log port alone is never
