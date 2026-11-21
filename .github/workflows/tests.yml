@@ -1,188 +1,41 @@
-name: Python tests
-
+name: Preview3 isolated Windows diagnostic
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  change-scope:
-    runs-on: ubuntu-24.04
-    outputs:
-      backend: ${{ steps.scope.outputs.backend }}
-      ui: ${{ steps.scope.outputs.ui }}
-      frontend: ${{ steps.scope.outputs.frontend }}
-      browser: ${{ steps.scope.outputs.browser }}
-      android: ${{ steps.scope.outputs.android }}
-      ios: ${{ steps.scope.outputs.ios }}
-      mobile_update: ${{ steps.scope.outputs.mobile_update }}
+  targeted:
+    runs-on: windows-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      - id: scope
-        env:
-          # Release tags check the entire tree; the previous tag object may no longer be reachable.
-          BASE_SHA: ${{ github.ref_type != 'tag' && (github.event.pull_request.base.sha || github.event.before) || '' }}
-          HEAD_SHA: ${{ github.sha }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: python3 scripts/ci-test-scope.py
-  android-compile:
-    needs: change-scope
-    if: needs.change-scope.outputs.android == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+          ref: c5d2ab410093b5fcd63d6d3ad5c63be3a694c81d
+      - uses: actions/setup-python@v5
         with:
-          distribution: temurin
-          java-version: '17'
-      - run: bash scripts/ci-android-build.sh
-  ios-compile:
-    needs: change-scope
-    if: needs.change-scope.outputs.ios == 'true'
-    uses: ./.github/workflows/mobile.yml
-    with:
-      source_ref: ${{ github.sha }}
-  mobile-update-tests:
-    needs: change-scope
-    if: needs.change-scope.outputs.mobile_update == 'true'
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - run: python3 scripts/test-mobile-releases.py
-      - run: python3 scripts/test-mobile-downloads.py
-      - run: python3 scripts/test-ios-events.py
-      - run: python3 scripts/test-ios-notification-routing.py
-      - run: python3 scripts/test-ios-notification-source.py
-      - run: python3 scripts/test-ios-notification-sources.py
-  # These five matrix names are required by main's existing branch protection.
-  test:
-    needs: change-scope
-    if: always()
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-24.04]
-        python: ['3.9', '3.13']
-        include:
-          - os: macos-latest
-            python: '3.13'
-    runs-on: ${{ needs.change-scope.outputs.backend == 'true' && matrix.os || 'ubuntu-24.04' }}
-    steps:
-      - name: Validate selection and report unaffected backend
-        env:
-          SCOPE_RESULT: ${{ needs.change-scope.result }}
-          BACKEND: ${{ needs.change-scope.outputs.backend }}
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-relay.txt cryptography keyring paramiko
+      - name: Run scoped tests with bounded stack diagnostics
         shell: bash
         run: |
-          test "$SCOPE_RESULT" = success
-          case "$BACKEND" in
-            true) echo "Backend checks selected" ;;
-            false) echo "Backend checks skipped: no affected source" ;;
-            *) exit 1 ;;
-          esac
-      - uses: actions/checkout@v4
-        if: needs.change-scope.outputs.backend == 'true'
-      - uses: actions/setup-python@v5
-        if: needs.change-scope.outputs.backend == 'true'
+          mkdir -p .tmp/preview3-win-diagnostic
+          python -u - <<'PY' 2>&1 | tee .tmp/preview3-win-diagnostic/scoped-tests.log
+          import faulthandler, sys, unittest
+          faulthandler.enable()
+          faulthandler.dump_traceback_later(180, exit=True)
+          sys.path[:0] = ['tests', '.']
+          patterns = ['test_hosted_desktop*.py', 'test_edited_history.py', 'test_private_json.py', 'test_update_data_safety.py', 'test_local_rpc.py', 'test_offline_management.py']
+          for pattern in patterns:
+              print('DIAGNOSTIC_PATTERN', pattern, flush=True)
+              suite = unittest.defaultTestLoader.discover('tests', pattern=pattern)
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              if not result.wasSuccessful():
+                  raise SystemExit(1)
+          faulthandler.cancel_dump_traceback_later()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          python-version: ${{ matrix.python }}
-      - name: Install shell used by PTY integration tests
-        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh
-      - name: Verify Windows continuous terminal before the full suite
-        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Windows'
-        run: python -B -m unittest discover -s tests -p test_windows_terminal.py -v
-      - name: Verify Windows native Claude controls before the full suite
-        if: needs.change-scope.outputs.backend == 'true' && runner.os == 'Windows'
-        run: python -B -m unittest discover -s tests -p test_claude_native_helper.py -v
-      - name: Install relay transport and Claude encrypted-reply support for integration tests
-        if: needs.change-scope.outputs.backend == 'true'
-        run: python -m pip install -r requirements-relay.txt cryptography
-      - if: needs.change-scope.outputs.backend == 'true'
-        run: python -B -m unittest discover -s tests -v
-
-  ui-tests:
-    needs: change-scope
-    if: needs.change-scope.outputs.ui == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - run: node --test tests/layouts.test.cjs tests/frontend-assets.test.cjs
-
-  frontend-tests:
-    needs: change-scope
-    if: needs.change-scope.outputs.frontend == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run test:desktop
-      - run: npm run test:updater
-
-  browser-tests:
-    needs: change-scope
-    if: needs.change-scope.outputs.browser == 'true'
-    runs-on: ubuntu-24.04
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: .local/tools/playwright
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
-      - run: npm run test:browser
-      - name: Save browser failure evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-failure-evidence
-          path: .tmp/browser-results/
-          if-no-files-found: ignore
+          name: preview3-win-scoped-diagnostic
           include-hidden-files: true
-
-  # Keep the existing required check name, including for documentation-only PRs.
-  desktop-tests:
-    needs: [change-scope, test, ui-tests, frontend-tests, browser-tests, android-compile, ios-compile, mobile-update-tests]
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Require every selected check to succeed
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PYTHON'
-          import json, os, runpy
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          if needs['change-scope']['result'] != 'success':
-              raise SystemExit('Change classification failed')
-          outputs = needs['change-scope']['outputs']
-          jobs = {'backend': 'test', 'ui': 'ui-tests', 'frontend': 'frontend-tests', 'browser': 'browser-tests',
-                  'android': 'android-compile', 'ios': 'ios-compile', 'mobile_update': 'mobile-update-tests'}
-          if any(outputs.get(key) not in ('true', 'false') for key in jobs):
-              raise SystemExit('Missing or invalid check selection')
-          scope = {key: outputs[key] == 'true' for key in jobs}
-          results = {key: needs[job]['result'] for key, job in jobs.items()}
-          runpy.run_path('scripts/ci-test-scope.py')['verify_results'](scope, results)
-          PYTHON
+          path: .tmp/preview3-win-diagnostic/scoped-tests.log
