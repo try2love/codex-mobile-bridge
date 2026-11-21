@@ -1,11 +1,15 @@
 """Read-only SQLite summary index and JSONL transcript reader for Antigravity."""
 import base64
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 from bridge.features.workspace.uploads import MAX_FILE, image_type
@@ -155,6 +159,8 @@ class AntigravityStore:
     def __init__(self, scratch_dir, home=None):
         self.scratch_dir = Path(scratch_dir)
         self.home = Path(home).expanduser().resolve() if home else Path.home().resolve()
+        self._transcript_cache = OrderedDict()
+        self._cache_lock = threading.Lock()
 
     def surfaces(self):
         """Return existing surface directories in priority order (2.0 -> IDE -> CLI)."""
@@ -176,24 +182,35 @@ class AntigravityStore:
         rel = dict(SURFACE_DIRS).get(key, '.gemini/antigravity')
         return (self.home / rel).resolve()
 
-    def _query_db(self, db_path, sql, params=(), *, strict=False):
+    @staticmethod
+    def _read_db(db_path, read, default, *, strict=False):
         if not db_path.is_file():
-            return []
-        try:
-            conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.5)
+            return default
+        for attempt in range(3):
             try:
-                conn.row_factory = sqlite3.Row
-                return [dict(row) for row in conn.execute(sql, params).fetchall()]
-            finally:
-                conn.close()
-        except sqlite3.DatabaseError:
-            if strict:
-                raise
-            # Never combine independently copied main/WAL/SHM files. A missing
-            # consistent native snapshot is unavailable, not evidence of idle.
-            # 数据库损坏（DatabaseError，如 file is not a database）在非严格列表读取时同样应降级为空，
-            # 避免列表接口返回 500 或穿透全局通知轮询；strict=True 时仍向上抛出以保持安全拦截。
-            return []
+                conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=0.5)
+                try:
+                    conn.row_factory = sqlite3.Row
+                    return read(conn)
+                finally:
+                    conn.close()
+            except sqlite3.DatabaseError as exc:
+                code = getattr(exc, 'sqlite_errorcode', 0) & 0xff
+                transient = isinstance(exc, sqlite3.OperationalError) and (
+                    code in (5, 6, 14) or str(exc).lower() in (
+                        'database is locked', 'database table is locked', 'unable to open database file'))
+                if transient and attempt < 2:
+                    time.sleep(0.05 * (attempt + 1))
+                    continue
+                if strict:
+                    raise
+                # Unavailable native state is never evidence of idle. Do not
+                # combine independently copied main/WAL/SHM files.
+                return default
+
+    def _query_db(self, db_path, sql, params=(), *, strict=False):
+        return self._read_db(db_path, lambda conn: [dict(row) for row in conn.execute(sql, params)],
+                             [], strict=strict)
 
     @staticmethod
     def _backend_for(dir_key, source):
@@ -203,27 +220,22 @@ class AntigravityStore:
             return 'cli'
         return 'app'
 
-    def _query_summaries_with_archived(self, db_path, sql):
-        if not db_path.is_file():
-            return [], set()
-        try:
-            conn = sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.5)
+    def _query_summaries_with_archived(self, db_path, sql, params=()):
+        def read(conn):
+            rows = [dict(row) for row in conn.execute(sql, params)]
+            ids = [row['conversation_id'] for row in rows]
+            fts_archived = set()
             try:
-                conn.row_factory = sqlite3.Row
-                rows = [dict(row) for row in conn.execute(sql).fetchall()]
-                fts_archived = set()
-                try:
+                if ids:
                     fts_rows = conn.execute(
-                        'SELECT DISTINCT conversation_id FROM conversations_fts WHERE archived = 1'
-                    ).fetchall()
-                    fts_archived = {str(r[0]).strip() for r in fts_rows if r and r[0]}
-                except sqlite3.DatabaseError:
-                    fts_archived = set()
-                return rows, fts_archived
-            finally:
-                conn.close()
-        except sqlite3.DatabaseError:
-            return [], set()
+                        'SELECT DISTINCT conversation_id FROM conversations_fts WHERE archived = 1 '
+                        'AND conversation_id IN (' + ','.join('?' for _ in ids) + ')', ids)
+                    fts_archived = {str(r[0]).strip() for r in fts_rows if r[0]}
+            except sqlite3.OperationalError as exc:
+                if 'no such table' not in str(exc) and 'no such column' not in str(exc):
+                    raise
+            return rows, fts_archived
+        return self._read_db(db_path, read, ([], set()))
 
     def _row_to_summary(self, dir_key, root, row, *, fts_archived=()):
         cid = str(row.get('conversation_id') or '').strip()
@@ -294,6 +306,28 @@ class AntigravityStore:
         for item in self.list_sessions():
             if item['id'] == sid:
                 return item
+        # Gateway IDs are UUIDv5 identities, not reversible native IDs. Scan only
+        # IDs in bounded batches, then read the matching full summary by its PK.
+        for surface in self.surfaces():
+            db_path = surface['root'] / 'conversation_summaries.db'
+            def find_id(conn):
+                cursor = conn.execute('SELECT conversation_id FROM conversation_summaries '
+                                      'WHERE nesting_depth = 0 AND '
+                                      '(parent_conversation_id IS NULL OR parent_conversation_id = "")')
+                while True:
+                    batch = cursor.fetchmany(128)
+                    if not batch:
+                        return None
+                    for row in batch:
+                        if gateway_id(surface['key'], row[0]) == sid:
+                            return row[0]
+            cid = self._read_db(db_path, find_id, None)
+            if cid:
+                rows, archived = self._query_summaries_with_archived(
+                    db_path, 'SELECT * FROM conversation_summaries WHERE conversation_id = ? '
+                    'AND nesting_depth = 0 AND (parent_conversation_id IS NULL OR parent_conversation_id = "")', (cid,))
+                if rows:
+                    return self._row_to_summary(surface['key'], surface['root'], rows[0], fts_archived=archived)
         # Also check brain/<cid> directory if session was just created before summary flush
         for surface in self.surfaces():
             for candidate_dir in (surface['root'] / 'brain').glob('*') if (surface['root'] / 'brain').is_dir() else ():
@@ -417,6 +451,39 @@ class AntigravityStore:
 
     def read_transcript_page(self, surface_root, conversation_id, *, limit=40, before=None, session_active=False):
         """Read a reverse-paginated slice of transcript.jsonl with targeted full-line hydration."""
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(conversation_id or '')) or (Path(surface_root) / 'brain' / conversation_id).is_symlink():
+            raise ValueError('原生会话路径无效')
+        logs_dir = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs'
+        key = (str(logs_dir), int(limit or 40), '' if before is None else str(before), bool(session_active))
+        def signature():
+            result = []
+            for name in ('transcript.jsonl', 'transcript_full.jsonl'):
+                try:
+                    stat = (logs_dir / name).stat()
+                    result.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+                except OSError:
+                    result.append(None)
+            return tuple(result)
+        stamp = signature()
+        with self._cache_lock:
+            for old_key in list(self._transcript_cache):
+                if old_key[0] == key[0] and self._transcript_cache[old_key][0] != stamp:
+                    del self._transcript_cache[old_key]
+            cached = self._transcript_cache.get(key)
+            if cached and not (Path(surface_root) / 'brain' / conversation_id).is_symlink():
+                self._transcript_cache.move_to_end(key)
+                return deepcopy(cached[1])
+        result = self._read_transcript_page(surface_root, conversation_id, limit=limit,
+                                            before=before, session_active=session_active)
+        if stamp[0] is not None and stamp == signature():
+            with self._cache_lock:
+                self._transcript_cache[key] = (stamp, deepcopy(result))
+                self._transcript_cache.move_to_end(key)
+                while len(self._transcript_cache) > 16:
+                    self._transcript_cache.popitem(last=False)
+        return result
+
+    def _read_transcript_page(self, surface_root, conversation_id, *, limit=40, before=None, session_active=False):
         logs_dir = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs'
         if not re.fullmatch(r'[0-9a-fA-F-]{36}', conversation_id) or (Path(surface_root)/'brain'/conversation_id).is_symlink():
             raise ValueError('原生会话路径无效')

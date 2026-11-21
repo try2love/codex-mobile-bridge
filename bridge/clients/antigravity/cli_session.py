@@ -1,5 +1,6 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
 import json
+import logging
 import re
 import math
 from datetime import datetime
@@ -619,7 +620,8 @@ class AntigravityCli:
                     target['address'] + '/exa.language_server_pb.LanguageServerService/' + method,
                     data=json.dumps(payload or {}).encode('utf-8'),
                     headers={'Content-Type': 'application/json', 'x-codeium-csrf-token': target['token']})
-                with self._opener.open(request, timeout=8) as response:
+                timeout = 30 if method in ('StartCascade', 'SendUserCascadeMessage') else 8
+                with self._opener.open(request, timeout=timeout) as response:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 if len(raw) > 8 * 1024 * 1024:
                     raise ValueError('Antigravity 原生回复过大')
@@ -631,6 +633,7 @@ class AntigravityCli:
                 verify_endpoint(target)
                 return (result, target['identity']) if return_identity else result
             except urllib.error.HTTPError as exc:
+                logging.getLogger(__name__).warning('Antigravity RPC %s failed: HTTP %s', method, exc.code)
                 if method == 'ForkConversation':
                     try:
                         detail = exc.read(4096).decode('utf-8', errors='replace').lower()
@@ -644,7 +647,8 @@ class AntigravityCli:
                         raise ResumePreflightBlocked('只能从已完成回复的轮次末尾创建分支') from None
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
-            except (OSError, ValueError, urllib.error.URLError):
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                logging.getLogger(__name__).warning('Antigravity RPC %s failed: %s', method, type(exc).__name__)
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
 
