@@ -7,6 +7,7 @@
 ### 新增与改进
 
 - **新版 Codex 原生连接。** 支持新版 hosted Desktop 的原生聊天读取、发送、停止与审批，并兼容旧版连接。首次正常准备连接时，可能需要重启 Codex 一次。
+- **长会话读取与列表响应。** 实时连接优先跟随当前回合，较早历史按需读取；改善大回执和并发刷新时的等待，并补齐原生编辑前保留历史的读取。
 - **更新失败后重试。** 重用已通过签名与完整性校验的更新包，减少重复下载；新版本成功启动并确认后再清理更新包。
 - **Windows 配置与恢复。** 改善配置文件权限处理，保留恢复副本；返回稳定版时恢复兼容配置。
 - **卸载数据保留。** 默认保留数据，可选择仅清理 Bridge 自有目录。
@@ -28,6 +29,7 @@ This preview supports newer Codex Desktop native connections and improves gatewa
 ### Features and improvements
 
 - **Newer Codex native connections.** Read native chats, send messages, stop turns and handle approvals through newer hosted Desktop connections while retaining older connection support. Initial connection setup may require one Codex restart.
+- **Responsive lists and long chats.** Follow the current native turn first and read older history on demand. Reduce delays from large replies and concurrent list refreshes, and read retained history across native edit boundaries.
 - **Retry failed updates.** Reuse update packages that passed signature and integrity checks to avoid repeated downloads; clean them up after the new version starts successfully and is confirmed.
 - **Windows configuration and recovery.** Improve configuration file permissions and retain recovery copies; restore compatible settings when returning to stable.
 - **Keep data during uninstall.** Preserve data by default, with an option to remove only Bridge-owned directories.
