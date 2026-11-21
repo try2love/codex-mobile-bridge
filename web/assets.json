@@ -17,6 +17,7 @@
   "/app.js": [
     "shared/dialog-dismiss.js",
     "features/chat/session-menu.js",
+    "shared/quota-continuation.js",
     "shell/app.js"
   ],
   "/bootstrap.js": ["shared/bootstrap.js", "shared/brand-icons.js"],

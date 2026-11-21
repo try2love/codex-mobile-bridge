@@ -94,6 +94,36 @@ class DesktopIdle(unittest.TestCase):
             self.bridge.assert_desktop_idle()
         self.assertEqual(self.bridge.live, {})
 
+    def test_system_error_is_not_idle_but_quota_only_preflight_can_verify_it(self):
+        def v13(message):
+            message['version'] = 13
+            return message
+        self.transform_event = v13
+        self.states[('local', 'desktop-only')] = {
+            'id': 'desktop-only', 'modelProvider': 'openai', 'cwd': '/project',
+            'threadRuntimeStatus': {'type': 'systemError'}, 'requests': [],
+            'turns': [{'turnId': 'quota-turn', 'status': 'failed', 'items': [],
+                       'error': {'codexErrorInfo': 'usageLimitExceeded'}}]}
+        with self.assertRaises(TaskStateUnavailable):
+            self.bridge.assert_desktop_idle()
+        with self.assertRaises(TaskStateUnavailable):
+            self.bridge.assert_desktop_idle(allow_quota_error=True)
+        validate = Mock()
+        self.bridge.assert_desktop_idle(identifiers=['desktop-only'], allow_quota_error=True, validate_state=validate)
+        self.assertEqual(validate.call_count, 2)  # On fresh follow and final recheck.
+        self.bridge.activate.assert_not_called()
+
+    def test_system_error_network_failure_is_not_admitted_by_quota_preflight(self):
+        self.states[('local', 'desktop-only')] = {
+            'id': 'desktop-only', 'modelProvider': 'openai', 'cwd': '/project',
+            'threadRuntimeStatus': {'type': 'systemError'}, 'requests': [],
+            'turns': [{'turnId': 'network-turn', 'status': 'failed', 'items': [],
+                       'error': {'codexErrorInfo': 'connectionFailed'}}]}
+        validate = Mock()
+        with self.assertRaises(TaskStateUnavailable):
+            self.bridge.assert_desktop_idle(allow_quota_error=True, validate_state=validate)
+        validate.assert_not_called()
+
     def test_unfollowed_desktop_busy_thread_prevents_shutdown(self):
         self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'active'}, 'turns': [], 'requests': []}
         with self.assertRaisesRegex(ValueError, '任务运行'): self.bridge.assert_desktop_idle()

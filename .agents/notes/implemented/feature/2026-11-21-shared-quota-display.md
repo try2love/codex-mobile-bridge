@@ -18,7 +18,7 @@ Antigravity 的 `quota.py` 将原生额度池转换为既有 `windowDurationMins
 
 ## 既有笔记审计
 
-[Claude 手动额度](../bug-fix/2026-10-12-keychain-access-and-manual-quota.md)与[ZCode 每日额度](2026-11-03-zcode-official-daily-quota.md)为数据来源约束，继续适用。其余账号切换和接入记录不被本次展示改动取代。
+[自动继续与初版圆环](2026-11-21-quota-continuation-and-mobile-rings.md)部分重叠，显示由本文取代，自动继续决定保留；[Claude 手动额度](../bug-fix/2026-10-12-keychain-access-and-manual-quota.md)与[ZCode 每日额度](2026-11-03-zcode-official-daily-quota.md)为数据来源约束，继续适用。其余账号切换和接入记录不被本次展示改动取代。
 
 ## 备选方案
 

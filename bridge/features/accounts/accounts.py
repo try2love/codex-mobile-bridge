@@ -836,6 +836,9 @@ class Accounts:
             return self.desktop_status()
         if action == 'account':
             return self.account(value)
+        if action == 'quotaContinuation':
+            changes = {k: v for k, v in value.items() if k != 'action'}
+            return self.monitor.continuation.configure(changes) if changes else self.monitor.continuation.public()
         if action == 'reminders':
             self.monitor.configure(value.get('preferences'))
             return self.desktop_status()

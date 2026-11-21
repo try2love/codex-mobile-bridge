@@ -1,7 +1,11 @@
 import unittest
+import threading
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 import test_bridge
+from bridge.features.sessions.quota_continue import QuotaContinuation
 
 
 class AccountsHttpTests(unittest.TestCase):
@@ -17,6 +21,34 @@ class AccountsHttpTests(unittest.TestCase):
         manager.info = SimpleNamespace(request=Mock(return_value={'accounts': [], 'switch': {'phase': 'idle'}}))
         self.server.bridge.accounts = manager
         return manager
+
+    def test_home_quota_toggle_is_global_authenticated_and_csrf_protected(self):
+        manager = self.manager()
+        preferences = {'autoContinue': False}
+        def configure(value):
+            preferences.update(value)
+        temp = tempfile.TemporaryDirectory(dir=test_bridge.ROOT / '.tmp')
+        self.addCleanup(temp.cleanup)
+        manager.root = Path(temp.name)
+        manager.lock = threading.RLock()
+        manager.bridge = SimpleNamespace(host='local')
+        manager.monitor = SimpleNamespace(manager=manager, preferences=preferences, configure=Mock(side_effect=configure))
+        manager.monitor.continuation = QuotaContinuation(manager.monitor)
+        path = '/api/quota-continuation'
+        self.assertEqual(self.request('GET', path)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', path, {'enabled': True}, {'Cookie': headers['Cookie']})[0], 403)
+        for body in ({'enabled': 'yes'}, {'enabled': True, 'extra': True}, {}):
+            self.assertEqual(self.request('POST', path, body, headers)[0], 400)
+        self.assertEqual(self.request('POST', path, {'enabled': True}, headers)[0], 200)
+        status, _, value = self.request('GET', path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(value['enabled'])
+        manager.monitor.configure.assert_called_once_with({'autoContinue': True})
+        excluded = {'threadId': test_bridge.THREAD, 'excluded': True}
+        self.assertEqual(self.request('POST', path, excluded, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, excluded, headers)[0], 200)
+        self.assertTrue(self.request('GET', path, headers=headers)[2]['tasks'][0]['excluded'])
 
     def test_reset_dynamic_setting_and_requests_require_auth_and_enabled_feature(self):
         manager = self.manager()

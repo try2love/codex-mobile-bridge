@@ -42,6 +42,19 @@ async function goalAction(action,payload) {
 const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
+
+// The home switch uses gateway state, shared with desktop and mobile.
+if($('quota-continue-enabled')){
+  const toggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
+    tasks:$('quota-continue-tasks'),exclude:(threadId,excluded)=>api('/api/quota-continuation',{threadId,excluded}),
+    read:()=>api('/api/quota-continuation'),write:enabled=>api('/api/quota-continuation',{enabled}),
+    visible:()=>!document.hidden&&!$('app').hidden&&!window.BridgeSharedRelay});
+  document.addEventListener('bridge-authenticated',()=>toggle.refresh());
+  document.addEventListener('visibilitychange',()=>toggle.refresh());
+  window.addEventListener('focus',()=>toggle.refresh());
+  setInterval(()=>toggle.refresh(),10000);
+  if(window.BridgeSharedRelay){$('quota-continue-enabled').closest('label').hidden=true;$('quota-continue-hint').hidden=true;}
+}
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){const path='/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);return window.BridgeRelayURL?.(path)||path;}
 function hostUrl(path,host=currentHost){const value=/^\/api\/sessions\/[0-9a-f-]{36}/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;return window.BridgeRelayURL?.(value)||value;}

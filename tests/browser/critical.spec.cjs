@@ -132,6 +132,28 @@ test('history cache logout session and namespace forget defeat stale writes from
   }finally{await fixture.context.close();}
 });
 
+test('quota home switch syncs across gateway pages', async ({page, context}, info) => {
+  let enabled=false;
+  await context.route('**/api/quota-continuation',async route=>{
+    if(route.request().method()==='POST')enabled=route.request().postDataJSON().enabled;
+    await route.fulfill({contentType:'application/json',body:JSON.stringify({enabled,error:''})});
+  });
+  await ready(page,'session-menu');
+  const toggle=page.locator('#quota-continue-enabled');
+  await expect(toggle).toBeVisible();await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();await toggle.check();
+  await expect(toggle).toBeChecked();
+  const other=await context.newPage();
+  await ready(other,'session-menu');
+  await expect(other.locator('#quota-continue-enabled')).toBeChecked();
+  await other.locator('#quota-continue-enabled').uncheck();
+  await page.bringToFront();
+  await expect(toggle).not.toBeChecked({timeout:15000});
+  await expect(page.locator('#quota-continue-error')).toBeEmpty();
+  await info.attach('quota-home-switch',{body:await page.screenshot({path:path.resolve(__dirname,'../../.tmp/quota-home-'+info.project.name+'.png')}),contentType:'image/png'});
+  await other.close();
+});
+
 test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
   await page.route('**/api/auth', route => route.fulfill({json: {
     authenticated: false, passwordless: false,

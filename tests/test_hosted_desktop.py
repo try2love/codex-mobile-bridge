@@ -7,6 +7,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import Mock
 
@@ -277,6 +278,37 @@ class HostedSessionTests(unittest.TestCase):
                             target='original-ide-owner')
                 self.assertEqual(legacy.request.call_args.args[0], 'thread-follower-interrupt-turn')
         self.assertFalse(any(m.get('method') in ('thread/resume', 'turn/start') for m in self.writes))
+
+    def test_quota_preflight_reads_fresh_native_failure_through_hosted_ipc(self):
+        from bridge.app.service import Bridge
+        from bridge.features.sessions.quota_continue import candidate
+        self.thread.update(modelProvider='openai', status={'type': 'systemError'})
+        self.turns = [{'id': 'quota-turn', 'status': 'failed', 'items': [],
+                       'error': {'codexErrorInfo': 'usageLimitExceeded'}}]
+        left, right = socket.socketpair()
+        self.addCleanup(left.close); self.addCleanup(right.close)
+        owner = 'desktop-runtime:fixture-generation'
+        follower = _Follower(right, owner, 'a' * 64, 'fixture-generation', self.sessions)
+        self.addCleanup(follower.close)
+        self.sessions.on_state = follower.snapshot
+        threading.Thread(target=follower.read, daemon=True).start()
+        bridge = Bridge.__new__(Bridge)
+        bridge.host = 'local'; bridge.codex_home = Path(self.temp.name)
+        bridge.ipc = SimpleNamespace(path='/fixture/old.sock', codex_home=self.temp.name)
+        bridge.accounts = Mock(); bridge.accounts.blockers.return_value = []
+        bridge.live = {}; bridge.remote_bridges = {}; bridge.lock = threading.RLock()
+        observed = []
+        def validate(state, actual_owner):
+            observed.append(candidate(SimpleNamespace(connected=True, runtime='desktop', origin='desktop',
+                state=state, owner=actual_owner)))
+        endpoint = {'path': '/fixture/host.sock', 'generation': 'fixture-generation', 'controlToken': 'a' * 64}
+        with patch('bridge.clients.codex.ipc.connect_stream', return_value=left), \
+                patch.object(runtime, 'hosted_endpoint', return_value=endpoint) as endpoint_lookup:
+            bridge.assert_desktop_idle(timeout=3, identifiers={'t'}, validate_state=validate, allow_quota_error=True)
+        self.assertTrue(endpoint_lookup.called)
+        self.assertTrue(observed)
+        self.assertTrue(all(row and row['turnId'] == 'quota-turn' and row['owner'] == owner for row in observed))
+        self.assertFalse(any(m.get('method') in ('thread/resume', 'thread/start', 'turn/start') for m in self.writes))
 
     def test_metadata_preserves_native_errors_and_explicit_not_sent_results(self):
         client = MetadataClient(self.temp.name)

@@ -50,6 +50,7 @@ from bridge.features.sessions.create import (
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.deletion import DeleteCommands, deletion_scope, delete_native
 from bridge.features.sessions.compaction import CompactCommands
+from bridge.features.sessions.quota_continue import candidate as quota_candidate, CONTINUE_TEXT, quota_windows, scope_stamp, QuotaDeferred
 from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.cli_force import CliForce, maintenance_daemon_status
 from bridge.features.sessions.cli_scope import CliScope
@@ -1343,7 +1344,7 @@ class Bridge:
             target.store.poll_results.clear()
 
     def assert_desktop_idle(self, timeout=20, identifiers=None, allow_missing_ipc=False, allow_stopped_app=False,
-                            *, desktop_only=False, desktop_executable=None):
+                            *, desktop_only=False, desktop_executable=None, validate_state=None, allow_quota_error=False):
         """Passively check every desktop owner before an application shutdown.
 
         The caller holds the account operation gate until shutdown completes.
@@ -1513,7 +1514,16 @@ class Bridge:
                         or any(turn.get('status') == 'inProgress' for turn in ordered_turns(state))):
                     raise ValueError(busy)
                 if runtime != 'idle':
-                    raise TaskStateUnavailable(unknown)
+                    # Quota failures are native systemError states, not idle.
+                    # Only the quota continuation preflight may admit this exact
+                    # terminal state, and it must still prove the quota failure.
+                    eligible_error = (runtime == 'systemError' and allow_quota_error and validate_state is not None
+                                      and quota_candidate(SimpleNamespace(connected=True, runtime='desktop', origin='desktop',
+                                          owner=record['owner'], state=state)) is not None)
+                    if not eligible_error:
+                        raise TaskStateUnavailable(unknown)
+                if validate_state is not None:
+                    validate_state(state, record['owner'])
             except (TypeError, AttributeError, KeyError) as exc:
                 raise TaskStateUnavailable(unknown) from exc
 
@@ -5374,6 +5384,10 @@ class Bridge:
                 objective=objective, status=status, ui_locale=ui_locale, expected=expected)
             if response.get('confirmed') and action in ('pause', 'cancel', 'edit'):
                 self._cancel_goal_activation_queues(thread_id)
+                if self.accounts is not None:
+                    turns = ordered_turns(session.state or {})
+                    if turns:
+                        self.accounts.monitor.continuation.note_manual_stop(thread_id, turns[-1].get('turnId'))
             if action == 'resume':
                 response['activation'] = self._send_goal_activation(session, response, action)
             with session.condition:
@@ -5515,6 +5529,59 @@ class Bridge:
                 with session.condition:
                     session.changed()
         return {'status': 'ignored', 'id': submission_id}
+
+    @operation
+    def continue_after_quota(self, thread_id, expected, submission_id, account_stamp, account_key, generation=None,
+                             *, before_write=None):
+        uuid.UUID(submission_id)
+        try:
+            session = self._target(thread_id)
+        except Exception as exc:
+            raise QuotaDeferred('原会话连接暂不可用，尚未发送') from exc
+        with session.action_lock:
+            try:
+                if self.store.get(thread_id).get('archived'):
+                    raise QuotaDeferred('聊天已归档，取消自动继续', cancel=True)
+                def validate(state, owner):
+                    if quota_candidate(session, state=state, owner=owner) != expected:
+                        raise QuotaDeferred('原生任务已变化，取消自动继续', cancel=True)
+                self.assert_desktop_idle(timeout=8, identifiers=[thread_id], validate_state=validate, allow_quota_error=True)
+                account = self.account.read(refresh=True)
+                windows = quota_windows(account)
+                if account.get('accountKey') != account_key:
+                    raise QuotaDeferred('账号已变化，取消自动继续', cancel=True)
+                if not windows or any(v <= 0 for v in windows.values()):
+                    raise QuotaDeferred('个人额度尚未确认可用，尚未发送')
+                with session.condition:
+                    if (quota_candidate(session) != expected or
+                            self.accounts.monitor.continuation.is_manually_stopped(thread_id, expected['turnId']) or
+                            thread_id in self.accounts.monitor.continuation.excluded or
+                            not self.accounts.monitor.preferences.get('autoContinue') or
+                            generation is not None and self.accounts.monitor.continuation.generation != generation or
+                            scope_stamp(self.accounts) != account_stamp):
+                        raise QuotaDeferred('额度自动继续的账号、开关或任务已变化', cancel=True)
+                native = None
+                if expected.get('goal'):
+                    native = self._native_goal_state(thread_id, strict=True)
+                    if not native or native['status'] != 'usageLimited' or goal_identity(native) != goal_identity(expected['goal']):
+                        raise QuotaDeferred('原生目标已变化', cancel=True)
+            except QuotaDeferred:
+                raise
+            except Exception as exc:
+                raise QuotaDeferred('发送前核验暂不可用，尚未发送') from exc
+            # Commit the durable no-replay marker only after the read-only preflight.
+            if before_write:
+                before_write()
+            if native:
+                return self.set_goal_status(thread_id, 'active', submission_id, expected=native)
+            key = thread_id + ':' + submission_id
+            with self.submit_lock:
+                if key in self.submissions:
+                    return {'status': self.submissions[key]['status'], 'duplicate': True}
+                entry = {'text': CONTINUE_TEXT, 'mode': 'send', 'skills': [], 'status': 'unknown', 'at': time.time()}
+                self.submissions[key] = entry
+                self._save_ledger()
+            return self._dispatch(session, key, entry)
 
     @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
@@ -5767,10 +5834,15 @@ class Bridge:
     def interrupt(self, thread_id):
         session = self._target(thread_id)
         with session.condition:
-            active = next((t for t in reversed(ordered_turns(session.state)) if t.get("status") == "inProgress"), None)
-            if not active or not active.get("turnId"):
-                raise ValueError("当前没有可停止的任务")
-            turn_id = active["turnId"]
+            turns = ordered_turns(session.state)
+            active = next((t for t in reversed(turns) if t.get("status") == "inProgress"), None)
+            turn_id = (active or (turns[-1] if turns else {})).get('turnId')
+        # Record intent before the RPC: a stale failure snapshot cannot revive a
+        # manually stopped task, even when its native stop result is delayed.
+        if self.accounts is not None:
+            self.accounts.monitor.continuation.note_manual_stop(thread_id, turn_id)
+        if not active or not active.get('turnId'):
+            raise ValueError("当前没有可停止的任务")
         return self._call(session, "thread-follower-interrupt-turn", {"mode": "user-stop", "expectedTurnId": turn_id})
 
     def full_history(self, thread_id):

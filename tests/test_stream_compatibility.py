@@ -20,6 +20,14 @@ class StreamCompatibilityTests(unittest.TestCase):
     def test_legacy_partial_snapshots_remain_readable(self):
         validate_stream_state(11, {'id': 'thread'})
 
+    def test_native_quota_failure_system_error_state_is_readable(self):
+        state = self.state()
+        state['threadRuntimeStatus'] = {'type': 'systemError'}
+        state['turns'] = [{'turnId': 'quota-turn', 'status': 'failed', 'items': [],
+                          'error': {'message': 'Your workspace is out of credits. Add credits to continue.',
+                                    'codexErrorInfo': 'usageLimitExceeded'}}]
+        validate_stream_state(13, state)
+
     def test_v13_requires_readable_control_state(self):
         for key, value in [('requests', None), ('threadRuntimeStatus', {'type': 'unknown'}),
                            ('turns', [{'status': 'new-status', 'items': []}])]:
