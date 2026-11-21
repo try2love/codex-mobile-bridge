@@ -639,7 +639,8 @@ class DesktopAppTests(unittest.TestCase):
             app=DesktopApp(bundle,folder);app.validate(Path(folder)/'runtime')
             self.assertEqual(app.executable,path.resolve())
             app.validate(None)
-            with patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=str(path)):
+            with patch('bridge.clients.desktop_app.sys.platform', 'darwin'), \
+                 patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=str(path)):
                 self.assertEqual(DesktopApp.scan(None,folder),str(path.resolve()))
 
     def test_macos_bundle_discovery_uses_plist_executable(self):
