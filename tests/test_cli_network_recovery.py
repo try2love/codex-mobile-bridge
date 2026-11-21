@@ -653,8 +653,8 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         self.assertFalse(self.bridge.cli_maintenance.worker.is_alive())
         path = self.bridge.data_dir/'cli-daemon-recovery.json'
         opened, release, cancelling, other_locks_held, release_other_locks = (threading.Event() for _ in range(5))
-        original_read, original_replace = Path.read_text, Path.replace
-        outcomes, sequence = {}, []
+        original_read, original_replace, original_path_replace = Path.read_text, os.replace, Path.replace
+        outcomes, sequence, replacements = {}, [], set()
         lock = self.bridge.cli_maintenance.lock
         class ReadLock:
             def __enter__(self):
@@ -674,13 +674,20 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
                 sequence.append('reader-closed')
                 return value
             return original_read(record, *args, **kwargs)
-        def replace(temporary, target):
-            if target == path and 'reader-closed' not in sequence:
-                error = PermissionError('Windows does not permit replacement while this reader is open')
-                error.winerror = 5
-                raise error
-            sequence.append('replaced')
-            return original_replace(temporary, target)
+        def replace(temporary, target, writer=original_replace):
+            if Path(target) == path:
+                if 'reader-closed' not in sequence:
+                    error = PermissionError('Windows does not permit replacement while this reader is open')
+                    error.winerror = 5
+                    raise error
+                key = (str(temporary), str(target))
+                if key not in replacements:
+                    sequence.append('replaced')
+                    replacements.add(key)
+            return writer(temporary, target)
+        def path_replace(temporary, target):
+            # 3.9 caches os.replace in Path's accessor; newer Python delegates live.
+            return replace(temporary, target, original_path_replace)
         def reader():
             outcomes['record'] = self.bridge._cli_recovery_record()
         def cancel():
@@ -696,7 +703,8 @@ class CliNetworkRecoveryTests(CliBridgeFixture):
         cancel_thread = threading.Thread(target=cancel, name='cancel-recovery')
         holder_thread = threading.Thread(target=hold_other_locks)
         with patch.object(self.bridge.cli_maintenance, 'lock', ReadLock()), \
-                patch.object(Path, 'read_text', read), patch.object(Path, 'replace', replace):
+                patch.object(Path, 'read_text', read), patch.object(Path, 'replace', path_replace), \
+                patch.object(os, 'replace', replace):
             try:
                 reader_thread.start()
                 self.assertTrue(opened.wait(3))
