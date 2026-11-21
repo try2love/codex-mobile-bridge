@@ -706,6 +706,14 @@ class Antigravity:
                             'contextWindow': ctx_meta['contextWindow'],
                             'measurement': 'session',
                         }
+                try:
+                    q_windows = self.cli.current_model_quota_windows(
+                        surface, session.get('model') or '', session.get('modelDisplayName') or '',
+                    )
+                    if q_windows:
+                        session['quotaWindows'] = q_windows
+                except (OSError, ValueError, BridgeUnavailable):
+                    pass
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
                     'readOnly': session['readOnly'],

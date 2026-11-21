@@ -342,3 +342,48 @@ test('current ZCode daily model quota shows exact native token quantities and ch
  assert.match(ui.text(),/今日剩余额度/);assert.match(ui.text(),/GLM-5.3/);assert.match(ui.text(),/GLM-5.3-Flash/);
  assert.match(ui.text(),/0 \/ 10 tokens/);assert.match(ui.text(),/9 \/ 20 tokens/);assert.match(ui.text(),/原 App 查询时间/);
 });
+
+test('Antigravity account model catalog renders structured quota badges, reset notes, tier badge, and credits without raw notice wall',async()=>{
+ const ui=fixture({provider:'antigravity'});
+ ui.panel.accept(snapshot([row('app')]));
+ ui.setHandler(async()=>({
+  groups:[{
+   surface:'app',label:'Antigravity 2.0',
+   notice:'账号等级 · Google AI Pro\n• Gemini 4 Neon: 剩余 100%\n• Claude Opus 5.5: 剩余 37.2% (将于 11/25 02:27 PST 重置)',
+   usageSummary:{
+    tier:'Google AI Pro',credits:'可用 Prompt 点数: 500 · Flow 点数: 100',items:[],
+    groups:[{
+     name:'Gemini Models',models:['Gemini 4 Neon'],
+     buckets:[
+      {window:'5h',shortLabel:'5h',label:'5h 限额',remainingPercent:70.6,usedPercent:29.4,status:'good',resetShort:'4h 10m',resetCountdown:'4小时10分后重置',resetNote:'将于 11/21 07:50 PST 重置'},
+      {window:'weekly',shortLabel:'7d',label:'周限额 (7d)',remainingPercent:91.0,usedPercent:9.0,status:'good',resetShort:'6d 23h',resetCountdown:'6天23小时后重置',resetNote:'将于 11/28 02:50 PST 重置'}
+     ]
+    }]
+   },
+   models:[
+    {
+     id:'gemini-4-neon',name:'Gemini 4 Neon',efforts:['low','medium','high'],quotaTag:'剩余 70.6%',quotaStatus:'good',
+     quotaWindows:[
+      {window:'5h',shortLabel:'5h',label:'5h 限额',remainingPercent:70.6,usedPercent:29.4,status:'good',resetCountdown:'4小时10分后重置',resetNote:'将于 11/21 07:50 PST 重置'},
+      {window:'weekly',shortLabel:'7d',label:'周限额 (7d)',remainingPercent:91.0,usedPercent:9.0,status:'good',resetCountdown:'6天23小时后重置',resetNote:'将于 11/28 02:50 PST 重置'}
+     ]
+    },
+    {id:'claude-opus-5-5',name:'Claude Opus 5.5',efforts:['low','high'],quotaTag:'剩余 37.2%',quotaStatus:'warning',resetNote:'将于 11/25 02:27 PST 重置'}
+   ]
+  }]
+ }));
+ await ui.panel.toggleModels();
+ assert.doesNotMatch(ui.text(),/• Gemini 4 Neon/);
+ assert.match(ui.text(),/Google AI Pro/);
+ assert.match(ui.text(),/Gemini Models/);
+ assert.match(ui.text(),/5h 限额/);
+ assert.match(ui.text(),/周限额 \(7d\)/);
+ assert.match(ui.text(),/可用 Prompt 点数: 500 · Flow 点数: 100/);
+ const rings=ui.all().filter(n=>typeof n.className==='string'&&n.className.includes('quota-pie-ring'));
+ assert.ok(rings.length>=4);
+ const expandableRow=ui.all().find(n=>typeof n.className==='string'&&n.className.includes('accounts-model-row'));
+ const detail=expandableRow.children.find(n=>n.className==='accounts-model-detail');
+ assert.equal(detail.hidden,true);
+ expandableRow.onclick();
+ assert.equal(detail.hidden,false);
+});
