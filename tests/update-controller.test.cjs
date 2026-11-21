@@ -147,6 +147,12 @@ test('manual historical installers back up before handoff and never claim the ap
     assert.deepEqual(reveal?f.calls.revealed:f.calls.opened,[archive]);assert.deepEqual(f.calls.exit,[]);
   }
 });
+test('failed legacy compatibility preparation blocks manual installer handoff without quitting',async()=>{
+  const f=controller();
+  vm.runInContext("worker=async()=>{throw Error('Legacy settings could not be restored; backup retained');}",f.context);
+  await assert.rejects(f.context.installUpdate({manualInstall:true,archive:'selected.exe',version:'2.2.1',asset:{name:'selected.exe'},transition:{intent:'switch-version'}}),/backup retained/);
+  assert.deepEqual(f.calls.opened,[]);assert.deepEqual(f.calls.revealed,[]);assert.deepEqual(f.calls.exit,[]);
+});
 function cacheController(t,options={}){
   const {Updater}=require('../desktop/features/updates/updater.cjs'),scratch=path.resolve(__dirname,'../.tmp');fs.mkdirSync(scratch,{recursive:true});
   const directory=fs.mkdtempSync(path.join(scratch,'update-cache-controller-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));

@@ -225,6 +225,48 @@ class UpdateDataSafetyTests(unittest.TestCase):
         self.assertTrue((Path(result['backup'])/'backup.json').exists())
         self.assertTrue(legacy.exists())
 
+    def test_manual_legacy_installer_restores_current_sidecar_after_durable_backup(self):
+        for unreadable in (False, True):
+            with self.subTest(unreadable=unreadable):
+                legacy = self.data/'desktop-sessions/settings.json'
+                fallback = self.data/'desktop-sessions/settings.user.json'
+                self.write(legacy, {'enabled': {'codex': True}, 'old': True})
+                self.write(fallback, {'enabled': {'codex': False}, 'latest': True})
+                expected = fallback.read_bytes()
+                self.payload['manualInstall'] = True
+                real_read = Path.read_bytes
+
+                def read(path):
+                    if unreadable and path == legacy:
+                        raise PermissionError()
+                    return real_read(path)
+
+                with patch.object(Path, 'read_bytes', autospec=True, side_effect=read):
+                    result = self.backup()
+                backup = Path(result['backup'])
+                self.assertEqual((backup/'desktop-sessions/settings.user.json').read_bytes(), expected)
+                self.assertEqual(json.loads(legacy.read_bytes()), json.loads(expected))
+                self.assertFalse(fallback.exists())
+                manifest = json.loads((backup/'backup.json').read_text())
+                self.assertEqual('desktop-sessions/settings.json' in manifest['files'], not unreadable)
+
+    def test_manual_legacy_restore_failure_keeps_complete_private_backup(self):
+        fallback = self.data/'desktop-sessions/settings.user.json'
+        self.write(fallback, {'enabled': {'codex': False}})
+        expected = fallback.read_bytes()
+        self.payload['manualInstall'] = True
+        with patch.object(updater, 'restore_legacy_client_settings', side_effect=ValueError('fixture restore failure')):
+            with self.assertRaisesRegex(ValueError, 'fixture restore failure'):
+                self.backup()
+        backups = list((self.data/'update-backups').iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0]/'backup.json').is_file())
+        self.assertEqual((backups[0]/'desktop-sessions/settings.user.json').read_bytes(), expected)
+        self.assertEqual(fallback.read_bytes(), expected)
+        if os.name != 'nt':
+            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o700)
+            self.assertEqual((backups[0]/'desktop-sessions/settings.user.json').stat().st_mode & 0o777, 0o600)
+
     def test_empty_linked_account_directory_is_rejected_without_walking_it(self):
         outside = self.root / 'outside-accounts'
         outside.mkdir()

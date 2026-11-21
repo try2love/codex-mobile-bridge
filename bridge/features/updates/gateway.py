@@ -269,10 +269,14 @@ def backup_configuration(data_dir, payload):
                 stream.write(raw)
             records[name] = {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
         write_json(backup / 'backup.json', {'schema': 1, 'transition': transition, 'files': records})
-        return {'backup': str(backup), 'files': len(files)}
     except Exception:
         shutil.rmtree(backup)
         raise
+    # A manual legacy installer never reaches apply(). Restore its settings only
+    # after the complete backup, and retain that backup if compatibility fails.
+    if payload.get('manualInstall') is True and transition['to'] == '2.2.1':
+        restore_legacy_client_settings(data, transition)
+    return {'backup': str(backup), 'files': len(files)}
 
 
 def write_json(path, value):
