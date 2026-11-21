@@ -71,6 +71,16 @@ test('Windows download preflight uses the current installation through the priva
   assert.equal(f.calls.workers[0].payload.target,path.dirname('/fixture/app/Bridge.exe'));
   assert.deepEqual(f.calls.exit,[]);
 });
+test('updater startup removes incomplete downloads and keeps all complete package versions',async t=>{
+  const scratch=path.resolve(__dirname,'../.tmp');fs.mkdirSync(scratch,{recursive:true});
+  const directory=fs.mkdtempSync(path.join(scratch,'update-cache-startup-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const updates=path.join(directory,'updates');fs.mkdirSync(updates);
+  const names=['1.0.0','2.0.0-preview.3','2.2.2-preview.3'].map(version=>`verified-${version}-darwin-arm64-${'a'.repeat(64)}.zip`);
+  for(const name of names)fs.writeFileSync(path.join(updates,name),'package');
+  fs.mkdirSync(path.join(updates,'download-stale'));fs.writeFileSync(path.join(updates,'download-stale','package.tmp'),'partial');
+  const f=controller({userData:directory,fixtureFiles:true});f.context.setupUpdater();await vm.runInContext('startupCleanup',f.context);
+  assert.deepEqual(fs.readdirSync(updates).sort(),names.sort());
+});
 
 test('selected channel crosses authorized IPC and confirmations default to cancel without installation',async()=>{
   let checked,installed=0;
@@ -91,6 +101,121 @@ test('confirmation forwards the checked identity and rechecks writes after the a
   vm.runInContext('workerWrites=1',f.context);release({response:1});await assert.rejects(pending,/当前操作/);assert.equal(installed,undefined);
   vm.runInContext('workerWrites=0',f.context);const again=f.invoke('bridge:install-update',{candidateId:'checked'});release({response:1});await again;
   assert.equal(installed.candidateId,'checked');assert.equal(installed.confirmed,true);
+});
+test('history and download IPC expose only the authorized opaque selection contract',async()=>{
+  let selected,listed=0,downloaded=0;
+  const f=controller(),value={candidateId:'historical',current:'2.2.2',version:'2.2.2-preview.3',intent:'switch-version',requiresConfirmation:true};
+  f.register({status:()=>value,listVersions:async()=>{listed++;return {releases:[]};},selectVersion:async id=>{selected=id;return value;},download:async({candidateId})=>{assert.equal(candidateId,'historical');downloaded++;return {state:'downloaded'};}});
+  for(const action of ['bridge:update-versions','bridge:download-update'])await assert.rejects(f.handlers.get(action)({sender:{},senderFrame:{}},{}),/不允许/);
+  await f.invoke('bridge:update-versions',{action:'list'});assert.equal(listed,1);
+  await f.invoke('bridge:update-versions',{action:'select',id:'opaque-asset'});assert.equal(selected,'opaque-asset');
+  await assert.rejects(f.invoke('bridge:update-versions',{action:'install',url:'https://example.invalid'}),/请求无效/);
+  await assert.rejects(f.invoke('bridge:download-update',{candidateId:'stale'}),/检查/);
+  assert.equal((await f.invoke('bridge:download-update',{candidateId:'historical'})).state,'downloaded');
+  assert.equal(downloaded,1);assert.equal(f.calls.dialogs.length,0);assert.deepEqual(f.calls.workers,[]);assert.deepEqual(f.calls.exit,[]);
+});
+test('download holds the shared cache lock while startup cleanup is pending',async()=>{
+  let release,downloaded=0;const f=controller();
+  f.context.fixtureCleanup=new Promise(resolve=>{release=resolve;});vm.runInContext('startupCleanup=fixtureCleanup',f.context);
+  f.register({status:()=>({candidateId:'selected'}),download:async()=>{downloaded++;return {state:'downloaded'};}});
+  const pending=f.invoke('bridge:download-update',{candidateId:'selected'});
+  await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids:['ignored']}),/更新完成/);
+  await assert.rejects(f.invoke('bridge:install-update',{candidateId:'selected'}),/当前操作/);
+  await assert.rejects(f.invoke('bridge:update-versions',{action:'select',id:'other'}),/当前操作/);
+  release();await pending;assert.equal(downloaded,1);
+});
+test('arbitrary version switching confirms exact target and distinguishes manual installation',async()=>{
+  for(const manualInstall of [false,true]){
+    let installed=0;const f=controller({confirm:async()=>({response:1})});
+    const value={candidateId:'selected',current:'2.2.2',version:'2.2.2-preview.3',assetName:'selected-package',intent:'switch-version',requiresConfirmation:true,manualInstall};
+    f.register({status:()=>value,install:async options=>{assert.equal(options.confirmed,true);assert.equal(options.candidateId,'selected');installed++;}});
+    await f.invoke('bridge:install-update',{candidateId:'selected'});
+    const dialog=f.calls.dialogs[0];assert.equal(dialog.defaultId,0);assert.equal(dialog.cancelId,0);
+    assert.match(dialog.message,/切换到所选版本/);assert.match(dialog.detail,/2\.2\.2 → 2\.2\.2-preview\.3/);assert.match(dialog.detail,/selected-package/);
+    assert.match(dialog.detail,manualInstall?/系统安装器/:/备份网关配置/);assert.equal(installed,1);
+  }
+});
+test('manual historical installers back up before handoff and never claim the application restarted',async()=>{
+  for(const [platform,extension] of [['darwin','dmg'],['win32','exe'],['linux','deb'],['darwin','zip'],['linux','AppImage']]){
+    const f=controller({platform}),archive='verified.'+extension;
+    const candidate={manualInstall:true,archive,version:'1.0.0',asset:{name:'package.'+extension},transition:{intent:'switch-version',from:'2.2.2-preview.3',to:'1.0.0',dataFormat:'bridge-data-v1'}};
+    const outcome=await f.context.installUpdate(candidate);
+    assert.equal(f.calls.workers[0].action,'update-backup');assert.equal(f.calls.workers[0].payload.manualInstall,true);
+    assert.equal(f.calls.workers[0].payload.transition,candidate.transition);
+    const reveal=['zip','AppImage'].includes(extension);
+    assert.equal(outcome.state,reveal?'downloaded':'installer-handoff');
+    assert.deepEqual(reveal?f.calls.revealed:f.calls.opened,[archive]);assert.deepEqual(f.calls.exit,[]);
+  }
+});
+function cacheController(t,options={}){
+  const {Updater}=require('../desktop/features/updates/updater.cjs'),scratch=path.resolve(__dirname,'../.tmp');fs.mkdirSync(scratch,{recursive:true});
+  const directory=fs.mkdtempSync(path.join(scratch,'update-cache-controller-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const f=controller(options),updater=new Updater({current:'2.2.1',directory,install:async()=>{}});
+  const ids=['2.2.1','2.2.2-preview.3'].map(version=>`verified-${version}-darwin-arm64-${'a'.repeat(64)}.zip`);
+  ids.forEach((id,index)=>fs.writeFileSync(path.join(directory,id),'x'.repeat(index+3)));
+  updater.set('available',{candidateId:'checked'});f.register(updater);
+  return {...f,updater,ids,directory};
+}
+test('cache IPC uses the authorized preload API and refuses another sender',async t=>{
+  let api;const calls=[];vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../desktop/preload.cjs'),'utf8'),{process:{platform:'darwin'},require:()=>({
+    contextBridge:{exposeInMainWorld(name,value){assert.equal(name,'bridgeDesktop');api=value;}},ipcRenderer:{invoke(...args){calls.push(args);}}})});
+  const payload={action:'list'};api.updateCache(payload);assert.deepEqual(calls,[['bridge:update-cache',payload]]);
+  const f=cacheController(t);
+  await assert.rejects(f.handlers.get('bridge:update-cache')({sender:{},senderFrame:{}},payload),/不允许/);
+  await assert.rejects(f.invoke('bridge:update-cache',{action:'install',id:f.ids[0]}),/请求无效/);
+});
+test('cache cancellation defaults to cancel and returns the unchanged idle list',async t=>{
+  const f=cacheController(t),before=await f.invoke('bridge:update-cache',{action:'list'});
+  const result=await f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]});
+  assert.equal(result.cancelled,true);assert.deepEqual(result.entries,before.entries);assert.equal(result.totalBytes,before.totalBytes);
+  assert.equal(f.calls.dialogs[0].defaultId,0);assert.equal(f.calls.dialogs[0].cancelId,0);assert.equal(f.calls.dialogs[0].noLink,true);
+  assert.match(f.calls.dialogs[0].detail,/1/);assert.match(f.calls.dialogs[0].detail,/MB/);assert.equal(fs.readFileSync(path.join(f.directory,f.ids[0]),'utf8'),'xxx');
+});
+test('cache confirmation deletes only checked packages and never accepts arbitrary paths',async t=>{
+  const f=cacheController(t,{confirm:async()=>({response:1})});
+  for(const ids of [['../'+f.ids[0]],['accounts.json'],[path.join(f.directory,f.ids[0])]])await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids}),/请求无效/);
+  assert.equal(f.calls.dialogs.length,0);
+  const result=await f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]});
+  assert.deepEqual(result.deleted,[f.ids[0]]);assert.equal(result.entries.length,1);assert.equal(result.entries[0].id,f.ids[1]);assert.equal(result.totalBytes,4);
+});
+test('delete confirmation holds its lock before awaiting and blocks concurrent installation',async t=>{
+  let release;const f=cacheController(t,{confirm:()=>new Promise(resolve=>{release=resolve;})});let installed=0;f.updater.install=async()=>{installed++;};
+  const deleting=f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]});
+  await assert.rejects(f.invoke('bridge:install-update',{candidateId:'checked'}),/当前操作/);
+  await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[1]]}),/更新完成/);
+  assert.ok((await f.invoke('bridge:update-cache',{action:'list'})).entries.every(entry=>entry.inUse));
+  await new Promise(setImmediate);release({response:0});await deleting;
+  await f.invoke('bridge:install-update',{candidateId:'checked'});assert.equal(installed,1);
+});
+test('installation holds its lock across startup cleanup and blocks cache deletion',async t=>{
+  const f=cacheController(t);let release,installed=0;
+  f.context.fixtureCleanup=new Promise(resolve=>{release=resolve;});vm.runInContext('startupCleanup=fixtureCleanup',f.context);
+  f.updater.install=async()=>{installed++;};const installing=f.invoke('bridge:install-update',{candidateId:'checked'});
+  await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]}),/更新完成/);
+  assert.ok((await f.invoke('bridge:update-cache',{action:'list'})).entries.every(entry=>entry.inUse));
+  release();await installing;assert.equal(installed,1);
+});
+test('cache deletion is blocked during each update state, confirmation and managed handoff',async t=>{
+  for(const state of ['downloading','preparing','restarting']){
+    const f=cacheController(t);f.updater.set(state);
+    assert.ok((await f.invoke('bridge:update-cache',{action:'list'})).entries.every(entry=>entry.inUse));
+    await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]}),/更新完成/);assert.equal(f.calls.dialogs.length,0);
+  }
+  for(const blocker of ['updateConfirmation=true','updateManaged=()=>true']){
+    const f=cacheController(t);vm.runInContext(blocker,f.context);
+    assert.ok((await f.invoke('bridge:update-cache',{action:'list'})).entries.every(entry=>entry.inUse));
+    await assert.rejects(f.invoke('bridge:update-cache',{action:'delete',ids:[f.ids[0]]}),/更新完成/);
+  }
+});
+test('confirmation rechecks update ownership and selected file identity before any deletion',async t=>{
+  for(const change of ['file','handoff','directory']){
+    let release;const f=cacheController(t,{confirm:()=>new Promise(resolve=>{release=resolve;})});
+    const deleting=f.invoke('bridge:update-cache',{action:'delete',ids:f.ids});await new Promise(setImmediate);
+    if(change==='file')fs.writeFileSync(path.join(f.directory,f.ids[1]),'replaced package');
+    else if(change==='directory'){fs.unlinkSync(path.join(f.directory,f.ids[1]));fs.mkdirSync(path.join(f.directory,f.ids[1]));}
+    else vm.runInContext('updateManaged=()=>true',f.context);
+    release({response:1});await assert.rejects(deleting,/已变化|更新完成/);assert.equal(fs.readFileSync(path.join(f.directory,f.ids[0]),'utf8'),'xxx');
+  }
 });
 test('Linux verified DEB handoff backs up first and never exits or claims completed installation',async()=>{
   const f=controller({platform:'linux'}),candidate={archive:'/private/verified.deb',version:'2.2.2-preview.2',asset:{name:'Bridge.deb'},transition:{intent:'update'}};
@@ -186,12 +311,12 @@ test('only the matching unfinished update binds the GUI data directory and ackno
   const foreign=launch();assert.equal(directory(foreign),explicit);assert.equal(foreign.updateManaged(),false);
   fs.unlinkSync(path.join(transaction,'launched.json'));
   const valid=launch();assert.equal(directory(valid),data);assert.equal(valid.updateManaged(),true);
-  let cleanupCount=0;valid.cleanupVerifiedPackages=()=>cleanupCount++;
-  vm.runInContext('updater={cleanupVerifiedPackages:async()=>cleanupVerifiedPackages()}',valid);
+  const cached=path.join(root,'updates','verified-2.0.0-preview.3-darwin-arm64-'+'a'.repeat(64)+'.zip');
+  fs.mkdirSync(path.dirname(cached));fs.writeFileSync(cached,'retained package');
   write('launched.json',{pid:123});await valid.acknowledgeUpdate();
-  assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});assert.equal(cleanupCount,1);fs.unlinkSync(ack);
+  assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});assert.equal(fs.readFileSync(cached,'utf8'),'retained package');fs.unlinkSync(ack);
   valid.worker=async()=>write('result.json',{state:'failed'});
-  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);assert.equal(cleanupCount,1);
+  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);assert.equal(fs.readFileSync(cached,'utf8'),'retained package');
   const finished=launch();assert.equal(directory(finished),explicit);assert.equal(finished.updateManaged(),false);
   const saved=path.join(root,'saved-test');
   fs.writeFileSync(path.join(root,'bridge-location.json'),JSON.stringify({dataDir:saved}));

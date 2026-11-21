@@ -8,6 +8,8 @@ Windows 网关曾在创建 `DesktopSessions` 时读取 `desktop-sessions/setting
 
 ## 决策
 
+缓存成功后自动清理的决定已被[用户选择历史版本并管理下载缓存](../feature/2026-11-21-release-history-and-download-cache.md)替代：完整包现在由用户勾选删除。下述原决定保留当时的交接约束与理由；Windows 配置权限、sidecar 和卸载范围继续有效。
+
 - Windows 上 `replace_session_file` 委托给 `local_service.write_private`，通过当前用户 SID 的受保护安全描述符创建临时文件并原子替换。这覆盖默认客户端设置、独立客户端设置及接入登记等共用此入口的 Bridge 文件。若旧 `settings.json` 可见但不可读，管理器切换到同目录的 `settings.user.json` 继续扫描和保存；sidecar 一旦存在就保持权威，不尝试夺取所有权或放宽旧 ACL。若 sidecar 也不可读，才进入只读降级并拒绝客户端设置写入。更新备份同时保存两条路径，跳过无法读取的旧主文件；返回不识别 sidecar 的稳定版时，在备份成功后原子地把有效 sidecar 写回 `settings.json`。主文件不可读且无 sidecar 时，回退在替换应用前停止，避免旧版启动崩溃或丢失客户端选择。
 - 更新器只把完整下载且匹配签名清单中 SHA-256 与长度的包放入稳定缓存。每次重试重新验证缓存；更新交接期间启动清理保留当前版本归档，只有新应用在完成启动检查并写入确认后才清理验证包。临时下载目录仍在进程重启时清理。
 - Windows 卸载提供默认不选中的数据清理段，只允许删除 `%APPDATA%\codex-mobile-bridge-desktop`。递归预检遇到重解析点、无法核验的项目、`claude-accounts` 目录或网关运行控制记录时保留整个数据目录；清理前再由用户确认。自动更新跳过清理段，不触碰 `%APPDATA%\Codex`。

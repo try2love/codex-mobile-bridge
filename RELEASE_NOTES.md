@@ -10,13 +10,16 @@
 - **连接恢复与长会话读取。** 改善 Codex 重开后的接入恢复，冷聊天和单聊天重建不再连带断开其他聊天；实时连接优先跟随当前回合，较早历史按需读取，编辑重发后仍可查看保留的前文。
 - **运行状态展示。** 修正历史时间单位混用导致的异常超大用时；自动重试警告不再反复作为终止错误置底，真实失败和工具错误继续显示。
 - **手机应用图标。** Android 和 iOS 同步新版图标，补齐此前只更新桌面与网页的遗漏。[#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
-- **更新失败后重试。** 重用已通过签名与完整性校验的更新包，减少重复下载；新版本成功启动并确认后再清理更新包。
+- **自由选择网关版本。** 从更新页查看全部已发布的正式版与预览版，并选择适合本机系统与架构的安装包；可单独下载，也可确认后切换到较新、较旧或当前版本。后续正式版与本预览版可双向切换，较早安装包保留明确的手动安装入口。
+- **下载缓存管理。** 完整安装包在更新成功后继续保留，列表标注版本、系统、架构、格式和大小，可勾选删除；重复下载或安装前重新校验并复用缓存。
 - **Windows 配置与恢复。** 改善配置文件权限处理，保留恢复副本；返回稳定版时恢复兼容配置。
 - **卸载数据保留。** 默认保留数据，可选择仅清理 Bridge 自有目录。
 
 ### 更新说明
 
 这是预览版，v2.2.1 仍为最新稳定版。v2.2.1 的既有更新器不会发现预览版，首次体验需手动安装；preview.1 的 Mac/Windows 用户及 preview.2 用户可通过检查更新升级；Linux preview.1 需手动安装。
+
+从 Preview 3 开始，版本选择与下载缓存由用户管理；旧程序不会因此自动获得新入口。自动替换继续校验发布签名、安装包和资料格式，并在切换前备份当前网关配置。需手动安装的包会明确提示，打开安装器不代表安装已完成。
 
 Android 版本为 **2.2.2-preview.3**，build **63**，沿用 v2.2.1、preview.1 和 preview.2 的应用标识与持久签名，可覆盖升级。iOS marketing version 为 **2.2.2**、build **63**；未签名 IPA 需要自行签名。原生操作以客户端实际能力为准。
 
@@ -34,13 +37,16 @@ This preview supports newer Codex Desktop native connections and improves gatewa
 - **Connection recovery and long chats.** Improve recovery after Codex reopens. Joining a cold chat or rebuilding one chat no longer disconnects other chats. Follow the current native turn first, load older history on demand, and retain readable history after editing and resending.
 - **Runtime status.** Fix excessively large elapsed times caused by mixed timestamp units. Automatic retry warnings no longer recur as terminal errors; actual failures and tool errors remain visible.
 - **Mobile app icons.** Update Android and iOS icons to match the new artwork previously shipped on desktop and web. [#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
-- **Retry failed updates.** Reuse update packages that passed signature and integrity checks to avoid repeated downloads; clean them up after the new version starts successfully and is confirmed.
+- **Choose any gateway release.** Browse all published stable and preview releases and select packages for the current OS and architecture. Download without installing, or explicitly switch to a newer, older or current version. Future stable releases and this preview support switching in either direction; older packages retain an explicit manual installation path.
+- **Manage download caches.** Keep complete packages after successful updates. See each version, OS, architecture, format and size, and select packages to delete. Revalidate cached files before reusing them for a download or installation.
 - **Windows configuration and recovery.** Improve configuration file permissions and retain recovery copies; restore compatible settings when returning to stable.
 - **Keep data during uninstall.** Preserve data by default, with an option to remove only Bridge-owned directories.
 
 ### Installation
 
 v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 users on macOS/Windows and preview.2 users can check for updates. Linux preview.1 requires a manual install.
+
+Starting with Preview 3, users control version selection and download caches; previously installed older apps do not gain the new chooser automatically. Automatic replacement still validates the signed release, package and data format, and backs up current gateway settings before switching. Manual installation is clearly labeled; opening an installer does not mean installation has completed.
 
 Android version **2.2.2-preview.3**, build **63**, keeps the application and persistent signing identities used by v2.2.1, preview.1 and preview.2 for in-place upgrades. iOS marketing version is **2.2.2**, build **63**; the unsigned IPA requires your own signing. Native operations depend on the connected client's capabilities.
 

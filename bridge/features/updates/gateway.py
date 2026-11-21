@@ -55,9 +55,14 @@ def validate_transition(target, payload):
     installed = read_record(locations(Path(target))[2] / 'update-version.json')
     if not installed or installed.get('version') != transition['from']:
         raise ValueError('当前安装版本已变化，请重新检查更新。')
-    if installed.get('dataFormat', DATA_FORMAT) != DATA_FORMAT:
+    switching = transition['intent'] == 'switch-version'
+    default_format = None if switching and installed['version'] != '2.2.1' else DATA_FORMAT
+    source_format = installed.get('dataFormat', default_format)
+    if source_format != DATA_FORMAT:
         raise ValueError('当前资料格式尚未核验，已取消安装。')
     before, after = version_key(transition['from']), version_key(transition['to'])
+    if switching:
+        return transition  # The selected archive must independently prove its data format in prepare().
     if after < before:
         if (transition['intent'] != 'return-stable' or transition['to'] != '2.2.1'
                 or not RETURN_STABLE_SOURCE.fullmatch(transition['from'])):
@@ -186,7 +191,7 @@ def configuration_snapshot(data, *, rollback=False):
 
 def restore_legacy_client_settings(data, transition):
     """Make client settings readable by stable builds that predate the sidecar."""
-    if transition.get('intent') != 'return-stable':
+    if transition.get('intent') not in ('return-stable', 'switch-version') or transition.get('to') != '2.2.1':
         return False
     directory = data/'desktop-sessions'
     primary, fallback = directory/'settings.json', directory/'settings.user.json'
@@ -244,12 +249,12 @@ def private_directory(path):
 
 
 def backup_configuration(data_dir, payload):
-    """Durable safety copy only. User rollback always opens current live data."""
+    """Copy current live data; this does not establish a manual target's compatibility."""
     data = Path(data_dir).resolve()
     transition = validate_transition(payload['target'], payload)
     if transition is None:
         raise ValueError('备份缺少已确认的版本操作。')
-    files = configuration_snapshot(data, rollback=transition['intent'] == 'return-stable')
+    files = configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'))
     parent = private_directory(data / 'update-backups')
     backup = private_directory(parent / uuid.uuid4().hex)
     try:
@@ -489,7 +494,7 @@ def prepare(data_dir, payload):
     preflight(target)
     transition = validate_transition(target, payload)
     if transition:
-        configuration_snapshot(data, rollback=transition['intent'] == 'return-stable')
+        configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'))
     digest = hashlib.sha256()
     with open(payload['archive'], 'rb') as stream:
         for chunk in iter(lambda: stream.read(1024*1024), b''):
@@ -510,8 +515,10 @@ def prepare(data_dir, payload):
         new_app, new_worker, resources = locations(staged)
         metadata = json.loads((resources / 'update-version.json').read_text(encoding='utf-8'))
         expected = {'version': payload['version'], 'platform': payload['platform'], 'arch': payload['arch']}
+        default_format = (None if transition and transition['intent'] == 'switch-version'
+                          and payload['version'] != '2.2.1' else DATA_FORMAT)
         if (any(metadata.get(key) != value for key, value in expected.items())
-                or set(metadata) - {*expected, 'dataFormat'} or metadata.get('dataFormat', DATA_FORMAT) != DATA_FORMAT):
+                or set(metadata) - {*expected, 'dataFormat'} or metadata.get('dataFormat', default_format) != DATA_FORMAT):
             raise ValueError('更新包版本或平台不匹配。')
         if not new_app.is_file() or not new_worker.is_file():
             raise ValueError('更新包缺少应用程序。')
