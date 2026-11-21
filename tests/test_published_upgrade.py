@@ -51,16 +51,16 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         self.rejected('differs from product', changed='tests/browser/unreviewed-fixture.spec.cjs\n')
 
     def test_preview3_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
-        product = json.loads((ROOT/'package.json').read_text())
+        product = json.loads((ROOT/'package.json').read_text(encoding='utf-8'))
         self.assertEqual(product['version'], prepare.VERSION)
         self.assertEqual(prepare.VERSION, '2.2.2-preview.3')
         self.assertEqual(prepare.BASELINES, (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True), ('2.2.2-preview.2', 'preview2', True)))
         self.assertEqual(prepare.BASE, '7672f49605a972c3d6b2e79dcde780ede1ee1642')
-        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text()
+        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text(encoding='utf-8')
         self.assertIn('fetch-depth: 0', workflow)
 
     def test_intel_supplement_executes_sha_checkout_and_version_guards(self):
-        workflow = (ROOT/'.github/workflows/mobile.yml').read_text()
+        workflow = (ROOT/'.github/workflows/mobile.yml').read_text(encoding='utf-8')
         blocks = workflow.split("python3 - <<'PY'\n")[1:]
         self.assertEqual(len(blocks), 2)
         for block in blocks:
@@ -81,7 +81,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
                 run(version='2.2.2-preview.1')
 
     def test_acceptance_platform_selector_preserves_all_or_selects_windows_only(self):
-        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text()
+        workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text(encoding='utf-8')
         code = textwrap.dedent(workflow.split("python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0])
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             output = Path(folder)/'matrix'
@@ -95,7 +95,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
                         self.assertFalse(output.exists())
                         continue
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    rows = json.loads(output.read_text().removeprefix('matrix='))['include']
+                    rows = json.loads(output.read_text(encoding='utf-8').removeprefix('matrix='))['include']
                     self.assertEqual(len(rows), count)
                     self.assertEqual({row['artifact'] for row in rows}, {'desktop-Windows-x64'} if count == 1 else
                         {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Windows-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})
