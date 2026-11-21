@@ -1002,4 +1002,4 @@ PushPlus 通过微信接收通知，**接入前需要付费实名认证，最低
 - Token 保存到本机通知配置文件；电脑 App 默认遮罩显示并支持查看，网页不回传已保存的 Token。留空保留原 Token，关闭通道后可勾选清除。
 - 点击聊天顶部标题，在聊天详情中选择 **修改聊天名称**，输入新名称并保存（最多 120 个字符）。名称写入该聊天所在主机的 Codex；支持本机和 SSH 聊天，网页列表与标题同步更新。
 
-实验接入与新增选项：[IPv6 源码监听](docs/ipv6-listening.md)、[通知回答预览](docs/webhook-notifications.md#完成通知中的回答预览)。Git 工作区差异和提交历史差异可在“阅读设置”中调整文件字号和自动换行。
+实验接入与新增选项：[IPv6 源码监听](docs/ipv6-listening.md)、[HarmonyOS 实验客户端](mobile/harmony/README.md)、[通知回答预览](docs/webhook-notifications.md#完成通知中的回答预览)。Git 工作区差异和提交历史差异可在“阅读设置”中调整文件字号和自动换行。

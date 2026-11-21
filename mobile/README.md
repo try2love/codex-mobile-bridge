@@ -236,3 +236,7 @@ iOS 构建入口 `scripts/build-mobile-ios.py` 生成未签名 IPA 和包含受�
 可选 APNs/FCM 接入见 [推送开发说明](push/README.md)。普通 APK 不含 Firebase SDK；没有配置自有推送服务和签名时，源码能力不等于远程推送可用。iOS 远程通知图片由 BridgeNotifications 扩展处理，需一同构建和签名。第三方许可见 [NOTICE.md](NOTICE.md)。
 
 手机 App 的主题在「手机设置」和聊天「外观与显示」之间同步，可选择跟随系统、浅色或深色；电脑连接页、列表、聊天和设置使用同一选择。切换时保留当前聊天和草稿，其他显示偏好不变。
+
+## HarmonyOS 实验工程
+
+[HarmonyOS 客户端](harmony/README.md)提供独立的单入口网页壳源码。当前未完成 DevEco 构建与真机验收，支持范围和签名配置见该目录说明。
