@@ -58,6 +58,10 @@ npm run test:browser
 
 新版 Codex Desktop 接入的定向入口为 `test_hosted_desktop.py`。`python3 -B scripts/smoke-hosted-desktop.py --codex <已安装原生运行时绝对路径>` 在 `.tmp/` 新建私有配置，以真实原生执行器和 loopback 模型验证生产 Bridge 的历史读取、发送、中断、审批取消及同一执行器重连。该入口不连接用户的 App、账号或正式 daemon；原 App 启动握手、真实 GUI 同步与 Windows 成品另行验收。
 
+Codex 初始化连接使用 `test_desktop_runtime_accounts.py`、`test_client_lifecycle.py` 和 `test_hosted_desktop.py` 验证同一初始化事务、实时连接证据、任务保护与过期通道；`test_codex_desktop_runtime.py` 和 `test_hosted_desktop.py` 还覆盖新增启动参数、字段、消息类型和通知后保留既有读取与发送，不使用 App 版本白名单。浏览器 `critical.spec.cjs` 会实际执行 `codex-initialization.browser.js`，检查远程与桌面网关的按钮、确认、取消零请求和在途操作去重；合成请求不会初始化真实 Codex。
+
+Linux 的定向源码入口为 `test_codex_linux_desktop.py`，覆盖已解包 Electron 布局、XDG 用户菜单入口及原文件保全。它不代表真实 Linux 菜单启动、原生执行器或 AppImage 已验收。Windows 初始化复用既有 MSIX/执行别名与私有管道，普通图标启动的持久环境接入仍需独立实现和实机验收；macOS 的验证结果不能代替它。
+
 macOS 普通启动的源码回归为 `test_codex_ordinary_launch.py`。原生分派器编译后，`python3 -B scripts/smoke-codex-ordinary-launch.py` 使用独立合成 App 实际验证 Launch Services 环境继承、安装/profile 分派及缺少网关时的原生透传。它临时设置并恢复当前用户的 `CODEX_CLI_PATH`，不启动真实 Codex，不读取账号、不发送模型消息；不随纯源码 discovery 自动执行。
 
 原生侧边聊天使用 `test_native_side_chat.py`、`test_store.py` 和浏览器的 `native-side-chat.spec.cjs` 验证持久化创建、父子归属、标准聊天路由与关闭视图不删除。旧 `test_side_chat.py` 中保留临时运行时回归，仅保护升级前已打开的旧页面；新增侧边聊天不再使用该运行时。独立侧边输入区和附件 UI 夹具已移除，现复用标准会话的相应用例。

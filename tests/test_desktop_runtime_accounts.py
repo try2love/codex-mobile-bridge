@@ -308,7 +308,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             self.manager.control(self.value)
         self.assertFalse(self.manager.desktop_runtime_status()['supported'])
         self.bridge.host = 'local'
-        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='linux')):
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='other')):
             with self.assertRaisesRegex(ValueError, '不支持'):
                 self.manager.control(self.value)
         self.mocks['stop'].assert_not_called()
@@ -654,7 +654,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         with self.manager.desktop_runtime_lifecycle():
             pass
         self.bridge.host = 'local'
-        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='linux')):
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='other')):
             with self.manager.desktop_runtime_lifecycle():
                 pass
         self.mocks['initialize_lock'].assert_not_called()

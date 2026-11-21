@@ -18,6 +18,17 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Codex initialization is available remotely and shares one confirmed native transaction',async({page})=>{
+  await ready(page,'session-menu');
+  await page.waitForFunction(()=>typeof clientNavigation!=='undefined'&&clientNavigation.clients.length>0);
+  await page.evaluate(readFileSync(path.join(__dirname,'codex-initialization.browser.js'),'utf8'));
+  const result=await page.evaluate(()=>runCodexInitializationChecks());
+  expect(result.passed).toBe(8);
+  await page.evaluate(readFileSync(path.join(__dirname,'../../desktop/features/clients/desktop-sessions.js'),'utf8'));
+  const desktop=await page.evaluate(()=>runCodexGatewayInitializationChecks());
+  expect(desktop.passed).toBe(4);
+});
+
 test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
   await ready(page);
   await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));

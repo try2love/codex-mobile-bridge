@@ -18,6 +18,17 @@ function fixture({accounts=false}={}){
   return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
+test('Codex gateway initialization uses the same account transaction and has no separate toggle write',async()=>{
+ for(const accepted of [false,true]){
+  const ui=fixture(),panel=ui.panel,calls=[];
+  panel.clients=[{id:'codex',name:'Codex',enabled:true,installed:true,configured:true,connected:false,canInitializeDesktop:true}];panel.gatewayRunning=true;
+  panel.api.accounts=async body=>{calls.push(body);return {switch:{phase:'preparing'}};};panel.refreshClients=async()=>{};
+  panel.renderClients();assert.match(ui.text(),/初始化连接/);
+  ui.setInitializeChoice(accepted);await panel.toggleClient('codex',true,{initializeDesktop:true});
+  assert.equal(calls.length,accepted?1:0);assert.equal(ui.calls.length,0);
+  if(accepted){assert.equal(calls[0].action,'initializeDesktopRuntime');assert.match(calls[0].requestId,/^[0-9a-f-]{36}$/);}
+ }
+});
 test('Antigravity management edits only the selected source session without claiming accounts support',async()=>{
   const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,installed:true,capabilities:{accounts:false,management:true}};ui.panel.clients=[client];
   const sources=['app','cli','ide'].map(id=>({id,name:id.toUpperCase(),historyAvailable:true,connected:id==='cli',sessions:[{id:id+'-session',title:id,model:'',permissionMode:'desktop'}]}));

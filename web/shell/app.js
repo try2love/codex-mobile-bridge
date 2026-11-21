@@ -1068,6 +1068,8 @@ function renderState(view){
   $('reconnect').hidden=limited&&!access.canReconnect;
   $('reconnect').textContent=t(access.source==='cli'?'继续会话':view.rebuildRecommended||view.desktopRestartRecommended?'重建连接':'重新连接');
   $('reconnect-manager').hidden=view.connected||!view.desktopRestartRecommended;
+  const nativeClient=clientNavigation?.managementClients().find(client=>client.id==='codex');
+  $('initialize-codex').hidden=view.connected||currentHost!=='local'||access.source!=='desktop'||nativeClient?.canInitializeDesktop!==true;
   renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
   $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!access.canSend;
   $('message').disabled=limited&&!access.canSend;
@@ -1330,6 +1332,10 @@ $('reconnect').onclick=async()=>{
   finally{$('reconnect').disabled=false;}
 };
 $('reconnect-manager').onclick=()=>clientNavigation.openManager();
+$('initialize-codex').onclick=async()=>{
+  const button=$('initialize-codex');if(button.disabled)return;button.disabled=true;
+  try{await clientNavigation.initialize('codex');}finally{button.disabled=false;}
+};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));

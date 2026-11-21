@@ -5,6 +5,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,31 @@ from bridge.clients.codex.ipc import DesktopIPC, IPCError, validate_stream_state
 
 
 class HostedOwnerTests(unittest.TestCase):
+    def test_desktop_readiness_uses_native_endpoint_or_real_desktop_snapshot(self):
+        from bridge.app.service import Bridge
+        bridge = SimpleNamespace(local=True, observation_enabled=lambda:True, codex_home=Path('/fixture'),
+            ipc=SimpleNamespace(lock=threading.RLock(), socket=object(), client_id='client'),
+            lock=threading.RLock(), live={})
+        with patch.object(runtime, 'hosted_endpoint', return_value=None) as endpoint:
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['ide'] = SimpleNamespace(origin='ide', runtime='desktop', connected=True)
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['desktop'] = SimpleNamespace(origin='desktop', runtime='desktop', connected=True)
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = None
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.return_value = {'path':'/verified.sock', 'generation':'g'}
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = object()
+            bridge.ipc.hosted = True
+            bridge.ipc.path = '/verified.sock'
+            bridge.ipc.hosted_generation = 'g'
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.hosted_generation = 'previous'
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.side_effect = ValueError('process generation changed')
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+
     def test_primary_app_and_its_bundled_host_have_the_same_verified_owner(self):
         app = {'pid': 1, 'parent': 99, 'image': '/Applications/Codex.app/Contents/MacOS/Codex'}
         host = {'pid': 2, 'parent': 1, 'image': '/Applications/Codex.app/Contents/Frameworks/Runtime.framework/Helpers/Host.app/Contents/MacOS/Host'}
@@ -180,6 +206,19 @@ class HostedSessionTests(unittest.TestCase):
         self.addCleanup(self.sessions._disconnect)
         self.addCleanup(self.router.close)
         self.router.from_app({'id': 1, 'method': 'initialize', 'params': {}})
+
+    def test_additive_features_fields_items_and_notifications_preserve_baseline_control(self):
+        self.thread['newFeature'] = {'enabled': True}
+        self.turns[0]['newFeature'] = {'enabled': True}
+        self.items.append({'turnId': 'turn', 'item': {'id': 'future', 'type': 'futureWidget', 'newField': [1, 2]}})
+        state = self.sessions.attach('t')
+        validate_stream_state(101, {**state, 'futureState': {'enabled': True}})
+        event = {'method': 'futureFeature/progress', 'params': {'threadId':'t', 'newField': {'x':1}}}
+        self.router.from_native(event)
+        self.assertEqual(self.app[-1], event)
+        result = self.sessions.call('t', 'thread-follower-start-turn', {'message':'baseline after additive update'})
+        self.assertIsInstance(result, dict)
+        self.assertTrue(any(packet.get('method') == 'turn/start' for packet in self.writes))
 
     def test_passive_attach_reads_paged_history_without_resuming(self):
         state = self.sessions.attach('t')

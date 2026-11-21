@@ -18,6 +18,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ClientLifecycleTests(unittest.TestCase):
+    def test_codex_running_and_configured_is_not_connection_evidence(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported': True, 'preparation': {}})
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertFalse(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.bridge.desktop_connection_ready.return_value = True
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertFalse(client['canInitializeDesktop'])
+
+    def test_codex_initialization_state_blocks_duplicate_buttons_until_worker_finishes(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported':True, 'preparation':{}})
+        self.accounts.state = {'operation':'desktopRuntime', 'phase':'verifying'}
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertEqual(client['connectionState'], 'connecting')
+        self.assertFalse(client['canInitializeDesktop'])
+        self.accounts.state.update(phase='failed', taskStateUnavailable=True)
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+
     def test_wsl_is_a_codex_entry_and_never_uses_native_desktop_lifecycle(self):
         from bridge.features.endpoints.registry import Entries
         from bridge.platforms.windows import wsl

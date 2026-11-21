@@ -31,7 +31,7 @@ test('CLI creation picker offers existing and custom folders with an accurate ac
 function node(){return {dataset:{},setAttribute(){},addEventListener(){},hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
 function fixture(){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
-  const ctx={composerToolbar:undefined,CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,clientNavigation:{provider:'codex'},listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogData:{models:null,skills:null},catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
+  const ctx={composerToolbar:undefined,CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,clientNavigation:{provider:'codex',managementClients:()=>[]},listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogData:{models:null,skills:null},catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
   ctx.chatOpenGeneration=0;ctx.modelCatalogGeneration=0;ctx.setTimeout=fn=>fn();ctx.chatTimeline.abort={signal:{aborted:false}};
   ctx.document={createElement:()=>node(),querySelectorAll:()=>[]};ctx.BridgeI18n.language=()=> 'en-US';ctx.BridgeI18n.t=ctx.t;
   vm.createContext(ctx);require('./fixtures/codex-entry-predicates.cjs')(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/activity.js'),'utf8'),ctx);
@@ -176,6 +176,16 @@ test('switching from a restricted WSL chat restores APP controls and queue avail
   assert.equal($('skills-button').hidden,false);assert.equal($('permissions-button').hidden,false);assert.equal($('work-mode').hidden,false);assert.equal(queue.disabled,false);
 });
 
+test('disconnected native Desktop chat offers initialization and keeps CLI and remote hosts separate',async()=>{
+ const {ctx,$}=fixture(),calls=[];
+ const client={id:'codex',canInitializeDesktop:true};ctx.clientNavigation.managementClients=()=>[client];ctx.clientNavigation.initialize=async id=>calls.push(id);
+ const view={access:{source:'desktop',runtime:'desktop',canReconnect:true},connected:false,status:'idle',requests:[],submissions:[],historyComplete:true};
+ ctx.renderState(view);assert.equal($('initialize-codex').hidden,false);
+ vm.runInContext(reconnectCode,ctx);await $('initialize-codex').onclick();assert.deepEqual(calls,['codex']);
+ ctx.renderState({...view,connected:true});assert.equal($('initialize-codex').hidden,true);
+ ctx.renderState({...view,access:{source:'cli',runtime:'cli'}});assert.equal($('initialize-codex').hidden,true);
+ ctx.currentHost='remote:fixture';ctx.renderState(view);assert.equal($('initialize-codex').hidden,true);
+});
 test('desktop router failure offers explicit rebuild and keeps failure plus draft visible',async()=>{
   const {ctx,$}=fixture(),view={host:'local',connected:false,status:'idle',requests:[],submissions:[],historyComplete:true,rebuildRecommended:true,access:{source:'desktop',canReconnect:true}};
   $('message').value='unsent draft';ctx.renderState(view);
@@ -190,7 +200,7 @@ test('a failed rebuild keeps retry and app management independently available',a
   const {ctx,$}=fixture(),calls=[];
   const view={host:'local',connected:false,status:'idle',requests:[],submissions:[],historyComplete:true,desktopRestartRecommended:true,rebuildRecommended:false,access:{source:'desktop',canReconnect:true}};
   $('message').value='unsent draft';ctx.renderState(view);
-  ctx.clientNavigation={openManager(){calls.push('manager');}};
+  ctx.clientNavigation={managementClients:()=>[],openManager(){calls.push('manager');}};
   ctx.sessionUrl=(id,action,host)=>`${host}/${id}/${action}`;
   ctx.api=async(url,body)=>{calls.push({url,body});return {connected:true};};
   vm.runInContext(reconnectCode,ctx);

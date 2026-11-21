@@ -3812,6 +3812,30 @@ class Bridge:
                     session.access = self._access(session.origin, session)
                     session.changed()
 
+    def desktop_connection_ready(self):
+        """Only native connection evidence counts; config and a GUI PID do not."""
+        if not self.local or not self.observation_enabled():
+            return False
+        from bridge.clients.codex.desktop_runtime import hosted_endpoint
+        try:
+            # A ready record is published only after the App's native handshake.
+            # Verify the complete live generation and its private endpoint.
+            endpoint = hosted_endpoint(self.codex_home)
+            if endpoint is not None:
+                with self.ipc.lock:
+                    return bool(self.ipc.socket and self.ipc.client_id and self.ipc.hosted and
+                        self.ipc.path == endpoint['path'] and
+                        self.ipc.hosted_generation == endpoint['generation'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        with self.ipc.lock:
+            if not self.ipc.socket or not self.ipc.client_id:
+                return False
+        with self.lock:
+            sessions = list(self.live.values())
+        return any(session.origin == 'desktop' and session.runtime == 'desktop' and session.connected
+                   for session in sessions)
+
     def desktop_restart_recommended(self):
         with self.lock:
             return any(session.desktop_restart_recommended and not session.connected
