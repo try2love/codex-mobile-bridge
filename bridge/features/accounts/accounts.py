@@ -23,6 +23,11 @@ from pathlib import Path
 from contextlib import nullcontext
 from urllib.parse import urlsplit
 
+try:
+    import tomllib
+except ImportError:
+    from bridge.vendor import wsl_tomli as tomllib
+
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.errors import TaskStateUnavailable, TaskAuditIncomplete
@@ -309,12 +314,12 @@ class Accounts:
     def management(self):
         try:
             text = (self.home/'config.toml').read_text(encoding='utf-8')
+            detected = magpie_managed(config=tomllib.loads(text))
         except FileNotFoundError:
-            text = ''
-        except (OSError, UnicodeError):
+            detected = False
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError, ImportError):
             return {'mode': 'external', 'external': True, 'reason': '无法确认接入配置，已暂停覆盖配置'}
         configured = self.index.get('accessManagement', 'auto')
-        detected = magpie_managed(text=text)
         return {'mode': configured, 'external': configured == 'external' or detected,
                 'detected': 'magpie' if detected else None,
                 'reason': '此入口由 Magpie 或外部工具管理；请在原工具中切换接入' if configured == 'external' or detected else None}
