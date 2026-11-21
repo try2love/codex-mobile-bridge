@@ -179,6 +179,33 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(after['rows'], [])
         self.assertIsNone(session.state['title'])
 
+    def test_session_list_does_not_wait_for_a_busy_session_to_observe_its_title(self):
+        from concurrent.futures import ThreadPoolExecutor
+        session = self.bridge.live[THREAD] = LiveSession(THREAD)
+        held, release, listed = threading.Event(), threading.Event(), threading.Event()
+        def hold_session():
+            with session.condition:
+                held.set()
+                release.wait(3)
+        def read_list():
+            rows = self.bridge.list(local_only=True)
+            listed.set()
+            return rows
+        with ThreadPoolExecutor(2) as pool:
+            holder = pool.submit(hold_session)
+            self.assertTrue(held.wait(1))
+            pending = pool.submit(read_list)
+            try:
+                self.assertTrue(listed.wait(.5), 'list waited for unrelated live-session work')
+            finally:
+                release.set()
+            rows = pending.result(2)
+            holder.result(2)
+        self.assertEqual([row['id'] for row in rows], [THREAD])
+        self.assertEqual(rows[0]['title'], 'Desktop test')
+        self.bridge.list(local_only=True)
+        self.assertEqual(session.saved_title, 'Desktop test')
+
     def test_desktop_router_restart_rediscovers_owner_without_restarting_gateway(self):
         session = self.bridge.session(THREAD)
         self.assertTrue(session.connected)

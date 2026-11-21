@@ -153,12 +153,18 @@ class LiveSession:
         title = metadata.get('name') or metadata.get('title')
         if not isinstance(title, str) or not title.strip() or title == '未命名聊天':
             return
-        with self.condition:
+        # A list refresh only observes display metadata. Native state handling
+        # must not make the whole chat list wait for this optional title update.
+        if not self.condition.acquire(blocking=False):
+            return
+        try:
             if title != self.saved_title:
                 self.saved_title = title
                 source = (self.state if self.connected else self.history_state or self.state) or {}
                 if source.get('title') in (None, '', '未命名聊天'):
                     self.changed()
+        finally:
+            self.condition.release()
 
     def timeline_view(self, conversation=False):
         # Presentation only. Actions still call view() against current state.

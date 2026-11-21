@@ -5,6 +5,7 @@ Bridge snapshots use its existing internal IPC representation, not App broadcast
 """
 import copy
 import hmac
+import io
 import json
 import logging
 import os
@@ -28,6 +29,19 @@ from . import desktop_runtime as runtime
 
 CONTROL_METHODS = frozenset(('thread/loaded/list', 'thread/turns/list', 'thread/items/list',
     'turn/start', 'turn/steer', 'turn/interrupt', 'thread/settings/update', 'thread/compact/start'))
+
+
+def _forward_native_output(stream, router, stopped):
+    # Popen keeps stdin unbuffered; reading lines from its raw stdout would
+    # issue one OS read per byte and stall all replies behind large histories.
+    stream = io.BufferedReader(stream)
+    while not stopped.is_set():
+        line = stream.readline(MAX_LINE + 2)
+        if not line:
+            return
+        if len(line.rstrip(b'\r\n')) > MAX_LINE:
+            raise ValueError('原生桌面回执过大')
+        router.from_native(json.loads(line))
 
 
 class _NativeClient:
@@ -404,13 +418,7 @@ def serve(config, app, host, arguments, initialize, env=None):
 
     def output():
         try:
-            while not stopped.is_set():
-                line = child.stdout.readline(MAX_LINE + 2)
-                if not line:
-                    return
-                if len(line.rstrip(b'\r\n')) > MAX_LINE:
-                    raise ValueError('原生桌面回执过大')
-                router.from_native(json.loads(line))
+            _forward_native_output(child.stdout, router, stopped)
         except (OSError, ValueError, AppServerError) as exc:
             logging.getLogger(__name__).warning('Codex native Desktop transport stopped: %s', exc)
         finally:

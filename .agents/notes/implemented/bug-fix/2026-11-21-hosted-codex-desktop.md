@@ -24,8 +24,12 @@ macOS 只接受主 App 或其应用包 Frameworks 内、直接隶属于该主 Ap
 
 ## 验证
 
+- 后续 8788 实测暴露了未覆盖的大回执与并发读取：原生子进程保持 `bufsize=0`，其原始 stdout 的 `readline()` 会逐字节调用底层读取。实机采样主要落在该路径；4 MiB 受控回执原先需要约 419 万次读取。现在只对 stdout 使用缓冲读取，stdin 继续保留原有即时写入和原始请求顺序。块读取、分片 UTF-8、EOF 与尺寸限制有回归，不增加版本、账号或供应商分支。
+- 列表只同步展示标题，遇到会话状态锁繁忙时跳过本次标题观察，后续读取继续同步；保存历史中的列表标题可直接返回。真实 `Bridge.list()` 回归在另一线程持有会话锁时先复现阻塞，再验证列表即时完成及随后标题更新。发送、审批、停止等操作仍使用原有锁与即时校验。
+- 初次单会话读写通过不能覆盖长历史和并发用户访问。`scripts/smoke-hosted-desktop.py --response-bytes 4194304` 使用同一个 loopback 原生写入者测试 4 MiB 历史、重连、发送、中断与审批；中断后等待 Bridge 确实观察到同一回合结束，不能把桌面已收到事件当成所有 follower 都已同步。
 - 新增回归覆盖生产 IPC 初始化、owner 发现和跟随、分页及空历史、原始配置保留、状态未知拒绝写入、发送超时不重放、审批归属、重复审批、已解决审批、原生元数据拒绝语义，以及新旧主进程拓扑。
-- 最终定向回归：`test_hosted_desktop.py` 18 项、`test_bridge.py` 122 项、`test_codex*.py` 186 项、`test_desktop*.py` 262 项、`test_stream_compatibility.py` 9 项均通过各自运行入口；Bridge/Codex 组分别按平台跳过 2/3 项。资源与平台定向检查、模块边界检查另行通过。笔记格式检查通过；全树链接检查仍报告发布基线已有的 `2026-11-12-chat-media-playback.md` 中示例链接“本机路径”，未为本次接入修复而改动该文件。
+- 延迟修复定向回归：`test_hosted_desktop_output.py` 3 项、`test_hosted_desktop.py` 18 项、`test_desktop_stdio.py` 10 项、`test_stream_compatibility.py` 9 项、`test_bridge.py` 123 项均通过，其中 Bridge 按平台跳过 2 项。本地 preview3 Test 成品完成签名校验，并由独立 Codex App 真实启动、读取元数据和握手后正常退出；这些隔离回归不替代用户实际浏览器或手机验收。
+- 初次接入定向回归：`test_hosted_desktop.py` 18 项、`test_bridge.py` 122 项、`test_codex*.py` 186 项、`test_desktop*.py` 262 项、`test_stream_compatibility.py` 9 项均通过各自运行入口；Bridge/Codex 组分别按平台跳过 2/3 项。资源与平台定向检查、模块边界检查另行通过。笔记格式检查通过；全树链接检查仍报告发布基线已有的 `2026-11-12-chat-media-playback.md` 中示例链接“本机路径”，未为本次接入修复而改动该文件。
 - `scripts/smoke-hosted-desktop.py --codex <已安装运行时>` 使用全新私有 `CODEX_HOME`、合成 provider 和 loopback 响应。生产 Bridge 实际读取分页历史、发送、接收完成事件、断开重连、中断并取消原生审批；原执行进程世代和配置文件字节保持。该测试不使用真实模型或账号，不等同于 GUI/手机真机验收。
 - macOS Codex App `26.1117.41037`（build `29803`）的独立资料实例通过生产启动器建立 `desktop-stdio` 运行记录，四级进程身份及 Bridge 握手核验成功。测试实例已正常退出；没有更改主 App 的配置或共享启动方式。
 - App 正常退出时，适配器处理 EOF/正常终止信号，关闭自己的原生 stdin 并等待执行器结束，再清除自己的运行记录。真实独立 App 的退出后清理已验证，不留下活动原生进程或就绪记录。

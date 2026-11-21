@@ -31,7 +31,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--codex')
     parser.add_argument('--adapter')
+    parser.add_argument('--response-bytes', type=int, default=0,
+                        help='Additional loopback response bytes for large-history acceptance')
     args = parser.parse_args()
+    if not 0 <= args.response_bytes <= 8 * 1024 * 1024:
+        parser.error('--response-bytes must be between 0 and 8 MiB')
     if args.adapter:
         config = runtime._read(Path(args.adapter))
         first = json.loads(sys.stdin.buffer.readline())
@@ -60,7 +64,7 @@ def main():
             last_user = next((item for item in reversed(inputs) if item.get('role') == 'user'), {})
             text = json.dumps(last_user)
             item = {'id': 'msg_fixture_' + str(len(calls)), 'type': 'message', 'role': 'assistant',
-                    'status': 'completed', 'content': [{'type': 'output_text', 'text': 'HOSTED_OK', 'annotations': []}]}
+                    'status': 'completed', 'content': [{'type': 'output_text', 'text': 'HOSTED_OK' + 'x' * args.response_bytes, 'annotations': []}]}
             if 'Synthetic approval' in text and not approval_sent:
                 approval_sent = True
                 tools = [tool.get('name') for tool in data.get('tools', [])]
@@ -180,8 +184,16 @@ def main():
                     assert session.condition.wait_for(lambda: any(turn.get('status') == 'inProgress'
                         for turn in session.state['turns']), 10)
                 bridge.interrupt(thread_id)
-                assert completed()['status'] == 'interrupted'
+                interrupted = completed()
+                assert interrupted['status'] == 'interrupted'
                 hold.set()
+                settled = time.monotonic()
+                with session.condition:
+                    assert session.condition.wait_for(lambda:
+                        session.state['threadRuntimeStatus']['type'] == 'idle' and
+                        any(turn['turnId'] == interrupted['id'] and turn['status'] == 'interrupted'
+                            for turn in session.state['turns']), 5), 'Bridge did not observe native interruption within 5s'
+                print('Native interruption observed by Bridge in', round((time.monotonic() - settled) * 1000, 1), 'ms')
                 receipt = bridge.send(thread_id, 'Synthetic approval', str(uuid.uuid4()))
                 with session.condition:
                     assert session.condition.wait_for(lambda: bool(session.state.get('requests')), 10), session.error
