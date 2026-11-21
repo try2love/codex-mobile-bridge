@@ -206,6 +206,15 @@ async function confirmation(main,ui,child,response,native){
   if(native)nativeClick(child.pid,options.buttons[response]);
   return {mode:native?'native-os-click':'controller-confirmation-integration',defaultId:options.defaultId,cancelId:options.cancelId};
 }
+async function installerHandoffEvidence(main,ui){
+  // The renderer settles its install IPC before clearing updateBusy. Observe
+  // that completion so a rejected backup or handoff cannot hide in a timeout.
+  await until(()=>ui.evaluate('!updateBusy'),'official Linux install IPC completion');
+  const renderer=await ui.evaluate('({update:snapshot.update,feedback:lastFeedback})');
+  const evidence=await main.evaluate('({update:acceptance.updater.status(),opened:acceptance.opened,packagesOpened:acceptance.packagesOpened})');
+  assert.equal(evidence.update.state,'installer-handoff','Official Linux package handoff failed: '+JSON.stringify({renderer,...evidence}));
+  return evidence;
+}
 async function stopLaunchedGui(planFile){
   const transaction=path.dirname(planFile),launched=JSON.parse(await fs.readFile(path.join(transaction,'launched.json'),'utf8'));
   let pid=launched.pid;
@@ -272,7 +281,7 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
     if(manual){
       assert.equal(candidate.manualInstall,true);assert.equal(candidate.manualRelease,undefined);
       const dialog=await confirmation(main,ui,child,1,false);
-      await until(async()=>(await ui.evaluate('snapshot.update')).state==='installer-handoff','official Linux package handoff');
+      await installerHandoffEvidence(main,ui);
       assert.deepEqual(await main.evaluate('acceptance.opened'),[]);
       assert.deepEqual(await main.evaluate('acceptance.packagesOpened'),[download.cache.archive]);
       assert.equal(JSON.parse(await fs.readFile(files.metadata,'utf8')).version,candidateVersion);
@@ -344,6 +353,7 @@ async function main(){
       const verifyVersion=async version=>{
         const metadata=JSON.parse(await fs.readFile(files.metadata,'utf8'));
         assert.equal(metadata.version,version);assert.equal(metadata.arch,process.arch);assert.equal(metadata.platform,process.platform);
+        if(version===candidateVersion)assert.equal(metadata.dataFormat,'bridge-data-v1','Candidate installed metadata must declare its reviewed data format');
       };
       const pair=async()=>{
         const snapshot=await worker('snapshot'),entry=snapshot.urls.find(value=>{const url=new URL(value);return url.protocol==='http:'&&!['127.0.0.1','localhost','::1'].includes(url.hostname);});assert.ok(entry,'LAN pairing entry');
@@ -452,5 +462,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
+module.exports={installerHandoffEvidence,click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});

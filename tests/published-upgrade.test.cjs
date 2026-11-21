@@ -4,7 +4,7 @@ const {spawn,spawnSync}=require('node:child_process'),path=require('node:path');
 const {EventEmitter,once}=require('node:events');
 const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm');
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
-const {click,stopOwnedGui,debuggerClient,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine}=require('../scripts/smoke-published-upgrade.cjs');
+const {installerHandoffEvidence,click,stopOwnedGui,debuggerClient,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
 test('acceptance mouse click scrolls an offscreen history action into view and verifies its hit target',async()=>{
   let y=1280,clicks=0,pressed=false,covered=false,disabled=false;
@@ -24,6 +24,21 @@ test('acceptance mouse click scrolls an offscreen history action into view and v
   covered=true;await assert.rejects(click(ui,'update-versions-install'),/not reachable/);
   disabled=true;await assert.rejects(click(ui,'update-versions-install'),/unavailable/);
   assert.equal(clicks,1);assert.equal(events.length,2);
+});
+test('Linux handoff checks the settled install result and exposes backup errors without a state timeout',async()=>{
+  const renderer={update:{state:'downloaded'},feedback:['backup retained',true,'']};
+  let complete=false;
+  const ui={evaluate:async expression=>{
+    if(expression==='!updateBusy'){complete=true;return true;}
+    assert.equal(complete,true);return renderer;
+  }};
+  const evidence={update:{state:'error',message:'backup retained'},opened:[],packagesOpened:[]};
+  const main={evaluate:async()=>{assert.equal(complete,true);return evidence;}};
+  await assert.rejects(installerHandoffEvidence(main,ui),error=>{
+    assert.match(error.message,/Official Linux package handoff failed/);assert.match(error.message,/backup retained/);return true;
+  });
+  evidence.update={state:'installer-handoff'};
+  assert.equal(await installerHandoffEvidence(main,ui),evidence);
 });
 test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
   const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
@@ -226,6 +241,11 @@ for(const [platform,arch,format,otherFormat] of [['darwin','arm64','zip','dmg'],
     assert.equal(preflights,0);assert.equal(applied,0);
     await updater.install({candidateId:again.candidateId,confirmed:true});
     assert.equal(preflights,1);assert.equal(applied,1);
+    if(platform==='linux'){
+      assert.equal(await native.shell.openPath(proof.archive),'');
+      assert.deepEqual([...context.acceptance.packagesOpened],[proof.archive]);
+      await assert.rejects(native.shell.openPath(proof.archive+'.unexpected'),/Unexpected package handoff/);
+    }
     await verifiedArchiveProof(proof.archive,{name,sha256:digest},context.acceptance.requests,0);
     assert.ok(context.acceptance.requests.includes(RELEASES+'&page=1'));
   });
