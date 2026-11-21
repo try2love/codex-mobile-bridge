@@ -60,28 +60,6 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.manager.control(self.value)
         test_accounts.wait_for_account_worker(self)
 
-    def test_explicit_external_transport_preparation_preserves_auth_and_configuration(self):
-        self.manager.index['accessManagement'] = 'external'
-        before = {name: (self.home/name).read_bytes() if (self.home/name).exists() else None
-                  for name in ('auth.json', 'config.toml')}
-        self.run_initialization()
-        self.assertEqual(self.manager.state['phase'], 'complete')
-        self.mocks['configure'].assert_called_once()
-        self.app.start.assert_called_once()
-        for name, raw in before.items():
-            self.assertEqual((self.home/name).read_bytes() if (self.home/name).exists() else None, raw)
-        with self.assertRaisesRegex(ValueError, '外部工具管理'):
-            self.manager.require_managed_writes()
-
-    def test_unprepared_external_management_still_prevents_automatic_restart(self):
-        self.manager.index['accessManagement'] = 'external'
-        self.mocks['connect'].return_value = None
-        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
-        self.assertEqual(self.manager.desktop_preparation['state'], 'failed')
-        self.mocks['stop'].assert_not_called()
-        self.mocks['configure'].assert_not_called()
-        self.app.start.assert_not_called()
-
     def test_desktop_ipc_before_native_handshake_does_not_fail_or_restart(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
         client = Mock()

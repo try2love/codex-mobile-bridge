@@ -3024,17 +3024,6 @@ class DesktopSessions:
                             self.instance = self.instance_owner.registry.pin_initialized_roots(self.instance.id)
                         if row['id'] == 'codex':
                             row['connected'] = row['configured'] and native['running']
-                            if row['connected'] and self.native_enabled('codex'):
-                                from bridge.clients.codex.desktop_runtime import connect
-                                from bridge.clients.codex.app_server import AppServerUnavailable
-                                try:
-                                    accounts = self.bridge.for_host('local').accounts
-                                    follower = connect(accounts.home, accounts.runtime)
-                                    if follower is not None:
-                                        follower.close()
-                                except AppServerUnavailable:
-                                    row.update(connected=False, setupStatus='needs-initialization',
-                                               reason='未能确认 Codex 原生共享连接，请重新初始化连接')
                         if row['id'] == 'deepseek' and (row['backgroundCount'] > 1 or row['backgroundRunning'] and not row['mainRunning']):
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):

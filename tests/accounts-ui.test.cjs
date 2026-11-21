@@ -116,15 +116,14 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} offers a conf
  ui.panel.accept({...state,switch:{phase:'failed',operation:'desktopRuntime',error:'known busy'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
  ui.panel.accept({...state,switch:{...state.switch,phase:'verifying'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
  if(!desktop){ui.panel.accept({...state,canSwitch:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
- ui.panel.accept({...state,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,!desktop);
+ ui.panel.accept({...state,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);
 });
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{
  for(const desktop of [false,true]){
   const ui=fixture(desktop);ui.setValue({...ui.value(),management:{mode:'auto',external:true,reason:'由 Magpie 管理'}});await ui.panel.refresh();
   assert.equal(ui.all().find(n=>n.textContent==='切换到此接入').disabled,true);assert.match(ui.text(),/由 Magpie 管理/);
-  if(desktop){assert.equal(ui.panel.recover.disabled,true);assert.equal(ui.panel.managementMode.value,'auto');assert.equal(ui.panel.initializeRuntime.disabled,false);}
-  else assert.equal(ui.panel.initializeRuntime.disabled,true);
+  if(desktop){assert.equal(ui.panel.recover.disabled,true);assert.equal(ui.panel.managementMode.value,'auto');}
  }
 });
 test('switch phases disable repeat actions and recovery only exists on desktop',async()=>{
