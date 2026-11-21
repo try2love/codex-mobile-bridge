@@ -378,7 +378,7 @@ test('Antigravity account model catalog renders structured quota badges, reset n
  assert.match(ui.text(),/Gemini Models/);
  assert.match(ui.text(),/5h 限额/);
  assert.match(ui.text(),/周限额 \(7d\)/);
- assert.match(ui.text(),/可用 Prompt 点数: 500 · Flow 点数: 100/);
+ assert.doesNotMatch(ui.text(),/Prompt 点数/);
  const rings=ui.all().filter(n=>typeof n.className==='string'&&n.className.includes('quota-pie-ring'));
  assert.ok(rings.length>=4);
  const expandableRow=ui.all().find(n=>typeof n.className==='string'&&n.className.includes('accounts-model-row'));

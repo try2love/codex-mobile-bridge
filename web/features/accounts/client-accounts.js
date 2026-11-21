@@ -273,7 +273,7 @@ class DesktopClientAccountsPanel {
         list.append(row);
       }
       box.append(list);
-      if(summary?.credits)box.append(this.node('div',summary.credits,'account-muted accounts-models-credits'));
+      if(summary?.credits&&!(Array.isArray(summary?.groups)&&summary.groups.length))box.append(this.node('div',summary.credits,'account-muted accounts-models-credits'));
     }
     if(!count&&!this.models?.notice&&!groups.some(group=>group.notice))box.append(this.node('p','当前客户端未返回可用模型，请检查客户端登录与模型配置。','account-muted'));
   }

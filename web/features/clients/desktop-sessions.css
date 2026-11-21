@@ -30,7 +30,7 @@
 .ds-usage-card{margin:4px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);font-size:12px;display:grid;gap:8px}
 .ds-usage-card-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px;font-weight:600;color:var(--muted)}
 .ds-usage-title{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--accent,#4664ed) 26%,var(--line));background:var(--soft,#f3f6ff);color:var(--accent,#4664ed);font-size:11px;font-weight:650}
-.ds-usage-credits{color:var(--muted);font-size:11.5px;font-weight:500;font-variant-numeric:tabular-nums}
+.ds-usage-credits,.ds-usage-hint{color:var(--muted);font-size:11.5px;font-weight:500;font-variant-numeric:tabular-nums}
 .quota-pools-list{display:grid;gap:6px}
 .quota-pool-card{border:1px solid var(--line,#dfe3eb);border-radius:10px;background:var(--raised,#fff);padding:7px 9px}
 .quota-pool-summary{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;cursor:pointer;user-select:none;font-weight:600;color:var(--text,#24262b);font-size:11.5px;list-style:none}
