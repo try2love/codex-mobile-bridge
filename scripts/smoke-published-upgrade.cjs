@@ -5,10 +5,11 @@ const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=r
 const {spawn,execFileSync}=require('node:child_process'),net=require('node:net');
 const {createHash,randomUUID}=require('node:crypto');
 const {runWorker}=require('../desktop/shared/controller.cjs');
-const oldVersion='2.2.1',candidateVersion='2.2.2-preview.2';
+const oldVersion='2.2.1',candidateVersion='2.2.2-preview.3';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function baselinePolicy(version,platform=process.platform){
-  assert.ok([oldVersion,'2.2.2-preview.1'].includes(version),'Unknown official baseline');
+  assert.ok([oldVersion,'2.2.2-preview.1','2.2.2-preview.2'].includes(version),'Unknown official baseline');
+  if(version==='2.2.2-preview.2')return {state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true};
   return {state:platform==='linux'?'unsupported':'current',includeCandidate:platform!=='linux'&&version===oldVersion,
     previewDiscoveryTested:platform!=='linux'&&version===oldVersion};
 }
@@ -106,14 +107,14 @@ async function inspectDesktop(executable,data,version,work,phase,exercise){
     return result;
   }finally{ui?.close();main?.close();await stopOwnedGui(child);console.log(`${phase} GUI exited: code=${child.exitCode} signal=${child.signalCode}`);}
 }
-function transportScript(directory,includeCandidate=false){
+function transportScript(directory,includeCandidate=false,includePreview2=false){
   // No signature, key, selection, install or helper logic is replaced. The
   // synthetic release directory cannot supply bytes outside this exact map.
   return `(()=>{const req=process.getBuiltinModule('module').createRequire(process.resourcesPath+'/app.asar/package.json');
     const fs=req('node:fs'),path=req('node:path'),{Readable}=req('node:stream'),electron=req('electron');
     const module=req('./desktop/features/updates/updater.cjs'),directory=${JSON.stringify(directory)};
-    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includeCandidate?[candidateVersion]:[])])}.map(version=>({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),assets:[{name:'bridge-update.json'}]}));
-    const files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1']]){
+    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[]),...(includeCandidate?[candidateVersion]:[])])}.map(version=>({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),assets:[{name:'bridge-update.json'}]}));
+    const files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
       for(const name of fs.readdirSync(path.join(directory,folder)))if(name!=='SHA256SUMS.txt')files.set(module.releaseUrl(version,name),path.join(directory,folder,name));
     }
     const fetch=async(url,{signal}={})=>{if(signal?.aborted)throw signal.reason;
@@ -248,7 +249,7 @@ async function main(){
   const {chromium}=require('@playwright/test'),directory=path.resolve('.tmp/published-upgrade'),results=[];
   let native=process.platform!=='linux',nativeLimit;
   try{
-    for(const [baseline,folder] of [[oldVersion,'old'],['2.2.2-preview.1','preview1']]){
+    for(const [baseline,folder] of [[oldVersion,'old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
       const work=path.join(directory,folder+'-bootstrap'),data=path.join(work,'data'),profile=path.join(work,'browser');
       await fs.mkdir(data,{recursive:true});assert.deepEqual(await fs.readdir(data),[],'Never reuse earlier fixture data');
       const target=process.platform==='linux'?'/opt/Codex Mobile Bridge':path.join(work,process.platform==='darwin'?'Codex Mobile Bridge.app':'installed');
@@ -321,11 +322,19 @@ async function main(){
             assert.equal(await ui.evaluate("document.getElementById('check-update').disabled"),true);
             return;
           }
-          await main.evaluate(transportScript(directory,policy.includeCandidate));
+          await main.evaluate(transportScript(directory,policy.includeCandidate,policy.channelDiscoveryTested));
           await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','baseline background check completion');
           await click(ui,'check-update');
           const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');return !['idle','checking'].includes(value.state)&&value;},'legacy stable filtering');
           assert.equal(value.state,policy.state,'official baseline release-directory behavior');
+          if(policy.channelDiscoveryTested){
+            assert.equal(value.currentChannel,'preview');assert.equal(value.channel,'preview');
+            await ui.evaluate("document.getElementById('update-channel').value='stable';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));");
+            const stable=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value;},'preview2 signed stable discovery');
+            assert.equal(stable.version,oldVersion);assert.equal(stable.intent,'return-stable');assert.equal(stable.requiresConfirmation,true);assert.ok(stable.candidateId);
+            await ui.evaluate("document.getElementById('update-channel').value='preview';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));");
+            await until(async()=>{const value=await ui.evaluate('snapshot.update');return value.channel==='preview'&&value.state==='current';},'preview2 channel restored');
+          }
         });
         await verifyData('baseline',{seed:true});await worker('stop');
         await install(candidateArchive,target,work,'candidate');await useRuntime();await verifyVersion(candidateVersion);

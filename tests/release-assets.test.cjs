@@ -107,7 +107,7 @@ test('mobile Intel supplement keeps the same checks and the default ARM build',(
     const validation=job.steps.find(step=>step.name==='Validate frozen Intel supplement source');assert.ok(validation);
     assert.ok(validation.run.includes("re.fullmatch(r'[0-9a-f]{40}', source)"));
     assert.ok(validation.run.includes("['git', 'rev-parse', 'HEAD']"));
-    assert.ok(validation.run.includes("'2.2.2-preview.2'"));
+    assert.ok(validation.run.includes("'2.2.2-preview.3'"));
     const checkout=job.steps.find(step=>step.uses==='actions/checkout@v4');
     assert.ok(checkout.with.ref.includes('inputs.source_ref'));
     assert.ok(job.steps.indexOf(validation)>job.steps.indexOf(checkout));

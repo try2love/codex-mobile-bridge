@@ -18,7 +18,7 @@ spec.loader.exec_module(prepare)
 
 
 class PublishedUpgradeProvenanceTests(unittest.TestCase):
-    def rejected(self, message, *, source='a'*40, head=None, version='2.2.2-preview.2', changed='', conclusion='success'):
+    def rejected(self, message, *, source='a'*40, head=None, version='2.2.2-preview.3', changed='', conclusion='success'):
         run = {'head_sha': head or source, 'path': '.github/workflows/desktop.yml',
                'status': 'completed', 'conclusion': conclusion}
         with patch.dict(os.environ, {'SOURCE_REF': source, 'CANDIDATE_RUN_ID': '123'}), \
@@ -44,16 +44,17 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
     def test_wrong_product_version_is_rejected(self):
         self.rejected('Unexpected frozen product version', version='2.2.1')
         self.rejected('Unexpected frozen product version', version='2.2.2-preview.1')
+        self.rejected('Unexpected frozen product version', version='2.2.2-preview.2')
 
     def test_unbuilt_product_changes_are_rejected(self):
         self.rejected('differs from product', changed='bridge/app/service.py\n')
         self.rejected('differs from product', changed='tests/browser/unreviewed-fixture.spec.cjs\n')
 
-    def test_preview2_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
-        source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        product = json.loads(subprocess.check_output(['git', 'show', source + ':package.json'], cwd=ROOT))
+    def test_preview3_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
+        product = json.loads((ROOT/'package.json').read_text())
         self.assertEqual(product['version'], prepare.VERSION)
-        self.assertEqual(prepare.VERSION, '2.2.2-preview.2')
+        self.assertEqual(prepare.VERSION, '2.2.2-preview.3')
+        self.assertEqual(prepare.BASELINES, (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True), ('2.2.2-preview.2', 'preview2', True)))
         self.assertEqual(prepare.BASE, '7672f49605a972c3d6b2e79dcde780ede1ee1642')
         workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text()
         self.assertIn('fetch-depth: 0', workflow)
@@ -65,13 +66,13 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         for block in blocks:
             code = compile(textwrap.dedent(block.split('\n          PY', 1)[0]), 'intel-source-guard', 'exec')
             source = 'a'*40
-            def run(requested=source, checkout=source, version='2.2.2-preview.2'):
+            def run(requested=source, checkout=source, version='2.2.2-preview.3'):
                 with patch.dict(os.environ, {'SOURCE_REF': requested}), \
                         patch('subprocess.check_output', return_value=checkout+'\n'), \
                         patch('builtins.open', return_value=io.StringIO(json.dumps({'version': version}))):
                     exec(code, {})
             run()
-            for invalid in ('release/v2.2.2-preview.2', 'a'*39, 'a'*41, 'A'*40):
+            for invalid in ('release/v2.2.2-preview.3', 'a'*39, 'a'*41, 'A'*40):
                 with self.assertRaisesRegex(SystemExit, '40-character'):
                     run(requested=invalid)
             with self.assertRaisesRegex(SystemExit, 'checkout'):

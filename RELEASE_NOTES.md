@@ -1,3 +1,43 @@
+## v2.2.2-preview.3 · 新版 Codex 原生连接适配与网关更新优化
+
+本次预览版适配新版 Codex Desktop 原生连接，并改善网关更新重试、配置恢复与卸载数据保留。[#252](https://github.com/try2love/codex-mobile-bridge/issues/252) · [#254](https://github.com/try2love/codex-mobile-bridge/issues/254)
+
+**建议更新网关，以适配最新版 Codex App 原生连接。**
+
+### 新增与改进
+
+- **新版 Codex 原生连接。** 支持新版 hosted Desktop 的原生聊天读取、发送、停止与审批，并兼容旧版连接。首次正常准备连接时，可能需要重启 Codex 一次。
+- **更新失败后重试。** 重用已通过签名与完整性校验的更新包，减少重复下载；新版本成功启动并确认后再清理更新包。
+- **Windows 配置与恢复。** 改善配置文件权限处理，保留恢复副本；返回稳定版时恢复兼容配置。
+- **卸载数据保留。** 默认保留数据，可选择仅清理 Bridge 自有目录。
+
+### 更新说明
+
+这是预览版，v2.2.1 仍为最新稳定版。v2.2.1 的既有更新器不会发现预览版，首次体验需手动安装；preview.1 和 preview.2 用户可通过检查更新升级。
+
+Android 版本为 **2.2.2-preview.3**，build **63**，沿用 v2.2.1、preview.1 和 preview.2 的应用标识与持久签名，可覆盖升级。iOS marketing version 为 **2.2.2**、build **63**；未签名 IPA 需要自行签名。原生操作以客户端实际能力为准。
+
+---
+
+### English · Newer Codex native connections and gateway update improvements
+
+This preview supports newer Codex Desktop native connections and improves gateway update retries, configuration recovery and data retention during uninstall. [#252](https://github.com/try2love/codex-mobile-bridge/issues/252) · [#254](https://github.com/try2love/codex-mobile-bridge/issues/254)
+
+**Updating the gateway is recommended for compatibility with the latest Codex App native connection.**
+
+### Features and improvements
+
+- **Newer Codex native connections.** Read native chats, send messages, stop turns and handle approvals through newer hosted Desktop connections while retaining older connection support. Initial connection setup may require one Codex restart.
+- **Retry failed updates.** Reuse update packages that passed signature and integrity checks to avoid repeated downloads; clean them up after the new version starts successfully and is confirmed.
+- **Windows configuration and recovery.** Improve configuration file permissions and retain recovery copies; restore compatible settings when returning to stable.
+- **Keep data during uninstall.** Preserve data by default, with an option to remove only Bridge-owned directories.
+
+### Installation
+
+v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 and preview.2 users can check for updates.
+
+Android version **2.2.2-preview.3**, build **63**, keeps the application and persistent signing identities used by v2.2.1, preview.1 and preview.2 for in-place upgrades. iOS marketing version is **2.2.2**, build **63**; the unsigned IPA requires your own signing. Native operations depend on the connected client's capabilities.
+
 ## v2.2.2-preview.2 · 可定制输入区、原生聊天控制与更新渠道选择
 
 本次预览版重点改进聊天输入与过程阅读，补齐 Antigravity 原生会话操作，修复 preview.1 反馈中的连接、启动、模型和消息展示问题，并新增正式／预览版本选择。

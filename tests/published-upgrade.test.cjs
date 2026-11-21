@@ -8,7 +8,7 @@ const {stopOwnedGui,transportScript,baselinePolicy}=require('../scripts/smoke-pu
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
 test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
   const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
-  for(const current of ['2.2.1','2.2.2-preview.2']){
+  for(const current of ['2.2.1','2.2.2-preview.3']){
     const channel=current.includes('-')?'preview':'stable',update={current,currentChannel:channel,channel};
     for(const state of ['idle','checking','current','available','skipped','error'])verifyUpdateDiscovery({...update,state},current);
     for(const state of ['unsupported','downloading','preparing','restarting','downloaded','installer-handoff'])assert.throws(()=>verifyUpdateDiscovery({...update,state},current));
@@ -22,7 +22,8 @@ test('baseline expectations respect old Linux support and published preview mani
     assert.deepEqual(baselinePolicy('2.2.2-preview.1',platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false});
   }
   for(const version of ['2.2.1','2.2.2-preview.1'])assert.deepEqual(baselinePolicy(version,'linux'),{state:'unsupported',includeCandidate:false,previewDiscoveryTested:false});
-  assert.throws(()=>baselinePolicy('2.2.2-preview.2','darwin'),/Unknown official baseline/);
+  for(const platform of ['darwin','win32','linux'])assert.deepEqual(baselinePolicy('2.2.2-preview.2',platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true});
+  assert.throws(()=>baselinePolicy('2.2.2-preview.3','darwin'),/Unknown official baseline/);
 });
 test('published-package installer refuses a daily workstation before any install or fixture write',()=>{
   const result=spawnSync(process.execPath,[script],{env:{...process.env,GITHUB_ACTIONS:'false',RUNNER_ENVIRONMENT:'github-hosted'},encoding:'utf8'});
@@ -57,7 +58,7 @@ test('owned GUI shutdown observes a real spawned process exit',async()=>{
 test('acceptance transport runs production signed selection and archive hashes without replacing the key',async t=>{
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-transport-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
-  for(const folder of ['old','preview1'])await fs.mkdir(path.join(directory,folder));
+  for(const folder of ['old','preview1','preview2'])await fs.mkdir(path.join(directory,folder));
   const module={exports:{}};
   vm.runInNewContext(sync.readFileSync(path.join(__dirname,'../desktop/features/updates/updater.cjs'),'utf8'),
     {module,require,Buffer,URL,AbortController,AbortSignal,setTimeout,Response});
@@ -71,7 +72,7 @@ test('acceptance transport runs production signed selection and archive hashes w
   const context=vm.createContext({process:{resourcesPath:'/unpacked/resources',getBuiltinModule:name=>{assert.equal(name,'module');return {createRequire:()=>req};}},Buffer,Response});
   vm.runInContext(transportScript(directory),context);
   let installed=0;
-  const options={current:'2.2.2-preview.2',platform:'win32',arch:'x64',key:keys.publicKey,directory:path.join(directory,'downloads'),
+  const options={current:'2.2.2-preview.3',platform:'win32',arch:'x64',key:keys.publicKey,directory:path.join(directory,'downloads'),
     install:async candidate=>{assert.equal(candidate.transition.intent,'return-stable');assert.deepEqual(await fs.readFile(candidate.archive),bytes);installed++;}};
   let updater=new Updater(options);
   const state=await updater.check({manual:true,channel:'stable'});
@@ -80,6 +81,21 @@ test('acceptance transport runs production signed selection and archive hashes w
   assert.equal((await updater.install({candidateId:state.candidateId,confirmed:true})).state,'restarting');assert.equal(installed,1);
   assert.deepEqual([...context.acceptance.requests],[RELEASES,releaseUrl('2.2.1','bridge-update.json'),releaseUrl('2.2.1',name)]);
   await assert.rejects(updater.fetch('https://fixture.invalid/'+name),/refuses unexpected URL/);
+  // Preview2 introduced channels, including Linux discovery. Its own catalogue
+  // entry must not make preview1 request a newer baseline's manifest.
+  const legacyCatalogue=await (await updater.fetch(RELEASES)).json();
+  assert.equal(legacyCatalogue.some(row=>row.tag_name==='v2.2.2-preview.2'),false);
+  vm.runInContext(transportScript(directory,false,true),context);
+  for(const platform of ['win32','linux']){
+    const baseline=new Updater({...options,current:'2.2.2-preview.2',platform});
+    assert.equal((await baseline.check({manual:true})).state,'current');
+    const stable=await baseline.check({manual:true,channel:'stable'});
+    assert.equal(stable.state,'available',stable.message);assert.equal(stable.version,'2.2.1');
+    assert.equal(stable.intent,'return-stable');assert.equal(stable.requiresConfirmation,true);
+    if(platform==='linux')assert.equal(stable.manualRelease,true);
+    const preview=await baseline.check({manual:true,channel:'preview'});
+    assert.equal(preview.state,'current');assert.equal(preview.channel,'preview');
+  }
   updater=new Updater(options);
   await updater.check({manual:true,channel:'stable'});await fs.writeFile(path.join(directory,'old',name),Buffer.alloc(bytes.length));
   await updater.cleanupVerifiedPackages({startup:true});

@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.2-preview.2：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.2) · [更新说明](RELEASE_NOTES.md)。可定制输入区、原生回合展示、Antigravity 控制与连接修复；新增正式／预览版本选择及明确返回正式版入口。稳定版仍为 [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)。
+> **v2.2.2-preview.3：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.3) · [更新说明](RELEASE_NOTES.md)。适配新版 Codex 原生连接，优化网关更新重试、返回稳定版配置恢复与 Windows 配置权限；首次正常准备可能需要重启 Codex 一次。preview.1／preview.2 用户可检查更新；稳定版仍为 [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)。
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
