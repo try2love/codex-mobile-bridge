@@ -89,13 +89,23 @@ class _NativeClient:
                     raise AppServerUnavailable('原生聊天历史分页游标重复')
                 seen.add(cursor)
 
-        turns = pages('thread/turns/list', {'itemsView': 'notLoaded'})
-        by_id = {turn['id']: {**turn, 'items': []} for turn in turns}
-        for row in pages('thread/items/list', {}):
-            if row.get('turnId') not in by_id or not isinstance(row.get('item'), dict):
-                raise AppServerUnavailable('原生聊天历史回合归属已变化')
-            by_id[row['turnId']]['items'].append(row['item'])
-        return {**value, 'thread': {**thread, 'turns': list(by_id.values())}}
+        # Older turns are already available through the gateway's saved-history
+        # projection. Only the current turn is needed to follow its native owner.
+        page = self.request('thread/turns/list', {'threadId': params['threadId'],
+            'cursor': None, 'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout)
+        turns = page.get('data')
+        if not isinstance(turns, list) or len(turns) > 1:
+            raise AppServerUnavailable('原生聊天历史分页格式已变化')
+        if turns:
+            turn = turns[0]
+            items = []
+            for row in pages('thread/items/list', {'turnId': turn['id']}):
+                if row.get('turnId') != turn['id'] or not isinstance(row.get('item'), dict):
+                    raise AppServerUnavailable('原生聊天历史回合归属已变化')
+                items.append(row['item'])
+            turns = [{**turn, 'items': items}]
+        return {**value, 'thread': {**thread, 'turns': turns,
+            'turnsPagination': {'hasLoadedOldest': not page.get('nextCursor')}}}
 
     def is_loaded(self, thread_id):
         cursor, seen = None, set()
@@ -147,6 +157,13 @@ class HostedSessions(CliSessions):
             self.requests[thread_id] = {key: value for key, value in self.router.server_requests.items()
                 if value.get('params', {}).get('threadId') == thread_id}
         return self.refresh(thread_id)
+
+    @staticmethod
+    def _state(thread, requests, metadata):
+        state = CliSessions._state(thread, requests, metadata)
+        if 'turnsPagination' in thread:
+            state['turnsPagination'] = thread['turnsPagination']
+        return state
 
     def _check_joined_identity(self, thread_id):
         super()._check_joined_identity(thread_id)

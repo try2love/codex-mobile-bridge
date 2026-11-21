@@ -5781,6 +5781,12 @@ class Bridge:
                 session.set_history(fallback)
             return {"loaded": True}
         session = self._target(thread_id)
+        if getattr(self.ipc, 'hosted', False) and (session.owner or '').startswith('desktop-runtime:') and (
+                'turnsPagination' in (session.state or {})):
+            saved = self.store.history(thread_id, turn_limit=None)
+            with session.condition:
+                session.set_history(saved)
+            return {"loaded": True}
         return self._call(session, "thread-follower-load-complete-history", {}, timeout=180)
 
     def _skip_question(self, thread_id, request_id, response):

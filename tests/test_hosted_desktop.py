@@ -155,8 +155,9 @@ class HostedSessionTests(unittest.TestCase):
             if method == 'initialize': value = {'codexHome': self.temp.name}
             elif method == 'thread/loaded/list': value = {'data': ['t'], 'nextCursor': None}
             elif method == 'thread/read': value = {'thread': copy.deepcopy(self.thread)}
-            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(self.turns), 'nextCursor': None}
-            elif method == 'thread/items/list': value = {'data': copy.deepcopy(self.items), 'nextCursor': None}
+            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(self.turns[-1:]), 'nextCursor': 'older' if len(self.turns) > 1 else None}
+            elif method == 'thread/items/list': value = {'data': [copy.deepcopy(row) for row in self.items
+                if params.get('turnId', row['turnId']) == row['turnId']], 'nextCursor': None}
             elif method == 'turn/start':
                 if self.drop_start: return
                 value = {'turn': {'id': 'new-turn', 'status': 'inProgress'}}
@@ -179,6 +180,16 @@ class HostedSessionTests(unittest.TestCase):
         self.assertNotIn('thread/start', methods)
         self.assertNotIn('turn/start', methods)
         with self.assertRaises(AppServerRequestNotSent): self.sessions.attach('saved-only')
+
+    def test_attach_with_an_oversized_older_turn_only_reads_current_turn(self):
+        self.turns.insert(0, {'id': 'old', 'status': 'completed', 'items': []})
+        self.items.insert(0, {'turnId': 'old', 'item': {'type': 'agentMessage', 'text': 'x' * 8192}})
+        with patch('bridge.clients.codex.desktop_host.MAX_LINE', 4096):
+            state = self.sessions.attach('t')
+        self.assertEqual(state['turnsPagination'], {'hasLoadedOldest': False})
+        self.assertEqual([turn['turnId'] for turn in state['turns']], ['turn'])
+        queries = [m['params'] for m in self.writes if m.get('method') == 'thread/items/list']
+        self.assertEqual([p.get('turnId') for p in queries], ['turn'])
 
     def test_paginated_empty_thread_is_readable_before_materialization(self):
         self.thread['path'] = None
