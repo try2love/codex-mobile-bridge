@@ -16,3 +16,5 @@
 `index.html` 使用相对文件路径，并直接引用 Web 的翻译和账号模块。增加共享资源时，同时检查根 `package.json` 的 `build.files`；移动 CommonJS 模块时，更新 `main.cjs` 的引用及相应测试夹具。
 
 `npm run test:desktop` 自动发现 `tests/` 和 `mobile/tests/` 下全部 Node 测试，检查页面、控制器与资源引用；`npm run test:updater` 可单独检查更新器和进程交接。平台构建方式见 `docs/linux.md` 与根构建文档。
+
+[macOS 凭据保存与旧数据迁移](../docs/macos-credentials.md)。

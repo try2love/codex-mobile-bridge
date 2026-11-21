@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path');
 const os=require('node:os');
 const {randomUUID}=require('node:crypto');
+const {PrivateCredentials}=require('../../shared/private-credentials.cjs');
 const {pathToFileURL}=require('node:url');
 const {ORIGIN,parseLink}=require('./link.cjs');
 const {serveLocal}=require('../../shared/local-service.cjs');
@@ -41,6 +42,8 @@ function readBrowserLogin(providers){
 class OfficialRemote {
   constructor({electron,profile,rendererPath,localServiceWorker}){
     this.electron=electron;this.profile=profile;this.rendererPath=rendererPath;this.localServiceWorker=localServiceWorker;this.serviceAvailable=false;
+    this.localStorage=process.platform==='darwin'?new PrivateCredentials(profile,'zcode-official'):null;
+    this.legacyLoginSaved=false;this.legacyAuthFile=path.join(profile,'zcode-official-auth.legacy.enc');
     this.authFile=path.join(profile,'zcode-official-auth.enc');this.settingsFile=path.join(profile,'zcode-official.json');
     this.link='';this.reason='请登录与 ZCode 原 App 相同的官方账号。';
     this.generation=0;this.authGeneration=0;this.runtime=null;this.loginWindow=null;this.auth=null;this.loginExternal=false;this.pendingAuthorization=null;
@@ -56,14 +59,30 @@ class OfficialRemote {
   }
   targetLink(){return this.link||this.auth?.link||'';}
   status(){const config=this.config(),available=this.serviceAvailable&&this.stopServer?.alive?.()!==false;return {configured:!!this.auth&&!!this.targetLink(),connected:available&&!!this.runtime,owner:available&&this.runtime?this.owner:null,available,secureStorageAvailable:this.secureStorageAvailable,
-    secureStoragePending:!!this.storageCheck,restoring:!!this.restorePending,loginDeferred:this.loginDeferred===true,loginSaved:fs.existsSync(this.authFile),
+    secureStoragePending:!!this.storageCheck,restoring:!!this.restorePending,loginDeferred:this.loginDeferred===true,loginSaved:fs.existsSync(this.authFile),legacyLoginSaved:this.legacyLoginSaved,
     browserLoginPending:!!this.loginWindow&&this.loginExternal,canSubmitLoginReceipt:!!this.loginWindow&&!!this.pendingAuthorization&&!this.pendingAuthorization.window.isDestroyed()&&!this.pendingAuthorization.used&&Date.now()<this.pendingAuthorization.expiresAt,
     accountName:this.auth?.name||'',provider:this.auth?.provider||'',reason:this.reason,
     link:this.targetLink(),selected:config.zcodeConnectionMode==='official-remote'||!config.zcodeConnectionMode&&config.zcodeOfficialRemote===true};}
+  credentialStorage(){return this.localStorage||this.electron.safeStorage;}
+  writeAuth(data,previous,authIdentity,settingsIdentity){
+    if(this.localStorage&&previous&&!PrivateCredentials.encrypted(previous)){
+      if(fs.existsSync(this.legacyAuthFile)){if(!fs.readFileSync(this.legacyAuthFile).equals(previous))throw failure('旧登录备份已存在，请先检查资料目录。');}
+      else this.writePrivate(this.legacyAuthFile,previous,()=>{if(fs.existsSync(this.legacyAuthFile))throw failure('旧登录备份已变化，已停止覆盖。');});
+    }
+    this.writePrivate(this.authFile,data,()=>{
+      if(this.fileIdentity(this.authFile)!==authIdentity||this.fileIdentity(this.settingsFile)!==settingsIdentity)throw failure('官方登录或链接已被其他进程修改，已停止覆盖。');
+      this.localStorage?.assertCurrent(data);
+    });this.legacyLoginSaved=false;
+  }
+  writePrivate(file,data,verify){
+    const temporary=file+'.'+randomUUID()+'.tmp';let fd;
+    try{fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,data);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;verify?.();fs.renameSync(temporary,file);}
+    finally{if(fd!==undefined)fs.closeSync(fd);fs.rmSync(temporary,{force:true});}
+  }
   storageBackendAllowed(){return process.platform!=='linux'||['gnome_libsecret','kwallet','kwallet5','kwallet6'].includes(this.electron.safeStorage.getSelectedStorageBackend?.());}
-  waitStorage(task){let timer;return Promise.race([task,new Promise((_,reject)=>{timer=setTimeout(()=>reject(failure('系统安全存储尚未就绪，请解锁系统钥匙串后重试。')),this.storageTimeoutMs);})]).finally(()=>clearTimeout(timer));}
+  waitStorage(task){let timer;return Promise.race([task,new Promise((_,reject)=>{timer=setTimeout(()=>reject(failure(this.localStorage?'网关凭据存储尚未就绪，请重试。':'系统安全存储尚未就绪，请解锁系统钥匙串后重试。')),this.storageTimeoutMs);})]).finally(()=>clearTimeout(timer));}
   async secure(){
-    const storage=this.electron.safeStorage;
+    const storage=this.credentialStorage();
     if(!this.storageBackendAllowed()||typeof storage.isAsyncEncryptionAvailable!=='function'||typeof storage.encryptStringAsync!=='function'||typeof storage.decryptStringAsync!=='function'){
       this.secureStorageAvailable=false;return false;
     }
@@ -79,12 +98,12 @@ class OfficialRemote {
     catch(error){this.secureStorageAvailable=false;throw error;}
   }
   encrypted(data){
-    if(!Buffer.isBuffer(data)||!data.length||process.platform==='linux'&&data.subarray(0,3).toString()!=='v11'){this.secureStorageAvailable=false;throw failure('系统安全存储不可用，暂不能保存官方登录。');}
+    if(!Buffer.isBuffer(data)||!data.length||this.localStorage&&!PrivateCredentials.encrypted(data)||process.platform==='linux'&&data.subarray(0,3).toString()!=='v11'){this.secureStorageAvailable=false;throw failure('系统安全存储不可用，暂不能保存官方登录。');}
     return data;
   }
   fileIdentity(file){try{const stat=fs.statSync(file);return [stat.dev,stat.ino,stat.size,stat.mtimeMs,stat.ctimeMs].join(':');}catch(error){if(error.code==='ENOENT')return null;throw error;}}
   authCurrent(generation,authIdentity,settingsIdentity){try{return !this.disposed&&this.authGeneration===generation&&this.fileIdentity(this.authFile)===authIdentity&&this.fileIdentity(this.settingsFile)===settingsIdentity;}catch{return false;}}
-  restore(){
+  restore({migrateLegacy=false}={}){
     if(this.disposed)return Promise.resolve(false);
     if(this.restorePending)return this.restorePending;
     try{if(fs.existsSync(this.settingsFile))this.link=this.localLink(JSON.parse(fs.readFileSync(this.settingsFile,'utf8')).link).url;}catch{this.reason='官方远控链接无法读取，请重新保存本机链接。';}
@@ -95,19 +114,37 @@ class OfficialRemote {
     const task=(async()=>{
       try{
         this.reason='正在恢复已保存的官方登录…';
-        const encrypted=this.encrypted(fs.readFileSync(this.authFile));
-        if(!await this.secure())throw failure('系统安全存储不可用，暂不能恢复官方登录。');
+        const original=fs.readFileSync(this.authFile),legacy=this.localStorage&&!PrivateCredentials.encrypted(original);
+        if(legacy&&!['v10','v11'].includes(original.subarray(0,3).toString()))throw failure('官方登录文件格式无法确认，已保留原文件。');
+        this.legacyLoginSaved=!!legacy;
+        if(legacy&&!migrateLegacy){this.auth=null;this.legacyLoginSaved=true;this.reason='旧官方登录已保留，请点击“迁移旧登录”，或重新登录后保存到网关。';return false;}
+        const storage=legacy?this.electron.safeStorage:this.credentialStorage();
+        if(legacy){if(!await this.waitStorage(storage.isAsyncEncryptionAvailable()))throw failure('旧登录迁移需要原系统凭据授权。');}
+        else if(!await this.secure())throw failure('凭据存储不可用，暂不能恢复官方登录。');
         if(!this.authCurrent(generation,authIdentity,settingsIdentity))return false;
-        const decrypted=await this.waitStorage(this.electron.safeStorage.decryptStringAsync(encrypted));
+        const decrypted=await this.waitStorage(storage.decryptStringAsync(legacy?original:this.encrypted(original)));
         if(!this.authCurrent(generation,authIdentity,settingsIdentity))return false;
+        if(!legacy)this.localStorage?.assertCurrent(decrypted);
         const auth=JSON.parse(decrypted.result);
         if(!auth||typeof auth.jwt!=='string'||!auth.jwt||auth.jwt.length>16384||/\s/.test(auth.jwt)||!LOGIN_PROVIDERS.includes(auth.provider))throw Error('Invalid saved login');
         const link=this.localLink(auth.link).url;
+        if(legacy){
+          const encrypted=await this.credentialStorage().encryptStringAsync(JSON.stringify(auth));
+          if(!this.authCurrent(generation,authIdentity,settingsIdentity))return false;
+          this.writeAuth(encrypted,original,authIdentity,settingsIdentity);
+        }
         if(!this.link)this.writeLink(link);
         this.auth=auth;this.reason='官方登录已保存，可连接官方远控。';return true;
       }catch(error){if(this.authCurrent(generation,authIdentity,settingsIdentity)){this.auth=null;this.reason=error.publicMessage||'官方登录无法读取，请重新登录。';}return false;}
     })();
     this.restorePending=task;const settled=()=>{if(this.restorePending===task)this.restorePending=null;};task.then(settled,settled);return task;
+  }
+  async migrateLogin(){
+    if(!this.localStorage)throw failure('当前系统无需迁移官方登录。');
+    if(this.restorePending)await this.restorePending;
+    this.authGeneration++;
+    if(!await this.restore({migrateLegacy:true}))throw failure(this.reason);
+    return this.status();
   }
   save(link){
     const parsed=this.localLink(link);
@@ -289,11 +326,11 @@ class OfficialRemote {
         if(typeof data.jwt!=='string'||!data.jwt||data.jwt.length>16384||/\s/.test(data.jwt)||!LOGIN_PROVIDERS.includes(data.provider))throw Error('Invalid token');
         // Close the official web terminal before the gateway claims its own terminal.
         const auth={...data,link:parsed.url};
-        const task=Promise.resolve().then(()=>this.electron.safeStorage.encryptStringAsync(JSON.stringify(auth)));
+        const task=Promise.resolve().then(()=>this.credentialStorage().encryptStringAsync(JSON.stringify(auth)));
         encrypting=task;const settled=()=>{if(encrypting===task)encrypting=null;};task.then(settled,settled);
         const encrypted=this.encrypted(await this.waitStorage(task));
         if(this.loginWindow!==win||win.isDestroyed()||!this.authCurrent(generation,authIdentity,settingsIdentity)||this.targetLink()!==parsed.url)return;
-        fs.writeFileSync(this.authFile+'.tmp',encrypted,{mode:0o600});fs.renameSync(this.authFile+'.tmp',this.authFile);
+        this.writeAuth(encrypted,fs.existsSync(this.authFile)?fs.readFileSync(this.authFile):null,authIdentity,settingsIdentity);
         this.auth=auth;this.reason='官方登录已保存，点击“连接官方远控”继续。';
         clearInterval(timer);this.loginWindow=null;win.destroy();
       }catch(error){if(this.loginWindow===win&&!win.isDestroyed()&&this.authCurrent(generation,authIdentity,settingsIdentity))this.reason=error.publicMessage||'官方登录尚未保存，请检查账号或重新登录。';}
@@ -304,7 +341,7 @@ class OfficialRemote {
     win.webContents.on('did-finish-load',capture);
     await win.loadURL(parsed.url);return this.status();
   }
-  async forget(){this.authGeneration++;this.loginWindow?.destroy();this.loginWindow=null;await this.disconnect();this.auth=null;try{fs.unlinkSync(this.authFile);}catch(error){if(error.code!=='ENOENT')throw error;}return this.status();}
+  async forget(){this.authGeneration++;this.loginWindow?.destroy();this.loginWindow=null;await this.disconnect();this.auth=null;for(const file of [this.authFile,this.legacyAuthFile])try{fs.unlinkSync(file);}catch(error){if(error.code!=='ENOENT')throw error;}this.legacyLoginSaved=false;return this.status();}
   dispose(){this.disposed=true;this.authGeneration++;this.serviceAvailable=false;this.disconnect();this.loginWindow?.destroy();this.stopServer?.();}
 }
 module.exports={OfficialRemote};

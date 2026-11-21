@@ -10,7 +10,8 @@ function storage(extra={}){return {isEncryptionAvailable(){throw Error('synchron
 function fixture(t){const p=profile(t),home=path.join(p,'native');fs.mkdirSync(home);fs.mkdirSync(path.join(p,'desktop-sessions'));
 fs.writeFileSync(path.join(home,'telemetry-state.json'),JSON.stringify({deviceMid:'this-machine'}));
 fs.writeFileSync(path.join(p,'desktop-sessions/settings.json'),JSON.stringify({discovered:{zcode:{dataDirectory:home}}}));
-return new OfficialRemote({electron:{safeStorage:storage()},profile:p,rendererPath:__filename});}
+// Keep the existing OS-vault contract tests explicit; Mac's profile store is covered below.
+const Controller=platformController('linux',serveLocal);return new Controller({electron:{safeStorage:storage()},profile:p,rendererPath:__filename});}
 test('official target must match existing native telemetry without generating a new identity',t=>{
  const c=fixture(t);assert.equal(c.localLink(link).mid,'this-machine');
  assert.throws(()=>c.localLink(link.replace('this-machine','another-machine')),/本机/);
@@ -25,7 +26,7 @@ test('saved link and encrypted login survive controller restart and a local-mode
  const c=fixture(t);c.electron.safeStorage=storage();
  c.save(link);assert.equal(c.status().configured,false);
  fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'private-secret',provider:'zai',name:'Fixture',link})),{mode:0o600});
- const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
+ const restored=new c.constructor({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
  assert.equal(restored.status().configured,true);assert.equal(restored.status().connected,false);assert.equal(restored.status().selected,false);
  assert.equal(restored.status().link,link);assert.equal(restored.status().accountName,'Fixture');
  if(process.platform!=='win32')assert.equal(fs.statSync(c.settingsFile).mode&0o777,0o600);assert.equal(JSON.stringify(restored.status()).includes('private-secret'),false);
@@ -33,7 +34,7 @@ test('saved link and encrypted login survive controller restart and a local-mode
  fs.writeFileSync(path.join(c.profile,'desktop-sessions/settings.json'),JSON.stringify(config));assert.equal(restored.status().selected,true);
 });
 test('standby pairing waits for explicit access before reading the keychain and shares one private listener',async t=>{
- const c=platformFixture(t,process.platform);t.after(()=>c.dispose());c.save(link);
+ const c=platformFixture(t,'linux');t.after(()=>c.dispose());c.save(link);
  fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'fixture',provider:'zai',link})));
  let decrypts=0;const decode=c.electron.safeStorage.decryptStringAsync;
  c.electron.safeStorage.decryptStringAsync=async bytes=>{decrypts++;return decode(bytes);};
@@ -53,7 +54,7 @@ test('legacy encrypted login supplies the target and forget retains the saved li
  const c=fixture(t);c.electron.safeStorage=storage();
  fs.writeFileSync(c.authFile,await c.electron.safeStorage.encryptStringAsync(JSON.stringify({jwt:'fixture-only',provider:'zai',link})));await c.restore();assert.equal(c.targetLink(),link);
  await c.forget();assert.equal(c.status().configured,false);assert.equal(c.status().link,link);
- const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
+ const restored=new c.constructor({electron:c.electron,profile:c.profile,rendererPath:__filename});await restored.restore();
  assert.equal(restored.status().configured,false);assert.equal(restored.status().link,link);
 });
 test('requests cannot cross a relay epoch or bypass expiry and action validation',async t=>{
@@ -199,7 +200,7 @@ test('official browser session capture executes the injected script for all prov
   win.webContents.emit('did-finish-load');await tick();await tick();
   assert.equal(c.status().configured,true);assert.equal(c.auth.provider,provider);assert.equal(c.auth.jwt,session.zcodeJwtToken);assert.equal(c.auth.name,session.userInfo.displayName);assert.equal(win.isDestroyed(),true);
   assert.deepEqual(reads,['oauth:browser_session']);const encrypted=fs.readFileSync(c.authFile);assert.ok(encrypted.toString().startsWith('v11sealed:'));
-  const restored=new OfficialRemote({electron:c.electron,profile:c.profile,rendererPath:__filename});t.after(()=>restored.dispose());
+  const restored=new c.constructor({electron:c.electron,profile:c.profile,rendererPath:__filename});t.after(()=>restored.dispose());
   assert.equal(await restored.restore(),true);assert.equal(restored.status().provider,provider);assert.equal(restored.auth.jwt,session.zcodeJwtToken);assert.deepEqual(fs.readFileSync(c.authFile),encrypted);
  }
 });
@@ -300,8 +301,8 @@ test('closing login or replacing settings prevents late encrypted capture from w
   encrypt.resolve(Buffer.from('v11encrypted-fixture'));await tick();await tick();assert.equal(fs.existsSync(c.authFile),false);assert.equal(c.auth,null);c.dispose();
  }
 });
-test('Mac and Windows async restore preserve existing synchronous-format encrypted credentials',async t=>{
- for(const platform of ['darwin','win32']){
+test('Windows async restore preserves existing synchronous-format encrypted credentials',async t=>{
+ for(const platform of ['win32']){
   const c=platformFixture(t,platform,storage()),auth=saved(c,'v10');const original=fs.readFileSync(c.authFile);
   c.electron.safeStorage.decryptStringAsync=async value=>{assert.deepEqual(value,original);return {result:JSON.stringify(auth),shouldReEncrypt:true};};
   assert.equal(await c.restore(),true);assert.equal(c.status().configured,true);assert.deepEqual(fs.readFileSync(c.authFile),original);c.dispose();
@@ -335,4 +336,35 @@ test('closing the controller during optional IPC startup closes its late listene
  const starting=c.start();c.dispose();server.resolve(()=>{closed++;});
  assert.equal(await starting,false);assert.equal(closed,1);assert.equal(c.status().available,false);
  assert.equal(await c.restore(),false);await assert.rejects(c.login(link),/服务已关闭/);
+});
+
+test('Mac restores profile credentials after rebuild without probing Electron safeStorage',{skip:process.platform==='win32'},async t=>{
+ const {PrivateCredentials}=require('../desktop/shared/private-credentials.cjs');
+ const safe=new Proxy({}, {get(){throw Error('unexpected keychain access');}}),c=platformFixture(t,'darwin',safe);
+ c.save(link);const local=new PrivateCredentials(c.profile,'zcode-official');
+ const encrypted=await local.encryptStringAsync(JSON.stringify({jwt:'local-fixture-secret',provider:'zai',name:'Fixture',link}));
+ fs.writeFileSync(c.authFile,encrypted,{mode:0o600});const original=fs.readFileSync(path.join(c.profile,'.credential-vault/key'));
+ assert.equal(await c.restore(),true);assert.equal(c.status().configured,true);
+ const rebuilt=platformFixture(t,'darwin',safe);rebuilt.profile=c.profile;rebuilt.authFile=c.authFile;rebuilt.settingsFile=c.settingsFile;rebuilt.localStorage=new PrivateCredentials(c.profile,'zcode-official');
+ assert.equal(await rebuilt.restore(),true);assert.equal(rebuilt.auth.jwt,'local-fixture-secret');
+ assert.deepEqual(fs.readFileSync(path.join(c.profile,'.credential-vault/key')),original);
+ assert.equal(JSON.stringify(rebuilt.status()).includes('local-fixture-secret'),false);
+});
+test('Mac old login is never decrypted until explicit migration and retains an encrypted rollback copy',{skip:process.platform==='win32'},async t=>{
+ let decrypts=0;const auth={jwt:'legacy-fixture-secret',provider:'zai',name:'Fixture',link};
+ const c=platformFixture(t,'darwin',storage({decryptStringAsync:async()=>{decrypts++;return {result:JSON.stringify(auth)};}}));
+ const original=Buffer.from('v10legacy-fixture');fs.writeFileSync(c.authFile,original,{mode:0o600});
+ assert.equal(await c.restore(),false);assert.equal(decrypts,0);assert.equal(c.status().legacyLoginSaved,true);
+ await c.migrateLogin();assert.equal(decrypts,1);assert.equal(c.auth.jwt,auth.jwt);assert.deepEqual(fs.readFileSync(c.legacyAuthFile),original);
+ assert.equal(fs.readFileSync(c.authFile).subarray(0,4).toString(),'CMB1');await c.restore();assert.equal(decrypts,1);
+ await c.forget();assert.equal(fs.existsSync(c.authFile),false);assert.equal(fs.existsSync(c.legacyAuthFile),false);
+});
+
+test('Mac migration preserves an externally replaced key and the original login ciphertext',{skip:process.platform==='win32'},async t=>{
+ const auth={jwt:'legacy-fixture',provider:'zai',link},c=platformFixture(t,'darwin',storage({decryptStringAsync:async()=>({result:JSON.stringify(auth)})}));
+ const original=Buffer.from('v10legacy-fixture');fs.writeFileSync(c.authFile,original,{mode:0o600});
+ const encrypt=c.localStorage.encryptStringAsync.bind(c.localStorage),foreign=Buffer.alloc(32,42);
+ c.localStorage.encryptStringAsync=async value=>{const encrypted=await encrypt(value);fs.writeFileSync(path.join(c.profile,'.credential-vault/key'),foreign);return encrypted;};
+ await assert.rejects(c.migrateLogin());assert.deepEqual(fs.readFileSync(c.authFile),original);assert.equal(c.auth,null);
+ assert.deepEqual(fs.readFileSync(path.join(c.profile,'.credential-vault/key')),foreign);
 });

@@ -550,10 +550,13 @@ class Desktop:
                 raise ValueError('Webhook 地址读取请求格式不正确')
             return {'webhookUrl': webhook_config(settings(self.data_dir), value.get('webhookId', 'legacy')).get('webhookUrl', '')}
         if value.get('id'):
-            from bridge.features.accounts.secrets import read
+            from bridge.features.accounts.secrets import read, LegacyCredentialsRequired
             if not any(c['id'] == value['id'] for c in self.preferences()['connections']):
                 raise ValueError('请先保存连接配置。')
-            return read(self.data_dir, value['id'])
+            try:
+                return read(self.data_dir, value['id'])
+            except LegacyCredentialsRequired:
+                return {'migrationRequired': True}
         notification = settings(self.data_dir)
         result = {key: notification[key] for key in ('token', 'barkKey', 'pushplusToken')}
         initial = self.data_dir/'首次登录.txt'
@@ -570,9 +573,12 @@ class Desktop:
         entry = next((c for c in self.preferences()['connections'] if c['id'] == value.get('id')), None)
         if not entry:
             raise ValueError('请先保存连接配置。')
-        from bridge.features.accounts.secrets import save
-        save(self.data_dir, entry['id'], value.get('secrets', {}))
-        return {'message': '连接凭据已保存到系统凭据存储。'}
+        from bridge.features.accounts.secrets import save, migrate
+        if value.get('migrate') is True:
+            migrate(self.data_dir, entry['id'])
+        else:
+            save(self.data_dir, entry['id'], value.get('secrets', {}))
+        return {'message': '连接凭据已保存。'}
 
     def server_setup(self, value):
         entry = access.select_connection(self.preferences(), value, allow_disabled=True)

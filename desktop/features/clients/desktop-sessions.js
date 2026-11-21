@@ -416,7 +416,7 @@ class DesktopConnectionsPanel {
     const status=node('p'),reason=node('p',undefined,'hint'),saved=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');saved.setAttribute('role','status');
     const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
     const actions=node('div',undefined,'actions'),buttons={};
-    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['browser-login','使用系统浏览器登录'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
+    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['migrate','迁移旧登录'],['browser-login','使用系统浏览器登录'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
       const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
     }
     const receiptRow=node('div'),receiptLabel=node('label'),receipt=node('input'),submitReceipt=node('button','提交授权回执');
@@ -431,14 +431,15 @@ class DesktopConnectionsPanel {
       if(value&&guidePending){guide.open=!value.configured;guidePending=false;}
       status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
         BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
-      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…','browser-login':'正在打开官方登录…','login-receipt':'正在提交授权回执…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…','browser-login':'正在打开官方登录…',migrate:'正在迁移旧登录…','login-receipt':'正在提交授权回执…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
       saved.textContent=BridgeI18n.t(edited?'连接配置已修改，尚未保存。':loadedLink?'连接配置已保存。登录失效时需要重新验证。':'请保存此电脑的官方远控链接，再完成官方登录。');label.dataset.dirty=String(edited);
       link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
       buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
       buttons['browser-login'].disabled=buttons.login.disabled;
+      buttons.migrate.hidden=!value?.legacyLoginSaved;buttons.migrate.disabled=busy||unavailable||!value?.legacyLoginSaved||edited;
       receiptRow.hidden=!value?.browserLoginPending;if(receiptRow.hidden)receipt.value='';receipt.disabled=busy;
       submitReceipt.disabled=busy||unavailable||edited||!value?.browserLoginPending||!receipt.value.trim();
-      buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!value?.configured;
+      buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!(value?.configured||value?.loginSaved);
     };
     const perform=async action=>{
       if(busy||this.busy||this.scanning||this.choosingClient)return;

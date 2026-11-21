@@ -24,6 +24,7 @@ async function saveConnectionCredentials(id){
   if(!draft||!draft.changed||!Object.values(draft.secrets).some(Boolean))return;
   const submitted=JSON.stringify(draft.secrets);
   await api.connectionCredentials({id,remember:draft.remember,secrets:{...draft.secrets}});
+  if(draft.remember)draft.migrationRequired=false;
   if(JSON.stringify(draft.secrets)===submitted)draft.changed=false;
 }
 async function saveAllConnectionCredentials(enabledOnly=false){
@@ -64,7 +65,7 @@ function renderConnections(){
       const button=document.createElement('button');button.type='button';button.textContent=t(label);button.dataset.connectionAction=method;button.dataset.connection=row.id;button.dataset.key=row.id+':'+method;
       button.onclick=async()=>{
         const key=button.dataset.key;if(dirty||busyActions.size)return;const target=method==='checkEntry'?connectionCheckIdentity(row):null;const current=()=>target===null||target===connectionCheckIdentity(connectionDraft.find(c=>c.id===row.id));busyActions.add(key);updateDirty();
-        try{if(!['clearCredentials','diagnostics'].includes(method))await saveConnectionCredentials(row.id);const result=await callback();if(!current())return;if(method==='checkEntry')connectionSetupState.set(row.id,result?.message||'');if(result?.message)feedback(result.message);}
+        try{if(!['clearCredentials','diagnostics','migrateCredentials'].includes(method))await saveConnectionCredentials(row.id);const result=await callback();if(!current())return;if(method==='checkEntry')connectionSetupState.set(row.id,result?.message||'');if(result?.message)feedback(result.message);}
         catch(e){if(current()){e.message=e.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');showError(e);connectionSetupState.set(row.id,e.message);}}
         finally{busyActions.delete(key);renderConnections();updateDirty();}
       };return button;
@@ -78,14 +79,15 @@ function renderConnections(){
         input.oninput=()=>{draft.secrets[key]=input.value;draft.changed=true;draft.revision++;};wrap.append(text,input);card.append(wrap);secretControl(input);
       }
       const label=document.createElement('label'),check=document.createElement('input'),text=document.createElement('span');label.className='check';check.type='checkbox';check.checked=draft.remember;
-      text.textContent=t('保存到系统凭据存储，重启后自动连接');check.onchange=()=>{draft.remember=check.checked;draft.changed=true;draft.revision++;};label.append(check,text);card.append(label);
+      text.textContent=t('保存连接凭据，重启后自动连接');check.onchange=()=>{draft.remember=check.checked;draft.changed=true;draft.revision++;};label.append(check,text);card.append(label);
       if(!draft.loaded&&snapshot?.preferences.connections.some(c=>c.id===row.id)){
         draft.loaded=true;const revision=draft.revision;
-        api.readCredentials({id:row.id}).then(values=>{if(connectionSecretDraft.get(row.id)!==draft||draft.changed||draft.revision!==revision)return;draft.secrets=values;for(const [key] of keys){const input=$('connection-'+row.id+'-'+key);if(input)input.value=values[key]||'';}}).catch(error=>{draft.loaded=false;feedback(error.message,true);});
+        api.readCredentials({id:row.id}).then(values=>{if(connectionSecretDraft.get(row.id)!==draft||draft.changed||draft.revision!==revision)return;draft.migrationRequired=values.migrationRequired===true;draft.secrets=Object.fromEntries(keys.filter(([key])=>typeof values[key]==='string').map(([key])=>[key,values[key]]));if(draft.migrationRequired)renderConnections();for(const [key] of keys){const input=$('connection-'+row.id+'-'+key);if(input)input.value=values[key]||'';}}).catch(error=>{draft.loaded=false;feedback(error.message,true);});
       }
       note('取消勾选时，新凭据仅本次有效；旧凭据可通过下方按钮清除。');
       const actions=document.createElement('div');actions.className='actions';
-      actions.append(action('保存连接凭据','credentials',async()=>({message:t('连接凭据已保存。')})),action('清除已保存凭据','clearCredentials',async()=>{const result=await api.connectionCredentials({id:row.id,secrets:{clear:true}});draft.secrets={};draft.changed=false;draft.revision++;return result;}));card.append(actions);
+      if(draft.migrationRequired)actions.append(action('迁移旧连接凭据','migrateCredentials',async()=>{if(draft.changed)throw Error(t('请先保存已填写的凭据，再迁移旧凭据。'));const result=await api.connectionCredentials({id:row.id,migrate:true});draft.migrationRequired=false;draft.loaded=false;draft.revision++;return result;}));
+      actions.append(action('保存连接凭据','credentials',async()=>({message:t('连接凭据已保存。')})),action('清除已保存凭据','clearCredentials',async()=>{const result=await api.connectionCredentials({id:row.id,secrets:{clear:true}});draft.secrets={};draft.changed=false;draft.migrationRequired=false;draft.revision++;return result;}));card.append(actions);
     }
     field('enabled','启用此连接','checkbox');field('name','连接名称','text',row.accessMode==='external'||row.accessMode==='nas'?'可选，例如家里电脑':'可选，例如家中 NAS');
     if(row.accessMode==='quick'){

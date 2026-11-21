@@ -67,6 +67,7 @@ class ConnectionSetupTests(unittest.TestCase):
             desktop.save(value)
         self.assertEqual(failure.exception.validation['field'], 'bark-server')
 
+    @patch.object(connection_secrets.sys, 'platform', 'linux')
     def test_saved_credentials_read_privately_without_poll_snapshot_leak(self):
         desktop = Desktop(self.directory)
         desktop.status = lambda: {'running': False}
@@ -122,6 +123,7 @@ class ConnectionSetupTests(unittest.TestCase):
         self.assertEqual(entry_urls({'connections': [named]}, [], external_status={}), [])
         self.assertEqual(entry_urls({'connections': [named]}, [], external_status={'test-server': {'state': 'connected'}}), ['https://codex.example.com'])
 
+    @patch.object(connection_secrets.sys, 'platform', 'linux')
     def test_vault_no_plaintext_and_failure_does_not_fallback(self):
         vault = MagicMock()
         vault.get_password.return_value = None

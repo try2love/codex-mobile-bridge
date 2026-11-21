@@ -237,6 +237,7 @@ function register(){
       if(service!==officialRemote||service.disposed)throw Error('网关资料目录已变化，请重新打开管理页。');
       if(payload.action==='zcode-official-state')return service.status();
       if(payload.action==='zcode-official-save')return service.save(payload.link);
+      if(payload.action==='zcode-official-migrate')return service.migrateLogin();
       if(payload.action==='zcode-official-login')return service.login(payload.link);
       if(payload.action==='zcode-official-browser-login')return service.login(payload.link,{external:true});
       if(payload.action==='zcode-official-login-receipt')return service.completeLoginReceipt(payload.receipt);
@@ -293,13 +294,20 @@ function register(){
     if(updater?.busy)throw Error('正在更新应用，请稍候。');
     const current=await worker('snapshot');
     if(!current.preferences.connections.some(c=>c.id===value?.id))throw Error('请先保存连接配置。');
+    if(value.migrate===true){
+      if(Object.keys(value).some(key=>!['id','migrate'].includes(key)))throw Error('连接凭据迁移格式不正确');
+      const previous=connectionSecrets[value.id];
+      const result=await worker('connection-credentials',{id:value.id,migrate:true});
+      if(connectionSecrets[value.id]===previous)delete connectionSecrets[value.id];
+      return result;
+    }
     const secret=value.secrets;
     if(!secret||typeof secret!=='object'||Object.keys(secret).some(key=>!['password','passphrase','tunnelToken','clear'].includes(key)))throw Error('连接凭据格式不正确');
     for(const [key,text] of Object.entries(secret))if(key!=='clear'&&(typeof text!=='string'||text.length>16384||text.includes('\0')))throw Error('连接凭据格式不正确');
     if(secret.clear){await worker('connection-credentials',{id:value.id,secrets:{clear:true}});delete connectionSecrets[value.id];}
     else if(value.remember){await worker('connection-credentials',{id:value.id,secrets:secret});delete connectionSecrets[value.id];}
     else connectionSecrets[value.id]={...connectionSecrets[value.id],...secret};
-    return {message:value.remember?'连接凭据已保存到系统凭据存储。':'连接凭据仅保留在本次 App 运行内存中。'};
+    return {message:value.remember?'连接凭据已保存。':'连接凭据仅保留在本次 App 运行内存中。'};
   });
   ipcMain.handle('bridge:copy-server-diagnostics',async(event,value)=>{
     authorize(event);const result=await worker('server-setup',{id:value.id,action:'diagnostics',language:value.language});
