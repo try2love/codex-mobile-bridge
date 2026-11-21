@@ -139,13 +139,21 @@ class IntegrationTests(unittest.TestCase):
         db.close()
         db.close()
         # This fixture uses desktop IPC only, never the runner's installed Codex.
-        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
 
     def tearDown(self):
         self.bridge.close()
         self.fixture.close()
         self.temp.cleanup()
+
+    def test_fixture_reconnect_keeps_its_explicit_ipc_endpoint(self):
+        self.bridge.ipc.connect()
+        self.bridge.ipc.close()
+        self.bridge.ipc.connect()
+        self.assertEqual(self.bridge.ipc.path, self.fixture.path)
+        self.assertEqual(self.bridge.ipc.original_path, self.fixture.path)
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
 
     def test_live_read_send_same_thread_and_idempotence(self):
         view = self.bridge.view(THREAD)
@@ -234,7 +242,7 @@ class IntegrationTests(unittest.TestCase):
                 super().send(message)
 
         self.fixture = RestartedDesktop(self.root)
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge.ipc.path = self.bridge.ipc.original_path = self.fixture.path
         self.fixture.state['title'] = 'After desktop restart'
         with patch('bridge.app.service.open_in_desktop') as activate:
             self.bridge._refresh_async(session)
@@ -740,8 +748,8 @@ class IntegrationTests(unittest.TestCase):
             self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': 'wrong'})
         self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
         self.bridge.close()
-        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
         remaining = self.bridge.view(THREAD)['requests']
         self.assertEqual([r['id'] for r in remaining], ['approval'])
         self.assertEqual(len(self.bridge.session(THREAD).state['turns'][0]['items'][0]['questions']), 1)
