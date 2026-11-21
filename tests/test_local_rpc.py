@@ -56,6 +56,68 @@ class LocalRpcTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'Windows ACL and named-pipe fixture')
 class WindowsLocalRpcTests(unittest.TestCase):
+    def test_elevated_private_write_is_readable_with_the_linked_standard_token(self):
+        import ctypes
+        from ctypes import wintypes
+        import shutil
+        import uuid
+        from bridge.platforms.windows import local_service as native
+        from bridge.features.auth.auth import replace_session_file
+        api = ctypes.WinDLL('advapi32', use_last_error=True)
+        api.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        api.OpenProcessToken.restype = wintypes.BOOL
+        api.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        api.GetTokenInformation.restype = wintypes.BOOL
+        api.ImpersonateLoggedOnUser.argtypes = [wintypes.HANDLE]
+        api.ImpersonateLoggedOnUser.restype = wintypes.BOOL
+        api.RevertToSelf.argtypes = []
+        api.RevertToSelf.restype = wintypes.BOOL
+        process = native._native().open(os.getpid(), terminate=False)
+        token, linked, size, elevated = wintypes.HANDLE(), wintypes.HANDLE(), wintypes.DWORD(), wintypes.DWORD()
+        try:
+            if not api.OpenProcessToken(process, 8, ctypes.byref(token)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not api.GetTokenInformation(token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated), ctypes.byref(size)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not elevated.value:
+                self.skipTest('Requires an elevated Windows process and its linked standard token')
+            if not api.GetTokenInformation(token, 19, ctypes.byref(linked), ctypes.sizeof(linked), ctypes.byref(size)):
+                error = ctypes.get_last_error()
+                if error == 1312:
+                    self.skipTest('This Windows logon has no linked standard token')
+                raise ctypes.WinError(error)
+            root = Path('.tmp').resolve()/('acl-' + uuid.uuid4().hex)
+            native.directory(root, create=True)
+            try:
+                path = root/'settings.json'
+                replace_session_file(path, b'{"fixture":true}')
+                if not api.ImpersonateLoggedOnUser(linked):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    self.assertEqual(path.read_bytes(), b'{"fixture":true}')
+                finally:
+                    if not api.RevertToSelf():
+                        raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                shutil.rmtree(root)
+        finally:
+            if linked:native._native().close(linked)
+            if token:native._native().close(token)
+            native._native().close(process)
+
+    def test_private_file_writer_creates_user_owned_atomic_file(self):
+        from bridge.platforms.windows import local_service as native
+        with tempfile.TemporaryDirectory(dir='.tmp') as name:
+            service_root = Path(name) / '.local-services'
+            path = service_root / 'fixture' / 'private.json'
+            native.directory(service_root, create=True)
+            native.directory(path.parent, create=True)
+            from bridge.features.auth.auth import replace_session_file
+            replace_session_file(path, b'{"fixture":true}')
+            self.assertEqual(path.read_bytes(), b'{"fixture":true}')
+            self.assertEqual(native.read_record(path), {'fixture': True})
+
     def test_private_record_rejects_inherited_permissions_and_hard_links(self):
         from bridge.platforms.windows import local_service as native
         with tempfile.TemporaryDirectory(dir='.tmp') as name:

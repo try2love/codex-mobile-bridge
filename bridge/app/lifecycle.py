@@ -49,8 +49,7 @@ class GatewayControl:
         self.record.update(pairingDir=self.pairing_dir.name, instanceId=instance_id, deviceManagement=auth is not None,
                            desktopSessionsManagement=desktop_sessions is not None, harnessManagement=harness is not None, accountsManagement=accounts is not None, accountManagement=account is not None, cliAccessManagement=cli_access is not None, notificationManagement=notifications is not None, networkAdaptationManagement=network_adaptation is not None)
         self.request_path.unlink(missing_ok=True)
-        self.path.write_text(json.dumps(self.record), encoding='utf-8')
-        self.path.chmod(0o600)
+        private_json(self.path, self.record)
         def watch():
             while not self.closed.wait(.2):
                 if read_record(self.request_path) == self.record:
@@ -114,8 +113,7 @@ def request_stop(data_dir, timeout=15):
     if not isinstance(record, dict) or not isinstance(record.get('pid'), int) or not record.get('token'):
         raise RuntimeError('No gateway control record; use Ctrl+C in its terminal if it is running.')
     request = path.with_name('gateway.stop')
-    request.write_text(json.dumps(record), encoding='utf-8')
-    request.chmod(0o600)
+    private_json(request, record)
     deadline = time.monotonic() + timeout
     acknowledged = False
     try:
@@ -133,6 +131,10 @@ def request_stop(data_dir, timeout=15):
 
 
 def private_json(path, value):
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, json.dumps(value).encode('utf-8'))
+        return
     descriptor, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
     temporary = Path(name)
     try:

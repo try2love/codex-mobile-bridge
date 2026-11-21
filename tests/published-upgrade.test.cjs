@@ -82,7 +82,12 @@ test('acceptance transport runs production signed selection and archive hashes w
   await assert.rejects(updater.fetch('https://fixture.invalid/'+name),/refuses unexpected URL/);
   updater=new Updater(options);
   await updater.check({manual:true,channel:'stable'});await fs.writeFile(path.join(directory,'old',name),Buffer.alloc(bytes.length));
-  assert.equal((await updater.install({candidateId:updater.status().candidateId,confirmed:true})).state,'error');assert.equal(installed,1);
+  await updater.cleanupVerifiedPackages({startup:true});
+  assert.equal((await updater.install({candidateId:updater.status().candidateId,confirmed:true})).state,'restarting');assert.equal(installed,2);
+  const cached=(await fs.readdir(options.directory)).find(name=>name.startsWith('verified-'));
+  await fs.writeFile(path.join(options.directory,cached),Buffer.alloc(bytes.length));
+  updater=new Updater(options);await updater.check({manual:true,channel:'stable'});
+  assert.equal((await updater.install({candidateId:updater.status().candidateId,confirmed:true})).state,'error');assert.equal(installed,2);
   await fs.writeFile(path.join(directory,'old','bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:Buffer.alloc(64).toString('base64')}));
   assert.equal((await updater.check({manual:true,channel:'stable'})).state,'error');assert.match(updater.status().message,/签名/);
 });

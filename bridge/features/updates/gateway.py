@@ -29,7 +29,7 @@ DATA_FORMAT = 'bridge-data-v1'
 RETURN_STABLE_SOURCE = re.compile(r'2\.2\.2-preview\.\d+')
 CONFIG_FILES = ('config.json', 'desktop.json', 'auth-sessions.json', 'connection-vault.json',
                 'notifications.json', 'notification-watches.json', 'notification-policies.json',
-                'network-adaptation.json', 'desktop-sessions/settings.json',
+                'network-adaptation.json', 'desktop-sessions/settings.json', 'desktop-sessions/settings.user.json',
                 'client-instances/entries.json', 'codex-entries/entries.json', 'cli-access/index.json',
                 'account-drafts.json')
 ACCOUNT_FILES = ('index.json', 'switch.json', 'shared-daemon-stop.json', 'reset-dynamic.json',
@@ -106,15 +106,23 @@ def configuration_files(data):
 def configuration_snapshot(data, *, rollback=False):
     files, total = {}, 0
     for path in configuration_files(data):
-        if not path.exists() and not path.is_symlink():
-            continue
         relative = path.relative_to(data)
-        if any(data.joinpath(*relative.parts[:index]).is_symlink()
-               for index in range(1, len(relative.parts) + 1)):
-            raise ValueError('更新备份的配置路径不能使用符号链接。')
-        if not path.is_file() or path.stat().st_size > 16*1024**2 or len(files) >= 10000:
-            raise ValueError('更新配置备份超出限制。')
-        raw = path.read_bytes()
+        try:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if any(data.joinpath(*relative.parts[:index]).is_symlink()
+                   for index in range(1, len(relative.parts) + 1)):
+                raise ValueError('更新备份的配置路径不能使用符号链接。')
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 16*1024**2 or len(files) >= 10000:
+                raise ValueError('更新配置备份超出限制。')
+            raw = path.read_bytes()
+        except PermissionError:
+            if relative.parts[-2:] in (('desktop-sessions', 'settings.json'),
+                                        ('desktop-sessions', 'settings.user.json')):
+                continue
+            raise
         total += len(raw)
         if total > 64*1024**2:
             raise ValueError('更新配置备份超出限制。')
@@ -176,6 +184,54 @@ def configuration_snapshot(data, *, rollback=False):
     return files
 
 
+def restore_legacy_client_settings(data, transition):
+    """Make client settings readable by stable builds that predate the sidecar."""
+    if transition.get('intent') != 'return-stable':
+        return False
+    directory = data/'desktop-sessions'
+    primary, fallback = directory/'settings.json', directory/'settings.user.json'
+    if directory.is_symlink() or primary.is_symlink() or fallback.is_symlink():
+        raise ValueError('无法返回稳定版：客户端设置路径不能使用符号链接。')
+    try:
+        raw = fallback.read_bytes()
+    except FileNotFoundError:
+        try:
+            with primary.open('rb'):
+                return False
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            raise ValueError('无法返回稳定版：客户端设置不可读，且没有可供旧版使用的恢复副本。') from None
+    except PermissionError:
+        raise ValueError('无法返回稳定版：新版客户端设置副本不可读。') from None
+    try:
+        value = json.loads(raw.decode('utf-8-sig'))
+    except (UnicodeError, ValueError):
+        raise ValueError('无法返回稳定版：新版客户端设置副本格式无效。') from None
+    if not isinstance(value, dict):
+        raise ValueError('无法返回稳定版：新版客户端设置副本格式无效。')
+    try:
+        if os.name == 'nt':
+            from bridge.platforms.windows.local_service import write_private
+            write_private(primary, json.dumps(value, ensure_ascii=False).encode('utf-8'))
+        else:
+            descriptor, name = tempfile.mkstemp(prefix='.' + primary.name + '.', suffix='.tmp', dir=directory)
+            temporary = Path(name)
+            try:
+                with os.fdopen(descriptor, 'wb') as stream:
+                    stream.write(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, primary)
+            finally:
+                temporary.unlink(missing_ok=True)
+        fallback.unlink()
+    except OSError as error:
+        raise ValueError('无法返回稳定版：客户端设置无法恢复到旧版路径。') from error
+    return True
+
+
 def private_directory(path):
     if os.name == 'nt':
         from bridge.platforms.windows.local_service import directory
@@ -215,6 +271,10 @@ def backup_configuration(data_dir, payload):
 
 
 def write_json(path, value):
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, json.dumps(value, ensure_ascii=False).encode('utf-8'))
+        return
     temporary = Path(str(path) + '.tmp')
     with open(temporary, 'w', encoding='utf-8') as stream:
         json.dump(value, stream, ensure_ascii=False)
@@ -674,6 +734,7 @@ def apply(plan_file, *, desktop=None, wait=wait_parent, launch=launch_app, healt
             # Take the final copy after the old controller and managed gateway
             # have stopped. It is independent of replaceable app transactions.
             plan['configurationBackup'] = backup_configuration(plan['dataDir'], plan)['backup']
+            restore_legacy_client_settings(Path(plan['dataDir']).resolve(), plan['transition'])
             write_json(Path(plan_file), plan)
         move_app(target, backup)
         try:

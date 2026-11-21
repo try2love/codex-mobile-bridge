@@ -55,10 +55,10 @@ class Desktop:
             raise ValueError('网关正在启动，请稍后重试')
         if self.local_bridge is None:
             from bridge.app.service import Bridge
-            from bridge.clients.manager import DesktopSessions
+            from bridge.clients.manager import DesktopSessions, read_client_settings, settings_path
             from bridge.clients.discovery import discover_clients, inventory_current
             p = self.preferences()
-            saved = read_json(self.data_dir/'desktop-sessions/settings.json', {})
+            saved = read_client_settings(settings_path(self.data_dir/'desktop-sessions')) or {}
             inputs = {**p, **{key: value for key, value in saved.items()
                                if key.endswith(('Home', 'Application', 'Applications'))}}
             if saved.get('discoveryPreferences', {}).get('desktopExecutable'):

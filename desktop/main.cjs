@@ -26,7 +26,7 @@ const root=path.resolve(__dirname,'..');
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 const iconTheme=createIconTheme({app,nativeTheme,nativeImage,platform:process.platform,assetsDir:path.join(__dirname,'assets'),getWindow:()=>window,getTray:()=>tray});
-let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false;
+let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false,startupCleanup=Promise.resolve();
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
@@ -170,11 +170,22 @@ async function installUpdate(candidate){
   throw Error('无法启动应用更新进程。');
 }
 function setupUpdater(){
+  const updateDirectory=path.join(app.getPath('userData'),'updates');
+  const updateTools=require('./features/updates/updater.cjs');
+  startupCleanup.catch(()=>{});
+  // A crashed handoff can leave only an incomplete download directory. Verified
+  // Other versions can be pending upgrade or return-to-stable retries.
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
-    fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
+    fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:updateDirectory,
     skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.env.APPIMAGE?'AppImage':'deb',
     supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32','linux'].includes(process.platform),
-    preflight:process.platform==='win32'?()=>worker('update-preflight',{target:updateTarget()}):undefined,install:installUpdate});
+    preflight:process.platform==='win32'?async()=>{
+      await startupCleanup;
+      await updateTools.cleanDownloadStaging(updateDirectory);
+      await worker('update-preflight',{target:updateTarget()});
+    }:undefined,install:installUpdate});
+  startupCleanup=Promise.all([updateTools.cleanDownloadStaging(updateDirectory),updater.cleanupVerifiedPackages({startup:true,preserveCurrent:updateManaged()})]);
+  startupCleanup.catch(()=>{});
   setTimeout(()=>updater.check(),5000).unref();
   setInterval(()=>updater.check(),6*60*60*1000).unref();
 }
@@ -201,9 +212,11 @@ function register(){
           buttons:[t('取消'),t(process.platform==='linux'?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
         if(answer.response!==1)return updater.status();
         if(blocked())throw Error('请等待当前操作完成后再更新。');
+        await startupCleanup;
         return await updater.install({candidateId,confirmed:true});
       }finally{updateConfirmation=false;}
     }
+    await startupCleanup;
     return updater.install({candidateId});
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});
@@ -408,8 +421,10 @@ async function acknowledgeUpdate(){
   try{
     if(process.platform==='darwin')await restoreMacUpdate({handoff,env:process.env,pid:process.pid,worker,stillManaged:updateManaged});
     await worker('snapshot');
-    if(updateManaged()&&handoff.dataDir===dataDir)
+    if(updateManaged()&&handoff.dataDir===dataDir){
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
+      await updater.cleanupVerifiedPackages();
+    }
   }catch{} // Missing acknowledgement makes the independent helper restore the old app.
 }
 function createWindow(hidden=false){
