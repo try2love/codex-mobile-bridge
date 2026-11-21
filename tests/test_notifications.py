@@ -61,6 +61,45 @@ class NotificationTests(unittest.TestCase):
                                        'includeTitle': False, 'mobileEnabled': False})
         self.manager.watch(self.thread, 'remote', True)
 
+    def test_opt_in_answer_preview_uses_completed_turn_and_excludes_tools(self):
+        self.manager.watch(self.thread, 'remote', True, True)
+        self.session.state = {'title': 'Title', 'requests': [], 'turns': []}
+        save_settings(self.directory, {'includeAnswer': True})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.scan()
+            self.session.state['turns'] = [{'turnId': 'answer-turn', 'status': 'inProgress', 'items': []}]
+            self.manager.scan()
+            self.session.state['turns'][0].update(status='completed', items=[
+                {'type': 'agentMessage', 'phase': 'commentary', 'text': 'private reasoning'},
+                {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Final answer ' * 40},
+                {'type': 'commandExecution', 'text': 'private command output'}])
+            self.manager.scan()
+            body = send.call_args.args[2]
+            self.assertTrue(body.startswith('Final answer'))
+            self.assertLessEqual(len(body), 281)
+            self.assertNotIn('private', body)
+
+    def test_queued_preview_obeys_disabled_setting_and_cannot_use_another_turn(self):
+        self.manager.watch(self.thread, 'remote', True, True)
+        row = {'id': self.thread, 'host': 'remote'}
+        config = settings(self.directory)
+        target = self.manager._targets(config)['ntfy']
+        key = self.manager._delivery_key(row, 'completed-turn', completion=True, target=target)
+        save_settings(self.directory, {'includeAnswer': True})
+        config = settings(self.directory)
+        self.manager._dispatch(config, row, 'Title', 'ntfy', target, [key], True,
+                               answer_previews={'other-turn': 'wrong answer'})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.deliver_pending()
+            self.assertNotIn('wrong answer', send.call_args.args[2])
+        self.manager.ledger.clear()
+        self.manager._dispatch(config, row, 'Title', 'ntfy', target, [key], True,
+                               answer_previews={'completed-turn': 'private answer'})
+        save_settings(self.directory, {'includeAnswer': False})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.deliver_pending()
+            self.assertNotIn('private answer', send.call_args.args[2])
+
     def test_global_defaults_monitor_unwatched_chats_without_loading_history(self):
         # Discovery finds a chat that was never explicitly watched.
         other = str(uuid.uuid4())

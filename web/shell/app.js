@@ -1701,7 +1701,7 @@ function renderNotificationChannel(config){
   $('pushplus-token').placeholder=t(config[channel.hasSecret]?'已保存，留空保留':'填写 '+channel.name+' '+channel.secretLabel);
 }
 function renderNotificationCommon(config){
-  for(const id of ['security-enabled','address-enabled','include-title'])$('notification-'+id).checked=!!config[{'security-enabled':'securityEnabled','address-enabled':'addressEnabled','include-title':'includeTitle'}[id]];
+  for(const id of ['security-enabled','address-enabled','include-title','include-answer'])$('notification-'+id).checked=!!config[{'security-enabled':'securityEnabled','address-enabled':'addressEnabled','include-title':'includeTitle','include-answer':'includeAnswer'}[id]];
   $('notification-address-name').value=config.addressName||'';
   $('notification-click-base').value=config.clickBase||'';
 }
@@ -1772,6 +1772,7 @@ $('notification-common-save').onclick=async()=>{
       addressEnabled:$('notification-address-enabled').checked,
       addressName:$('notification-address-name').value.trim(),
       includeTitle:$('notification-include-title').checked,
+      includeAnswer:$('notification-include-answer').checked,
       clickBase:$('notification-click-base').value.trim()
     });
     if(request===notificationListRequest&&$('notification-channels-dialog').open){renderNotificationCommon(config);toast('通用通知设置已保存');}

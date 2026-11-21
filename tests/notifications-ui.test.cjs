@@ -311,8 +311,21 @@ test('common notification controls save once outside provider detail',async()=>{
   ui.nodes.get('notification-include-title').checked=true;
   ui.nodes.get('notification-click-base').value='https://bridge.example';
   await ui.nodes.get('notification-common-save').onclick();
-  assert.deepEqual(ui.writes[0].body,{securityEnabled:true,addressEnabled:false,addressName:'Home gateway',includeTitle:true,clickBase:'https://bridge.example'});
+  assert.deepEqual(ui.writes[0].body,{securityEnabled:true,addressEnabled:false,addressName:'Home gateway',includeTitle:true,includeAnswer:false,clickBase:'https://bridge.example'});
   assert.equal(ui.nodes.get('notification-channels-dialog').open,true);
+});
+
+test('answer previews require an explicit saved choice and restore on reopen',async()=>{
+  const ui=await fixture();await ui.nodes.get('pushplus-settings').onclick();
+  const toggle=ui.nodes.get('notification-include-answer');
+  assert.equal(toggle.checked,false);
+  toggle.checked=true;
+  await ui.nodes.get('notification-common-save').onclick();
+  assert.equal(ui.writes[0].body.includeAnswer,true);
+  ui.nodes.get('notification-channels-dialog').close();
+  toggle.checked=false;
+  await ui.nodes.get('pushplus-settings').onclick();
+  assert.equal(toggle.checked,true);
 });
 
 test('provider list reports configured and enabled states',async()=>{

@@ -8,6 +8,7 @@ const en={
 "确认撤回":"Confirm revert",
 "撤回":"Revert",
 "将撤销这条消息及之后的对话内容。默认保留文件；勾选文件回退后，由原客户端撤销对应工作区改动，Bridge 无法恢复。":"This removes this message and the following conversation. Files are kept by default. If selected, the original client also reverts subsequent workspace changes; Bridge cannot restore them.",
+"完成通知显示回答预览（可能出现在锁屏）":"Show answer previews in completion notifications (may appear on the lock screen)",
 "阅读设置":"Reading settings",
 "原始行宽":"Original line width",
 "自动换行":"Wrap lines",

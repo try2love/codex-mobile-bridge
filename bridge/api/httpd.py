@@ -1115,7 +1115,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.notifications
                 if manager is None:
                     raise ValueError('当前网关未启用通知服务')
-                fields = ('includeTitle', 'clickBase', 'securityEnabled', 'addressEnabled', 'addressName')
+                fields = ('includeTitle', 'includeAnswer', 'clickBase', 'securityEnabled', 'addressEnabled', 'addressName')
                 with manager.lock:
                     if write:
                         body = self.read_json()
