@@ -314,15 +314,16 @@ class HostedSessionTests(unittest.TestCase):
         self.assertFalse(any(m.get('method') in ('thread/revert', 'turn/start') for m in self.writes))
 
     def test_running_followup_preserves_images_and_file_context(self):
+        file_path = str(Path('fixture/spec.txt').absolute())
         self.turns[0]['status'] = 'inProgress'
         self.sessions.attach('t')
         self.sessions.call('t', 'thread-follower-steer-turn', {
             'input': [{'type': 'text', 'text': 'follow up'}, {'type': 'localImage', 'path': '/fixture/image.png'}],
             'attachments': [{'path': '/fixture/image.png'}],
-            'restoreMessage': {'context': {'fileAttachments': [{'path': '/fixture/spec.txt'}]}}})
+            'restoreMessage': {'context': {'fileAttachments': [{'path': file_path}]}}})
         call = next(m for m in self.writes if m.get('method') == 'turn/steer')
         self.assertEqual(call['params']['expectedTurnId'], 'turn')
-        self.assertIn('/fixture/spec.txt', call['params']['input'][0]['text'])
+        self.assertIn(file_path, call['params']['input'][0]['text'])
         self.assertEqual(call['params']['input'][1], {'type': 'localImage', 'path': '/fixture/image.png'})
 
     def test_one_follower_leaving_keeps_the_other_subscription_and_state(self):
