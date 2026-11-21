@@ -203,6 +203,12 @@ async function verifiedArchiveProof(archive,asset,requests,expectedDownloads){
   assert.equal(sha256,asset.sha256,'actual retained archive matches signed package digest');
   return {archive,sha256,downloads};
 }
+async function stableReturnCacheProof(cache,asset){
+  const retained=await verifiedArchiveProof(cache.archive,asset,[],0);
+  assert.equal(retained.sha256,cache.sha256);
+  return {...cache,retainedAfterSuccess:true,cleanupSupportedByTarget:false,
+    reason:'v2.2.1 predates verified-cache cleanup'};
+}
 async function returnThroughUpdater(files,data,work,phase,directory,{failure=false,native=false,manual=false,retryCache}={}){
   let planFile;
   const evidence=await inspectDesktop(files.app,data,candidateVersion,work,phase,async({ui,main,child})=>{
@@ -254,8 +260,9 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
   if(failure){
     const retained=await verifiedArchiveProof(evidence.cache.archive,evidence.package,[],0);
     assert.equal(retained.sha256,evidence.cache.sha256);
-  }else await assert.rejects(fs.access(evidence.cache.archive),{code:'ENOENT'});
-  return {...evidence,cache:{...evidence.cache,retainedAfterFailure:failure,removedAfterSuccess:!failure},helper:{state:result.state,recovered:result.recovered,configurationBackupRetained:true}};
+  }
+  const cache=failure?{...evidence.cache,retainedAfterFailure:true}:await stableReturnCacheProof(evidence.cache,evidence.package);
+  return {...evidence,cache,helper:{state:result.state,recovered:result.recovered,configurationBackupRetained:true}};
 }
 async function main(){
   assert.equal(process.env.GITHUB_ACTIONS,'true','Only run against an ephemeral GitHub-hosted runner');
@@ -385,5 +392,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof};
+module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});

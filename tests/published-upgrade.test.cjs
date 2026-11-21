@@ -4,7 +4,7 @@ const {spawn,spawnSync}=require('node:child_process'),path=require('node:path');
 const {EventEmitter,once}=require('node:events');
 const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm');
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
-const {stopOwnedGui,transportScript,baselinePolicy,verifiedArchiveProof}=require('../scripts/smoke-published-upgrade.cjs');
+const {stopOwnedGui,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
 test('Linux package discovery remains in the installed channel and cannot imply automatic installation',()=>{
   const {verifyUpdateDiscovery}=require('../scripts/smoke-linux.cjs');
@@ -117,8 +117,16 @@ test('real archive evidence requires the signed digest and exact per-attempt ZIP
   await fs.writeFile(archive,bytes);
   const first=await verifiedArchiveProof(archive,asset,[url],1),retry=await verifiedArchiveProof(archive,asset,[],0);
   assert.equal(first.archive,retry.archive);assert.equal(first.sha256,retry.sha256);
+  // The actual rollback target is old stable221, whose acknowledgement does not
+  // clean verified caches. Require retained authentic bytes, not a new capability.
+  const returned=await stableReturnCacheProof(retry,asset);
+  assert.equal(returned.retainedAfterSuccess,true);assert.equal(returned.cleanupSupportedByTarget,false);
+  assert.equal(returned.reason,'v2.2.1 predates verified-cache cleanup');
+  assert.deepEqual(await fs.readFile(returned.archive),bytes);
+
   await assert.rejects(verifiedArchiveProof(archive,asset,[url],0),/ZIP downloads/);
   await fs.writeFile(archive,Buffer.alloc(bytes.length));
   await assert.rejects(verifiedArchiveProof(archive,asset,[],0),/signed package digest/);
+  await assert.rejects(stableReturnCacheProof(retry,asset),/signed package digest/);
   await fs.unlink(archive);await assert.rejects(verifiedArchiveProof(archive,asset,[],0),{code:'ENOENT'});
 });
