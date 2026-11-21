@@ -351,6 +351,34 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(session.view()['rebuildRecommended'])
         self.assertFalse(self.bridge.desktop_restart_recommended())
 
+    def _hosted_cold_recovery_keeps_shared_transport(self, *, rebuild):
+        from bridge.app.service import LiveSession
+        session = self.bridge.session(THREAD)
+        self.bridge.ipc.hosted = True
+        self.fixture.loaded = False
+        session.connected = False
+        session.rebuild_recommended = True
+        session.last_activation = time.monotonic() if rebuild else None
+        other = LiveSession('other-chat')
+        other.runtime = other.origin = 'desktop'
+        other.connected = True
+        other.owner = 'original-owner'
+        self.bridge.live[other.id] = other
+        original_socket = self.bridge.ipc.socket
+        with patch.object(self.bridge.ipc, 'endpoint_changed', return_value=False), patch(
+                'bridge.app.service.open_in_desktop', side_effect=lambda *_: setattr(self.fixture, 'loaded', True)) as navigate:
+            result = self.bridge.reconnect_session(THREAD, rebuild=rebuild)
+        self.assertTrue(result.connected)
+        self.assertIs(self.bridge.ipc.socket, original_socket)
+        self.assertTrue(other.connected, 'One cold chat must not disconnect another chat')
+        navigate.assert_called_once()
+
+    def test_hosted_cold_activation_keeps_other_chats_connected(self):
+        self._hosted_cold_recovery_keeps_shared_transport(rebuild=False)
+
+    def test_hosted_explicit_rebuild_keeps_other_chats_connected(self):
+        self._hosted_cold_recovery_keeps_shared_transport(rebuild=True)
+
     def test_reconnect_clears_old_transport_synchronously(self):
         ipc = self.bridge.ipc
         ipc.connect()

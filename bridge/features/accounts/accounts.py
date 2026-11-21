@@ -1047,7 +1047,7 @@ class Accounts:
         if not valid_id:
             raise ValueError('初始化请求标识无效')
         with self.gate, self.bridge.account.lock, self.lock:
-            self.require_managed_writes()
+            # Preparing transport does not replace authentication or providers.
             if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
                 return self.public()
             self.assert_editable()
@@ -1073,7 +1073,7 @@ class Accounts:
             self.thread.start()
             return self.public()
 
-    def prepare_desktop_runtime(self, app, *, cancelled=lambda: False):
+    def prepare_desktop_runtime(self, app, *, cancelled=lambda: False, allow_cold_start=True):
         """Startup preparation; return True only when a passive retry is safe.
 
         Waiting does not change account state or hold a gate between attempts.
@@ -1088,14 +1088,16 @@ class Accounts:
             if self.bridge.closed.is_set() or cancelled():
                 return False
             self.assert_editable()
-            return self._initialize_desktop_runtime(app, automatic=True, cancelled=cancelled)
+            return self._initialize_desktop_runtime(app, automatic=True, cancelled=cancelled,
+                                                    allow_cold_start=allow_cold_start)
         except ValueError as exc:
             self.desktop_preparation = {'state': 'waiting', 'reason': str(exc)}
             return True
         finally:
             self.gate.release()
 
-    def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False):
+    def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False,
+                                    allow_cold_start=True):
         from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity, DesktopRuntimeBusy
         from bridge.clients.codex.desktop_runtime import preparation, record_preparation, settings
         from bridge.clients.codex.app_server import AppServerUnavailable
@@ -1159,7 +1161,6 @@ class Accounts:
                     app.validate(self.runtime)
                     from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings
                     try:
-                        self.require_managed_writes()
                         validate_runtime(self.runtime)
                         launcher_settings(app.executable)
                     except ValueError as exc:
@@ -1170,6 +1171,9 @@ class Accounts:
                             raise
                         preparation_error = exc
                 state, identities = observed()
+                if automatic and not state['running'] and not allow_cold_start:
+                    self.desktop_preparation = {'state': 'waiting', 'reason': '等待 Codex 启动后自动恢复原生连接'}
+                    return True
                 if preparation_error and state['running']:
                     raise preparation_error
                 try:

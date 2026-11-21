@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续的账号独立准备、持续恢复、有界实时同步与编辑支持见[原生连接恢复](../bug-fix/2026-11-21-desktop-connection-recovery.md)；本篇保留原决定及其约束。
+
 新版 utility host 的执行连接适配见[宿主进程与旧 IPC 并存](../bug-fix/2026-11-21-hosted-codex-desktop.md)。本篇的准备事务、空闲核验与未知任务确认边界继续有效。
 
 ## 问题

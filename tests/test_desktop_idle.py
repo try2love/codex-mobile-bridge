@@ -27,7 +27,7 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.hosts = SimpleNamespace(lifecycle_hosts=Mock(return_value={}))
         self.bridge.lock = threading.RLock(); self.bridge.live = {}
         self.bridge.store = SimpleNamespace(lifecycle_threads=Mock(return_value=[{'id': 'desktop-only'}]), history=Mock())
-        self.bridge.ipc = SimpleNamespace(path='fixture-ipc')
+        self.bridge.ipc = SimpleNamespace(path='fixture-ipc', original_path='fixture-ipc')
         self.bridge.remote_bridges = {}; self.bridge.accounts = SimpleNamespace(blockers=Mock(return_value=[]))
         self.bridge.closed = threading.Event()
         self.bridge.activate = Mock(side_effect=AssertionError('idle checks cannot activate chats'))
@@ -410,7 +410,7 @@ class DesktopIdle(unittest.TestCase):
     def test_remote_and_live_only_threads_are_checked_with_their_original_host(self):
         remote = SimpleNamespace(host='remote:test', lock=threading.RLock(), live={'remote-live': object()},
                                  store=SimpleNamespace(lifecycle_threads=Mock(return_value=[{'id': 'remote-history'}])),
-                                 ipc=SimpleNamespace(path='fixture-ipc'))
+                                 ipc=SimpleNamespace(path='fixture-ipc', original_path='fixture-ipc'))
         self.bridge.hosts.lifecycle_hosts.return_value = {'remote:test': {'alias': 'test'}}
         self.bridge.for_host = Mock(return_value=remote)
         self.bridge.remote_bridges['remote:test'] = remote

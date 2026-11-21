@@ -613,7 +613,8 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertEqual(self.launch.call_args.kwargs, {'allow_unprepared_codex': True})
         self.assertTrue(self.running)
         self.assertTrue(self.manager.enabled('codex'))
-        prepare.assert_not_called()
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.kwargs, {'allow_cold_start': False})
         self.accounts.idle.assert_not_called()
 
     def test_codex_explicit_enable_cancels_preparation_and_keeps_shared_launch_lock(self):
@@ -638,6 +639,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_codex_background_preparation_waits_for_enabled_selection(self):
         self.manager.config['enabled']['codex'] = False
+        self.accounts.prepare_desktop_runtime.side_effect = lambda *args, **kwargs: self.manager.runtime_preparation_cancel.set()
         self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.manager.runtime_preparation_thread.join(3)
         self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
@@ -646,6 +648,25 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertEqual(str(app.executable), self.manager.config['discovered']['codex']['executable'])
         self.assertEqual(app.home, self.accounts.home)
         self.launch.assert_not_called()
+
+    def test_codex_preparation_keeps_monitoring_after_ready_without_cold_relaunch(self):
+        from bridge.clients import manager as module
+        cancelled = threading.Event()
+        checks = []
+        class MonitorEvent:
+            is_set = cancelled.is_set
+            set = cancelled.set
+            def wait(self, delay):
+                self.delay = delay
+                return len(checks) >= 2
+        def ready(app, **options):
+            checks.append(options['allow_cold_start'])
+            return False
+        self.accounts.prepare_desktop_runtime.side_effect = ready
+        with patch.object(module, 'threading', SimpleNamespace(Event=lambda: MonitorEvent(), Thread=threading.Thread)):
+            self.manager._prepare_codex_runtime(self.manager.config['discovered']['codex'])
+            self.manager.runtime_preparation_thread.join(2)
+        self.assertEqual(checks, [True, False])
 
     def test_codex_disable_cancels_preparation_before_waiting_for_its_gate(self):
         entered, cancelled = threading.Event(), threading.Event()
