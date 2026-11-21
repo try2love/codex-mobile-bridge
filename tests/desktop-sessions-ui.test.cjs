@@ -2121,6 +2121,26 @@ async function stopConcurrencyFixture({status='idle',stop=true}={}){
  ui.setHandler((url,body)=>new Promise(resolve=>{receipts[new URL(url,'http://fixture').pathname.split('/').at(-1)]=resolve;}));
  return {ui,view,receipts};
 }
+for(const status of ['unknown','uncertain'])test('first '+status+' send reveals management without another submission',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture();view.manageMessages.hidden=true;
+ const sending=view.mutate('send',{text:'possibly delivered'});
+ receipts.send({status,message:'Check original chat'});await sending;
+ assert.equal(view.manageMessages.hidden,false);
+ assert.equal(view.pending.size,1,'unconfirmed operation ID must remain available');
+ assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/send')).length,1);
+});
+for(const field of ['session','provider','generation','gateway','account'])test('late uncertain send leaves management untouched after changing '+field,async()=>{
+ const {view,receipts}=await stopConcurrencyFixture();
+ const sending=view.mutate('send',{text:'old task'});
+ if(field==='session')view.prepareChat('b');
+ if(field==='provider'){await view.choose('deepseek',{loadList:false});view.prepareChat('a');}
+ if(field==='generation')view.generation++;
+ if(field==='gateway')view.bindDraftGateway('gateway-b');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};
+ view.manageMessages.hidden=true;
+ receipts.send({status:'unknown'});await sending;
+ assert.equal(view.manageMessages.hidden,true);
+});
 test('idle first send exposes stop only for a supported send in the current scope',async()=>{
  const {ui,view,receipts}=await stopConcurrencyFixture();view.input.value='first task';
  const sending=view.submit();assert.equal(view.freshDetail,false);assert.equal(view.stop.hidden,false);assert.equal(view.stop.disabled,false);
