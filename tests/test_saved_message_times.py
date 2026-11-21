@@ -211,6 +211,32 @@ class RolloutMessageTimeTests(unittest.TestCase):
         saved = self.store._history('thread', self.meta)
         self.assertNotIn('completedAt', saved['turns'][0])
 
+    def test_index_converts_native_seconds_before_late_clock_enrichment(self):
+        from bridge.features.sessions.model import normalize_state
+        from bridge.features.sessions.timeline import Timeline
+        completion = '2026-11-10T00:02:05Z'
+        self.write(self.records() + [{'type': 'event_msg', 'timestamp': completion,
+            'payload': {'type': 'task_complete', 'turn_id': 'turn', 'thread_id': 'thread'}}])
+        self.make_index([{'id': 'native-reply', 'type': 'agentMessage', 'text': 'same reply'}])
+        timeline = Timeline()
+        previous = None
+        for sequence, seconds in enumerate((None, 0, STAMP // 1000), 1):
+            with self.subTest(seconds=seconds):
+                with closing(sqlite3.connect(self.home / 'thread_history_1.sqlite')) as conn, conn:
+                    conn.execute('UPDATE thread_turns SET started_at=?', (seconds,))
+                state = self.store._indexed_history('thread', self.meta, 1)
+                timeline.update({**normalize_state(state), 'sequence': sequence})
+                page = timeline.page(1)
+                row = page['rows'][0]
+                self.assertEqual(row.get('turnStartedAt'), STAMP if seconds else None)
+                self.assertEqual(row['turnCompletedAt'], completion)
+                if seconds:
+                    delta = timeline.changes(previous['sequence'], previous['epoch'], previous['before'])
+                    self.assertEqual(delta['rows'][0]['turnStartedAt'], STAMP)
+                    self.assertEqual(delta['rows'][0]['key'], previous['rows'][0]['key'])
+                    self.assertEqual(delta['rows'][0]['version'], previous['rows'][0]['version'])
+                previous = page
+
     def test_terminal_event_joins_only_its_native_turn_and_thread(self):
         from bridge.features.sessions.store import rollout_message_times
         terminal = {'type': 'event_msg', 'timestamp': ISO,

@@ -1467,8 +1467,9 @@ class Bridge:
             with condition:
                 if message.get('method') == 'client-status-changed':
                     if params.get('status') == 'disconnected':
-                        for record in followed.values():
-                            if record['owner'] == params.get('clientId'):
+                        for key, record in followed.items():
+                            if (record['owner'] == params.get('clientId') and
+                                    (not params.get('conversationId') or key == (params.get('hostId'), params['conversationId']))):
                                 record['invalid'] = True
                         condition.notify_all()
                     return
@@ -1518,7 +1519,7 @@ class Bridge:
                 raise TaskStateUnavailable(unknown) from exc
 
         options = {'codex_home': self.ipc.codex_home} if getattr(self.ipc, 'codex_home', None) is not None else {}
-        ipc = DesktopIPC(self.ipc.path, on_event=event, on_disconnect=disconnect, **options)
+        ipc = DesktopIPC(self.ipc.original_path, on_event=event, on_disconnect=disconnect, **options)
         audits = ThreadPoolExecutor(max_workers=min(8, max(1, len(threads))))
         try:
             remaining()
@@ -1674,9 +1675,6 @@ class Bridge:
                 'canUseGoal': (desktop and self.host == 'local') or cli_controls and goal,
                 'canUseSideChat': desktop_controls, 'canEditMessages': desktop_controls,
                 'reason': None if reconnect else '未找到可用的 Codex CLI 后台服务或已安装的服务包；请先在电脑上安装或更新 Codex CLI，并运行一次。'}
-        if (desktop and session and session.owner and getattr(self.ipc, 'hosted', False)
-                and session.owner not in self.ipc.legacy_owners):
-            access['canEditMessages'] = False
         if session and session.desktop_stream_error:
             access.update({key: False for key in access if key.startswith('can')})
             access.update(readOnly=True, reason=session.desktop_stream_error)
@@ -3795,11 +3793,13 @@ class Bridge:
                 if not self.observation_enabled():
                     self.suspend_observation()
                     return
+                owner = (self.ipc.owner(session.id, host=self.native_host, legacy_discovery=False)
+                         if self.ipc.hosted and self.native_host == 'local' else None)
                 with session.condition:
-                    session.owner = None
+                    session.owner = owner
                     session.revision = None
                     session.discovering = True
-                self.ipc.follow(session.id, None, host=self.native_host)
+                self.ipc.follow(session.id, owner, host=self.native_host)
                 with session.condition:
                     session.condition.wait_for(lambda: session.connected or self.closed.is_set(), timeout=timeout)
                     # Keep following: a cold chat can publish after this short
@@ -3853,12 +3853,34 @@ class Bridge:
                     followed.last_activation = None
                     followed.retry_at = 0
 
+    def _recover_desktop_transport(self):
+        if not self.ipc.endpoint_changed():
+            return
+        gate = self.accounts.gate if self.accounts is not None else None
+        if gate is not None and not gate.acquire(timeout=0):
+            return
+        try:
+            # Do not replace a follower during a write or replay its result.
+            # A newly prepared native route may coexist with a stale legacy
+            # socket that never closes; passive reads must notice that change.
+            if self.ipc.endpoint_changed():
+                self._rebuild_desktop_transport()
+        finally:
+            if gate is not None:
+                gate.release()
+
     @operation
     def rebuild_connection(self, thread_id):
         session = self.session(thread_id, background=True)
         self._load_session_origin(session)
         if session.origin != 'desktop' or self.host != 'local':
             raise IPCError('此会话不使用桌面连接，请使用继续会话。')
+        if self.ipc.hosted and self.ipc.socket and not self.ipc.endpoint_changed():
+            # A cold thread does not invalidate the verified shared runtime.
+            # Retry its owner and explicit activation without dropping siblings.
+            with session.condition:
+                session.last_activation = None
+            return self.activate(thread_id)
         # The host operation gate drains pending writes before this read-only
         # follower connection is replaced. Native tasks keep their original owner.
         rebuilt = False
@@ -3940,7 +3962,7 @@ class Bridge:
                         session.changed()
             endpoint_changed = not _transport_rebuilt and session.runtime == 'desktop' and self.ipc.endpoint_changed()
             replace_transport = endpoint_changed or (not _transport_rebuilt and session.runtime == 'desktop' and
-                not session.connected and session.rebuild_recommended)
+                not self.ipc.hosted and not session.connected and session.rebuild_recommended)
             if session.connected and not replace_transport:
                 return session
             with session.condition:
@@ -4062,7 +4084,9 @@ class Bridge:
                 with self.lock:
                     sessions = list(self.live.values())
                 for session in sessions:
-                    if session.owner == params.get("clientId"):
+                    if (session.owner == params.get("clientId") and
+                            (not params.get('conversationId') or params.get('hostId') == self.native_host
+                             and params['conversationId'] == session.id)):
                         self._invalidate(session, "桌面会话连接已断开，正在等待重连", runtime='desktop',
                                          owner=params.get("clientId"), reason='desktop_client_disconnected')
             # Owner changes can make previously unanswered probes available.
@@ -4276,6 +4300,7 @@ class Bridge:
                         self.accounts.check_ready()
                     except ValueError:
                         continue
+                self._recover_desktop_transport()
                 with self.lock:
                     sessions = list(self.live.values())
                 for session in sessions:

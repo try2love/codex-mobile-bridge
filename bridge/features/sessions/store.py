@@ -791,8 +791,10 @@ class SessionStore:
                                               (row['thread_id'], row['turn_id'])).fetchone()
                         if header is None:
                             return None
+                        # Native index clocks use Unix seconds, like thread/read.
+                        # Normalize here before joining rollout ISO completion times.
                         turns[row['turn_id']] = {'turnId': row['turn_id'], 'status': header['status'],
-                                                'turnStartedAtMs': header['started_at'],
+                                                'turnStartedAtMs': header['started_at'] * 1000 if header['started_at'] else None,
                                                 '_firstUserItemId': header['first_user_item_id'],
                                                 '_itemsComplete': not (more and row['turn_id'] == rows[item_limit]['turn_id']),
                                                 'error': json.loads(header['error_json']) if header['error_json'] else None,

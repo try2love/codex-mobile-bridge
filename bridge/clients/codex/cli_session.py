@@ -735,8 +735,6 @@ class CliSessions:
             self._queue_refresh(thread_id)
             return {'applied': True}
         if desktop_method == 'thread-follower-steer-turn':
-            if params.get('attachments') or (params.get('restoreMessage') or {}).get('context', {}).get('fileAttachments'):
-                raise AppServerUnsupported('CLI steering with files is unavailable')
             with self.lock:
                 active = next((t for t in reversed(self.states[thread_id]['turns'])
                                if t.get('status') == 'inProgress'), None)
@@ -744,7 +742,7 @@ class CliSessions:
                 raise AppServerUnavailable('No active CLI turn to steer')
             result = self.client.request('turn/steer', {
                 'threadId': thread_id, 'expectedTurnId': active['turnId'],
-                'input': self._inputs(params.get('input', []), {}),
+                'input': self._inputs(params.get('input', []), (params.get('restoreMessage') or {}).get('context') or {}),
                 'clientUserMessageId': params.get('clientUserMessageId')}, timeout=timeout)
             self._queue_refresh(thread_id)
             return result
@@ -1137,7 +1135,7 @@ class CliSessions:
                     item[field] = copy.deepcopy(prior)
         return item
 
-    def _event(self, event):
+    def _event(self, event, *, publish=True):
         method = event.get('method')
         params = event.get('params') or {}
         thread_id = params.get('threadId')
@@ -1283,10 +1281,12 @@ class CliSessions:
                     parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
+            if not publish:
+                return
             snapshot = copy.deepcopy(state)
         self.on_state(thread_id, snapshot)
 
-    def _server_request(self, request):
+    def _server_request(self, request, *, publish=True):
         thread_id = (request.get('params') or {}).get('threadId')
         with self.lock:
             if thread_id not in self.joined and thread_id not in self.attaching:
@@ -1297,6 +1297,8 @@ class CliSessions:
             state = self.states.get(thread_id)
             if state is not None:
                 state['requests'] = list(self.requests[thread_id].values())
+                if not publish:
+                    return
                 snapshot = copy.deepcopy(state)
             else:
                 snapshot = None
@@ -1369,7 +1371,7 @@ class CliSessions:
             self.refresh_pending.clear()
         self.on_disconnect()
 
-    def _invalidate(self, thread_id, expected_process=None):
+    def _invalidate(self, thread_id, expected_process=None, *, notify=True):
         with self.lock:
             if expected_process is not None and self.joined.get(thread_id) is not expected_process:
                 return
@@ -1384,7 +1386,8 @@ class CliSessions:
             self.states.pop(thread_id, None)
             self.requests.pop(thread_id, None)
             self.consumed_requests.pop(thread_id, None)
-        self.on_disconnect(thread_id)
+        if notify:
+            self.on_disconnect(thread_id)
 
     def close(self):
         self.client.close()

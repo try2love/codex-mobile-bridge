@@ -2265,7 +2265,7 @@ class DesktopSessions:
             self.startup_thread = threading.Thread(target=self.start_enabled, daemon=True)
             self.startup_thread.start()
 
-    def _prepare_codex_runtime(self, descriptor):
+    def _prepare_codex_runtime(self, descriptor, *, allow_cold_start=True):
         if (self.runtime_preparation_thread and self.runtime_preparation_thread.is_alive()
                 and not self.runtime_preparation_cancel.is_set()):
             return
@@ -2273,13 +2273,17 @@ class DesktopSessions:
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp(descriptor['executable'], descriptor['dataDirectory'])
         def prepare():
+            cold_start = allow_cold_start
             while not self.closed.is_set() and not cancelled.is_set():
                 with self.client_lock:
                     if not self.config.get('enabled', {}).get('codex', True):
                         return
-                if not self.bridge.accounts.prepare_desktop_runtime(app, cancelled=lambda: self.closed.is_set() or cancelled.is_set()):
-                    return
-                if cancelled.wait(60):
+                self.bridge.accounts.prepare_desktop_runtime(app,
+                    cancelled=lambda: self.closed.is_set() or cancelled.is_set(), allow_cold_start=cold_start)
+                # Continue observing after success, including a later ordinary
+                # App launch. Only gateway startup may open a stopped App.
+                cold_start = False
+                if cancelled.wait(30):
                     return
         self.runtime_preparation_thread = threading.Thread(target=prepare, daemon=True, name='native-side-chat-preparation')
         self.runtime_preparation_thread.start()
@@ -3450,6 +3454,9 @@ class DesktopSessions:
             if provider == 'codex' and not enabled and self.bridge is not None:
                 self.bridge.suspend_observation()
             self._save_client_settings(self.config)
+            if (enabled and not startup and provider == 'codex' and accounts and descriptor['installed']
+                    and sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local'):
+                self._prepare_codex_runtime(descriptor, allow_cold_start=False)
             if not enabled and hasattr(self, 'terminals'):
                 identifiers = {str(uuid.uuid5(uuid.NAMESPACE_URL, p + ':' + sid)) for p, sid in self.workspace_roots if p == provider}
                 with self.terminals.lock:

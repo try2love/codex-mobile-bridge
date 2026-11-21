@@ -115,6 +115,7 @@ class DesktopIPC:
         self.original_path = str(path)
         self.codex_home = codex_home
         self.hosted = False
+        self.hosted_generation = None
         self.legacy = None
         self.legacy_owners = set()
         self.on_event = on_event or (lambda event: None)
@@ -137,6 +138,16 @@ class DesktopIPC:
 
     def endpoint_changed(self):
         """Report a replacement, without interrupting any pending operation."""
+        if self.codex_home is not None:
+            from bridge.clients.codex.desktop_runtime import hosted_endpoint
+            try:
+                hosted = hosted_endpoint(self.codex_home)
+            except (OSError, ValueError, KeyError, TypeError):
+                return False  # An unverified replacement cannot select a route.
+            with self.lock:
+                if self.socket and hosted and (not self.hosted or self.path != hosted['path'] or
+                                               self.hosted_generation != hosted['generation']):
+                    return True
         current = endpoint_identity(self.path)
         with self.lock:
             return bool(self.socket and self.endpoint_identity is not None and
@@ -157,6 +168,7 @@ class DesktopIPC:
                     raise IPCError('原生桌面连接身份无法核验，请在账号管理中检查连接状态。') from exc
                 self.path = hosted['path'] if hosted else self.original_path
             self.hosted = hosted is not None
+            self.hosted_generation = hosted['generation'] if hosted else None
             try:
                 identity = endpoint_identity(self.path)
                 if deadline is None:
@@ -204,7 +216,7 @@ class DesktopIPC:
             except OSError as exc:
                 raise IPCError("桌面连接已断开；请检查会话后再决定是否重发。") from exc
 
-    def request(self, method, params, target=None, host="local", timeout=15, *, deadline=None):
+    def request(self, method, params, target=None, host="local", timeout=15, *, deadline=None, legacy_discovery=False):
         if method not in self.VERSIONS:
             raise IPCError("不支持的桌面操作")
         if self.hosted and (target in self.legacy_owners or host != 'local'):
@@ -236,7 +248,7 @@ class DesktopIPC:
             if response.get("resultType") != "success":
                 # Only an explicit negative discovery may try the old router.
                 # Timeouts, unknown results and mutations never switch routes.
-                if self.hosted and method == 'thread-owner-discovery' and response.get('error') == 'no-client-found':
+                if legacy_discovery and self.hosted and method == 'thread-owner-discovery' and response.get('error') == 'no-client-found':
                     return self._legacy_request(method, params, target, host, timeout, deadline)
                 error = IPCError(response.get("error", "桌面请求未完成"))
                 error.not_sent = response.get('notSent') is True
@@ -265,10 +277,10 @@ class DesktopIPC:
             self.legacy_owners.add(response['handledByClientId'])
         return response
 
-    def owner(self, session_id, host="local"):
+    def owner(self, session_id, host="local", *, legacy_discovery=True):
         self.connect()
         response = self.request("thread-owner-discovery", {
-            "hostId": host, "conversationId": session_id}, timeout=6)
+            "hostId": host, "conversationId": session_id}, timeout=6, legacy_discovery=legacy_discovery)
         return response["handledByClientId"]
 
     def follow(self, session_id, owner, enabled=True, host="local"):

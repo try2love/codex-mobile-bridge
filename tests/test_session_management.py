@@ -192,7 +192,7 @@ class SessionManagement(unittest.TestCase):
         bridge.host = 'local'; bridge.codex_home = self.home
         bridge.accounts = SimpleNamespace(blockers=lambda: [])
         bridge.remote_bridges = {}; bridge.lock = threading.RLock(); bridge.live = {}
-        bridge.ipc = SimpleNamespace(path='fixture')
+        bridge.ipc = SimpleNamespace(path='fixture', original_path='fixture')
         bridge.store = SimpleNamespace()
         missing = IPCError('desktop absent'); missing.__cause__ = FileNotFoundError('endpoint')
         follower = Mock(); follower.connect.side_effect = missing
@@ -210,7 +210,7 @@ class SessionManagement(unittest.TestCase):
         bridge.accounts = SimpleNamespace(blockers=lambda: [], index={'desktopExecutable': '/fixture/Codex'})
         bridge.catalog_reader = SimpleNamespace(executable='/fixture/codex')
         bridge.remote_bridges = {}; bridge.lock = threading.RLock(); bridge.live = {}
-        bridge.ipc = SimpleNamespace(path='fixture'); bridge.store = SimpleNamespace()
+        bridge.ipc = SimpleNamespace(path='fixture', original_path='fixture'); bridge.store = SimpleNamespace()
         missing = IPCError('desktop absent'); missing.__cause__ = FileNotFoundError('endpoint')
         follower = Mock(); follower.connect.side_effect = missing
         app = Mock(); app.processes.return_value = []

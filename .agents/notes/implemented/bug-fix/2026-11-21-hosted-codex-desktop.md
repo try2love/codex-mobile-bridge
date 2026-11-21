@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续的账号独立准备、持续恢复、有界实时同步与编辑支持见[原生连接恢复](2026-11-21-desktop-connection-recovery.md)；本篇保留原决定及其约束。
+
 ## 问题
 
 新版 Codex 将桌面会话管理移入 utility host，不再参加原有的聊天 owner 发现和状态订阅。旧 IPC 端点仍可能由 VS Code 持有，因此套接字存在和初始化成功都不能证明 Codex Desktop 已接入。发布提交 `ad5e929d` 的原始 owner 查询在该环境中超时。

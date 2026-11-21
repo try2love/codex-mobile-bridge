@@ -1156,6 +1156,45 @@ class CliSessionTests(unittest.TestCase):
         self.assertEqual(self.states[-1][1]['turns'][-1]['status'], 'inProgress')
         self.assertNotIn('willRetry', self.states[-1][1]['turns'][-1])
 
+    def test_native_retry_error_does_not_trail_resumed_output_as_a_terminal_failure(self):
+        from bridge.features.sessions.timeline import Timeline
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'retry-turn', 'status': 'inProgress', 'items': []}}})
+        error = {'message': 'Temporary response stream interruption'}
+        timeline = Timeline()
+        sent = list(self.fake.sent)
+        for sequence in (1, 2):
+            self.sessions._event({'method': 'error', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': True, 'error': error}})
+            self.sessions._event({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'itemId': 'reply', 'delta': 'resumed output'}})
+            state = self.states[-1][1]
+            timeline.update({**normalize_state(state), 'sequence': sequence})
+            self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant'])
+            # Presentation must not rewrite native retry/error evidence or replay the turn.
+            self.assertEqual(state['turns'][-1]['error'], error)
+            self.assertIs(state['turns'][-1]['willRetry'], True)
+        self.assertEqual(self.fake.sent, sent)
+        self.sessions._event({'method': 'error', 'params': {
+            'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': False, 'error': error}})
+        timeline.update({**normalize_state(self.states[-1][1]), 'sequence': 3})
+        self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant', 'error'])
+        self.assertEqual(timeline.page()['rows'][-1]['turnId'], 'retry-turn')
+
+    def test_retry_presentation_preserves_terminal_legacy_and_item_errors(self):
+        error = {'message': 'Native error'}
+        for status, retry in (('failed', True), ('failed', False), ('inProgress', None)):
+            with self.subTest(status=status, retry=retry):
+                turn = {'turnId': 'turn', 'status': status, 'error': error, 'items': []}
+                if retry is not None:
+                    turn['willRetry'] = retry
+                self.assertEqual(normalize_state({'turns': [turn]})['turns'][0]['error'], error)
+        view = normalize_state({'turns': [{'turnId': 'turn', 'status': 'inProgress', 'willRetry': True,
+            'error': error, 'items': [{'id': 'tool-error', 'type': 'error', 'message': 'Tool failed'}]}]})
+        self.assertEqual(view['turns'][0]['messages'][0]['role'], 'error')
+        self.assertEqual(view['turns'][0]['messages'][0]['text'], 'Tool failed')
+
     def test_completed_turn_keeps_user_item_omitted_from_event(self):
         self.fake.thread['turns'] = [{'id': 'turn-1', 'status': 'inProgress', 'items': [
             {'id': 'user-1', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Hello'}]},

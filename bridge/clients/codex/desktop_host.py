@@ -28,7 +28,8 @@ from . import desktop_runtime as runtime
 
 
 CONTROL_METHODS = frozenset(('thread/loaded/list', 'thread/turns/list', 'thread/items/list',
-    'turn/start', 'turn/steer', 'turn/interrupt', 'thread/settings/update', 'thread/compact/start'))
+    'turn/start', 'turn/steer', 'turn/interrupt', 'thread/settings/update', 'thread/compact/start',
+    'thread/revert', 'thread/rollback'))
 
 
 def _forward_native_output(stream, router, stopped):
@@ -70,25 +71,6 @@ class _NativeClient:
             # A newly created durable thread has no stored turns before input.
             return value
 
-        def pages(method, extra):
-            result, cursor, seen, total = [], None, set(), 0
-            while True:
-                page = self.request(method, {'threadId': params['threadId'], 'cursor': cursor,
-                    'limit': 100, 'sortDirection': 'asc', **extra}, timeout)
-                rows = page.get('data')
-                if not isinstance(rows, list):
-                    raise AppServerUnavailable('原生聊天历史分页格式已变化')
-                total += len(json.dumps(rows, ensure_ascii=False).encode())
-                if total > MAX_LINE:
-                    raise AppServerUnavailable('原生聊天历史超过接入容量限制')
-                result.extend(rows)
-                cursor = page.get('nextCursor')
-                if not cursor:
-                    return result
-                if cursor in seen:
-                    raise AppServerUnavailable('原生聊天历史分页游标重复')
-                seen.add(cursor)
-
         # Older turns are already available through the gateway's saved-history
         # projection. Only the current turn is needed to follow its native owner.
         page = self.request('thread/turns/list', {'threadId': params['threadId'],
@@ -96,16 +78,22 @@ class _NativeClient:
         turns = page.get('data')
         if not isinstance(turns, list) or len(turns) > 1:
             raise AppServerUnavailable('原生聊天历史分页格式已变化')
+        more = bool(page.get('nextCursor'))
         if turns:
             turn = turns[0]
+            page = self.request('thread/items/list', {'threadId': params['threadId'],
+                'turnId': turn['id'], 'cursor': None, 'limit': 100, 'sortDirection': 'desc'}, timeout)
+            if not isinstance(page.get('data'), list) or len(page['data']) > 100:
+                raise AppServerUnavailable('原生聊天历史分页格式已变化')
             items = []
-            for row in pages('thread/items/list', {'turnId': turn['id']}):
+            for row in reversed(page['data']):
                 if row.get('turnId') != turn['id'] or not isinstance(row.get('item'), dict):
                     raise AppServerUnavailable('原生聊天历史回合归属已变化')
                 items.append(row['item'])
-            turns = [{**turn, 'items': items}]
+            more = more or bool(page.get('nextCursor'))
+            turns = [{**turn, 'items': items, '_itemsComplete': not page.get('nextCursor')}]
         return {**value, 'thread': {**thread, 'turns': turns,
-            'turnsPagination': {'hasLoadedOldest': not page.get('nextCursor')}}}
+            'turnsPagination': {'hasLoadedOldest': not more}}}
 
     def is_loaded(self, thread_id):
         cursor, seen = None, set()
@@ -133,13 +121,43 @@ class _NativeClient:
 class HostedSessions(CliSessions):
     """Reuse native event normalization and operations, with no CLI activation."""
     def __init__(self, home, router, on_state, on_disconnect):
-        super().__init__(home, on_state, on_disconnect)
+        super().__init__(home, self._mark_dirty, on_disconnect)
+        self.publish_state = on_state
         self.client = _NativeClient(router)
         self.router = router
         self.app_metadata = {}
+        self.subscribers = {}
+        self.editing = set()
+        self.event_condition = threading.Condition()
+        self.dirty = set()
+        self.event_closed = False
         router.observer = self
+        self.event_worker = threading.Thread(target=self._process_events, daemon=True,
+                                             name='desktop-observation')
+        self.event_worker.start()
 
-    def attach(self, thread_id):
+    def retain(self, thread_id, subscriber):
+        with self.lock:
+            subscribers = self.subscribers.setdefault(thread_id, set())
+            subscribers.add(subscriber)
+        try:
+            return self.attach(thread_id, _subscribers=subscribers)
+        except Exception:
+            self.release(thread_id, subscriber)
+            raise
+
+    def release(self, thread_id, subscriber):
+        with self.lock:
+            subscribers = self.subscribers.get(thread_id, set())
+            subscribers.discard(subscriber)
+            if not subscribers:
+                self.subscribers.pop(thread_id, None)
+                # Local observation cleanup is not a native disconnect. In
+                # particular a failed cold-chat follow shares its socket with
+                # already connected chats and must not close that transport.
+                self._invalidate(thread_id, notify=False)
+
+    def attach(self, thread_id, *, _subscribers=None):
         # Reading saved history never grants control of a non-loaded thread.
         if not self.client.is_loaded(thread_id):
             raise AppServerRequestNotSent('no-client-found')
@@ -149,6 +167,8 @@ class HostedSessions(CliSessions):
                 (thread.get('status') or {}).get('type') not in ('idle', 'active', 'systemError')):
             raise AppServerUnavailable('无法核验原桌面聊天的配置和运行状态')
         with self.router.lock, self.lock:
+            if _subscribers is not None and self.subscribers.get(thread_id) is not _subscribers:
+                raise AppServerRequestNotSent('原生聊天订阅已关闭')
             metadata = self.app_metadata.get(thread_id, {})
             metadata = {**metadata, 'cwd': thread['cwd'], 'modelProvider': thread['modelProvider'],
                         'model': thread.get('model') or metadata.get('model')}
@@ -163,6 +183,9 @@ class HostedSessions(CliSessions):
         state = CliSessions._state(thread, requests, metadata)
         if 'turnsPagination' in thread:
             state['turnsPagination'] = thread['turnsPagination']
+        for original, turn in zip(thread.get('turns', []), state['turns']):
+            if original.get('_itemsComplete') is False:
+                turn['_itemsComplete'] = False
         return state
 
     def _check_joined_identity(self, thread_id):
@@ -173,12 +196,75 @@ class HostedSessions(CliSessions):
             except (ValueError, KeyError, TypeError) as exc:
                 raise AppServerRequestNotSent('原生聊天控制格式已变化，操作未发送，请更新 Bridge') from exc
 
+    def call(self, thread_id, desktop_method, params, timeout=30):
+        if desktop_method != 'thread-follower-edit-last-user-turn':
+            return super().call(thread_id, desktop_method, params, timeout)
+        self._check_joined_identity(thread_id)
+        thread = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+        if thread['status']['type'] != 'idle' or self.requests.get(thread_id):
+            raise AppServerRequestNotSent('请先停止当前任务，再编辑消息')
+        paginated = thread.get('historyMode') == 'paginated'
+        if paginated:
+            turns = self.client.request('thread/turns/list', {'threadId': thread_id,
+                'cursor': None, 'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'})['data']
+        else:
+            turns = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': True})['thread']['turns'][-1:]
+        if (len(turns) != 1 or turns[0].get('id') != params.get('turnId') or
+                turns[0].get('status') == 'inProgress' or not isinstance(params.get('message'), str)):
+            raise AppServerRequestNotSent('最近一条消息已变化，请刷新后重新编辑')
+        if paginated:
+            rows = self.client.request('thread/items/list', {'threadId': thread_id, 'turnId': params['turnId'],
+                'cursor': None, 'limit': 100, 'sortDirection': 'asc'})['data']
+            if any(row.get('turnId') != params['turnId'] for row in rows):
+                raise AppServerRequestNotSent('原生消息归属已变化')
+            items = [row['item'] for row in rows]
+        else:
+            items = turns[0].get('items') or []
+        users = [item for item in items if item.get('type') == 'userMessage']
+        if len(users) != 1 or not isinstance(users[0].get('content'), list):
+            raise AppServerRequestNotSent('无法确认原始输入，请在桌面编辑此消息')
+        inputs = copy.deepcopy(users[0]['content'])
+        text = next((item for item in inputs if item.get('type') == 'text'), None)
+        if text is None:
+            inputs.insert(0, {'type': 'text', 'text': params['message'], 'text_elements': []})
+        else:
+            from bridge.features.sessions.model import _desktop_wrapper_bounds
+            bounds = _desktop_wrapper_bounds(text.get('text', ''))
+            prefix = text['text'][:bounds[2]] if bounds else ''
+            text.update(text=prefix + params['message'], text_elements=[])
+        with self.lock:
+            self.editing.add(thread_id)
+        reverted = False
+        try:
+            result = self.client.request('thread/revert' if paginated else 'thread/rollback',
+                {'threadId': thread_id, **({'beforeTurnId': params['turnId']} if paginated else {'numTurns': 1})}, timeout=timeout)
+            reverted = True
+            updated = result.get('thread') or {}
+            if (updated.get('id') != thread_id or updated.get('cwd') != thread['cwd'] or
+                    updated.get('modelProvider') != thread['modelProvider']):
+                raise AppServerUnavailable('编辑后的原生聊天身份无法核验')
+            result = self.client.request('turn/start', {'threadId': thread_id, 'input': inputs,
+                'turnTrigger': 'edit_user_message'}, timeout=timeout)
+        except Exception as exc:
+            # Revert already succeeded. The whole edit is a single durable
+            # unknown write until verified; never replay its first half.
+            if reverted:
+                raise AppServerUnknownResult('历史已更新，但编辑重发结果尚未确认；请核对原会话，不会自动重发') from exc
+            raise
+        finally:
+            with self.lock:
+                self.editing.discard(thread_id)
+            self._queue_refresh(thread_id)
+        return result
+
     def app_response(self, request, response):
         result = response.get('result')
         if not isinstance(result, dict):
             return
         thread = result.get('thread') or {}
         thread_id = thread.get('id') if isinstance(thread, dict) else None
+        if thread_id and request.get('method') in ('thread/revert', 'thread/rollback'):
+            self._queue_refresh(thread_id)
         if thread_id and request.get('method') in ('thread/start', 'thread/resume'):
             fields = ('model', 'reasoningEffort', 'serviceTier', 'collaborationMode')
             self.app_metadata[thread_id] = {key: copy.deepcopy(result[key]) for key in fields if key in result}
@@ -187,10 +273,74 @@ class HostedSessions(CliSessions):
                     ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'activePermissionProfile') if key in result}
 
     def native_event(self, message):
-        if 'id' in message and 'method' in message:
-            self._server_request(message)
-        elif 'method' in message:
-            self._event(message)
+        thread_id = (message.get('params') or {}).get('threadId')
+        # Apply ordered deltas to a bounded state before the next native reply.
+        # Copying, validation and serialization run on the publisher instead.
+        with self.lock:
+            if thread_id not in self.joined:
+                return
+            if (message.get('method') == 'thread/status/changed' and
+                    (message.get('params', {}).get('status') or {}).get('type') == 'notLoaded' and
+                    (thread_id in self.editing or any(p[0] == 'app' and p[2] in ('thread/revert', 'thread/rollback')
+                        and p[3].get('params', {}).get('threadId') == thread_id for p in self.router.pending.values()))):
+                # Revert replaces the loaded history in the same native runtime.
+                # Its transient unload precedes the verified replacement reply.
+                return
+            if message.get('method') in ('thread/reverted', 'thread/rolledBack'):
+                self._queue_refresh(thread_id)
+            if 'id' in message:
+                self._server_request(message, publish=False)
+            else:
+                self._event(message, publish=False)
+            state = self.states.get(thread_id)
+            if state is not None:
+                turns = state['turns']
+                if len(turns) > 2:
+                    del turns[:-2]
+                    state['turnsPagination'] = {'hasLoadedOldest': False}
+                for turn in turns:
+                    if len(turn['items']) > 100:
+                        del turn['items'][:-100]
+                        turn['_itemsComplete'] = False
+                        state['turnsPagination'] = {'hasLoadedOldest': False}
+        self._mark_dirty(thread_id)
+
+    def _mark_dirty(self, thread_id, state=None):
+        with self.event_condition:
+            if not self.event_closed:
+                self.dirty.add(thread_id)
+                self.event_condition.notify_all()
+
+    def _process_events(self):
+        while True:
+            with self.event_condition:
+                self.event_condition.wait_for(lambda: self.event_closed or self.dirty)
+                # Coalesce streamed text without queuing every token or snapshot.
+                self.event_condition.wait_for(lambda: self.event_closed, timeout=.025)
+                if self.event_closed:
+                    return
+                changed = self.dirty
+                self.dirty = set()
+            for thread_id in changed:
+                try:
+                    with self.lock:
+                        state = self.states.get(thread_id)
+                        if state is None:
+                            continue
+                        snapshot = copy.deepcopy(state)
+                    self.publish_state(thread_id, snapshot)
+                except Exception:
+                    logging.getLogger(__name__).warning('Desktop observation could not synchronize')
+                    self._invalidate(thread_id)
+
+    def _disconnect(self):
+        with self.event_condition:
+            self.event_closed = True
+            self.dirty.clear()
+            self.event_condition.notify_all()
+        super()._disconnect()
+        if threading.current_thread() is not self.event_worker:
+            self.event_worker.join(timeout=2)
 
 
 class _Follower:
@@ -233,6 +383,12 @@ class _Follower:
                     self.revision += 1
                 # This is Bridge's normalized snapshot contract, independent of
                 # the App version or the retired upstream desktop stream number.
+                if state is None:
+                    self.send({'type': 'broadcast', 'method': 'client-status-changed', 'version': 0,
+                        'sourceClientId': self.owner, 'targetClientIds': [self.client_id],
+                        'params': {'hostId': 'local', 'conversationId': thread_id,
+                                   'clientId': self.owner, 'status': 'disconnected'}})
+                    continue
                 self.send({'type': 'broadcast', 'method': 'thread-stream-state-changed', 'version': 13,
                     'sourceClientId': self.owner, 'targetClientIds': [self.client_id],
                     'params': {'hostId': 'local', 'conversationId': thread_id,
@@ -273,6 +429,7 @@ class _Follower:
                 with self.condition:
                     self.following.discard(thread_id)
                     self.pending.pop(thread_id, None)
+                self.sessions.release(thread_id, self.client_id)
                 return {}
             targets = message.get('targetClientIds')
             if targets and targets != [self.owner]:
@@ -280,7 +437,7 @@ class _Follower:
             with self.condition:
                 self.following.add(thread_id)
             try:
-                self.sessions.attach(thread_id)
+                self.sessions.retain(thread_id, self.client_id)
             except Exception:
                 with self.condition:
                     self.following.discard(thread_id)
@@ -322,9 +479,15 @@ class _Follower:
 
     def close(self):
         with self.condition:
+            if self.closed:
+                return
             self.closed = True
+            following = list(self.following)
+            self.following.clear()
             self.pending.clear()
             self.condition.notify_all()
+        for thread_id in following:
+            self.sessions.release(thread_id, self.client_id)
         try:
             self.stream.shutdown(socket.SHUT_RDWR)
         except (OSError, AttributeError):
@@ -420,8 +583,10 @@ def serve(config, app, host, arguments, initialize, env=None):
         with followers_lock:
             targets = list(followers)
         for follower in targets:
-            if thread_id is None or thread_id in follower.following:
+            if thread_id is None:
                 follower.close()
+            else:
+                follower.snapshot(thread_id, None)
 
     sessions = HostedSessions(home, router, publish, disconnected)
 
