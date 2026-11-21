@@ -90,8 +90,9 @@ def run(configuration, arguments):
         # Windows CRT process overlay can crash before forwarding startup output.
         return subprocess.call([cli, *arguments], env=env, stdin=sys.stdin, stdout=sys.stdout,
                                stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
-    app = process_identity(os.getppid())
-    if (app['image'] != config['application'] or Path(env.get('CODEX_HOME', '')).resolve() != home
+    from .desktop_runtime import desktop_owner
+    app, host = desktop_owner(process_identity(os.getppid()), config['application'])
+    if (Path(env.get('CODEX_HOME', '')).resolve() != home
             or Path(env.get('CODEX_SQLITE_HOME') or home).resolve() != home):
         raise ValueError('原生共享连接与当前 App 或配置目录不匹配')
     first = sys.stdin.buffer.readline(MAX_LINE + 2)
@@ -115,6 +116,9 @@ def run(configuration, arguments):
             child.stdin.close()
         return child.wait()
     with exclusive_lock(home, 'runtime'):
+        if host is not None:
+            from .desktop_host import serve
+            return serve(config, app, host, arguments, initialize, env)
         return _serve(config, app, arguments, initialize, env, native)
 
 

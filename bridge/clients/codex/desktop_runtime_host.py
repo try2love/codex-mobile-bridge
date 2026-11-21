@@ -75,8 +75,11 @@ def run(configuration, arguments):
     # All unrelated native CLI calls retain their original behavior and IO.
     if server_args is None or Path(os.environ.get('CODEX_HOME', '')).resolve() != home:
         os.execv(cli, [cli, *arguments])
-    app = process_identity(os.getppid())
-    if app['image'] != value['application']:
+    parent = process_identity(os.getppid())
+    from bridge.clients.codex.desktop_runtime import desktop_owner
+    try:
+        app, host = desktop_owner(parent, value['application'])
+    except ValueError:
         os.execv(cli, [cli, *arguments])
     first = sys.stdin.buffer.readline(MAX_LINE + 1)
     if len(first) > MAX_LINE:
@@ -93,6 +96,9 @@ def run(configuration, arguments):
         # A different storage boundary is not an authorized default-home runtime.
         return _passthrough(cli, arguments, first)
     with exclusive_lock(home, 'runtime'):
+        if host is not None:
+            from bridge.clients.codex.desktop_host import serve
+            return serve(value, app, host, arguments, initialize)
         private_directory(endpoint.parent)
         return _serve(value, app, server_args, endpoint, initialize, generation)
 

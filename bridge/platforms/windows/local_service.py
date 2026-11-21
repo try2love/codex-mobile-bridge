@@ -176,9 +176,18 @@ def listener(address):
     return local_listener(address, security_attributes=private_security)
 
 
-def byte_stream(connection):
+def byte_stream(connection, *, duplicate=False):
     import _winapi
-    _winapi.SetNamedPipeHandleState(connection.fileno(), 0, None, None)  # PIPE_READMODE_BYTE
-    # connection owns the handle. Each WindowsPipe operation finishes cancelled
-    # overlapped I/O before returning, so its caller may then close connection.
-    return WindowsPipe(connection.fileno())
+    handle = connection.fileno()
+    if duplicate:
+        current = _winapi.GetCurrentProcess()
+        handle = _winapi.DuplicateHandle(current, handle, current, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
+    try:
+        _winapi.SetNamedPipeHandleState(handle, 0, None, None)  # PIPE_READMODE_BYTE
+    except OSError:
+        if duplicate:
+            _winapi.CloseHandle(handle)
+        raise
+    # The ordinary caller retains connection through all IO. A long-lived
+    # follower duplicates ownership so its stream can outlive that connection.
+    return WindowsPipe(handle)

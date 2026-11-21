@@ -365,7 +365,8 @@ class Bridge:
             cli=codex_bin or 'codex', alias=alias, allow_installed_runtime=self.local, clear_sqlite_home=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.reconnect_pending = {}
-        self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
+        self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected,
+                              codex_home=codex_home if host == 'local' and not ipc_path else None)
         self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, self.native_host,
                                    executable_getter=executable_getter, **_runtime_scope(host))
         self.closed = threading.Event()
@@ -1510,7 +1511,8 @@ class Bridge:
             except (TypeError, AttributeError, KeyError) as exc:
                 raise TaskStateUnavailable(unknown) from exc
 
-        ipc = DesktopIPC(self.ipc.path, on_event=event, on_disconnect=disconnect)
+        options = {'codex_home': self.ipc.codex_home} if getattr(self.ipc, 'codex_home', None) is not None else {}
+        ipc = DesktopIPC(self.ipc.path, on_event=event, on_disconnect=disconnect, **options)
         audits = ThreadPoolExecutor(max_workers=min(8, max(1, len(threads))))
         try:
             remaining()
@@ -1666,6 +1668,9 @@ class Bridge:
                 'canUseGoal': (desktop and self.host == 'local') or cli_controls and goal,
                 'canUseSideChat': desktop_controls, 'canEditMessages': desktop_controls,
                 'reason': None if reconnect else '未找到可用的 Codex CLI 后台服务或已安装的服务包；请先在电脑上安装或更新 Codex CLI，并运行一次。'}
+        if (desktop and session and session.owner and getattr(self.ipc, 'hosted', False)
+                and session.owner not in self.ipc.legacy_owners):
+            access['canEditMessages'] = False
         if session and session.desktop_stream_error:
             access.update({key: False for key in access if key.startswith('can')})
             access.update(readOnly=True, reason=session.desktop_stream_error)
