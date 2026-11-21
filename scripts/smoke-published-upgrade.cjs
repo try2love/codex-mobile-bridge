@@ -113,21 +113,34 @@ function transportScript(directory,includeCandidate=false,includePreview2=false)
   return `(()=>{const req=process.getBuiltinModule('module').createRequire(process.resourcesPath+'/app.asar/package.json');
     const fs=req('node:fs'),path=req('node:path'),{Readable}=req('node:stream'),electron=req('electron');
     const module=req('./desktop/features/updates/updater.cjs'),directory=${JSON.stringify(directory)};
-    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[]),...(includeCandidate?[candidateVersion]:[])])}.map(version=>({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),assets:[{name:'bridge-update.json'}]}));
-    const files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
-      for(const name of fs.readdirSync(path.join(directory,folder)))if(name!=='SHA256SUMS.txt')files.set(module.releaseUrl(version,name),path.join(directory,folder,name));
+    const releases=new Map(),files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
+      const release=JSON.parse(fs.readFileSync(path.join(directory,folder,'release.json'),'utf8'));
+      if(release.tag_name!=='v'+version||release.draft||release.prerelease!==version.includes('-'))throw Error('Unexpected official acceptance release');
+      releases.set(version,release);
+      for(const name of fs.readdirSync(path.join(directory,folder)))if(!['SHA256SUMS.txt','release.json'].includes(name))files.set(module.releaseUrl(version,name),path.join(directory,folder,name));
     }
+    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[])])}.map(version=>releases.get(version));
+    ${includeCandidate?`catalogue.push({tag_name:'v${candidateVersion}',draft:false,prerelease:true,assets:[{name:'bridge-update.json'}]});`:''}
     const fetch=async(url,{signal}={})=>{if(signal?.aborted)throw signal.reason;
       acceptance.requests.push(url);
       if(url===module.RELEASES)return new Response(JSON.stringify(catalogue));
+      if(url===module.RELEASES+'&page=1')return new Response(JSON.stringify(catalogue));
       if(!files.has(url))throw Error('Acceptance transport refuses unexpected URL: '+url);
       return new Response(Readable.toWeb(fs.createReadStream(files.get(url))));};
-    const original=module.Updater.prototype.check;module.Updater.prototype.check=function(...args){this.fetch=fetch;acceptance.updater=this;return Reflect.apply(original,this,args);};
+    for(const method of ['check','listVersions','selectVersion']){
+      const original=module.Updater.prototype[method];if(typeof original!=='function')continue;
+      module.Updater.prototype[method]=function(...args){this.fetch=fetch;this.catalogueFetch=fetch;acceptance.updater=this;return Reflect.apply(original,this,args);};
+    }
     const show=electron.dialog.showMessageBox.bind(electron.dialog);
-    globalThis.acceptance={dialogs:[],response:null,opened:[],requests:[]};
+    globalThis.acceptance={dialogs:[],response:null,opened:[],packagesOpened:[],requests:[]};
     electron.dialog.showMessageBox=async(...args)=>{const options=args.at(-1);acceptance.dialogs.push(options);
       return acceptance.response===null?show(...args):{response:acceptance.response,checkboxChecked:false};};
     electron.shell.openExternal=async url=>{if(url!=='https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1')throw Error('Unexpected release handoff');acceptance.opened.push(url);};
+    electron.shell.openPath=async archive=>{
+      const updater=acceptance.updater,candidate=updater.candidate;
+      const expected=path.join(updater.directory,module.cacheName(candidate,updater.platform,updater.arch,candidate.format||updater.format));
+      if(process.platform!=='linux'||archive!==expected||!archive.endsWith('.deb'))throw Error('Unexpected package handoff');
+      acceptance.packagesOpened.push(archive);return '';};
     return {keyUnchanged:true,transport:'synthetic-directory / official-byte-cache'};})()`;
 }
 function nativeClick(pid,label,platform=process.platform){
@@ -169,16 +182,25 @@ function nativeClick(pid,label,platform=process.platform){
   }
   throw Error('Linux native confirmation is covered by controller integration; installer handoff is verified separately');
 }
-async function checkStable(ui){
+async function selectStable(ui){
   await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','initial background check completion');
-  await ui.evaluate(`tab('updates');document.getElementById('update-channel').value='stable';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));`);
-  const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value;},'signed stable candidate');
-  assert.equal(value.current,candidateVersion);assert.equal(value.version,oldVersion);assert.equal(value.intent,'return-stable');assert.equal(value.requiresConfirmation,true);assert.ok(value.candidateId);
+  await ui.evaluate("tab('updates');loadUpdateVersions()");
+  const list=await until(async()=>{
+    const state=await ui.evaluate('({value:updateVersionsState.value,loading:updateVersionsState.loading,error:updateVersionsState.error})');
+    if(state.error)throw Error(state.error);return !state.loading&&state.value;
+  },'official history IPC list');
+  assert.equal(list.platform,process.platform);assert.equal(list.arch,process.arch);assert.equal(list.current,candidateVersion);
+  const release=list.releases.find(row=>row.version===oldVersion);assert.ok(release);
+  const format=process.platform==='linux'?'deb':'zip',asset=release.assets.find(row=>row.format===format);assert.ok(asset);
+  await ui.evaluate(`document.getElementById('update-versions-version').value=${JSON.stringify(oldVersion)};document.getElementById('update-versions-version').dispatchEvent(new Event('change',{bubbles:true}));`);
+  const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value.selected&&value;},'official history IPC selection');
+  assert.equal(value.current,candidateVersion);assert.equal(value.version,oldVersion);assert.equal(value.intent,'switch-version');assert.equal(value.requiresConfirmation,true);assert.ok(value.candidateId);
+  assert.equal(value.format,format);assert.equal(value.assetName,asset.name);assert.equal(!!value.manualInstall,process.platform==='linux');
   return value;
 }
 async function confirmation(main,ui,child,response,native){
   if(!native)await main.evaluate('acceptance.response='+response);
-  const count=await main.evaluate('acceptance.dialogs.length');await click(ui,'install-update');
+  const count=await main.evaluate('acceptance.dialogs.length');await click(ui,'update-versions-install');
   const options=await until(async()=>main.evaluate(`acceptance.dialogs.length>${count}?acceptance.dialogs.at(-1):null`),'main native confirmation request');
   assert.equal(options.defaultId,0);assert.equal(options.cancelId,0);assert.ok(options.detail.includes(candidateVersion+' → '+oldVersion));
   if(native)nativeClick(child.pid,options.buttons[response]);
@@ -197,10 +219,10 @@ async function stopLaunchedGui(planFile){
 async function verifiedArchiveProof(archive,asset,requests,expectedDownloads){
   const url=`https://github.com/try2love/codex-mobile-bridge/releases/download/v${oldVersion}/${asset.name}`;
   const downloads=requests.filter(value=>value===url).length;
-  assert.equal(downloads,expectedDownloads,'official stable ZIP downloads in this attempt');
+  assert.equal(downloads,expectedDownloads,'official selected package downloads in this attempt');
   assert.ok(path.isAbsolute(archive));
   const bytes=await fs.readFile(archive),sha256=createHash('sha256').update(bytes).digest('hex');
-  assert.equal(sha256,asset.sha256,'actual retained archive matches signed package digest');
+  assert.equal(sha256,asset.sha256,'actual retained archive matches trusted package digest');
   return {archive,sha256,downloads};
 }
 async function stableReturnCacheProof(cache,asset){
@@ -209,50 +231,86 @@ async function stableReturnCacheProof(cache,asset){
   return {...cache,retainedAfterSuccess:true,cleanupSupportedByTarget:false,
     reason:'v2.2.1 predates verified-cache cleanup'};
 }
+async function pausedUpdateEvidence(main,frame){
+  // Runtime.evaluate with awaitPromise cannot complete until this pause resumes.
+  const value=await main.call('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,
+    expression:'({plan:prepared.plan,archive:candidate.archive,requests:acceptance.requests})',returnByValue:true});
+  if(value.exceptionDetails)throw Error(JSON.stringify(value.exceptionDetails));return value.result.value;
+}
+function automaticHandoffLine(source){
+  const lines=source.split('\n'),prepare=lines.findIndex(line=>line.includes("await worker('update-prepare'"));assert.ok(prepare>=0);
+  const line=lines.findIndex((value,index)=>index>prepare&&value.trim()==='saveDataDir(dataDir);');assert.ok(line>prepare);return line;
+}
+async function downloadHistoryPackage(ui,main,files,data){
+  const before=await ui.evaluate("bridgeDesktop.updateCache({action:'list'})");
+  const backups=await fs.readdir(path.join(data,'update-backups')).catch(error=>{if(error.code==='ENOENT')return [];throw error;});
+  const target=process.platform==='darwin'?path.dirname(path.dirname(path.dirname(files.app))):path.dirname(files.app),parent=path.dirname(target);
+  const transactions=(await fs.readdir(parent)).filter(name=>name.startsWith('.cmb-update-'));
+  const proof={...await main.evaluate('({name:acceptance.updater.candidate.asset.name,sha256:acceptance.updater.candidate.asset.sha256})'),
+    digestSource:process.platform==='linux'?'official-release-api':'signed-manifest-and-official-release-api'};
+  await ui.evaluate("globalThis.acceptanceDownload=null;bridgeDesktop.downloadUpdate({candidateId:snapshot.update.candidateId}).then(value=>globalThis.acceptanceDownload={value},error=>globalThis.acceptanceDownload={error:error.message});void 0");
+  const completed=await until(()=>ui.evaluate('globalThis.acceptanceDownload'),'official download-only IPC completion',180000);
+  if(completed.error)throw Error(completed.error);const downloaded=completed.value;
+  assert.equal(downloaded.state,'downloaded',downloaded.message);assert.equal(downloaded.intent,'switch-version');
+  const cached=before.entries.some(entry=>entry.version===oldVersion&&entry.format===downloaded.format);
+  const cache=await verifiedArchiveProof(downloaded.path,proof,await main.evaluate('acceptance.requests'),cached?0:1);
+  await ui.evaluate('refresh()');
+  const listing=await ui.evaluate("bridgeDesktop.updateCache({action:'list'})"),entry=listing.entries.find(row=>row.id===path.basename(cache.archive));assert.ok(entry);
+  assert.equal(entry.size,(await fs.stat(cache.archive)).size);assert.equal(entry.version,oldVersion);assert.equal(entry.format,downloaded.format);assert.equal(entry.inUse,false);
+  assert.equal(JSON.parse(await fs.readFile(files.metadata,'utf8')).version,candidateVersion);
+  assert.deepEqual(await fs.readdir(path.join(data,'update-backups')).catch(error=>{if(error.code==='ENOENT')return [];throw error;}),backups);
+  assert.deepEqual((await fs.readdir(parent)).filter(name=>name.startsWith('.cmb-update-')),transactions);
+  return {package:proof,cache,downloadOnly:true,cacheListed:true,installationStarted:false};
+}
 async function returnThroughUpdater(files,data,work,phase,directory,{failure=false,native=false,manual=false,retryCache}={}){
   let planFile;
   const evidence=await inspectDesktop(files.app,data,candidateVersion,work,phase,async({ui,main,child})=>{
-    await main.evaluate(transportScript(directory));
-    const candidate=await checkStable(ui);
+    await main.evaluate(transportScript(directory,false,true));
+    const candidate=await selectStable(ui);
+    const download=await downloadHistoryPackage(ui,main,files,data);
+    if(retryCache){assert.equal(download.cache.archive,retryCache.archive);assert.equal(download.cache.sha256,retryCache.sha256);assert.equal(download.cache.downloads,0);}
     if(manual){
-      assert.equal(candidate.manualInstall,true);assert.equal(candidate.manualRelease,true);
+      assert.equal(candidate.manualInstall,true);assert.equal(candidate.manualRelease,undefined);
       const dialog=await confirmation(main,ui,child,1,false);
-      await until(async()=>(await ui.evaluate('snapshot.update')).state==='manual-release','official Linux release handoff');
-      assert.deepEqual(await main.evaluate('acceptance.opened'),['https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1']);
+      await until(async()=>(await ui.evaluate('snapshot.update')).state==='installer-handoff','official Linux package handoff');
+      assert.deepEqual(await main.evaluate('acceptance.opened'),[]);
+      assert.deepEqual(await main.evaluate('acceptance.packagesOpened'),[download.cache.archive]);
       assert.equal(JSON.parse(await fs.readFile(files.metadata,'utf8')).version,candidateVersion);
-      return {dialog,manual:true,automaticInstall:false,currentVersionUnchanged:true};
+      const listing=await ui.evaluate("bridgeDesktop.updateCache({action:'list'})");
+      assert.equal(listing.entries.find(entry=>entry.id===path.basename(download.cache.archive)).inUse,true);
+      const backups=await fs.readdir(path.join(data,'update-backups'));assert.ok(backups.length);
+      return {dialog,...download,manual:true,automaticInstall:false,currentVersionUnchanged:true,configurationBackupRetained:true};
     }
     await main.call('Debugger.enable');
     const script=main.events.find(value=>value.method==='Debugger.scriptParsed'&&/[\\/]desktop[\\/]main\.cjs$/.test(value.params.url));
     assert.ok(script,'the actual packaged main process is debugged');
     const source=(await main.call('Debugger.getScriptSource',{scriptId:script.params.scriptId})).scriptSource;
-    const lineNumber=source.split('\n').findIndex(line=>line.trim()==='saveDataDir(dataDir);');assert.ok(lineNumber>=0);
+    const lineNumber=automaticHandoffLine(source);
     await main.call('Debugger.setBreakpoint',{location:{scriptId:script.params.scriptId,lineNumber}});
-    const packageProof=await main.evaluate('({name:acceptance.updater.candidate.asset.name,sha256:acceptance.updater.candidate.asset.sha256})');
+    const packageProof=download.package;
     const paused=main.event('Debugger.paused',180000);paused.catch(()=>{});
     const dialog=await confirmation(main,ui,child,1,native);
     const pause=await paused,frame=pause.callFrames.find(value=>value.functionName==='installUpdate');assert.ok(frame);
-    const value=await main.call('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression:'prepared.plan',returnByValue:true});planFile=value.result.value;
-    const archiveValue=await main.call('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression:'candidate.archive',returnByValue:true});
-    const cache=await verifiedArchiveProof(archiveValue.result.value,packageProof,await main.evaluate('acceptance.requests'),retryCache?0:1);
+    const prepared=await pausedUpdateEvidence(main,frame);planFile=prepared.plan;
+    const cache=await verifiedArchiveProof(prepared.archive,packageProof,prepared.requests,download.cache.downloads);
     if(retryCache){assert.equal(cache.archive,retryCache.archive);assert.equal(cache.sha256,retryCache.sha256);}
     const plan=JSON.parse(await fs.readFile(planFile,'utf8'));
     const target=process.platform==='darwin'?path.dirname(path.dirname(path.dirname(files.app))):path.dirname(files.app);
     assert.equal(plan.target,target);
-    assert.equal(plan.dataDir,data);assert.equal(plan.transition.intent,'return-stable');assert.equal(plan.version,oldVersion);
+    assert.equal(plan.dataDir,data);assert.equal(plan.transition.intent,'switch-version');assert.equal(plan.version,oldVersion);
     assert.equal(path.dirname(path.dirname(planFile)),path.dirname(target));
     if(failure){const executable=paths(plan.staged).app;await fs.rename(executable,executable+'.acceptance-broken');}
     await main.call('Debugger.resume');
     main.close();ui.close();
     await until(()=>child.exitCode!==null||child.signalCode!==null,'candidate-owned installer handoff',30000);
-    return {dialog,planFile,package:packageProof,cache,failureInjected:failure};
+    return {dialog,planFile,package:packageProof,cache,downloadOnly:download.downloadOnly,cacheListed:download.cacheListed,failureInjected:failure};
   });
   if(manual)return evidence;
   const result=await until(async()=>JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'result.json'),'utf8')),'actual update helper result',180000);
   assert.equal(result.state,failure?'failed':'updated',JSON.stringify(result));if(failure)assert.equal(result.recovered,true,JSON.stringify(result));
   assert.ok(result.configurationBackup,'pre-replacement data backup');await fs.access(result.configurationBackup);
   const backup=JSON.parse(await fs.readFile(path.join(result.configurationBackup,'backup.json'),'utf8'));
-  assert.equal(backup.transition.intent,'return-stable');
+  assert.equal(backup.transition.intent,'switch-version');
   for(const name of ['config.json','desktop.json','accounts/index.json']){
     assert.deepEqual(await fs.readFile(path.join(result.configurationBackup,name)),await fs.readFile(path.join(data,name)),'current live data safety copy: '+name);
   }
@@ -365,9 +423,10 @@ async function main(){
         // First prove cancel leaves the verified candidate and live data intact.
         let cancellation;
         const cancel=()=>inspectDesktop(files.app,data,candidateVersion,work,'cancel-return',async({ui,main,child})=>{
-          await main.evaluate(transportScript(directory));await checkStable(ui);
+          await main.evaluate(transportScript(directory,false,true));await selectStable(ui);
+          const download=await downloadHistoryPackage(ui,main,files,data);
           const dialog=await confirmation(main,ui,child,0,native);
-          await delay(300);assert.equal((await ui.evaluate('snapshot.update')).state,'available');await verifyVersion(candidateVersion);return dialog;
+          await delay(300);assert.equal((await ui.evaluate('snapshot.update')).state,'downloaded');await verifyVersion(candidateVersion);return {...dialog,...download};
         });
         try{cancellation=await cancel();}catch(error){
           if(!native||!/(native confirmation|osascript|powershell|button unavailable|not allowed|assistive)/i.test(error.message))throw error;
@@ -376,21 +435,22 @@ async function main(){
         await verifyData('cancelled-return');
         let failure,returned;
         if(process.platform==='linux'){
-          returned=await returnThroughUpdater(files,data,work,'manual-return',directory,{manual:true});await verifyData('manual-handoff');await worker('stop');
+          returned=await returnThroughUpdater(files,data,work,'manual-return',directory,{manual:true,retryCache:cancellation.cache});await verifyData('manual-handoff');await worker('stop');
           await install(path.join(directory,'old',packageName(oldVersion)),target,work,'manual-stable');await useRuntime();
+          returned.cache=await stableReturnCacheProof(returned.cache,returned.package);
         }else{
-          failure=await returnThroughUpdater(files,data,work,'failed-return',directory,{failure:true,native});await verifyVersion(candidateVersion);
+          failure=await returnThroughUpdater(files,data,work,'failed-return',directory,{failure:true,native,retryCache:cancellation.cache});await verifyVersion(candidateVersion);
           await inspectDesktop(files.app,data,candidateVersion,work,'recovered-candidate');await verifyData('recovered-candidate');
           returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native,retryCache:failure.cache});await useRuntime();
         }
         await verifyVersion(oldVersion);await inspectDesktop(files.app,data,oldVersion,work,'returned-stable');await verifyData('returned-stable');
         const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,checks,
-          transport:'fixture release directory; original official signed manifests/packages; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
+          transport:'fixture release directory; original official manifests/packages and API digests; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
         results.push(result);await fs.writeFile(path.join(work,'result.json'),JSON.stringify(result,null,2)+'\n');console.log('PASS official '+baseline+' bootstrap and stable return');
       }finally{if(worker)await worker('stop').catch(error=>console.error('Owned gateway cleanup: '+error.message));}
     }
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof};
+module.exports={packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});

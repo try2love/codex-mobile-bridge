@@ -86,6 +86,7 @@ def main():
             if actual != checksums[filename]:
                 raise SystemExit('Official baseline checksum mismatch: ' + filename)
             digests[filename] = actual
+        (directory / 'release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         baselines.append({'version': version, 'release': release['html_url'], 'sha256': digests})
     (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
         'buildSource': build_source, 'sourceEquivalentChanges': build_changes,
