@@ -557,6 +557,7 @@ def _split_model_variant(model_id, label):
 class AntigravityCli:
     _ALLOWED_METHODS = (
         'GetUserStatus',
+        'RetrieveUserQuotaSummary',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
         'GetCascadeTrajectoryGeneratorMetadata',
@@ -587,6 +588,8 @@ class AntigravityCli:
         self._waiting_cache = {}
         self._variant_cache = {}
         self._base_cache = {}
+        self._quota_summary_cache = {}
+        self._default_model_cache = {}
 
     def available(self, surface='app'):
         try:
@@ -894,6 +897,116 @@ class AntigravityCli:
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
 
+    def _quota_summary_with_timestamp(self, surface='app', *, refresh=False, max_age=60.0):
+        now_mono = time.monotonic()
+        if not refresh and max_age > 0:
+            with self._lock:
+                cached = self._quota_summary_cache.get(surface)
+            if cached and now_mono - cached[0] < max_age:
+                return cached[2], cached[1]
+        try:
+            res = self.call_ls_rpc('RetrieveUserQuotaSummary', {'forceRefresh': bool(refresh)}, surface=surface)
+        except (OSError, ValueError, BridgeUnavailable):
+            return {}, 0.0
+        resp = res.get('response') if isinstance(res, dict) else None
+        if not isinstance(resp, dict):
+            return {}, 0.0
+        fetched_at = time.time()
+        with self._lock:
+            self._quota_summary_cache[surface] = (time.monotonic(), fetched_at, resp)
+        return resp, fetched_at
+
+    def quota_summary(self, surface='app', *, refresh=False, max_age=60.0):
+        resp, _ = self._quota_summary_with_timestamp(surface, refresh=refresh, max_age=max_age)
+        return resp
+
+    def current_model_quota_windows(self, surface='app', model_id='', model_display_name='', *, max_age=60.0):
+        mid = str(model_id or '').strip()
+        mname = str(model_display_name or '').strip()
+        if not mid and not mname:
+            with self._lock:
+                default_pair = self._default_model_cache.get(surface)
+            if default_pair:
+                mid, mname = default_pair
+        if not mid and not mname:
+            return []
+        raw = self.quota_summary(surface, refresh=False, max_age=max_age)
+        parsed = self._parse_quota_summary_groups(raw)
+        if not parsed:
+            return []
+        matched = self._match_model_quota_group(mname or mid, mid, parsed)
+        return [dict(b) for b in matched['buckets']] if matched else []
+
+    def overlay_live_quota(self, surface, catalog, *, max_age=60.0):
+        """Overlay fresh <=60s RetrieveUserQuotaSummary data onto a cached catalog without extra GetUserStatus calls."""
+        if not isinstance(catalog, dict):
+            return catalog
+        import copy
+
+        def apply_to_bucket(surf, obj):
+            if not isinstance(obj, dict):
+                return None, 0.0
+            models = obj.get('models')
+            if not isinstance(models, list) or not models:
+                return None, 0.0
+            raw, fetched_at = self._quota_summary_with_timestamp(surf, refresh=False, max_age=max_age)
+            parsed = self._parse_quota_summary_groups(raw)
+            if not parsed:
+                return None, 0.0
+            updated = copy.deepcopy(obj)
+            for entry in updated['models']:
+                if not isinstance(entry, dict):
+                    continue
+                matched = self._match_model_quota_group(entry.get('name') or '', entry.get('id') or '', parsed)
+                if matched is None:
+                    continue
+                if entry.get('name') and entry['name'] not in matched['matchedModels']:
+                    matched['matchedModels'].append(entry['name'])
+                entry['quotaGroup'] = matched['name']
+                entry['quotaWindows'] = [dict(b) for b in matched['buckets']]
+                binding = min(matched['buckets'], key=lambda b: b.get('remainingPercent', 100.0))
+                entry['quotaTag'] = binding.get('val') or entry.get('quotaTag', '')
+                entry['quotaStatus'] = binding.get('status') or entry.get('quotaStatus', '')
+                if binding.get('resetNote'):
+                    entry['resetNote'] = binding['resetNote']
+            summary_groups = [
+                {'name': g['name'], 'models': list(g['matchedModels']), 'buckets': [dict(b) for b in g['buckets']]}
+                for g in parsed if g['matchedModels']
+            ]
+            if summary_groups:
+                summary = dict(updated.get('usageSummary') or {})
+                summary['groups'] = summary_groups
+                updated['usageSummary'] = summary
+            return updated, fetched_at
+
+        if surface is not None:
+            updated, fetched_at = apply_to_bucket(surface, catalog)
+            if updated is None:
+                return catalog
+            if fetched_at and isinstance(updated.get('cache'), dict):
+                updated['cache'] = {**updated['cache'], 'updatedAt': max(float(updated['cache'].get('updatedAt') or 0), fetched_at)}
+            return updated
+
+        raw_groups = catalog.get('groups')
+        if not isinstance(raw_groups, list) or not raw_groups:
+            return catalog
+        out = copy.deepcopy(catalog)
+        latest_at = 0.0
+        changed = False
+        for idx, grp in enumerate(out['groups']):
+            if not isinstance(grp, dict) or not grp.get('surface'):
+                continue
+            updated_grp, fetched_at = apply_to_bucket(grp['surface'], grp)
+            if updated_grp is not None:
+                out['groups'][idx] = updated_grp
+                latest_at = max(latest_at, fetched_at)
+                changed = True
+        if not changed:
+            return catalog
+        if latest_at and isinstance(out.get('cache'), dict):
+            out['cache'] = {**out['cache'], 'updatedAt': max(float(out['cache'].get('updatedAt') or 0), latest_at)}
+        return out
+
     def assert_idle(self, surface, expected_identity):
         # Request every trajectory, including children. Saved history is neither
         # complete nor synchronous enough to authorize an account restart.
@@ -925,6 +1038,131 @@ class AntigravityCli:
         return f'重置时间 {text}'
 
     @staticmethod
+    def _format_reset_countdown(reset_time, *, now=None):
+        text = str(reset_time or '').strip()
+        if not text:
+            return '', '', None
+        stamp = _parse_iso_seconds(text)
+        if stamp is None:
+            return '', '', None
+        diff_sec = stamp - (now if now is not None else time.time())
+        if diff_sec <= 0:
+            return '即将重置 (<1m)', '<1m', int(stamp)
+        total_mins = int(diff_sec // 60)
+        days = total_mins // 1440
+        hours = (total_mins % 1440) // 60
+        mins = total_mins % 60
+        if days > 0:
+            full = f'{days}天{hours}小时后重置' if hours > 0 else f'{days}天后重置'
+            short = f'{days}d {hours}h' if hours > 0 else f'{days}d'
+        elif hours > 0:
+            full = f'{hours}小时{mins}分后重置' if mins > 0 else f'{hours}小时后重置'
+            short = f'{hours}h {mins}m' if mins > 0 else f'{hours}h'
+        elif mins > 0:
+            full = f'{mins}分钟后重置'
+            short = f'{mins}m'
+        else:
+            full = '即将重置 (<1m)'
+            short = '<1m'
+        return full, short, int(stamp)
+
+    @classmethod
+    def _parse_quota_summary_groups(cls, quota_summary):
+        raw_groups = quota_summary.get('groups') if isinstance(quota_summary, dict) else None
+        if not isinstance(raw_groups, list):
+            return []
+        parsed = []
+        win_order = {'5h': 0, 'daily': 1, 'weekly': 2}
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            g_name = str(raw_group.get('displayName') or '').strip()
+            g_desc = str(raw_group.get('description') or '').strip()
+            explicit_models = []
+            if 'models within this group:' in g_desc.lower():
+                after = g_desc.split(':', 1)[1]
+                explicit_models = [m.strip() for m in after.split(',') if m.strip()]
+            raw_buckets = raw_group.get('buckets') if isinstance(raw_group.get('buckets'), list) else []
+            buckets = []
+            for b in raw_buckets:
+                if not isinstance(b, dict) or b.get('disabled'):
+                    continue
+                win_raw = str(b.get('window') or '').strip().lower()
+                bid_low = str(b.get('bucketId') or '').strip().lower()
+                if win_raw == '5h' or '5h' in bid_low:
+                    win_key, short_label, full_label = '5h', '5h', '5h 限额'
+                elif win_raw in ('weekly', '7d') or 'weekly' in bid_low:
+                    win_key, short_label, full_label = 'weekly', '7d', '周限额 (7d)'
+                elif win_raw in ('daily', '1d') or 'daily' in bid_low:
+                    win_key, short_label, full_label = 'daily', '1d', '日限额'
+                else:
+                    win_key = win_raw or 'quota'
+                    short_label = win_raw or '额度'
+                    full_label = str(b.get('displayName') or '限额').strip()
+                frac = b.get('remainingFraction', 0)
+                if not isinstance(frac, (int, float)):
+                    frac = 0.0
+                frac = max(0.0, min(1.0, float(frac)))
+                rem_pct = round(frac * 100.0, 1)
+                used_pct = round((1.0 - frac) * 100.0, 1)
+                q_info = cls._quota_info({'quotaInfo': {'remainingFraction': frac, 'resetTime': b.get('resetTime')}}) or {}
+                reset_note = cls._format_reset_note(b.get('resetTime'))
+                countdown, short_cd, reset_at = cls._format_reset_countdown(b.get('resetTime'))
+                bucket_item = {
+                    'bucketId': str(b.get('bucketId') or ''),
+                    'window': win_key,
+                    'shortLabel': short_label,
+                    'label': full_label,
+                    'remainingPercent': rem_pct,
+                    'usedPercent': used_pct,
+                    'val': q_info.get('quotaTag') or f'剩余 {rem_pct}%',
+                    'status': q_info.get('quotaStatus') or ('exhausted' if frac <= 0.005 else ('warning' if frac < 0.2 else 'good')),
+                }
+                if reset_note:
+                    bucket_item['resetNote'] = reset_note
+                if countdown:
+                    bucket_item['resetCountdown'] = countdown
+                if short_cd:
+                    bucket_item['resetShort'] = short_cd
+                if reset_at is not None:
+                    bucket_item['resetAt'] = reset_at
+                buckets.append(bucket_item)
+            if not buckets:
+                continue
+            buckets.sort(key=lambda item: win_order.get(item['window'], 9))
+            parsed.append({
+                'name': g_name or 'Model Quota',
+                'description': g_desc,
+                'explicitModels': explicit_models,
+                'matchedModels': [],
+                'buckets': buckets,
+            })
+        return parsed
+
+    @staticmethod
+    def _match_model_quota_group(model_name, model_id, parsed_groups):
+        if not parsed_groups:
+            return None
+        m_low = str(model_name or '').strip().lower()
+        id_low = str(model_id or '').strip().lower()
+        for g in parsed_groups:
+            if g['name'].lower() == m_low or any(x.lower() == m_low for x in g['explicitModels']):
+                return g
+        if 'argon' in m_low or 'argon' in id_low or 'g1-pro' in id_low:
+            for g in parsed_groups:
+                if 'argon' in g['name'].lower():
+                    return g
+        if 'gemini' in m_low or 'orchestrator' in m_low:
+            for g in parsed_groups:
+                if 'gemini' in g['name'].lower() and 'argon' not in g['name'].lower():
+                    return g
+        if any(k in m_low or k in id_low for k in ('claude', 'gpt', 'sonnet', 'opus')):
+            for g in parsed_groups:
+                if 'claude' in g['name'].lower() or 'gpt' in g['name'].lower():
+                    return g
+        return None
+
+    @staticmethod
     def _quota_info(row):
         q = row.get('quotaInfo')
         if not isinstance(q, dict):
@@ -945,16 +1183,17 @@ class AntigravityCli:
             'resetNote': reset_note,
         }
 
-    def _build_catalog_from_status(self, status, *, surface='app'):
+    def _build_catalog_from_status(self, status, *, surface='app', quota_summary=None):
         model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
         configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
-        default_override = model_data.get('defaultOverrideModelConfig') if isinstance(model_data.get('defaultOverrideModelConfig'), dict) else {}
+        default_override = model_data.get('defaultOverrideModelConfig') if isinstance(status.get('cascadeModelConfigData'), dict) and isinstance(model_data.get('defaultOverrideModelConfig'), dict) else {}
         default_alias = default_override.get('modelOrAlias') if isinstance(default_override.get('modelOrAlias'), dict) else {}
         default_override_enum = str(default_alias.get('model') or '').strip()
 
         user_tier = status.get('userTier') if isinstance(status.get('userTier'), dict) else {}
         tier_name = str(user_tier.get('name') or '').strip()
         plan_status = status.get('planStatus') if isinstance(status.get('planStatus'), dict) else {}
+        parsed_quota_groups = self._parse_quota_summary_groups(quota_summary)
 
         # Detect ungrouped IDs first so grouped base IDs never collide with standalone rows.
         ungrouped_ids = set()
@@ -1064,29 +1303,50 @@ class AntigravityCli:
                         'note': quota['resetNote'],
                         'status': quota['quotaStatus'],
                     })
-                    line = f"• {entry['name']}: {quota['quotaTag']}"
-                    if quota['resetNote']:
-                        line += f" ({quota['resetNote']})"
-                    notice_lines.append(line)
+            matched_qgroup = self._match_model_quota_group(entry['name'], entry['id'], parsed_quota_groups)
+            if matched_qgroup is not None:
+                if entry['name'] not in matched_qgroup['matchedModels']:
+                    matched_qgroup['matchedModels'].append(entry['name'])
+                entry['quotaGroup'] = matched_qgroup['name']
+                entry['quotaWindows'] = [dict(b) for b in matched_qgroup['buckets']]
             models.append(entry)
 
         with self._lock:
             self._variant_cache[surface] = variant_cache
             self._base_cache[surface] = base_cache
+            if default_override_enum:
+                for entry in models:
+                    variants = entry.get('variants') if isinstance(entry.get('variants'), dict) else {}
+                    if entry.get('nativeModel') == default_override_enum or any(
+                        isinstance(v, dict) and v.get('nativeModel') == default_override_enum for v in variants.values()
+                    ):
+                        self._default_model_cache[surface] = (entry['id'], entry['name'])
+                        break
 
         p_credits = plan_status.get('availablePromptCredits', 0)
         f_credits = plan_status.get('availableFlowCredits', 0)
         credits_line = ''
         if isinstance(status.get('planStatus'), dict):
             credits_line = f'可用 Prompt 点数: {p_credits or 0} · Flow 点数: {f_credits or 0}'
-            notice_lines.append(credits_line)
 
-        if notice_lines and tier_name:
-            notice_lines.insert(0, f'账号等级 · {tier_name}')
+        summary_groups = []
+        if models:
+            for g in parsed_quota_groups:
+                if not g['matchedModels']:
+                    continue
+                summary_groups.append({
+                    'name': g['name'],
+                    'models': list(g['matchedModels']),
+                    'buckets': [dict(b) for b in g['buckets']],
+                })
+
         notice = '\n'.join(notice_lines) if notice_lines else ('' if models else '原客户端暂未提供可用模型列表')
         result = {'models': models, 'userStatus': status, 'notice': notice}
-        if usage_items or credits_line:
-            result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
+        if usage_items or credits_line or summary_groups:
+            summary_obj = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
+            if summary_groups:
+                summary_obj['groups'] = summary_groups
+            result['usageSummary'] = summary_obj
         return result
 
 
@@ -1206,7 +1466,11 @@ class AntigravityCli:
 
     def catalog_models(self, *, refresh=False, surface='app'):
         status = self.user_status(surface)
-        return self._build_catalog_from_status(status, surface=surface)
+        has_models = isinstance(status.get('cascadeModelConfigData'), dict) and bool(
+            status['cascadeModelConfigData'].get('clientModelConfigs')
+        )
+        quota_summary = self.quota_summary(surface, refresh=refresh) if has_models else {}
+        return self._build_catalog_from_status(status, surface=surface, quota_summary=quota_summary)
 
     @staticmethod
     def _is_enabled_model_row(row):

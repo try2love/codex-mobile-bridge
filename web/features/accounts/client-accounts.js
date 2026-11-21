@@ -98,9 +98,10 @@ class DesktopClientAccountsPanel {
     if(!this.desktop||this.busy||this.loading||row.saved===false)return;
     if(window.confirm(this.text('删除此已保存接入？仅删除网关保存的副本，不会退出电脑上的账号。')))return this.perform({action:'remove',id:row.id});
   }
-  dispose(){this.generation++;clearTimeout(this.timer);this.closeEditor();this.disposed=true;document.removeEventListener('bridge-language',this.languageListener);document.removeEventListener('visibilitychange',this.visibilityListener);}
-  resume(){clearTimeout(this.timer);if(this.disposed||!this.visible())return;if(!this.checkedAt||Date.now()-this.checkedAt>=300000)return this.refresh(false);this.schedule();}
+  dispose(){this.generation++;clearTimeout(this.timer);clearTimeout(this.modelsAutoTimer);this.modelsAutoTimer=null;this.closeEditor();this.disposed=true;document.removeEventListener('bridge-language',this.languageListener);document.removeEventListener('visibilitychange',this.visibilityListener);}
+  resume(){clearTimeout(this.timer);if(this.disposed||!this.visible())return;this.scheduleModelsAutoRefresh();if(!this.checkedAt||Date.now()-this.checkedAt>=300000)return this.refresh(false);this.schedule();}
   schedule(){clearTimeout(this.timer);if(!this.disposed&&this.visible())this.timer=setTimeout(()=>this.resume(),Math.max(0,300000-(Date.now()-this.checkedAt)));}
+  scheduleModelsAutoRefresh(){clearTimeout(this.modelsAutoTimer);this.modelsAutoTimer=null;if(this.disposed||this.provider!=='antigravity'||!this.modelsOpen||!this.readModels||!this.visible())return;this.modelsAutoTimer=setTimeout(()=>{this.modelsAutoTimer=null;if(!this.disposed&&this.modelsOpen&&this.visible()&&!this.modelsLoading)this.loadModels(false);},60000);}
   activeIds(value=this.value){return new Set(value?.activeIds||[value?.activeId].filter(Boolean));}
   accept(value,notifyChange=true){
     if(!value||!Array.isArray(value.accounts))throw Error(this.text('账号信息暂不可用'));
@@ -179,15 +180,15 @@ class DesktopClientAccountsPanel {
     box.append(results);
   }
   async toggleModels(){
-    this.modelsOpen=!this.modelsOpen;if(!this.modelsOpen){this.render();return;}
+    this.modelsOpen=!this.modelsOpen;if(!this.modelsOpen){clearTimeout(this.modelsAutoTimer);this.modelsAutoTimer=null;this.render();return;}
     if(!this.value?.modelCatalogIdentity)this.models=null;
     return this.loadModels();
   }
   async loadModels(refresh=false){
-    const focused=refresh&&document.activeElement===this.modelsRefreshButton,generation=this.generation,revision=++this.modelsRevision,identity=this.value?.modelCatalogIdentity||'';this.modelsError='';this.modelsLoading=true;this.render();
+    const focused=refresh&&document.activeElement===this.modelsRefreshButton,generation=this.generation,revision=++this.modelsRevision,identity=this.value?.modelCatalogIdentity||'';this.modelsError='';this.modelsLoading=true;clearTimeout(this.modelsAutoTimer);this.modelsAutoTimer=null;this.render();
     try{const value=await this.readModels(refresh);if(generation!==this.generation||revision!==this.modelsRevision)return;if(identity&&value.cache?.identity!==identity){this.models=null;throw Error(this.text('账号已切换，请重新打开模型设置'));}this.models=value;}
     catch(error){if(generation===this.generation&&revision===this.modelsRevision)this.modelsError=error.message;}
-    finally{if(generation===this.generation&&revision===this.modelsRevision){this.modelsLoading=false;this.render();if(focused&&this.modelsRefreshButton.isConnected&&(document.activeElement===document.body||document.activeElement===this.modelsRefreshButton)&&!this.modelsTouching)this.modelsRefreshButton.focus({preventScroll:true});}}
+    finally{if(generation===this.generation&&revision===this.modelsRevision){this.modelsLoading=false;this.render();this.scheduleModelsAutoRefresh();if(focused&&this.modelsRefreshButton.isConnected&&(document.activeElement===document.body||document.activeElement===this.modelsRefreshButton)&&!this.modelsTouching)this.modelsRefreshButton.focus({preventScroll:true});}}
   }
   renderModels(box){
     box.replaceChildren();this.modelsRefreshButton.disabled=this.modelsLoading;
@@ -195,14 +196,84 @@ class DesktopClientAccountsPanel {
     if(this.modelsLoading&&!this.models)box.append(this.node('p','正在读取模型…','account-muted'));
     if(this.modelsError||this.models?.modelError)box.append(this.node('p',this.modelsError||this.models.modelError,'error'));
     if(!this.models&&(this.modelsLoading||this.modelsError))return;
-    if(this.models?.notice)box.append(this.node('p',this.models.notice,'account-muted'));
-    let count=0;const groups=this.models?.groups?.length?this.models.groups:[{models:this.models?.models||this.models?.catalog?.models||[]}];
+    const formatWindow=w=>{const pct=Number.isFinite(w?.remainingPercent)?Math.max(0,Math.min(100,w.remainingPercent)):0,used=Number.isFinite(w?.usedPercent)?Math.max(0,Math.min(100,w.usedPercent)):Math.round((100-pct)*10)/10;let shortCd=w?.resetShort||'',fullCd=w?.resetCountdown||'';if(Number.isFinite(w?.resetAt)&&w.resetAt>0){const mins=Math.max(0,Math.floor((w.resetAt*1000-Date.now())/60000)),d=Math.floor(mins/1440),h=Math.floor((mins%1440)/60),m=mins%60;shortCd=d>0?(h>0?`${d}d ${h}h`:`${d}d`):h>0?(m>0?`${h}h ${m}m`:`${h}h`):m>0?`${m}m`:'<1m';fullCd=d>0?(h>0?`${d}天${h}小时后重置`:`${d}天后重置`):h>0?(m>0?`${h}小时${m}分后重置`:`${h}小时后重置`):m>0?`${m}分钟后重置`:'即将重置 (<1m)';}const status=w?.status||(pct<10?'exhausted':pct<25?'warning':'good');return {...w,pct,used,shortCd,fullCd,status};};
+    const buildRingChip=(rawWin,withCd=false)=>{const w=formatWindow(rawWin),winCls=w.window==='5h'?' is-5h':w.window==='weekly'?' is-weekly':'',chip=this.node('span',undefined,'quota-ring-chip '+w.status+winCls),ring=this.node('span',undefined,'quota-pie-ring '+w.status);ring.style?.setProperty?.('--quota-pct',String(w.pct));chip.append(ring,this.node('span',w.shortLabel||w.window||'','quota-ring-label'),this.node('strong',Math.round(w.pct)+'%','quota-ring-pct'));if(withCd&&w.shortCd)chip.append(this.node('small',w.shortCd,'quota-ring-cd'));chip.title=[w.label||w.shortLabel,w.val||`剩余 ${w.pct}%`,`已用 ${w.used}%`,w.fullCd,w.resetNote].filter(Boolean).join(' · ');return chip;};
+    const isZh=typeof BridgeI18n==='undefined'||String(BridgeI18n.locale?.()||'zh').toLowerCase().startsWith('zh');
+    const effortLabels={auto:'自动',none:'无',minimal:'最低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'Max',ultra:'Ultra'};
+    const formatEffort=effort=>{const raw=typeof effort==='string'?effort:effort?.name||effort?.id||'';return isZh&&effortLabels[raw.toLowerCase()]?effortLabels[raw.toLowerCase()]:this.text(raw);};
+    const isQuotaDump=(notice,models)=>typeof notice==='string'&&notice.includes('• ')&&Array.isArray(models)&&models.some(m=>m&&typeof m==='object'&&m.quotaTag);
+    const groups=this.models?.groups?.length?this.models.groups:[{models:this.models?.models||this.models?.catalog?.models||[]}];
+    const allGroupModels=groups.flatMap(g=>g.models||[]);
+    if(this.models?.notice&&!isQuotaDump(this.models.notice,allGroupModels))box.append(this.node('p',this.models.notice,'account-muted'));
+    let count=0;
     for(const group of groups){
       if(!group.models?.length&&!group.notice)continue;count+=group.models?.length||0;
-      box.append(this.node('strong',[group.surface==='code'?'Code':group.surface==='cowork'?'Cowork':group.label||group.name||group.id,this.text(group.source==='session-history'?'历史模型':group.source==='desktop-config'?'配置模型':'可用模型')].filter(Boolean).join(' · ')));
-      if(group.notice)box.append(this.node('p',group.notice,'account-muted'));
+      const summary=group.usageSummary||(groups.length===1?this.models?.usageSummary:null);
+      const head=this.node('div',undefined,'accounts-models-group-head');
+      head.append(this.node('strong',[group.surface==='code'?'Code':group.surface==='cowork'?'Cowork':group.label||group.name||group.id,this.text(group.source==='session-history'?'历史模型':group.source==='desktop-config'?'配置模型':'可用模型')].filter(Boolean).join(' · ')));
+      if(summary?.tier)head.append(this.node('span',summary.tier,'accounts-plan accounts-models-tier'));
+      box.append(head);
+      if(group.notice&&!isQuotaDump(group.notice,group.models))box.append(this.node('p',group.notice,'account-muted'));
+      if(Array.isArray(summary?.groups)&&summary.groups.length){
+        const pools=this.node('div',undefined,'quota-pools-list accounts-quota-pools');
+        for(const g of summary.groups){
+          const pool=this.node('details',undefined,'quota-pool-card'),sum=this.node('summary',undefined,'quota-pool-summary'),rings=this.node('span',undefined,'quota-pool-rings');
+          for(const b of g.buckets||[])rings.append(buildRingChip(b,true));
+          sum.append(this.node('span',g.name,'quota-pool-name'),rings);
+          const body=this.node('div',undefined,'quota-pool-body');
+          for(const b of g.buckets||[]){
+            const w=formatWindow(b),bRow=this.node('div',undefined,'quota-bucket-detail'),bHead=this.node('div',undefined,'quota-bucket-head'),bStat=this.node('span',undefined,'quota-bucket-stat'),bRing=this.node('span',undefined,'quota-pie-ring is-large '+w.status);
+            bRing.style?.setProperty?.('--quota-pct',String(w.pct));
+            bStat.append(this.node('span',`剩余 ${w.pct}%`,'quota-bucket-rem '+w.status),this.node('small',`已用 ${w.used}%`,'quota-bucket-used'),bRing);
+            bHead.append(this.node('strong',w.label||w.shortLabel,'quota-bucket-title'),bStat);
+            bRow.append(bHead);
+            const resetLine=[w.fullCd,w.resetNote].filter(Boolean).join(' · ');
+            if(resetLine)bRow.append(this.node('div',resetLine,'quota-bucket-reset'));
+            body.append(bRow);
+          }
+          if(Array.isArray(g.models)&&g.models.length)body.append(this.node('div','共用此额度：'+g.models.join(' · '),'quota-pool-models'));
+          pool.append(sum,body);pools.append(pool);
+        }
+        box.append(pools);
+      }
       if(!group.models?.length)continue;
-      const list=this.node('ul');for(const model of group.models){const row=this.node('li',typeof model==='string'?model:model.name||model.id);if(model.efforts?.length)row.append(this.node('small',' · '+model.efforts.map(effort=>this.text(typeof effort==='string'?effort:effort.name||effort.id)).join(' / '),'account-muted'));list.append(row);}box.append(list);
+      const list=this.node('ul',undefined,'accounts-models-list');
+      for(const model of group.models){
+        const row=this.node('li',undefined,'accounts-model-row'),top=this.node('div',undefined,'accounts-model-top'),main=this.node('div',undefined,'accounts-model-main');
+        main.append(this.node('span',typeof model==='string'?model:model.name||model.id,'accounts-model-name'));
+        if(model.efforts?.length)main.append(this.node('small',model.efforts.map(formatEffort).join(' / '),'account-muted accounts-model-efforts'));
+        top.append(main);
+        if(model&&typeof model==='object'&&Array.isArray(model.quotaWindows)&&model.quotaWindows.length){
+          const badge=this.node('span',undefined,'model-choice-badge model-choice-dual'+(model.quotaStatus?' badge-'+model.quotaStatus:''));
+          for(const win of model.quotaWindows)badge.append(buildRingChip(win,false));
+          top.append(badge);
+          const detail=this.node('div',undefined,'accounts-model-detail');detail.hidden=true;
+          for(const win of model.quotaWindows){
+            const w=formatWindow(win),dRow=this.node('div',undefined,'quota-bucket-detail'),dHead=this.node('div',undefined,'quota-bucket-head'),dStat=this.node('span',undefined,'quota-bucket-stat'),dRing=this.node('span',undefined,'quota-pie-ring is-large '+w.status);
+            dRing.style?.setProperty?.('--quota-pct',String(w.pct));
+            dStat.append(this.node('span',`剩余 ${w.pct}%`,'quota-bucket-rem '+w.status),this.node('small',`已用 ${w.used}%`,'quota-bucket-used'),dRing);
+            dHead.append(this.node('strong',w.label||w.shortLabel,'quota-bucket-title'),dStat);
+            dRow.append(dHead);
+            const resetLine=[w.fullCd,w.resetNote].filter(Boolean).join(' · ');
+            if(resetLine)dRow.append(this.node('div',resetLine,'quota-bucket-reset'));
+            detail.append(dRow);
+          }
+          row.classList?.add?.('is-expandable');
+          row.onclick=()=>{detail.hidden=!detail.hidden;row.classList?.toggle?.('is-open',!detail.hidden);};
+          row.append(top,detail);
+        }else{
+          if(model&&typeof model==='object'&&(model.quotaTag||model.resetNote)){
+            const meta=this.node('div',undefined,'accounts-model-meta');
+            if(model.quotaTag)meta.append(this.node('span',model.quotaTag,'model-choice-badge'+(model.quotaStatus?' badge-'+model.quotaStatus:'')));
+            if(model.resetNote)meta.append(this.node('small',model.resetNote,'account-muted accounts-model-reset'));
+            top.append(meta);
+          }
+          row.append(top);
+        }
+        list.append(row);
+      }
+      box.append(list);
+      if(summary?.credits)box.append(this.node('div',summary.credits,'account-muted accounts-models-credits'));
     }
     if(!count&&!this.models?.notice&&!groups.some(group=>group.notice))box.append(this.node('p','当前客户端未返回可用模型，请检查客户端登录与模型配置。','account-muted'));
   }

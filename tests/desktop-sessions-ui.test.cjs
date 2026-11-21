@@ -2159,3 +2159,28 @@ test('ordinary writes and duplicate stop stay blocked while stop is pending even
  assert.equal(ui.calls.filter(c=>c.body&&/\/(send|settings|stop)(?:\?|$)/.test(c.url)).length,1);
  receipts.stop({status:'accepted'});await stopping;
 });
+
+test('Antigravity chat toolbar renders current model circular quota rings and tooltips without extra text clutter',async()=>{
+ const ui=fixture();
+ ui.setHandler((url)=>{
+  if(url.includes('/detail'))return Promise.resolve({
+   session:{
+    id:'a',title:'Antigravity Chat',status:'idle',model:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon',effort:'high',requests:[],
+    quotaWindows:[
+     {window:'5h',shortLabel:'5h',label:'5h 限额',remainingPercent:58.8,usedPercent:41.2,status:'good',resetCountdown:'3小时53分后重置'},
+     {window:'weekly',shortLabel:'7d',label:'周限额 (7d)',remainingPercent:87.5,usedPercent:12.5,status:'good',resetCountdown:'6天22小时后重置'}
+    ]
+   },
+   capabilities:{send:true,stop:false,models:true,effort:true},
+   messages:[],modelCatalogIdentity:'ag-id',
+  });
+  return Promise.resolve({sessions:[{id:'a',title:'Antigravity Chat'}]});
+ });
+ await ui.view.choose('antigravity');
+ await ui.view.open('a');
+ await new Promise(setImmediate);
+ assert.equal(ui.view.modelQuotaRings.hidden,false);
+ const rings=ui.view.modelQuotaRings.querySelectorAll('.quota-pie-ring');
+ assert.equal(rings.length,2);
+ assert.match(ui.view.modelButton.title,/5h 59%.*7d 88%/);
+});
