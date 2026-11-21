@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sqlite3
 import threading
 
 from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
@@ -216,7 +217,7 @@ class Antigravity:
                 'capabilities': {'send': live, 'stop': live, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
-                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live, 'tasks': True,
+                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live, 'revert': live, 'tasks': True,
                                  'plan': live, 'goal': live, 'archive': live, 'unarchive': live}}
 
     def management(self):
@@ -894,6 +895,26 @@ class Antigravity:
             self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
                                        items=items, media=media, turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
+        if action == 'revert':
+            step_index = body.get('stepIndex')
+            conversation_only = body.get('conversationOnly', True)
+            if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0 or not isinstance(conversation_only, bool):
+                raise ResumePreflightBlocked('撤回参数无效')
+            try:
+                expected_identity = self.cli.source_identity(surface)
+                self._ensure_native_idle(row, key, cid, surface,
+                    waiting_msg='原会话等待确认，请先回应后再撤回',
+                    busy_msg='原会话正在运行，请先停止后再撤回', expected_identity=expected_identity)
+                if self.hooks and self.hooks.get_queued_items(key):
+                    raise ValueError('请先处理待发消息再撤回')
+                if self.store.revert_anchor(row['surfaceRoot'], cid, step_index) != body.get('messageId'):
+                    raise ValueError('原消息已变化或不属于该会话，请刷新后重新选择')
+            except (OSError, ValueError, sqlite3.DatabaseError, BridgeUnavailable) as exc:
+                raise ResumePreflightBlocked(str(exc)) from exc
+            result = self.cli.revert_to_step(cid, step_index, conversation_only=conversation_only,
+                                             surface=surface, expected_identity=expected_identity)
+            reverted = (result or {}).get('metadata', {}).get('revertedUris') if isinstance(result, dict) else None
+            return {'status': 'accepted', 'stepIndex': step_index, 'revertedUris': reverted or []}
         raise ValueError('此 Antigravity 操作尚不支持')
 
     def close(self):

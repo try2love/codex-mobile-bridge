@@ -5,6 +5,7 @@ import hmac
 import logging
 import os
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -39,7 +40,7 @@ from bridge.clients.codex.remote import ssh_read, payload
 from bridge.resources import source_text
 
 READS = {'list', 'detail', 'catalog', 'projects', 'create-models', 'account', 'access', 'organization', 'tasks'}
-WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message', 'queue-action'}
+WRITES = {'send', 'stop', 'settings', 'respond', 'create', 'access', 'resume', 'fork', 'revert', 'pin', 'archive', 'rename', 'organization', 'goal', 'compact', 'stop-task', 'edit-message', 'queue-action'}
 
 
 CLAUDE_HISTORY_NOTICE = '客户端尚未提供当前可选模型，历史模型仅供查看'
@@ -1732,6 +1733,12 @@ class DesktopSessions:
             raise ValueError('会话接续请求无效')
         if action == 'compact' and set(body) != {'id'}:
             raise ValueError('上下文压缩请求无效')
+        if action == 'revert' and (provider != 'antigravity' or
+                set(body) - {'id', 'stepIndex', 'messageId', 'conversationOnly'} or
+                type(body.get('stepIndex')) is not int or body['stepIndex'] < 0 or
+                not isinstance(body.get('messageId'), str) or not re.fullmatch(r'[0-9a-f]{64}', body['messageId']) or
+                type(body.get('conversationOnly', True)) is not bool):
+            raise ValueError('撤回参数无效')
         if action == 'stop-task' and (set(body) != {'id', 'taskId'} or
                 not isinstance(body.get('taskId'), str) or not 1 <= len(body['taskId']) <= 512):
             raise ValueError('后台任务标识无效')
@@ -1790,6 +1797,9 @@ class DesktopSessions:
                 db = None
                 try:
                     db = self._receipts(adapter)
+                    if action == 'revert' and any(json.loads(row[0]).get('status') in ('unknown', 'uncertain', 'queued')
+                            for row in db.execute('SELECT result FROM requests WHERE id != ?', (rid,))):
+                        raise ValueError('请先核对 Antigravity 待确认操作或处理待发消息，再撤回对话')
                     result = {'status': 'unknown', 'id': rid, 'message': '结果待核对，请检查桌面原会话；相同请求不会重复执行'}
                     inserted = db.execute('INSERT OR IGNORE INTO requests VALUES (?,?,?)', (rid, fingerprint, json.dumps(result))).rowcount
                     if inserted and reference_files and provider == 'zcode':

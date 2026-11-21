@@ -13,7 +13,7 @@ import time
 from urllib.parse import unquote, urlsplit
 
 from bridge.features.workspace.uploads import MAX_FILE, image_type
-from .model import SURFACE_LABELS, compute_turn_fork_points, extract_user_text, gateway_id, normalize_steps
+from .model import SURFACE_LABELS, compute_turn_fork_points, extract_user_text, gateway_id, normalize_steps, revert_message_id
 
 SURFACE_DIRS = (
     ('app', '.gemini/antigravity'),
@@ -448,6 +448,18 @@ class AntigravityStore:
         points = compute_turn_fork_points(all_steps, session_active=False)
         messages, _, _ = normalize_steps(all_steps, session_active=False, turn_fork_points=points)
         return {int(msg['forkMessageId']) for msg in messages if isinstance(msg.get('forkMessageId'), str) and msg['forkMessageId'].isdigit()}
+
+    def revert_anchor(self, surface_root, conversation_id, step_index):
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', str(conversation_id or '')):
+            raise ValueError('原生会话路径无效')
+        directory = Path(surface_root) / 'brain' / conversation_id
+        if directory.is_symlink():
+            raise ValueError('原生会话路径无效')
+        # This is write authorization, so never read the display-page cache.
+        for step in self._load_reconciled_steps(directory / '.system_generated/logs/transcript.jsonl'):
+            if step.get('step_index') == step_index and step.get('type') == 'USER_INPUT':
+                return revert_message_id(step)
+        raise ValueError('目标不是当前原会话的用户消息')
 
     def read_transcript_page(self, surface_root, conversation_id, *, limit=40, before=None, session_active=False):
         """Read a reverse-paginated slice of transcript.jsonl with targeted full-line hydration."""

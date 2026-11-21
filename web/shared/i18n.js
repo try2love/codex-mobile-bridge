@@ -2,6 +2,12 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"撤回到此消息":"Revert to this message",
+"同时回退这条消息之后的文件改动":"Also revert file changes after this message",
+"原客户端已接受撤回":"Revert accepted by the original client",
+"确认撤回":"Confirm revert",
+"撤回":"Revert",
+"将撤销这条消息及之后的对话内容。默认保留文件；勾选文件回退后，由原客户端撤销对应工作区改动，Bridge 无法恢复。":"This removes this message and the following conversation. Files are kept by default. If selected, the original client also reverts subsequent workspace changes; Bridge cannot restore them.",
   "已完成": "Completed",
   "运行失败": "Failed",
   "已完成，用时 {minutes} 分钟 {seconds} 秒": "Completed in {minutes} min {seconds} sec",

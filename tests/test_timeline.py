@@ -13,6 +13,19 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_revert_anchor_survives_page_and_changes_with_the_native_message(self):
+        timeline = Timeline()
+        message = {'id': 'input', 'role': 'user', 'text': 'request',
+                   'revertStepIndex': 4, 'revertMessageId': 'a' * 64}
+        timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]})
+        first = timeline.page()['rows'][0]
+        self.assertEqual((first['revertStepIndex'], first['revertMessageId']), (4, 'a' * 64))
+        message = {**message, 'text': 'replacement', 'revertMessageId': 'b' * 64}
+        timeline.update({'sequence': 2, 'turns': [{'id': 'turn', 'messages': [message]}]})
+        second = timeline.page()['rows'][0]
+        self.assertEqual(second['revertMessageId'], 'b' * 64)
+        self.assertNotEqual(first['version'], second['version'])
+
     def test_file_activity_preserves_complete_native_paths_and_counts_without_copying_patches(self):
         from bridge.features.sessions.model import normalize_item
         paths = ['/repo/' + 'long-directory/' * 20 + 'file-' + str(i) + '.py' for i in range(65)]

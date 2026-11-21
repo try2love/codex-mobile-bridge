@@ -83,3 +83,5 @@ MCP 表单复用共享问题控件，保留字符串、有限数值、严格布�
 七项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。字符串枚举及数组元素保留原值空格，不用文本清理改变合法答案。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。
 
 额度随同来源、同账号模型目录保存为成功查询快照，沿用原更新时间与手动刷新，不增加自动请求。官方 protobuf 中存在 `quotaInfo` 或 `planStatus` 消息而省略非 optional 数值字段时代表零；整个消息缺失仍不显示未知额度。重置时间复用原时间解析并显示本机时区，不把 UTC 文本截断为本地时间。三项定向回归及原目录/上下文用例覆盖消息缺失、零值与 UTC 转换。
+
+[新版发现、历史读取与撤回](../bug-fix/2026-11-21-antigravity-read-and-revert.md)补充 CSRF 环境回退、有界缓存及默认仅撤回对话的控制链；本篇原来源和未知写入边界继续生效。

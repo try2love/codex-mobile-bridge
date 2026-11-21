@@ -95,7 +95,7 @@ class Timeline:
                                for a in (message.get('attachments') or [])[:20]]
                 version = hashlib.sha256(encoded([text, turn.get('model'), turn.get('effort'), attachments, message.get('fileSummary'), message.get('activityFiles'),
                                                  view['sequence'] if message.get('_detailSource') else None])).hexdigest()[:24]
-                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName', 'activityFiles', 'forkMessageId', 'editMessageId') if k in message}
+                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId', 'interaction', 'toolName', 'activityFiles', 'forkMessageId', 'editMessageId', 'revertStepIndex', 'revertMessageId') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),

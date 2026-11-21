@@ -87,6 +87,36 @@ test('fresh empty desktop history replaces persisted content and account changes
  await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
 });
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('native revert defaults to conversation only and file rollback requires an explicit check',async()=>{
+ const ui=await opened(),view=ui.view,writes=[];
+ const message={id:'user',role:'user',text:'Original request',revertStepIndex:2,revertMessageId:'a'.repeat(64)};
+ view.applyDetail({session:{id:'a',title:'A'},capabilities:{revert:true},messages:[message]});
+ view.mutate=async(...args)=>{writes.push(args);return {status:'accepted'};};
+ for(const includeFiles of [false,true]){
+  view.input.value='Keep existing draft';view.revert(message);
+  const dialog=ui.document.body.querySelector('dialog'),check=dialog.querySelector('input');
+  assert.equal(!!check.checked,false);check.checked=includeFiles;
+  await dialog.querySelector('form').onsubmit({preventDefault(){}});
+  assert.equal(writes.at(-1)[1].conversationOnly,!includeFiles);
+  assert.equal(writes.at(-1)[1].messageId,message.revertMessageId);
+  assert.equal(view.input.value,'Keep existing draft');
+ }
+ assert.equal(writes.length,2);
+});
+test('native revert rejects a stale dialog and does not restore text into a later chat',async()=>{
+ const ui=await opened(),view=ui.view,writes=[];
+ const message={id:'user',role:'user',text:'Old request',revertStepIndex:2,revertMessageId:'a'.repeat(64)};
+ const detail={session:{id:'a',title:'A'},capabilities:{revert:true},messages:[message]};
+ view.applyDetail(detail);view.mutate=async(...args)=>{writes.push(args);return {};};
+ view.revert(message);let form=ui.document.body.querySelector('dialog').querySelector('form');
+ view.prepareChat('b');await form.onsubmit({preventDefault(){}});assert.equal(writes.length,0);
+ view.prepareChat('a');view.applyDetail(detail);let finish;
+ view.mutate=(...args)=>{writes.push(args);return new Promise(resolve=>finish=resolve);};
+ view.revert(message);form=ui.document.body.querySelector('dialog').querySelector('form');
+ const pending=form.onsubmit({preventDefault(){}});view.prepareChat('b');view.input.value='';
+ finish({status:'accepted'});await pending;
+ assert.equal(writes.length,1);assert.equal(view.input.value,'');assert.equal(view.sid,'b');
+});
 test('native details expose each intermediate row without process-directory requests',async()=>{
  const ui=await opened(),view=ui.view;const rows=[
   {id:'input',role:'user',text:'Request'},

@@ -1,5 +1,6 @@
 """Normalize Antigravity transcript.jsonl steps into Bridge timeline messages."""
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -17,6 +18,11 @@ SURFACE_LABELS = {
     'ide': 'Antigravity IDE',
     'cli': 'Antigravity CLI',
 }
+
+
+def revert_message_id(step):
+    return hashlib.sha256(json.dumps([step.get('step_index'), step.get('content'), step.get('media')],
+                                    sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 # These reserve shared composer positions, never authorize native operations.
 COMPOSER_PRESENTATION = dict.fromkeys(('models', 'skills', 'permissions', 'attachments', 'plan', 'goal'), True)
@@ -270,7 +276,8 @@ def normalize_steps(steps, *, session_active=False, turn_fork_points=None):
             pending_tool_msgs.clear()
             text = extract_user_text(step.get('content') or '')
             attachments = _media_attachments(step_index, step.get('media'))
-            msg = {'id': f'step-{step_index}-user', 'role': 'user', 'text': text, 'timestamp': step_ts}
+            msg = {'id': f'step-{step_index}-user', 'role': 'user', 'text': text, 'timestamp': step_ts,
+                   'revertStepIndex': step_index, 'revertMessageId': revert_message_id({**step, 'step_index': step_index})}
             if attachments:
                 msg['attachments'] = attachments
             current_turn = {'turnId': f'turn-{step_index}', 'status': 'completed', 'messages': [msg], '_startStep': step_index}
