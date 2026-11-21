@@ -476,14 +476,29 @@ class DesktopIdle(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_slow_metadata_read_is_bounded_without_following_partial_results(self):
-        release = threading.Event()
-        self.bridge.store.lifecycle_threads.side_effect = lambda: release.wait(2) or []
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def read():
+            entered.set()
+            try:
+                release.wait()
+                return [{'id': 'partial-metadata'}]
+            finally:
+                finished.set()
+        self.bridge.store.lifecycle_threads.side_effect = read
         try:
-            with self.assertRaisesRegex(ValueError, '读取'): self.bridge.assert_desktop_idle(timeout=.02)
+            # Isolate the metadata Future's real timeout from the outer audit
+            # clock, so scheduler delays cannot select a different failure path.
+            started = time.monotonic()
+            with patch('bridge.app.service.time', SimpleNamespace(monotonic=lambda: 100)):
+                with self.assertRaisesRegex(TaskStateUnavailable, '读取'):
+                    self.bridge.assert_desktop_idle(timeout=.2)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertTrue(entered.wait(1))
             self.assertFalse(release.is_set())
             self.assertEqual(self.calls, [])
         finally:
             release.set()
+            self.assertTrue(finished.wait(1))
 
     def test_busy_nested_desktop_subagent_is_checked_without_exposing_it_in_chat_list(self):
         path = self.bridge.codex_home/'state_5.sqlite'

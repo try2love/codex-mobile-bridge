@@ -15,7 +15,7 @@ ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-publ
                     '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
                     '.github/workflows/mobile.yml', '.github/workflows/tests.yml',
                     'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
-                    'tests/test_ci_test_scope.py',
+                    'tests/test_ci_test_scope.py', 'tests/test_desktop_idle.py',
                     '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
 
 
