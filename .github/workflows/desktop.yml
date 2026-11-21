@@ -20,6 +20,12 @@ on:
       build_target:
         type: string
         default: all
+      reuse_run_id:
+        type: string
+        default: ''
+      reuse_source_ref:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       source_ref:
@@ -40,10 +46,18 @@ on:
         options: [all, Windows]
         default: all
       build_target:
-        description: Build all architectures or only the Intel Mac package
+        description: Build all, Intel only, or Windows with verified non-Windows reuse
         type: choice
-        options: [all, intel]
+        options: [all, intel, windows-reuse]
         default: all
+      reuse_run_id:
+        description: Completed upstream Desktop run with four successful non-Windows jobs
+        type: string
+        default: ''
+      reuse_source_ref:
+        description: Exact upstream product SHA (Windows reuse only)
+        type: string
+        default: ''
   push:
     # Main receives source updates without building Apps; use manual or release builds.
     branches: [feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
@@ -64,12 +78,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
+        include: ${{ fromJSON(inputs.build_target == 'windows-reuse' && '[{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
+      - name: Verify exact Windows rebuild source
+        if: inputs.build_target == 'windows-reuse'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          assert re.fullmatch('[0-9a-f]{40}', source), 'Exact build SHA required'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source, 'Build checkout mismatch'
+          PY
       - name: Verify reuse of completed release CI for Intel-only packaging
         if: inputs.build_target == 'intel'
         env:
@@ -167,7 +193,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
-    if: inputs.acceptance_only != true && inputs.build_target != 'intel'
+    if: inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'windows-reuse'
     strategy:
       fail-fast: false
       matrix:
@@ -241,3 +267,37 @@ jobs:
           name: linux-smoke-screenshots-${{ matrix.arch }}
           include-hidden-files: true
           path: .tmp/linux-app-*/desktop-*.png
+
+  reuse:
+    if: inputs.acceptance_only != true && inputs.build_target == 'windows-reuse'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: [desktop-macOS-arm64, desktop-macOS-x64, desktop-Linux-x64, desktop-Linux-arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify source equivalence and successful upstream packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+          REUSE_SOURCE_REF: ${{ inputs.reuse_source_ref }}
+          REUSE_ARTIFACT: ${{ matrix.artifact }}
+        run: python -B scripts/reuse-desktop-artifacts.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: .tmp/desktop-reuse/${{ matrix.artifact }}/packages/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reuse-provenance-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: .tmp/desktop-reuse/${{ matrix.artifact }}/provenance.json

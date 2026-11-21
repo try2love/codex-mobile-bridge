@@ -23,7 +23,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
                'status': 'completed', 'conclusion': conclusion}
         with patch.dict(os.environ, {'SOURCE_REF': source, 'CANDIDATE_RUN_ID': '123'}), \
                 patch.object(prepare.subprocess, 'run') as ancestry, \
-                patch.object(prepare.subprocess, 'check_output', side_effect=[json.dumps({'version': version}).encode(), changed]), \
+                patch.object(prepare.subprocess, 'check_output', side_effect=[json.dumps({'version': version}).encode(), changed, changed]), \
                 patch.object(prepare, 'api', return_value=run), \
                 patch.object(prepare.urllib.request, 'urlretrieve') as download:
             with self.assertRaisesRegex(SystemExit, message):
@@ -35,8 +35,8 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
     def test_branch_name_is_not_an_immutable_source(self):
         self.rejected('exact 40-character', source='release/v2.2.2-preview')
 
-    def test_unrelated_run_head_is_rejected(self):
-        self.rejected('successful Desktop builds', head='b'*40)
+    def test_build_head_with_product_changes_is_rejected(self):
+        self.rejected('differs from product', head='b'*40, changed='bridge/app/service.py\n')
 
     def test_failed_build_cannot_supply_acceptance_artifacts(self):
         self.rejected('successful Desktop builds', conclusion='failure')
