@@ -841,6 +841,12 @@ class Accounts:
             return self.desktop_status()
         if action == 'account':
             return self.account(value)
+        if action == 'quotaContinuation':
+            if set(value) - {'action', 'enabled'} or ('enabled' in value and type(value['enabled']) is not bool):
+                raise ValueError('额度自动继续设置无效')
+            if 'enabled' in value:
+                self.monitor.configure({'autoContinue': value['enabled']})
+            return self.monitor.continuation.public()
         if action == 'reminders':
             self.monitor.configure(value.get('preferences'))
             return self.desktop_status()

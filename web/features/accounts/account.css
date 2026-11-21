@@ -173,3 +173,11 @@
 @media(pointer:coarse){.accounts-panel .accounts-global-expand,.accounts-panel .accounts-global-language,.accounts-global-announcement>a{min-height:44px;align-content:center}}
 
 .accounts-global-feedback{margin:8px 0 0;color:var(--muted,#777d88);font-size:12px}
+/* Shared home switch in the browser, mobile WebView and desktop overview. */
+#quota-continue-enabled{appearance:none;position:relative;box-sizing:border-box;flex-shrink:0;width:36px;height:22px;margin:0;border:1px solid #8892a3;border-radius:12px;background:#8892a3;cursor:pointer;transition:background .15s,border-color .15s}
+#quota-continue-enabled::before{content:"";position:absolute;left:3px;top:3px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s}
+#quota-continue-enabled:checked{background:var(--accent,#5b5ce2);border-color:var(--accent,#5b5ce2)}
+#quota-continue-enabled:checked::before{transform:translateX(14px)}
+#quota-continue-enabled:focus-visible{outline:2px solid var(--accent,#5b5ce2);outline-offset:3px}
+#quota-continue-enabled:disabled{opacity:.5;cursor:wait}
+@media(prefers-reduced-motion:reduce){#quota-continue-enabled,#quota-continue-enabled::before{transition:none}}

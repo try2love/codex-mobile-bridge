@@ -1,4 +1,4 @@
-"""Opt-in account reminders. No model runs, account switching, or credit consumption."""
+"""Opt-in account reminders and quota continuation, both disabled by default."""
 import copy
 import hashlib
 import json
@@ -7,11 +7,12 @@ import threading
 import time
 
 from bridge.features.notifications.channels import channels, publish, publish_bark, publish_pushplus, publish_webhook, read_json, settings, write_json, webhook_channel_config
+from bridge.features.sessions.quota_continue import QuotaContinuation
 
 
 DEFAULTS = {'lowQuota':False, 'quotaReset':False, 'resetExpiry':False,
             'subscriptionExpiry':False, 'desktopUpdate':False,
-            'globalReset':False, 'globalResetSignal':False}
+            'globalReset':False, 'globalResetSignal':False, 'autoContinue':False}
 GLOBAL_REMINDERS = ('globalReset', 'globalResetSignal')
 
 
@@ -70,6 +71,7 @@ class AccountMonitor:
         self.current_checked = 0
         self.global_watch_path = manager.root/'global-reset-watch.json'
         self.global_watch = read_json(self.global_watch_path, {})
+        self.continuation = QuotaContinuation(self)
 
     def adopt_identity(self, identity, aliases):
         before = self.ledger.copy()
@@ -99,6 +101,8 @@ class AccountMonitor:
     def configure(self, value):
         if not isinstance(value, dict) or set(value)-set(DEFAULTS) or any(type(v) is not bool for v in value.values()):
             raise ValueError('提醒设置无效')
+        if 'autoContinue' in value and getattr(self.manager.bridge, 'host', 'local') != 'local':
+            raise ValueError('请在默认网关主页设置额度自动继续')
         if any(k in value for k in GLOBAL_REMINDERS):
             enabled = any(value.get(k, False) for k in GLOBAL_REMINDERS)
             value = {**value, **{k: enabled for k in GLOBAL_REMINDERS}}
@@ -109,6 +113,15 @@ class AccountMonitor:
             write_json(self.global_watch_path, self.global_watch)
             self.preferences = {**self.preferences, **value}
             write_json(self.path, self.preferences)
+            if 'autoContinue' in value:
+                self.continuation.generation += 1
+                self.continuation.next_scan = 0
+                self.continuation.next_discovery = 0
+                if not value['autoContinue']:
+                    # Re-enabling must observe a new depletion/recovery cycle.
+                    self.continuation.records = {k: v for k, v in self.continuation.records.items()
+                                                 if v.get('attempted') or v.get('state') in ('dispatching', 'unknown', 'accepted')}
+                    self.continuation.save()
 
     def reset_global_watch(self):
         self.global_watch.update({kind: time.time() for kind in GLOBAL_REMINDERS})
@@ -181,7 +194,11 @@ class AccountMonitor:
             return
         if not getattr(self.manager.bridge, 'observation_enabled', lambda: True)():
             return
-        # No quota polling when all delivery channels are disabled.
+        try:
+            self.continuation.scan()
+        except Exception:
+            self.continuation.error = '额度自动继续检查暂不可用，将在下一次检查时重试。'
+        # Reminder polling needs a channel; quota continuation above is independent.
         if not channels(settings(self.notification_data_dir)):
             return
         if any(self.preferences[k] for k in GLOBAL_REMINDERS):
@@ -192,7 +209,7 @@ class AccountMonitor:
             if update.get('state') == 'available':
                 self.deliver('desktop', ('desktopUpdate', str(update['targetBuild']), 'Codex Desktop 有新版本',
                                         '官方更新渠道发布了新版本，请在客户端管理的 Codex 版本与更新中查看。'))
-        if not any(self.preferences[k] for k in DEFAULTS if k not in (*GLOBAL_REMINDERS, 'desktopUpdate')):
+        if not any(self.preferences[k] for k in DEFAULTS if k not in (*GLOBAL_REMINDERS, 'desktopUpdate', 'autoContinue')):
             return
         with self.manager.lock:
             self.manager.check_ready()

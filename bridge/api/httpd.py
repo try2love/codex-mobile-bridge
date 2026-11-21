@@ -887,6 +887,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('重置动态设置无效')
                 account_bridge.accounts.set_reset_dynamic(body['enabled'])
                 return self.output(200, account_bridge.accounts.public())
+            if path == '/api/quota-continuation':
+                monitor = self.server.bridge.accounts.monitor
+                if write:
+                    body = self.read_json()
+                    if set(body) != {'enabled'} or type(body['enabled']) is not bool:
+                        raise ValueError('额度自动继续设置无效')
+                    monitor.configure({'autoContinue': body['enabled']})
+                return self.output(200, monitor.continuation.public())
             if write and path == '/api/accounts/reminders':
                 body = self.read_json()
                 if set(body) != {'preferences'}:

@@ -41,6 +41,18 @@ async function goalAction(action,payload) {
 const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
+
+// The home switch uses gateway state, shared with desktop and mobile.
+if($('quota-continue-enabled')){
+  const toggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
+    read:()=>api('/api/quota-continuation'),write:enabled=>api('/api/quota-continuation',{enabled}),
+    visible:()=>!document.hidden&&!$('app').hidden&&!window.BridgeSharedRelay});
+  document.addEventListener('bridge-authenticated',()=>toggle.refresh());
+  document.addEventListener('visibilitychange',()=>toggle.refresh());
+  window.addEventListener('focus',()=>toggle.refresh());
+  setInterval(()=>toggle.refresh(),10000);
+  if(window.BridgeSharedRelay){$('quota-continue-enabled').closest('label').hidden=true;$('quota-continue-hint').hidden=true;}
+}
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){const path='/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);return window.BridgeRelayURL?.(path)||path;}
 function hostUrl(path,host=currentHost){const value=/^\/api\/sessions\/[0-9a-f-]{36}/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;return window.BridgeRelayURL?.(value)||value;}
@@ -81,6 +93,28 @@ function clearListSnapshot(){
 function authLost(){hideWebhookUrl();clearListSnapshot();if(!$('app').hidden)document.dispatchEvent(new Event('bridge-auth-lost'));showLogin();}
 async function api(path,body,signal,authCurrent){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}let response;try{response=await fetch(hostUrl(path),options);}catch(error){if(!signal?.aborted&&error.name!=='AbortError')window.BridgeMobileHandoff?.unreachable();throw error;}if([502,503,504,522,523,524,530].includes(response.status))window.BridgeMobileHandoff?.unreachable();let data;try{data=await response.json();}catch(error){throw Object.assign(error,{status:response.status});}if(!response.ok){if(response.status===401&&(!authCurrent||authCurrent()))authLost();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status,code:data.code});}return data;}
 const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:authLost,openChat,composer:$('message'),onReference:()=>window.BridgePresentation?.openChat()});
+// The compact/native chat strip shares the same quota source as account management.
+if(workbench.tabs){
+  const media=window.matchMedia('(max-width:720px)');
+  const quotaRings=new AccountQuotaRings({
+    context:()=>{
+      if($('app').hidden||!isCodexClient(clientNavigation.provider)||!workbench.current||window.BridgeSharedRelay)return null;
+      const host=workbench.current.host;
+      if(host!=='local'&&!host?.startsWith('codex:'))return null;
+      return {key:JSON.stringify([draftGateway,host,codexActiveAccountId||'']),host};
+    },
+    visible:()=>!document.hidden&&!$('app').hidden&&$('app').classList.contains('chat-open')&&(BridgeHost.isNativeApp()||media.matches),
+    read:(context,force)=>api('/api/account?cached='+(force?'0':'1')+(context.host==='local'?'':'&entry='+encodeURIComponent(context.host)))
+  });
+  workbench.tabs.after(quotaRings.root);
+  const refresh=()=>quotaRings.refresh();
+  new MutationObserver(refresh).observe(workbench.tabs,{childList:true});
+  new MutationObserver(refresh).observe($('app'),{attributes:true,attributeFilter:['class','hidden']});
+  document.addEventListener('bridge-authenticated',refresh);document.addEventListener('visibilitychange',refresh);
+  document.addEventListener('bridge-language',()=>quotaRings.render());window.addEventListener('focus',refresh);
+  media.addEventListener('change',refresh);setInterval(refresh,60000);
+}
+
 async function sendSessionPin(identity,body,token){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
   try{return await api(identity.provider==='codex'?sessionUrl(identity.id,'pin',identity.host):ClientIdentity.path(identity.provider,'pin'),identity.provider==='codex'?body:{...body,sessionId:identity.id},controller.signal,()=>sessionPins.current(token));}finally{clearTimeout(timer);}

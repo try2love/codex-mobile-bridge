@@ -1,5 +1,13 @@
 'use strict';
 const $=id=>document.getElementById(id),api=window.bridgeDesktop,t=BridgeI18n.t;
+if($('quota-continue-enabled')){
+  const toggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
+    read:()=>api.accounts({action:'quotaContinuation'}),write:enabled=>api.accounts({action:'quotaContinuation',enabled}),
+    visible:()=>!document.hidden});
+  window.addEventListener('focus',()=>toggle.refresh());
+  document.addEventListener('visibilitychange',()=>toggle.refresh());
+  setInterval(()=>toggle.refresh(),10000);toggle.refresh();
+}
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
 let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',savedFields={},feedbackKind='',lastFeedback;
 let networkAdaptationState,networkAdaptationBusy=false,networkAdaptationRevision=0,networkAdaptationError='';
