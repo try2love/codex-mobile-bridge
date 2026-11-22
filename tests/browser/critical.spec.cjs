@@ -1331,3 +1331,67 @@ test('visible files render decoded thumbnails in the right split pane and narrow
  await testInfo.attach('files-thumbnail',{body:await page.screenshot(),contentType:'image/png'});
 });
 });
+
+test('desktop update cache and official version controls keep download and install separate in both languages',async({page},testInfo)=>{
+ const root=path.resolve(__dirname,'../..'),errors=[];page.on('pageerror',error=>errors.push(error.message));
+ await page.addInitScript(()=>{
+  window.fixtureCacheCalls=[];window.fixtureVersionCalls=[];window.fixtureCancelDelete=true;window.fixtureInstalls=[];window.fixtureDownloads=[];
+  window.fixtureEntries=[{id:'stable.zip',version:'2.2.2',platform:'darwin',arch:'arm64',format:'zip',size:1024,inUse:false},{id:'preview.zip',version:'2.2.2-preview.3',platform:'darwin',arch:'arm64',format:'zip',size:2048,inUse:true}];
+  window.fixtureSnapshot={runtime:{running:false,portOccupied:false,supportsNotifications:true},preferences:{port:8787,lan:false,autoStart:false,connections:[]},auth:{mode:'password',username:'fixture'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},notificationStatus:{},watches:[],origins:[],urls:[],dataDir:'/fixture',credentialsAvailable:false,update:{state:'idle',current:'2.2.2',channel:'stable'}};
+  const release=()=>({current:'2.2.2',platform:'darwin',arch:'arm64',releases:[{version:'2.2.2',channel:'stable',assets:[{id:'stable-zip',name:'Codex-Mobile-Bridge-2.2.2-arm64.zip',format:'zip',size:1024}]},{version:'2.2.2-preview.3',channel:'preview',assets:[{id:'preview-zip',name:'Codex-Mobile-Bridge-2.2.2-preview.3-arm64.zip',format:'zip',size:2048},{id:'preview-dmg',name:'Codex-Mobile-Bridge-2.2.2-preview.3-arm64.dmg',format:'dmg',size:3072}]}]});
+  window.bridgeDesktop={platform:'darwin',language:async()=>'zh-CN',setLanguage:async value=>value,snapshot:async()=>structuredClone(fixtureSnapshot),logs:async()=>({text:''}),account:async()=>({visible:false}),transferSettings:async()=>({clickDownloadMiB:60}),
+   updateCache:async body=>{fixtureCacheCalls.push(body);if(body.action==='delete'&&!fixtureCancelDelete)fixtureEntries=fixtureEntries.filter(entry=>!body.ids.includes(entry.id));return {entries:fixtureEntries,totalBytes:fixtureEntries.reduce((sum,entry)=>sum+entry.size,0),...(body.action==='delete'?fixtureCancelDelete?{cancelled:true}:{deleted:body.ids}:{})};},
+   updateVersions:async body=>{fixtureVersionCalls.push(body);if(body.action==='list')return release();const item=release().releases.find(item=>item.assets.some(asset=>asset.id===body.id)),asset=item.assets.find(asset=>asset.id===body.id);fixtureSnapshot.update={state:'available',current:'2.2.2',selected:true,intent:'switch-version',version:item.version,candidateId:asset.id,format:asset.format,assetName:asset.name,manualInstall:asset.format==='dmg'};return fixtureSnapshot.update;},
+   downloadUpdate:async body=>{fixtureDownloads.push(body);fixtureSnapshot.update={...fixtureSnapshot.update,state:'downloaded',path:'/fixture/cache/package.zip'};},installUpdate:async body=>{fixtureInstalls.push(body);},open:async()=>{throw Error('Unexpected external open');}};
+ });
+ // Retain production HTML, layout, translation and renderer; unrelated client panels
+ // stay absent and every host call is served by the isolated bridge stub above.
+ const omitted=new Set(['/desktop/features/clients/desktop-sessions.js','/desktop/features/clients/harness.js','/web/features/accounts/accounts.js','/web/features/accounts/client-accounts.js','/web/features/accounts/cli-access.js','/desktop/features/files/settings.js']);
+ await page.route('**/*',async route=>{
+  const filename=new URL(route.request().url()).pathname;
+  if(filename==='/desktop/index.html')return route.fulfill({contentType:'text/html',body:readFileSync(path.join(root,'desktop/index.html'))});
+  if(omitted.has(filename))return route.fulfill({contentType:'text/javascript',body:''});
+  if(!filename.startsWith('/desktop/')&&!filename.startsWith('/web/'))return route.continue();
+  const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();
+  try{return route.fulfill({body:readFileSync(file),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}
+ });
+ await page.setViewportSize({width:1200,height:950});await page.goto('/desktop/index.html');
+ await expect(page.locator('#sidebar-status')).toHaveText('未启动');
+ expect(await page.evaluate(()=>fixtureCacheCalls.length+fixtureVersionCalls.length)).toBe(0);
+ await page.locator('[data-tab=advanced]').click();await page.locator('[data-maintenance-tab=updates]').click();
+ await expect(page.locator('.update-cache-entry')).toHaveCount(2);
+ await expect(page.locator('#update-cache-summary')).toHaveText('2 个更新包 · 3 KiB');
+ await expect(page.locator('[data-update-cache-id="preview.zip"]')).toBeDisabled();
+ await expect(page.locator('.update-cache-in-use')).toHaveText('使用中');
+ await page.locator('#update-cache-all').check();await expect(page.locator('#update-cache-delete')).toBeEnabled();
+ await page.locator('#update-cache-delete').click();await expect(page.locator('#update-cache-state')).toHaveText('已取消删除，缓存已保留。');
+ await expect(page.locator('[data-update-cache-id="stable.zip"]')).toBeChecked();
+ await page.locator('#language').selectOption('en');
+ await expect(page.locator('#update-cache')).toBeVisible();await expect(page.locator('#update-cache h2')).toHaveText('Download cache');
+ await expect(page.locator('#update-versions .update-version-fields label > span')).toHaveText(['Release channel','Version','Package format']);
+ await expect(page.locator('.update-cache-in-use')).toHaveText('In use');
+ await expect(page.locator('#update-cache-state')).toHaveText('Deletion cancelled. Downloaded packages were kept.');
+ await page.locator('#update-versions-version').selectOption('2.2.2-preview.3');await expect(page.locator('#update-versions-download')).toBeEnabled();
+ expect(await page.evaluate(()=>fixtureDownloads.length+fixtureInstalls.length)).toBe(0);
+ await page.locator('#update-versions-download').click();await expect(page.locator('#update-state')).toContainText('current version is still running');
+ expect(await page.evaluate(()=>fixtureDownloads.length)).toBe(1);expect(await page.evaluate(()=>fixtureInstalls.length)).toBe(0);
+ await page.locator('#update-versions-install').click();expect(await page.evaluate(()=>fixtureInstalls.map(call=>call.candidateId))).toEqual(['preview-zip']);
+ await page.locator('#update-versions-asset').selectOption('preview-dmg');await expect(page.locator('#update-versions-install')).toHaveText('Download and open installer');
+ await page.locator('#update-versions-version').selectOption('2.2.2');await expect(page.locator('#update-versions-install')).toHaveText('Switch version and restart');
+ await page.locator('#update-versions-install').click();expect(await page.evaluate(()=>fixtureInstalls.map(call=>call.candidateId))).toEqual(['preview-zip','stable-zip']);
+ await page.evaluate(()=>{fixtureSnapshot.update.state='downloading';render(fixtureSnapshot);});
+ await expect(page.locator('#update-cache-delete')).toBeDisabled();await expect(page.locator('[data-update-cache-id="stable.zip"]')).toBeDisabled();
+ await page.evaluate(()=>{fixtureSnapshot.update.state='error';render(fixtureSnapshot);fixtureCancelDelete=false;});
+ await expect(page.locator('#update-cache-delete')).toBeEnabled();await page.locator('#update-cache-delete').click();await expect(page.locator('.update-cache-entry')).toHaveCount(1);
+ await expect(page.locator('#update-cache-state')).toHaveText('Selected downloaded packages were deleted.');
+ for(const width of [1200,820,700]){
+  await page.setViewportSize({width,height:950});
+  const geometry=await page.locator('#update-cache').evaluate(node=>{const article=node.getBoundingClientRect(),toolbar=node.querySelector('.update-cache-toolbar').getBoundingClientRect(),check=node.querySelector('.update-cache-toolbar label').getBoundingClientRect(),actions=node.querySelector('.update-cache-toolbar .actions').getBoundingClientRect();return {fits:node.scrollWidth<=node.clientWidth+1&&toolbar.right<=article.right,overflow:document.documentElement.scrollWidth>innerWidth+1,sameRow:Math.abs(check.y+check.height/2-actions.y-actions.height/2)<2};});
+  expect(geometry).toEqual({fits:true,overflow:false,sameRow:true});
+  const versionFits=await page.locator('#update-versions').evaluate(node=>node.scrollWidth<=node.clientWidth+1);expect(versionFits).toBe(true);
+  await testInfo.attach('desktop-updates-'+width,{body:await page.screenshot({fullPage:true}),contentType:'image/png'});
+ }
+ await page.evaluate(()=>{fixtureEntries=[];});await page.locator('#update-cache-refresh').click();await expect(page.locator('#update-cache-state')).toHaveText('No downloaded packages.');
+ await expect(page.locator('#update-cache-all')).toBeDisabled();await expect(page.locator('#update-cache-delete')).toBeDisabled();
+ expect(errors).toEqual([]);
+});

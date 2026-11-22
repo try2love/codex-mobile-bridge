@@ -20,9 +20,9 @@ function ico(png){
   });
   return Buffer.concat([header,...images]);
 }
-function write(file,bytes){fs.writeFileSync(path.join(root,file),bytes);}
-async function render(window,nativeImage,file,size){
-  const source='data:image/svg+xml;base64,'+fs.readFileSync(path.join(root,file)).toString('base64');
+function write(file,bytes){const target=path.join(root,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,bytes);}
+async function render(window,nativeImage,file,size,transform=source=>source){
+  const source='data:image/svg+xml;base64,'+Buffer.from(transform(fs.readFileSync(path.join(root,file),'utf8'))).toString('base64');
   const png=await window.webContents.executeJavaScript(`(async()=>{
     const image=new Image();image.src=${JSON.stringify(source)};await image.decode();
     const canvas=document.createElement('canvas');canvas.width=canvas.height=${size};
@@ -30,6 +30,31 @@ async function render(window,nativeImage,file,size){
     return canvas.toDataURL('image/png').split(',')[1];
   })()`);
   return nativeImage.createFromBuffer(Buffer.from(png,'base64'));
+}
+function mobileArtwork(svg,theme,foreground=false){
+  // The OS applies the outer icon mask; keep the approved terminal/phone art.
+  const tile=new RegExp(`<rect x="32" y="32" width="960" height="960" rx="218" fill="url\\(#cmb-${theme}-tile\\)"/>`);
+  const outline=/<rect x="33" y="33" width="958" height="958" rx="217"[^>]*\/>/;
+  if(!tile.test(svg)||!outline.test(svg))throw Error('Approved icon tile structure changed.');
+  svg=svg.replace(tile,'').replace(outline,'');
+  if(foreground)return svg.replace('translate(71.68 71.68) scale(0.86)','translate(143.36 143.36) scale(0.72)');
+  return svg.replace('</defs>',`</defs><rect width="1024" height="1024" fill="url(#cmb-${theme}-tile)"/>`);
+}
+async function mobile(window,nativeImage){
+  for(const theme of ['light','dark']){
+    const file=`assets/icon-${theme}.svg`;
+    const square=await render(window,nativeImage,file,1024,svg=>mobileArtwork(svg,theme));
+    const png=size=>square.resize({width:size,height:size,quality:'best'}).toPNG();
+    write(`mobile/android/res/drawable${theme==='dark'?'-night':''}-nodpi/ic_bridge.png`,png(512));
+    write(`mobile/android/res/drawable${theme==='dark'?'-night':''}-nodpi/ic_launcher_art.png`,
+      (await render(window,nativeImage,file,432,svg=>mobileArtwork(svg,theme,true))).toPNG());
+    const icons='mobile/ios/BridgePreview/Assets.xcassets/AppIcon.appiconset';
+    write(`${icons}/icon-1024${theme==='dark'?'-dark':''}.png`,png(1024));
+    if(theme==='light'){
+      for(const size of [20,29,40,58,60,76,80,87,120,152,167,180])write(`${icons}/icon-${size}.png`,png(size));
+      for(const [name,size] of [['60x60@2x',120],['60x60@3x',180],['76x76',76],['76x76@2x',152],['83x83@2x',167]])write(`mobile/ios/BridgePreview/AppIcon${name}.png`,png(size));
+    }
+  }
 }
 async function build(){
   const {app,BrowserWindow,nativeImage}=require('electron');
@@ -41,6 +66,7 @@ async function build(){
   const window=new BrowserWindow({show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
   try{
     await window.loadURL('data:text/html,<html><body></body></html>');
+    if(process.argv.includes('--mobile-only')){await mobile(window,nativeImage);console.log('Exported Android adaptive layers and iOS light/dark icons.');return;}
     for(const theme of ['light','dark']){
       console.log(`Rendering ${theme} artwork...`);
       const source=await render(window,nativeImage,`assets/icon-${theme}.svg`,1024);

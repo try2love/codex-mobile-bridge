@@ -114,5 +114,6 @@ jobs:
             .tmp/published-upgrade/*-desktop.png
             .tmp/published-upgrade/*-browser.png
             .tmp/published-upgrade/*/result.json
+            .tmp/published-upgrade/*/release.json
             .tmp/published-upgrade/*/*-desktop.png
             .tmp/published-upgrade/*/*-browser.png

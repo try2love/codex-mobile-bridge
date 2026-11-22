@@ -16,7 +16,7 @@ ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-publ
                     '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
                     '.github/workflows/mobile.yml', '.github/workflows/tests.yml',
                     'tests/published-upgrade.test.cjs', 'tests/test_published_upgrade.py',
-                    'tests/test_ci_test_scope.py', 'tests/test_bridge.py',
+                    'tests/test_ci_test_scope.py', 'tests/test_bridge.py', 'tests/test_hosted_desktop.py',
                     'tests/test_wsl_manual_profiles.py', 'tests/test_cli_network_recovery.py',
                     'scripts/reuse-desktop-artifacts.py', 'tests/test_desktop_reuse.py', 'tests/test_desktop_idle.py',
                     'tests/release-assets.test.cjs',
@@ -86,6 +86,7 @@ def main():
             if actual != checksums[filename]:
                 raise SystemExit('Official baseline checksum mismatch: ' + filename)
             digests[filename] = actual
+        (directory / 'release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         baselines.append({'version': version, 'release': release['html_url'], 'sha256': digests})
     (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
         'buildSource': build_source, 'sourceEquivalentChanges': build_changes,

@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.2.2-preview.3:** [Preview download](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.3) · [Release notes](RELEASE_NOTES.md). Support newer Codex native connections, improve gateway update retries, restore compatible settings when returning to stable, and improve Windows configuration permissions. Initial setup may require one Codex restart. Preview.1/preview.2 users can check for updates; [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) remains the latest stable release.
+> **v2.2.2-preview.3:** [Preview download](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.3) · [Release notes](RELEASE_NOTES.md). Support newer Codex native connections, add complete release selection and download cache management, preserve compatible settings during version switches, and improve Windows configuration permissions. Initial setup may require one Codex restart. Preview.1 users on macOS/Windows and preview.2 users can check for updates; Linux preview.1 requires manual installation; [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) remains the latest stable release.
 
 **Android installation:** The new **Bridge** app installs alongside the old v2.2.0 app and cannot replace it in place. Install Bridge, add your computers and verify the connections first. Preserve any drafts you need from the old app before uninstalling it; old bindings and drafts do not migrate automatically. Users of the separate v2.2.1-preview.1 **Bridge Preview** app can upgrade in place and retain that preview app’s connections and drafts.
 

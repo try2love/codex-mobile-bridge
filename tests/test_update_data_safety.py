@@ -3,9 +3,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 from bridge.features.updates import gateway as updater
 
@@ -223,6 +225,48 @@ class UpdateDataSafetyTests(unittest.TestCase):
         self.assertTrue((Path(result['backup'])/'backup.json').exists())
         self.assertTrue(legacy.exists())
 
+    def test_manual_legacy_installer_restores_current_sidecar_after_durable_backup(self):
+        for unreadable in (False, True):
+            with self.subTest(unreadable=unreadable):
+                legacy = self.data/'desktop-sessions/settings.json'
+                fallback = self.data/'desktop-sessions/settings.user.json'
+                self.write(legacy, {'enabled': {'codex': True}, 'old': True})
+                self.write(fallback, {'enabled': {'codex': False}, 'latest': True})
+                expected = fallback.read_bytes()
+                self.payload['manualInstall'] = True
+                real_read = Path.read_bytes
+
+                def read(path):
+                    if unreadable and path == legacy:
+                        raise PermissionError()
+                    return real_read(path)
+
+                with patch.object(Path, 'read_bytes', autospec=True, side_effect=read):
+                    result = self.backup()
+                backup = Path(result['backup'])
+                self.assertEqual((backup/'desktop-sessions/settings.user.json').read_bytes(), expected)
+                self.assertEqual(json.loads(legacy.read_bytes()), json.loads(expected))
+                self.assertFalse(fallback.exists())
+                manifest = json.loads((backup/'backup.json').read_text())
+                self.assertEqual('desktop-sessions/settings.json' in manifest['files'], not unreadable)
+
+    def test_manual_legacy_restore_failure_keeps_complete_private_backup(self):
+        fallback = self.data/'desktop-sessions/settings.user.json'
+        self.write(fallback, {'enabled': {'codex': False}})
+        expected = fallback.read_bytes()
+        self.payload['manualInstall'] = True
+        with patch.object(updater, 'restore_legacy_client_settings', side_effect=ValueError('fixture restore failure')):
+            with self.assertRaisesRegex(ValueError, 'fixture restore failure'):
+                self.backup()
+        backups = list((self.data/'update-backups').iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0]/'backup.json').is_file())
+        self.assertEqual((backups[0]/'desktop-sessions/settings.user.json').read_bytes(), expected)
+        self.assertEqual(fallback.read_bytes(), expected)
+        if os.name != 'nt':
+            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o700)
+            self.assertEqual((backups[0]/'desktop-sessions/settings.user.json').stat().st_mode & 0o777, 0o600)
+
     def test_empty_linked_account_directory_is_rejected_without_walking_it(self):
         outside = self.root / 'outside-accounts'
         outside.mkdir()
@@ -283,6 +327,247 @@ class UpdateDataSafetyTests(unittest.TestCase):
                 self.assertTrue(Path(result['configurationBackup']).is_dir())
                 updater.clean_transactions(app)
                 self.assertTrue(Path(result['configurationBackup']).is_dir())
+
+    def select_switch(self, source, target, source_format=updater.DATA_FORMAT):
+        metadata = {'version': source, 'platform': 'darwin', 'arch': 'arm64'}
+        if source_format is not None:
+            metadata['dataFormat'] = source_format
+        self.write(self.target / 'Contents/Resources/update-version.json', metadata)
+        self.payload = {'target': str(self.target), 'version': target, 'platform': 'darwin', 'arch': 'arm64',
+                        'parentPid': 123, 'token': 'fixture',
+                        'transition': {'intent': 'switch-version', 'from': source, 'to': target,
+                                       'dataFormat': updater.DATA_FORMAT}}
+
+    def switch_archive(self, metadata=None, identity=None):
+        old_app, old_worker, _ = updater.locations(self.target)
+        for path in (old_app, old_worker):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'synthetic old executable')
+        target = self.payload['version']
+        metadata = ({'version': target, 'platform': 'darwin', 'arch': 'arm64', 'dataFormat': updater.DATA_FORMAT}
+                    if metadata is None else metadata)
+        identity = ({'CFBundleIdentifier': updater.APP_ID, 'CFBundleShortVersionString': target}
+                    if identity is None else identity)
+        archive = self.root / 'selected-version.zip'
+        with zipfile.ZipFile(archive, 'w') as bundle:
+            prefix = updater.APP + '.app/'
+            bundle.writestr(prefix + 'Contents/MacOS/' + updater.APP, b'synthetic selected executable')
+            bundle.writestr(prefix + 'Contents/Resources/gateway/codex-mobile-gateway', b'synthetic runtime')
+            bundle.writestr(prefix + 'Contents/Resources/update-version.json', json.dumps(metadata))
+            bundle.writestr(prefix + 'Contents/Info.plist', plistlib.dumps(identity))
+        self.payload.update(archive=str(archive), sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
+
+    def prepare_switch(self):
+        with patch.object(updater, 'preflight'), patch.object(updater.subprocess, 'run') as run, \
+                patch('bridge.app.desktop.Desktop.status', return_value={'running': False, 'portOccupied': False}):
+            result = updater.prepare(self.data, self.payload)
+        return result, run
+
+    def test_switch_version_accepts_all_directions_and_same_version_with_exact_source_format(self):
+        for source, target in (('2.2.2', '2.2.2-preview.3'), ('2.2.2-preview.3', '2.2.2'),
+                               ('2.2.2-preview.3', '2.2.2-preview.1'), ('2.2.2-preview.3', '2.2.2-preview.3'),
+                               ('2.2.1', '2.2.2-preview.3')):
+            with self.subTest(source=source, target=target):
+                self.select_switch(source, target, None if source == '2.2.1' else updater.DATA_FORMAT)
+                self.assertEqual(updater.validate_transition(self.target, self.payload), self.payload['transition'])
+                backup = Path(self.backup()['backup'])
+                self.assertEqual(json.loads((backup / 'backup.json').read_text())['transition'], self.payload['transition'])
+
+    def test_switch_version_rejects_illegal_identity_format_and_extra_transition_fields(self):
+        self.select_switch('2.2.2-preview.3', '2.2.2-preview.1')
+        before = updater.configuration_snapshot(self.data)
+        for change in ({'from': '2.2.2-preview.2'}, {'to': '2.2.2-preview.2'}, {'to': 'bad'},
+                       {'intent': 'unknown'}, {'dataFormat': 'bridge-data-v2'}, {'extra': True}):
+            with self.subTest(change=change), patch.dict(self.payload['transition'], change):
+                with self.assertRaises(ValueError):
+                    self.backup()
+        for source_format in (None, 'bridge-data-v2'):
+            self.select_switch('2.2.2-preview.3', '2.2.2-preview.1', source_format)
+            with self.subTest(source_format=source_format), self.assertRaisesRegex(ValueError, '资料格式'):
+                self.backup()
+        for source, target in (('bad', '2.2.2'), ('2.2.2-preview.3', 'bad')):
+            self.select_switch(source, target)
+            with self.subTest(source=source, target=target), self.assertRaisesRegex(ValueError, '版本格式'):
+                self.backup()
+        self.assertEqual(updater.configuration_snapshot(self.data), before)
+        self.assertFalse((self.data / 'update-backups').exists())
+
+    def test_manual_historical_target_gets_a_limited_source_backup_without_target_compatibility_claim(self):
+        self.select_switch('2.2.2-preview.3', '1.4.0')
+        self.payload['manualInstall'] = True
+        before = updater.configuration_snapshot(self.data)
+        result = self.backup()
+        backup = Path(result['backup'])
+        manifest = json.loads((backup / 'backup.json').read_text())
+        self.assertEqual(manifest['transition'], self.payload['transition'])
+        self.assertEqual(set(manifest['files']), set(before))
+        self.assertEqual(updater.configuration_snapshot(self.data), before)
+        self.assertFalse((self.data / 'desktop-update.log').exists())
+
+    def test_switch_prepare_rejects_unknown_target_formats_before_touching_live_data(self):
+        for target, target_format in (('2.2.2-preview.1', None), ('1.4.0', None),
+                                      ('2.2.2-preview.1', 'bridge-data-v2'), ('2.2.1', 'bridge-data-v2')):
+            with self.subTest(target=target, target_format=target_format):
+                self.select_switch('2.2.2-preview.3', target)
+                metadata = {'version': target, 'platform': 'darwin', 'arch': 'arm64'}
+                if target_format is not None:
+                    metadata['dataFormat'] = target_format
+                self.switch_archive(metadata)
+                self.payload['manualInstall'] = True  # A manual UI choice must never bypass automatic preparation checks.
+                before = updater.configuration_snapshot(self.data)
+                with self.assertRaisesRegex(ValueError, '版本或平台'):
+                    self.prepare_switch()
+                self.assertEqual(updater.configuration_snapshot(self.data), before)
+                self.assertEqual(list(self.root.glob('.cmb-update-*')), [])
+                self.assertFalse((self.data / 'update-backups').exists())
+
+    def test_switch_prepare_checks_signed_bundle_identity_digest_platform_and_arch(self):
+        self.select_switch('2.2.2-preview.3', '2.2.2-preview.1')
+        for field, value in (('version', '2.2.2-preview.2'), ('platform', 'win32'), ('arch', 'x64')):
+            metadata = {'version': self.payload['version'], 'platform': 'darwin', 'arch': 'arm64',
+                        'dataFormat': updater.DATA_FORMAT, field: value}
+            self.switch_archive(metadata)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, '版本或平台'):
+                self.prepare_switch()
+        self.switch_archive(identity={'CFBundleIdentifier': 'wrong.identity', 'CFBundleShortVersionString': self.payload['version']})
+        with self.assertRaisesRegex(ValueError, '应用标识或版本'):
+            self.prepare_switch()
+        self.switch_archive()
+        with patch.object(updater.subprocess, 'run', side_effect=RuntimeError('signature rejected')), \
+                patch.object(updater, 'preflight'), self.assertRaisesRegex(RuntimeError, 'signature rejected'):
+            updater.prepare(self.data, self.payload)
+        with patch.dict(self.payload, sha256='0' * 64), self.assertRaisesRegex(ValueError, '校验失败'):
+            self.prepare_switch()
+        self.assertEqual(list(self.root.glob('.cmb-update-*')), [])
+        self.assertFalse((self.data / 'update-backups').exists())
+
+    def test_switch_prepare_accepts_reviewed_legacy_221_without_format_and_declared_v1_targets(self):
+        for target in ('2.2.1', '2.2.2-preview.1', '2.2.2-preview.3'):
+            with self.subTest(target=target):
+                self.select_switch('2.2.2-preview.3', target)
+                metadata = {'version': target, 'platform': 'darwin', 'arch': 'arm64'}
+                if target != '2.2.1':
+                    metadata['dataFormat'] = updater.DATA_FORMAT
+                self.switch_archive(metadata)
+                result, run = self.prepare_switch()
+                plan_file = Path(result['plan'])
+                self.assertEqual(json.loads(plan_file.read_text())['transition'], self.payload['transition'])
+                self.assertEqual(run.call_args_list[0].args[0][:4], ['/usr/bin/codesign', '--verify', '--deep', '--strict'])
+                self.assertEqual(run.call_args_list[1].args[0][-1], '--help')
+                self.assertFalse((self.data / 'update-backups').exists())
+                self.write(plan_file.parent / 'result.json', {'state': 'updated'})
+                updater.clean_transactions(self.target)
+
+    def test_switch_version_preserves_account_operation_and_live_task_guards(self):
+        self.select_switch('2.2.2-preview.3', '2.2.2-preview.3')
+        for name, value in (('accounts/switch.json', {'phase': 'applying'}), ('accounts/rollback.json', {})):
+            path = self.data / name
+            self.write(path, value)
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.backup()
+            path.unlink()
+        self.switch_archive()
+        with patch.object(updater, 'preflight', side_effect=ValueError('active task')) as check, \
+                patch.object(updater.hashlib, 'sha256') as digest, self.assertRaisesRegex(ValueError, 'active task'):
+            updater.prepare(self.data, self.payload)
+        check.assert_called_once_with(self.target)
+        digest.assert_not_called()
+        self.assertEqual(list(self.root.glob('.cmb-update-*')), [])
+        self.assertFalse((self.data / 'update-backups').exists())
+
+    def test_switch_restores_sidecar_only_for_legacy_221_after_backup(self):
+        legacy = self.data / 'desktop-sessions/settings.json'
+        fallback = self.data / 'desktop-sessions/settings.user.json'
+        for intent, target in (('switch-version', '2.2.1'), ('switch-version', '2.2.2-preview.1'),
+                                ('switch-version', '2.2.2'), ('return-stable', '2.2.2')):
+            with self.subTest(intent=intent, target=target):
+                self.select_switch('2.2.2-preview.3', target)
+                self.payload['transition']['intent'] = intent
+                self.write(legacy, {'legacy': True})
+                self.write(fallback, {'enabled': {'codex': False}})
+                before = legacy.read_bytes(), fallback.read_bytes()
+                backup = Path(self.backup()['backup'])
+                restored = updater.restore_legacy_client_settings(self.data, self.payload['transition'])
+                self.assertEqual((backup / 'desktop-sessions/settings.json').read_bytes(), before[0])
+                self.assertEqual((backup / 'desktop-sessions/settings.user.json').read_bytes(), before[1])
+                self.assertEqual(restored, target == '2.2.1')
+                if target == '2.2.1':
+                    self.assertEqual(json.loads(legacy.read_bytes()), {'enabled': {'codex': False}})
+                    self.assertFalse(fallback.exists())
+                else:
+                    self.assertEqual((legacy.read_bytes(), fallback.read_bytes()), before)
+
+    def test_switch_transactions_roundtrip_stable_preview_and_reinstall_using_latest_live_data(self):
+        class Desktop:
+            def status(self): return {'running': False, 'portOccupied': False, 'instanceId': None}
+        class Child:
+            def poll(self): return None
+        backups = []
+        for source, target in (('2.2.2', '2.2.2-preview.3'), ('2.2.2-preview.3', '2.2.2'),
+                               ('2.2.2', '2.2.2-preview.3'), ('2.2.2-preview.3', '2.2.2-preview.1'),
+                               ('2.2.2-preview.1', '2.2.2-preview.1')):
+            with self.subTest(source=source, target=target):
+                self.select_switch(source, target)
+                self.switch_archive()
+                prepared, _ = self.prepare_switch()
+                # Changes made after prepare must be captured at the final handoff.
+                self.write(self.data / ('accounts/' + self.account_id + '/api.json'), {'key': 'current-' + target})
+                current = updater.configuration_snapshot(self.data)
+                launches = []
+                def launch(app, *args, **kwargs):
+                    launches.append(json.loads((app / 'Contents/Resources/update-version.json').read_text())['version'])
+                    return Child()
+                with patch.object(updater, 'preflight'), patch.object(updater, 'registry_version'):
+                    result = updater.apply(prepared['plan'], desktop=Desktop(), wait=lambda pid: None,
+                                           launch=launch, health=lambda *args: None)
+                self.assertEqual(result['state'], 'updated')
+                self.assertEqual(launches, [target])
+                self.assertEqual(json.loads((self.target / 'Contents/Resources/update-version.json').read_text())['version'], target)
+                backup = Path(result['configurationBackup'])
+                backups.append(backup)
+                for name, raw in current.items():
+                    self.assertEqual((self.data / name).read_bytes(), raw)
+                    self.assertEqual((backup / name).read_bytes(), raw)
+                updater.clean_transactions(self.target)
+        self.assertEqual(len(set(backups)), 5)
+        self.assertTrue(all((backup / 'backup.json').is_file() for backup in backups))
+
+    def test_switch_failed_health_restores_app_and_foreign_gateway_blocks_before_backup_or_stop(self):
+        class Child:
+            def poll(self): return None
+            def terminate(self): pass
+            def wait(self, timeout): pass
+        class Desktop:
+            def status(self): return {'running': False, 'portOccupied': False, 'instanceId': 'foreign'}
+            def stop(self): raise AssertionError('A foreign gateway must not be stopped')
+        for foreign in (False, True):
+            with self.subTest(foreign=foreign):
+                self.select_switch('2.2.2-preview.3', '2.2.2-preview.1')
+                self.switch_archive()
+                prepared, _ = self.prepare_switch()
+                plan_file = Path(prepared['plan'])
+                if foreign:
+                    plan = json.loads(plan_file.read_text())
+                    plan['runtime'] = {'running': True, 'instanceId': 'original'}
+                    self.write(plan_file, plan)
+                current = updater.configuration_snapshot(self.data)
+                launches = []
+                def launch(app, *args, **kwargs):
+                    launches.append(json.loads((app / 'Contents/Resources/update-version.json').read_text())['version'])
+                    return Child()
+                def health(*args):
+                    raise RuntimeError('synthetic startup failure')
+                with patch.object(updater, 'preflight'), patch.object(updater, 'registry_version'):
+                    result = updater.apply(plan_file, desktop=Desktop(), wait=lambda pid: None,
+                                           launch=launch, health=health)
+                self.assertEqual(result['state'], 'failed')
+                self.assertTrue(result['recovered'])
+                self.assertEqual(json.loads((self.target / 'Contents/Resources/update-version.json').read_text())['version'], '2.2.2-preview.3')
+                self.assertEqual(launches, ['2.2.2-preview.3'] if foreign else ['2.2.2-preview.1', '2.2.2-preview.3'])
+                self.assertEqual('configurationBackup' in result, not foreign)
+                for name, raw in current.items():
+                    self.assertEqual((self.data / name).read_bytes(), raw)
+                updater.clean_transactions(self.target)
 
 
 if __name__ == '__main__':

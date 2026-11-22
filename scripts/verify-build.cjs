@@ -9,6 +9,7 @@ module.exports=async context=>{
   if(metadata.platform!==platform||metadata.arch!==arch||metadata.version!==context.packager.appInfo.version){
     throw Error(`Gateway does not match ${platform}/${arch}/${context.packager.appInfo.version}. Run scripts/build-desktop.py on the target OS and architecture first.`);
   }
+  if(metadata.dataFormat!=='bridge-data-v1')throw Error('Gateway data format is missing or unsupported; rebuild the gateway.');
   const executable=path.join(root,'dist/gateway',platform==='win32'?'codex-mobile-gateway.exe':'codex-mobile-gateway');
   fs.accessSync(executable,fs.constants.R_OK);
   const helpers={darwin:['claude-bridge-helper','zcode-bridge-helper','codex-launcher'],win32:['claude-bridge-helper.exe','codex-quit-helper.exe','codex-launcher.exe']};

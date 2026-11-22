@@ -10,7 +10,7 @@ const {createIconTheme}=require('./shell/icons.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
-const {Updater,allowedMirrorUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
+const {Updater,allowedMirrorUrl,allowedCatalogueUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {relaunchMacUpdate,restoreMacUpdate}=require('./features/updates/mac-handoff.cjs');
 relaunchMacUpdate({app,process});
 const {createLoginStartup,restoreDevelopmentEnvironment}=require('./login-startup.cjs');
@@ -26,7 +26,7 @@ const root=path.resolve(__dirname,'..');
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
 const iconTheme=createIconTheme({app,nativeTheme,nativeImage,platform:process.platform,assetsDir:path.join(__dirname,'assets'),getWindow:()=>window,getTray:()=>tray});
-let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false,startupCleanup=Promise.resolve();
+let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false,updateStarting=false,cacheDeleting=false,startupCleanup=Promise.resolve();
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
@@ -127,10 +127,13 @@ function worker(action,payload){
   return action==='snapshot'?snapshotPending:result;
 }
 async function installUpdate(candidate){
-  if(process.platform==='linux'){
-    await worker('update-backup',{target:updateTarget(),version:candidate.version,transition:candidate.transition});
+  if(process.platform==='linux'||candidate.manualInstall){
+    await worker('update-backup',{target:updateTarget(),version:candidate.version,transition:candidate.transition,...(candidate.manualInstall?{manualInstall:true}:{})});
     if(candidate.manualRelease){await shell.openExternal(candidate.releasePage);return {state:'manual-release'};}
-    if(candidate.asset.name.endsWith('.AppImage')){
+    // Preserve the configured data location before an external installer replaces
+    // the bundle; opening an installer is not proof that installation completed.
+    saveDataDir(dataDir);
+    if(/\.(AppImage|zip)$/.test(candidate.asset.name)){
       shell.showItemInFolder(candidate.archive);return {state:'downloaded'};
     }
     const error=await shell.openPath(candidate.archive);
@@ -173,18 +176,19 @@ function setupUpdater(){
   const updateDirectory=path.join(app.getPath('userData'),'updates');
   const updateTools=require('./features/updates/updater.cjs');
   startupCleanup.catch(()=>{});
-  // A crashed handoff can leave only an incomplete download directory. Verified
-  // Other versions can be pending upgrade or return-to-stable retries.
+  // Remove incomplete downloads left by a crash. Complete verified packages
+  // remain available until the user explicitly deletes them.
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:updateDirectory,
-    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.env.APPIMAGE?'AppImage':'deb',
+    catalogueFetch:cloudflared.electronFetch(net,allowedCatalogueUrl),
+    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.platform==='linux'?(process.env.APPIMAGE?'AppImage':'deb'):'zip',
     supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32','linux'].includes(process.platform),
     preflight:process.platform==='win32'?async()=>{
       await startupCleanup;
       await updateTools.cleanDownloadStaging(updateDirectory);
       await worker('update-preflight',{target:updateTarget()});
     }:undefined,install:installUpdate});
-  startupCleanup=Promise.all([updateTools.cleanDownloadStaging(updateDirectory),updater.cleanupVerifiedPackages({startup:true,preserveCurrent:updateManaged()})]);
+  startupCleanup=updateTools.cleanDownloadStaging(updateDirectory);
   startupCleanup.catch(()=>{});
   setTimeout(()=>updater.check(),5000).unref();
   setInterval(()=>updater.check(),6*60*60*1000).unref();
@@ -197,27 +201,70 @@ function showWindow(){
 function register(){
   ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
+  ipcMain.handle('bridge:update-versions',async(event,payload)=>{
+    authorize(event);
+    if(payload?.action==='list')return updater.listVersions();
+    if(payload?.action!=='select')throw Error('更新版本请求无效。');
+    if(updater.busy||updateStarting||updateConfirmation||cacheDeleting||updateManaged())throw Error('请等待当前操作完成后再更新。');
+    return updater.selectVersion(payload.id);
+  });
+  ipcMain.handle('bridge:download-update',async(event,payload)=>{
+    authorize(event);
+    if(updater.busy||updateStarting||updateConfirmation||cacheDeleting||updateManaged())throw Error('请等待当前操作完成后再更新。');
+    const candidateId=payload?.candidateId;
+    if(!candidateId||updater.status().candidateId!==candidateId)throw Error('请先检查更新。');
+    updateStarting=true;
+    try{
+      await startupCleanup;
+      return await updater.download({candidateId});
+    }finally{updateStarting=false;}
+  });
+  ipcMain.handle('bridge:update-cache',async(event,payload)=>{
+    authorize(event);
+    const inUse=()=>updater.busy||updateStarting||updateConfirmation||updateManaged();
+    const listing=()=>updater.cacheStatus({inUse:inUse()||cacheDeleting});
+    if(payload?.action==='list')return listing();
+    if(payload?.action!=='delete')throw Error('更新缓存请求无效。');
+    if(inUse()||cacheDeleting)throw Error('请等待应用更新完成后再删除缓存。');
+    cacheDeleting=true;
+    try{
+      await startupCleanup;
+      if(inUse())throw Error('请等待应用更新完成后再删除缓存。');
+      const selection=updater.cacheSelection(payload.ids),size=selection.files.reduce((total,file)=>total+file.entry.size,0);
+      const answer=await dialog.showMessageBox(window,{type:'warning',title:t('更新下载缓存'),message:t('确认删除所选缓存？'),
+        detail:t('将删除 {count} 个更新包，释放 {size}。').replace('{count}',String(selection.files.length)).replace('{size}',`${(size/1024/1024).toFixed(2)} MB`),
+        buttons:[t('取消'),t('删除所选缓存')],defaultId:0,cancelId:0,noLink:true});
+      if(answer.response!==1)return {...updater.cacheStatus({inUse:inUse()}),cancelled:true};
+      if(inUse())throw Error('请等待应用更新完成后再删除缓存。');
+      const deleted=updater.deleteCache(selection);
+      return {...updater.cacheStatus(),deleted};
+    }finally{cacheDeleting=false;}
+  });
   ipcMain.handle('bridge:install-update',async(event,payload)=>{
     authorize(event);
-    const blocked=()=>installPending||workerWrites||setupPending||updateManaged();
-    if(blocked()||updateConfirmation)throw Error('请等待当前操作完成后再更新。');
+    const blocked=()=>installPending||workerWrites||setupPending||cacheDeleting||updateManaged();
+    if(blocked()||updateConfirmation||updateStarting)throw Error('请等待当前操作完成后再更新。');
     const value=updater.status(),candidateId=payload?.candidateId;
     if(!candidateId||value.candidateId!==candidateId)throw Error('请先检查更新。');
-    if(value.requiresConfirmation){
-      updateConfirmation=true;
-      try{
+    updateStarting=true;
+    try{
+      if(value.requiresConfirmation){
+        updateConfirmation=true;
+        const choosing=value.intent==='switch-version',manual=process.platform==='linux'||value.manualInstall;
         const answer=await dialog.showMessageBox(window,{type:'warning',title:t('应用更新'),
-          message:t(value.intent==='return-stable'?'确认返回稳定版？':'确认安装预览版？'),
-          detail:`${value.current} → ${value.version}\n\n${t(process.platform==='linux'?(value.manualRelease?'此版本缺少签名的 Linux 更新包信息，将打开官方发布页供你手动下载。':'下载通过签名与摘要校验后，由系统安装器或你手动完成替换。安装完成前，当前版本继续运行。'):value.intent==='return-stable'?'返回稳定版会替换当前应用并重启。已保存的配置和登录会保留。':'预览版可能存在未解决的问题。安装会替换当前应用并重启。')}`,
-          buttons:[t('取消'),t(process.platform==='linux'?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
+          message:t(choosing?'确认切换到所选版本？':value.intent==='return-stable'?'确认返回稳定版？':'确认安装预览版？'),
+          detail:`${value.current} → ${value.version}${value.assetName?'\n'+value.assetName:''}\n\n${t(choosing?(manual?'安装包校验后会备份网关配置，并交由系统安装器或你手动完成替换。旧版可能无法识别较新的配置功能；安装完成前，当前版本继续运行。':'切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。'):manual?(value.manualRelease?'此版本缺少签名的 Linux 更新包信息，将打开官方发布页供你手动下载。':'下载通过签名与摘要校验后，由系统安装器或你手动完成替换。安装完成前，当前版本继续运行。'):value.intent==='return-stable'?'返回稳定版会替换当前应用并重启。已保存的配置和登录会保留。':'预览版可能存在未解决的问题。安装会替换当前应用并重启。')}`,
+          buttons:[t('取消'),t(choosing?(manual?'下载并打开安装包':'切换版本并重启'):manual?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
         if(answer.response!==1)return updater.status();
         if(blocked())throw Error('请等待当前操作完成后再更新。');
         await startupCleanup;
+        if(blocked())throw Error('请等待当前操作完成后再更新。');
         return await updater.install({candidateId,confirmed:true});
-      }finally{updateConfirmation=false;}
-    }
-    await startupCleanup;
-    return updater.install({candidateId});
+      }
+      await startupCleanup;
+      if(blocked())throw Error('请等待当前操作完成后再更新。');
+      return await updater.install({candidateId});
+    }finally{updateConfirmation=false;updateStarting=false;}
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});
   ipcMain.handle('bridge:set-language',(event,value)=>{
@@ -431,7 +478,6 @@ async function acknowledgeUpdate(){
     await worker('snapshot');
     if(updateManaged()&&handoff.dataDir===dataDir){
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
-      await updater.cleanupVerifiedPackages();
     }
   }catch{} // Missing acknowledgement makes the independent helper restore the old app.
 }

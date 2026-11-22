@@ -113,6 +113,7 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,lo
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
   for(const id of ['clients-start','clients-stop','clients-page'])nodes.set(id,node());
+  nodes.get('update-cache-list').querySelectorAll=()=>nodes.get('update-cache-list').children?.flatMap(row=>row.children||[]).filter(child=>child.type==='checkbox')||[];
   const value={loginStartup,runtime:{running:false,portOccupied:false,supportsNotifications:true},
     preferences:{port:8787,lan:true,tunnel:false,autoStart,connections:[]},
     auth:{mode:'password',username:'admin'},notifications:{enabled:false,server:'https://ntfy.sh',topic:'',webhookTemplates:{generic:'{"event":"{{event}}"}',feishu:JSON.stringify({msg_type:'text',content:{text:'{{title}}\n{{body}}\n{{url}}'}}),dingtalk:'{"msgtype":"text"}',discord:'{"content":"{{body}}"}',telegram:'{"chat_id":"","text":"{{body}}"}'}},
@@ -681,10 +682,13 @@ test('packaging rejects a gateway from another architecture, OS or version',asyn
   try{
     await fs.mkdir(path.join(root,'dist/gateway'),{recursive:true});
     const write=value=>fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify(value));
-    const valid={platform:'linux',arch:'arm64',version:'1.2.2'};
+    const valid={platform:'linux',arch:'arm64',version:'1.2.2',dataFormat:'bridge-data-v1'};
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway'),'fixture');
     for(const wrong of [{arch:'x64'},{platform:'darwin'},{version:'1.2.1'}]){
       await write({...valid,...wrong});await assert.rejects(verify(context),/does not match/);
+    }
+    for(const dataFormat of [undefined,'unknown-format']){
+      await write({...valid,dataFormat});await assert.rejects(verify(context),/data format/);
     }
     await write(valid);
     const bundled=path.join(root,'dist/gateway/_internal/cloudflared');
@@ -711,7 +715,7 @@ test('Windows packaging requires the complete locked ConPTY pair',async()=>{
     await fs.mkdir(path.join(runtime,'cloudflared'),{recursive:true});
     await fs.mkdir(path.join(runtime,'conpty'),{recursive:true});
     await fs.mkdir(path.join(root,'scripts'));
-    await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2'}));
+    await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2',dataFormat:'bridge-data-v1'}));
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway.exe'),'fixture');
     for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe','codex-launcher.exe'])
       await fs.writeFile(path.join(runtime,'client-helpers',name),'fixture');
@@ -890,6 +894,136 @@ test('unsupported updates explain manual downloads in both languages',async()=>{
   assert.equal(ui.nodes.get('install-update').hidden,true);
   assert.match(ui.nodes.get('update-state').textContent,/发布页面/);
   ui.run("applyLanguage('en')");assert.match(ui.nodes.get('update-state').textContent,/releases page/);
+});
+
+test('download cache loads on entering updates and keeps the maintenance tab across languages without polling disk',async()=>{
+  const ui=await renderer();let reads=0;
+  ui.value.update={state:'idle',current:'2.2.2-preview.3'};await ui.poll();
+  ui.api.updateCache=async()=>{reads++;return {entries:[],totalBytes:0};};
+  assert.equal(reads,0);ui.run("tab('updates')");await new Promise(setImmediate);
+  assert.equal(reads,1);assert.equal(ui.nodes.get('update-cache-state').textContent,'暂无下载缓存。');
+  assert.equal(ui.nodes.get('update-cache-all').disabled,true);assert.equal(ui.nodes.get('update-cache-delete').disabled,true);
+  for(let i=0;i<10;i++)ui.run('renderUpdate()');
+  ui.run("applyLanguage('en')");assert.equal(reads,1);assert.equal(ui.run('activeMaintenanceTab'),'updates');
+  assert.equal(ui.nodes.get('update-cache-state').textContent,'No downloaded packages.');
+  assert.equal(ui.nodes.get('update-cache-summary').textContent,'0 packages · 0 B');
+});
+
+test('download cache selects only removable packages, preserves cancellation and deletes without installing',async()=>{
+  const ui=await renderer();let requests=[],installs=0,cancel=true;
+  const entries=[{id:'stable.zip',version:'2.2.1',platform:'darwin',arch:'arm64',format:'zip',size:1024,modifiedAt:1000,inUse:false},{id:'preview.zip',version:'2.2.2-preview.3',platform:'darwin',arch:'arm64',format:'zip',size:2048,modifiedAt:2000,inUse:true}];
+  ui.value.update={state:'idle',current:'2.2.2-preview.3'};await ui.poll();
+  ui.api.installUpdate=async()=>{installs++;};
+  ui.api.updateCache=async body=>{requests.push(JSON.parse(JSON.stringify(body)));return body.action==='list'?{entries,totalBytes:3072}:cancel?{entries,totalBytes:3072,cancelled:true}:{entries:[entries[1]],totalBytes:2048,deleted:[entries[0].id]};};
+  ui.run("tab('updates')");await new Promise(setImmediate);
+  const boxes=ui.nodes.get('update-cache-list').querySelectorAll('input');
+  assert.equal(boxes.length,2);assert.equal(boxes[0].disabled,false);assert.equal(boxes[1].disabled,true);
+  boxes[0].checked=true;boxes[0].onchange();assert.equal(ui.nodes.get('update-cache-delete').disabled,false);
+  await ui.nodes.get('update-cache-delete').onclick();
+  assert.deepEqual(requests[1],{action:'delete',ids:['stable.zip']});assert.equal(boxes[0].checked,true);
+  assert.match(ui.nodes.get('update-cache-state').textContent,/已取消删除/);
+  ui.run("applyLanguage('en')");assert.match(ui.nodes.get('update-cache-state').textContent,/Deletion cancelled/);
+  ui.nodes.get('update-cache-all').checked=false;ui.nodes.get('update-cache-all').onchange();assert.equal(ui.nodes.get('update-cache-delete').disabled,true);
+  ui.nodes.get('update-cache-all').checked=true;ui.nodes.get('update-cache-all').onchange();
+  assert.deepEqual(ui.run('[...updateCacheState.selected]').join(','),'stable.zip');
+  cancel=false;await ui.nodes.get('update-cache-delete').onclick();
+  assert.equal(ui.nodes.get('update-cache-list').children.length,1);assert.equal(ui.nodes.get('update-cache-delete').disabled,true);
+  assert.match(ui.nodes.get('update-cache-state').textContent,/were deleted/);assert.equal(installs,0);
+});
+
+test('cache operations lock while updating or deleting and refresh once a download completes',async()=>{
+  const ui=await renderer();let reads=0,deletes=0,finish,installs=0;
+  const entries=[{id:'fixture.deb',version:'2.2.1',platform:'linux',arch:'x64',format:'deb',size:10,inUse:false}];
+  ui.value.update={state:'idle',current:'2.2.2-preview.3'};await ui.poll();
+  ui.api.updateCache=body=>{if(body.action==='list'){reads++;return Promise.resolve({entries,totalBytes:10});}deletes++;return new Promise(resolve=>{finish=resolve;});};
+  ui.api.installUpdate=async()=>{installs++;};ui.run("tab('updates')");await new Promise(setImmediate);
+  ui.nodes.get('update-cache-all').checked=true;ui.nodes.get('update-cache-all').onchange();
+  ui.value.update.state='downloading';await ui.poll();
+  assert.equal(ui.nodes.get('update-cache-list').querySelectorAll('input')[0].disabled,true);
+  assert.equal(ui.nodes.get('update-cache-delete').disabled,true);await ui.nodes.get('update-cache-delete').onclick();assert.equal(deletes,0);
+  ui.value.update.state='downloaded';await ui.poll();await new Promise(setImmediate);assert.equal(reads,2);
+  const deletion=ui.nodes.get('update-cache-delete').onclick();
+  assert.equal(ui.nodes.get('check-update').disabled,true);assert.match(ui.nodes.get('update-cache-state').textContent,/正在删除/);
+  await ui.nodes.get('install-update').onclick();assert.equal(installs,0);
+  finish({entries:[],totalBytes:0,deleted:['fixture.deb']});await deletion;
+  assert.equal(ui.nodes.get('update-cache-refresh').disabled,false);
+});
+
+test('cache read and deletion failures keep usable state and require an explicit retry',async()=>{
+  const ui=await renderer('en');let reads=0;
+  ui.value.update={state:'idle',current:'2.2.2-preview.3'};await ui.poll();
+  ui.api.updateCache=async()=>{reads++;throw Error('fixture unavailable');};
+  ui.run("tab('updates')");await new Promise(setImmediate);
+  assert.match(ui.nodes.get('update-cache-state').textContent,/Could not complete.*fixture unavailable/);
+  for(let i=0;i<10;i++)ui.run('renderUpdate()');assert.equal(reads,1);
+  ui.api.updateCache=async body=>{if(body.action==='delete')throw Error('fixture delete failure');return {entries:[{id:'cache.zip',version:'2.2.1',format:'zip',size:20}],totalBytes:20};};
+  await ui.nodes.get('update-cache-refresh').onclick();ui.nodes.get('update-cache-all').checked=true;ui.nodes.get('update-cache-all').onchange();
+  await ui.nodes.get('update-cache-delete').onclick();assert.match(ui.nodes.get('update-cache-state').textContent,/fixture delete failure/);
+  assert.equal(ui.nodes.get('update-cache-list').children.length,1);assert.equal(ui.nodes.get('update-cache-delete').disabled,false);
+});
+
+test('official release history preserves explicit version choices and separates download from installation',async()=>{
+  const ui=await renderer();let lists=0,downloads=[],installs=[];
+  const releases=[{version:'2.2.2',channel:'stable',assets:[{id:'stable-zip',name:'stable.zip',format:'zip',size:100}]},{version:'2.2.2-preview.3',channel:'preview',assets:[{id:'preview-zip',name:'preview.zip',format:'zip',size:200},{id:'preview-dmg',name:'preview.dmg',format:'dmg',size:300}]}];
+  ui.value.update={state:'idle',current:'2.2.2',channel:'stable'};await ui.poll();
+  ui.api.updateVersions=async body=>{if(body.action==='list'){lists++;return {current:'2.2.2',platform:'darwin',arch:'arm64',releases};}const release=releases.find(release=>release.assets.some(asset=>asset.id===body.id)),asset=release.assets.find(asset=>asset.id===body.id);ui.value.update={state:'available',current:'2.2.2',version:release.version,selected:true,intent:'switch-version',candidateId:asset.id,format:asset.format,assetName:asset.name,manualInstall:asset.format==='dmg'};return ui.value.update;};
+  ui.api.downloadUpdate=async body=>{downloads.push(body.candidateId);ui.value.update={...ui.value.update,state:'downloaded',path:'/cache/preview.zip'};};
+  ui.api.installUpdate=async body=>{installs.push(body.candidateId);};
+  assert.equal(lists,0);ui.run("tab('updates')");await new Promise(setImmediate);assert.equal(lists,1);
+  assert.equal(ui.nodes.get('update-versions-download').disabled,true);
+  ui.nodes.get('update-versions-version').value='2.2.2-preview.3';await ui.nodes.get('update-versions-version').onchange();
+  assert.equal(ui.nodes.get('update-versions-asset').value,'preview-zip');assert.equal(ui.nodes.get('update-versions-download').disabled,false);
+  assert.equal(ui.nodes.get('skip-update').hidden,true);assert.equal(ui.nodes.get('update-badge').hidden,true);assert.equal(ui.nodes.get('update-state').textContent,'已选择安装版本。');
+  ui.run("tab('overview')");assert.equal(ui.nodes.get('update-banner').hidden,true);ui.run("tab('updates')");
+  assert.equal(downloads.length,0);assert.equal(installs.length,0);
+  await ui.nodes.get('update-versions-download').onclick();assert.deepEqual(downloads,['preview-zip']);assert.equal(installs.length,0);
+  assert.equal(ui.nodes.get('update-versions-install').disabled,false);await ui.nodes.get('update-versions-install').onclick();assert.deepEqual(installs,['preview-zip']);
+  ui.run("tab('overview');tab('updates');applyLanguage('en')");assert.equal(lists,1);assert.equal(ui.nodes.get('update-versions-version').value,'2.2.2-preview.3');
+  assert.equal(ui.nodes.get('update-versions-install').textContent,'Switch version and restart');
+  ui.nodes.get('update-versions-asset').value='preview-dmg';await ui.nodes.get('update-versions-asset').onchange();assert.equal(ui.nodes.get('update-versions-install').textContent,'Download and open installer');
+  ui.value.update={...ui.value.update,state:'downloaded',path:'/cache/preview.dmg'};await ui.poll();assert.equal(ui.nodes.get('update-versions-install').textContent,'Open installer');
+  ui.nodes.get('update-versions-version').value='2.2.2';await ui.nodes.get('update-versions-version').onchange();
+  await ui.nodes.get('update-versions-install').onclick();assert.deepEqual(installs,['preview-zip','stable-zip']);
+});
+
+test('release channel filtering clears an out-of-filter package without downloading or switching versions',async()=>{
+  const ui=await renderer('en');let selected=0;
+  ui.value.update={state:'idle',current:'2.2.2'};await ui.poll();
+  ui.api.updateVersions=async body=>{assert.equal(body.action,'list');return {platform:'win32',arch:'x64',releases:[{version:'2.2.2-preview.3',channel:'preview',assets:[{id:'installer',name:'fixture.exe',format:'exe',size:10}]}]};};
+  ui.run("tab('updates')");await new Promise(setImmediate);
+  ui.nodes.get('update-versions-channel').value='stable';ui.nodes.get('update-versions-channel').onchange();
+  assert.equal(ui.nodes.get('update-versions-version').disabled,true);assert.match(ui.nodes.get('update-versions-state').textContent,/No packages/);
+  assert.equal(ui.nodes.get('update-versions-download').disabled,true);assert.equal(ui.nodes.get('update-versions-install').disabled,true);assert.equal(selected,0);
+  assert.equal(ui.nodes.get('update-versions-platform').textContent,'For this computer: Windows / x64');
+});
+
+test('release history loading failures are translated and retried only on explicit refresh',async()=>{
+  const ui=await renderer('en');let reads=0;
+  ui.value.update={state:'idle',current:'2.2.2'};await ui.poll();
+  ui.api.updateVersions=async()=>{reads++;throw Error('fixture release failure');};
+  ui.run("tab('updates')");await new Promise(setImmediate);assert.equal(reads,1);
+  for(let i=0;i<10;i++)ui.run('renderUpdate()');assert.equal(reads,1);
+  assert.match(ui.nodes.get('update-versions-state').textContent,/Could not complete.*fixture release failure/);
+  await ui.nodes.get('update-versions-refresh').onclick();assert.equal(reads,2);
+});
+
+test('release list refresh preserves the selected package name while rebinding new opaque asset identities',async()=>{
+  const ui=await renderer();let generation=0,selected=[],downloads=0,installs=0,missing=false;
+  ui.value.update={state:'idle',current:'2.2.2'};await ui.poll();
+  ui.api.updateVersions=async body=>{
+    if(body.action==='list'){generation++;return {platform:'darwin',arch:'arm64',releases:[{version:'2.2.2-preview.3',channel:'preview',assets:missing?[]:[{id:'opaque-'+generation,name:'preview.zip',format:'zip',size:20}]}]};}
+    selected.push(body.id);ui.value.update={state:'available',current:'2.2.2',version:'2.2.2-preview.3',selected:true,candidateId:'candidate-'+body.id};return ui.value.update;
+  };
+  ui.api.downloadUpdate=async()=>{downloads++;};ui.api.installUpdate=async()=>{installs++;};
+  ui.run("tab('updates')");await new Promise(setImmediate);
+  ui.nodes.get('update-versions-version').value='2.2.2-preview.3';await ui.nodes.get('update-versions-version').onchange();
+  await ui.nodes.get('update-versions-refresh').onclick();
+  assert.equal(ui.nodes.get('update-versions-version').value,'2.2.2-preview.3');assert.equal(ui.nodes.get('update-versions-asset').value,'opaque-2');
+  assert.deepEqual(selected,['opaque-1','opaque-2']);assert.equal(ui.run('updateVersionsState.candidateId'),'candidate-opaque-2');assert.equal(ui.nodes.get('update-versions-download').disabled,false);
+  assert.equal(downloads,0);assert.equal(installs,0);
+  missing=true;await ui.nodes.get('update-versions-refresh').onclick();
+  assert.equal(ui.nodes.get('update-versions-version').value,'');assert.equal(ui.nodes.get('update-versions-asset').value,'');
+  assert.equal(ui.nodes.get('update-versions-download').disabled,true);assert.equal(ui.nodes.get('update-versions-install').disabled,true);assert.deepEqual(selected,['opaque-1','opaque-2']);
 });
 
 test('login validity is collected as zero and survives polling and language edits',async()=>{
