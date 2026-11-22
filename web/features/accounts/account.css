@@ -47,7 +47,8 @@
 .accounts-panel .accounts-reset{color:var(--accent,#4664ed);border-color:var(--accent,#4664ed);font-size:12px}
 .accounts-identity.accounts-official{display:grid;grid-template-columns:minmax(0,1fr);gap:8px 12px}
 .accounts-official .accounts-name{min-width:0;overflow-wrap:anywhere}
-.accounts-official .accounts-usage{display:grid;grid-column:1/-1;grid-template-columns:minmax(0,1fr);align-items:start;gap:12px;min-width:0;margin:12px 0 0}
+.accounts-official .accounts-usage{display:grid;grid-column:1/-1;grid-template-columns:minmax(0,1fr);align-items:start;gap:12px;min-width:0;margin:0}
+.accounts-panel .accounts-usage .quota-pool{margin:0}
 .accounts-official .accounts-window{grid-template-columns:minmax(0,1fr) auto;min-width:0;max-width:none;width:100%}
 .accounts-official .accounts-window strong{text-align:right;white-space:nowrap}
 .accounts-reset-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;margin-top:14px;border-radius:10px;background:var(--soft,#f3f6ff)}

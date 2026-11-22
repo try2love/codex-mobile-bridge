@@ -7,5 +7,7 @@
 :root{color-scheme:light;--page:#fff;--surface:#f6f7f9;--raised:#fff;--text:#24262b;--muted:#777d88;--line:#e9ebef;--user:#f1f3f6;--code:#f3f4f7;--accent:#4664ed;--accent-ink:#fff;--green:#405bdc;--soft:#4664ed12;--warning-bg:#fff7e6;--warning-text:#856329;--warning-line:#e7d5aa;--error:#b84343;--message-size:16px;--code-size:13px;--message-leading:1.8;--message-gap:24px;color:var(--text);background:var(--page)}
 :root[data-theme=dark]{color-scheme:dark;--page:#17181c;--surface:#202228;--raised:#272a32;--text:#e4e6ed;--muted:#a0a5b1;--line:#30333c;--user:#272a32;--code:#202228;--warning-bg:#332c20;--warning-text:#e0be79;--warning-line:#665234;--error:#f19c9c}
 /* Gateway-wide quota continuation control on the home screen. */
-.quota-continue-home{display:flex;align-items:center;gap:8px;padding:10px 12px}
-#quota-continue-hint,#quota-continue-status,#quota-continue-error{margin:0;padding:0 12px 8px;font-size:12px}
+.quota-continue-setting{padding:0 0 16px;margin-bottom:18px;border-bottom:1px solid var(--line,#dfe3eb)}
+.accounts-panel .quota-continue-label{display:flex;align-items:center;gap:8px;margin:0}
+#quota-continue-hint,#quota-continue-status,#quota-continue-error{margin:6px 0 0;padding:0;font-size:12px}
+#quota-continue-error:empty{display:none}

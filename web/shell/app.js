@@ -43,17 +43,17 @@ const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoo
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 
-// The home switch uses gateway state, shared with desktop and mobile.
+// The account-page switch uses gateway state shared with desktop and mobile.
+let quotaContinuationToggle=null;
 if($('quota-continue-enabled')){
-  const toggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
+  const toggle=quotaContinuationToggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
     tasks:$('quota-continue-tasks'),exclude:(threadId,excluded)=>api('/api/quota-continuation',{threadId,excluded}),
     read:()=>api('/api/quota-continuation'),write:enabled=>api('/api/quota-continuation',{enabled}),
-    visible:()=>!document.hidden&&!$('app').hidden&&!window.BridgeSharedRelay});
+    visible:()=>!document.hidden&&!$('app').hidden&&$('accounts-dialog').open&&!$('quota-continue-setting').hidden&&!window.BridgeSharedRelay});
   document.addEventListener('bridge-authenticated',()=>toggle.refresh());
   document.addEventListener('visibilitychange',()=>toggle.refresh());
   window.addEventListener('focus',()=>toggle.refresh());
   setInterval(()=>toggle.refresh(),10000);
-  if(window.BridgeSharedRelay){$('quota-continue-enabled').closest('label').hidden=true;$('quota-continue-hint').hidden=true;}
 }
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){const path='/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);return window.BridgeRelayURL?.(path)||path;}
@@ -1881,17 +1881,19 @@ function renderAccountEntries(){
   if(codexAccountEntry!=='desktop'&&!entries.some(row=>row.id===codexAccountEntry))codexAccountEntry='desktop';
   if(accountEntrySelect){accountEntrySelect.replaceChildren(new Option(t('此电脑'),'desktop'),...entries.map(row=>new Option(row.name||row.label,row.id)));accountEntrySelect.value=codexAccountEntry;accountEntryControls.hidden=independent||!entries.length;}
   codexCliDetails.hidden=codexAccountEntry!=='desktop';$('accounts-content').hidden=codexAccountEntry.startsWith('wsl:');if(codexWslRoot)codexWslRoot.hidden=!codexAccountEntry.startsWith('wsl:');if(typeof accountsPanel!=='undefined'&&accountsPanel)accountsPanel.refreshButton.hidden=codexAccountEntry.startsWith('wsl:');
+  if($('quota-continue-setting')){$('quota-continue-setting').hidden=codexAccountEntry!=='desktop'||!!window.BridgeSharedRelay;quotaContinuationToggle?.refresh();}
   if(codexCliDetails.hidden)codexCliAccessPanel?.clear();
 }
 
 const accountsPanel=window.BridgeSharedRelay||typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),toolbar:$('accounts-heading'),read:force=>api(accountUrl('/api/accounts'+(accountsPanel?.visible()&&accountsPanel?.value?.resetDynamicEnabled?'?resetForecast='+(force?'refresh':'1'):''))),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(accountUrl(action==='initializeDesktopRuntime'?'/api/accounts/desktop-runtime':action==='retrySsh'?'/api/accounts/ssh-retry':action==='account'?'/api/accounts/account':action==='details'?'/api/accounts/details':action==='reminders'?'/api/accounts/reminders':action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?'/api/accounts/desktop-update':'/api/accounts/switch'),action==='checkDesktopUpdate'||action==='requestDesktopUpdate'?{action,...value}:value),onChanged:value=>{if(codexActiveAccountId!==undefined&&codexActiveAccountId!==value.activeId){browserNavigation.invalidate();if(typeof ChatTimeline!=='undefined')ChatTimeline.clearCache?.();clearCodexProvisionalDrafts();clearQuoteComposer();codexDraftScope=null;codexDraftTouched=false;}resetModelCatalog();},onUpdate:value=>{codexActiveAccountId=value.activeId;const label='账号管理';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 accountsPanel?.attachApiAccess(codexCliAccessPanel,codexCliDetails);
+if(accountsPanel&&$('quota-continue-setting')){accountsPanel.desktopRuntime.after($('quota-continue-setting'));$('quota-continue-setting').hidden=false;}
 function openCurrentAccounts(){
   const activeProvider=clientNavigation.provider,provider=ClientIdentity.family(activeProvider),entry=ClientIdentity.entry(activeProvider)?activeProvider:provider;
   if(!provider)return false;
   if(isCodexClient(provider)){
     if(!accountsPanel)return false;
-    refreshEntryAccounts();renderAccountEntries();$('accounts-dialog').showModal();refreshSelectedAccounts();return true;
+    refreshEntryAccounts();renderAccountEntries();$('accounts-dialog').showModal();refreshSelectedAccounts();quotaContinuationToggle?.refresh();return true;
   }
   const name=clientNavigation.clients.find(row=>row.id===activeProvider)?.name||provider;
   const dialog=desktopSessions.dialog('账号与接入'),content=el('div','provider-account');

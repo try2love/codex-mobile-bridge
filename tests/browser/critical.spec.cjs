@@ -143,25 +143,31 @@ test('history cache logout session and namespace forget defeat stale writes from
   }finally{await fixture.context.close();}
 });
 
-test('quota home switch syncs across gateway pages', async ({page, context}, info) => {
+test('quota account switch stays below native connection and syncs across gateway pages', async ({page, context}, info) => {
   let enabled=false;
+  await context.route('**/api/accounts',route=>route.fulfill({json:{accounts:[],current:{kind:'signedOut',status:'ready'},switch:{phase:'complete'},desktopRuntime:{supported:true,configured:true},canManageDesktop:true}}));
   await context.route('**/api/quota-continuation',async route=>{
     if(route.request().method()==='POST')enabled=route.request().postDataJSON().enabled;
     await route.fulfill({contentType:'application/json',body:JSON.stringify({enabled,error:''})});
   });
   await ready(page,'session-menu');
+  await expect(page.locator('#sidebar #quota-continue-enabled')).toHaveCount(0);
+  await expect(page.locator('#quota-continue-enabled')).toBeHidden();
+  await page.locator('#accounts-button').click();
+  expect(await page.locator('#quota-continue-setting').evaluate(node=>node.previousElementSibling.classList.contains('accounts-native-runtime'))).toBe(true);
   const toggle=page.locator('#quota-continue-enabled');
   await expect(toggle).toBeVisible();await expect(toggle).toBeEnabled();
   await expect(toggle).not.toBeChecked();await toggle.check();
   await expect(toggle).toBeChecked();
   const other=await context.newPage();
   await ready(other,'session-menu');
+  await other.locator('#accounts-button').click();
   await expect(other.locator('#quota-continue-enabled')).toBeChecked();
   await other.locator('#quota-continue-enabled').uncheck();
   await page.bringToFront();
   await expect(toggle).not.toBeChecked({timeout:15000});
   await expect(page.locator('#quota-continue-error')).toBeEmpty();
-  await info.attach('quota-home-switch',{body:await page.screenshot({path:path.resolve(__dirname,'../../.tmp/quota-home-'+info.project.name+'.png')}),contentType:'image/png'});
+  await info.attach('quota-account-switch',{body:await page.screenshot({path:path.resolve(__dirname,'../../.tmp/quota-account-'+info.project.name+'.png')}),contentType:'image/png'});
   await other.close();
 });
 
@@ -1415,5 +1421,25 @@ test('native connection section remains visible outside reminders on desktop and
   expect(await page.locator('#standalone-native-fixture .accounts-native-runtime').evaluate(node=>node.parentElement.firstElementChild===node&&!node.closest('details'))).toBe(true);
   await expect(page.locator('#standalone-native-fixture .accounts-native-runtime button').first()).toBeVisible();
   await page.evaluate(()=>{standaloneNativePanel.clear();document.getElementById('standalone-native-fixture').remove();});
+ }
+});
+
+
+test('official account subscription and quota pools keep compact spacing on web and desktop',async({page,baseURL})=>{
+ await ready(page,'session-menu');await page.evaluate(()=>BridgeFeatures.load('accounts'));
+ for(const desktop of [false,true]){
+  if(desktop){const url=baseURL+'/__fixture_account_desktop.css';await page.route(url,route=>route.fulfill({path:path.resolve(__dirname,'../../desktop/shell/style.css'),contentType:'text/css'}));await page.addStyleTag({url});}
+  await page.evaluate(desktop=>{
+   const root=document.createElement('div');root.id='account-spacing-regression';root.style.cssText='position:fixed;inset:8px;overflow:auto;background:var(--page);padding:12px;z-index:99999';document.body.append(root);
+   const now=Date.now()/1000,usage={status:'ready',updatedAt:now,subscription:{periodEndsAt:now+86400,source:'online'},limits:[{id:'codex',name:'Codex',windows:[{windowDurationMins:300,remainingPercent:75,resetsAt:now+3600}]}],resetCredits:{availableCount:0}};
+   const value={activeId:'official',accounts:[{id:'official',kind:'chatgpt',name:'Official',email:'account@example.invalid',details:{usage}}],current:{kind:'chatgpt',id:'official',status:'ready'},switch:{phase:'complete'}};window.spacingRegression=new AccountsPanel({root,desktop,read:async()=>value,request:async()=>value});spacingRegression.accept(value);
+  },desktop);
+  const root=page.locator('#account-spacing-regression');
+  const gap=()=>root.evaluate(node=>node.querySelector('.quota-pool').getBoundingClientRect().top-node.querySelector('.account-subscription-info').getBoundingClientRect().bottom);
+  expect(await gap()).toBeGreaterThanOrEqual(4);expect(await gap()).toBeLessThanOrEqual(12);
+  await root.locator('.account-subscription-info').click();await expect(root.locator('.account-subscription-note')).toBeVisible();
+  await root.locator('.account-subscription-info').click();await expect(root.locator('.account-subscription-note')).toBeHidden();expect(await gap()).toBeLessThanOrEqual(12);
+  expect(await root.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+  await page.evaluate(()=>{spacingRegression.clear();document.getElementById('account-spacing-regression').remove();});
  }
 });
