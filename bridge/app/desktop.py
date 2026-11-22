@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qsl
 
@@ -453,7 +454,8 @@ class Desktop:
             return request_pairing(self.data_dir, {'action': 'devices', 'value': value})
         if read_record(self.data_dir/'gateway-control.json'):
             raise ValueError('网关状态暂不可用，请稍后刷新设备列表')
-        return Auth(self.config()['auth'], self.data_dir).manage(value)
+        with closing(Auth(self.config()['auth'], self.data_dir)) as auth:
+            return auth.manage(value)
 
     def notification_watches(self, value, *, preferences=None):
         if value.get('action') != 'list':

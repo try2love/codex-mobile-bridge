@@ -14,6 +14,7 @@ from bridge.clients.codex.desktop_runtime import (
     VERSION, _read, _write, directory, process_identity, server_arguments,
     exclusive_lock, private_directory, socket_path, require_inactive, verified_socket)
 from bridge.clients.websocket import WebSocket
+from bridge.clients.codex.ipc_json import FrameReader, has_stored_text, iter_wire_json
 from bridge.clients.codex.app_server import AppServerMessageTooLarge as MessageTooLarge
 
 
@@ -169,7 +170,9 @@ def _serve(config, app, arguments, endpoint, initialize, generation):
         def open_transport():
             try:
                 handshake.set_result(WebSocket(proxy.stdout, proxy.stdin,
-                                               max_message_bytes=MAX_LINE, oversized=MessageTooLarge))
+                                               max_message_bytes=MAX_LINE, oversized=MessageTooLarge,
+                                               message_reader=lambda stream: FrameReader(
+                                                   stream, None, 1024 * 1024, native_rpc=True).read()))
             except Exception as exc:
                 handshake.set_exception(exc)
         threading.Thread(target=open_transport, daemon=True).start()
@@ -182,7 +185,12 @@ def _serve(config, app, arguments, endpoint, initialize, generation):
             raise ValueError('Native Desktop process identity changed')
         def emit(packet):
             with output_lock:
-                sys.stdout.write(json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n')
+                if has_stored_text(packet):
+                    for chunk in iter_wire_json(packet):
+                        sys.stdout.write(chunk.decode('utf-8'))
+                    sys.stdout.write('\n')
+                else:
+                    sys.stdout.write(json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n')
                 sys.stdout.flush()
         def output_loop():
             try:

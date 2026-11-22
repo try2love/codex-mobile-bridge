@@ -16,20 +16,49 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
-def rollout_message_times(raw, thread_id, include_turns=False):
-    """Native identities only; text and rollout positions are not clock evidence."""
-    times, completed_turns, turn_id = {}, {}, None
-    for line in raw.splitlines():
-        if not any(token in line for token in (b'"task_started"', b'"response_item"', b'"item_completed"', b'"task_complete"', b'"turn_aborted"')):
-            continue
+def recorded_turn_label(payload):
+    collaboration = payload.get('collaboration_mode')
+    settings = collaboration.get('settings') if isinstance(collaboration, dict) else None
+    settings = settings if isinstance(settings, dict) else {}
+    effort = payload['effort'] if 'effort' in payload else settings.get('reasoning_effort')
+    return {'model': payload.get('model') or settings.get('model'), 'effort': effort}
+
+
+def _records(lines):
+    for line in lines:
         try:
             record = json.loads(line)
-        except ValueError:
+        except (ValueError, UnicodeError):
             continue
+        if isinstance(record, dict):
+            yield record
+
+
+def _recorded_token_usage(payload):
+    info = payload.get('info')
+    last = info.get('last_token_usage') if isinstance(info, dict) else None
+    used = last.get('total_tokens') if isinstance(last, dict) else None
+    if type(used) is int and used >= 0:
+        return {'last': {'totalTokens': used}, 'modelContextWindow': info.get('model_context_window')}
+    return None
+
+
+def rollout_message_times(raw, thread_id, include_turns=False, include_labels=False, *, records=None):
+    """Native identities only; text and rollout positions are not clock evidence."""
+    times, completed_turns, labels, turn_id = {}, {}, {}, None
+    if records is None:
+        records = _records(line for line in raw.splitlines() if any(token in line for token in
+            (b'"task_started"', b'"response_item"', b'"item_completed"', b'"task_complete"', b'"turn_aborted"', b'"turn_context"')))
+    for record in records:
         payload = record.get('payload') or {}
         kind = payload.get('type')
         if record.get('type') == 'event_msg' and kind == 'task_started':
             turn_id = payload.get('turn_id') if payload.get('thread_id', thread_id) == thread_id else None
+            continue
+        if include_labels and record.get('type') == 'turn_context' and payload.get('thread_id', thread_id) == thread_id:
+            identity = payload.get('turn_id') or turn_id
+            if isinstance(identity, str) and identity:
+                labels[identity] = recorded_turn_label(payload)
             continue
         if record.get('type') == 'event_msg' and kind in ('task_complete', 'turn_aborted'):
             identity, stamp = payload.get('turn_id') or turn_id, record.get('timestamp')
@@ -60,7 +89,8 @@ def rollout_message_times(raw, thread_id, include_turns=False):
             source = 'rollout-item-completed' if 'rollout-item-completed' in sources else 'rollout-response-item'
             result[key] = (sources[source][0], source)
     if include_turns:
-        return result, {identity: values[0] for identity, values in completed_turns.items() if len(values) == 1}
+        completed = {identity: values[0] for identity, values in completed_turns.items() if len(values) == 1}
+        return (result, completed, labels) if include_labels else (result, completed)
     return result
 
 
@@ -298,7 +328,7 @@ class SessionStore:
                 bool(database and Path(str(database) + '-shm').exists()), exc)
             raise StoreUnavailable("暂时无法读取 Codex 会话数据库，请稍后重试或重新打开电脑 Codex。") from exc
 
-    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=(), exclude_sources=()):
+    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=(), exclude_sources=(), transfer=False):
         if source not in ('all', 'desktop', 'cli', 'ide'):
             raise ValueError('不支持的会话来源')
         labels, matches = self._cli_inputs(query)
@@ -353,7 +383,17 @@ class SessionStore:
                     'SELECT id,name FROM projects WHERE id IN (' + ','.join('?' for _ in identifiers) + ')', identifiers)} if identifiers else {}
             for row in rows:
                 item = dict(row)
-                item['lastUserInputAt'] = self.last_user_input(item.pop('rollout_path', None), item['id'])
+                rollout_path = item.pop('rollout_path', None)
+                if transfer:
+                    try:
+                        path = Path(rollout_path).resolve(strict=True)
+                        if self._rollout_in_home(path):
+                            item['sourceBytes'] = path.stat().st_size
+                            item['sourceHome'] = str(self.home.resolve())
+                    except (OSError, TypeError, ValueError):
+                        pass
+                else:
+                    item['lastUserInputAt'] = self.last_user_input(rollout_path, item['id'])
                 if native_projects is not None:
                     item['_nativeProject'] = native_projects.get(item.get('project_id'))
                 origin = self._origin(item)
@@ -755,7 +795,7 @@ class SessionStore:
                     matches.append(path)
         return matches[0] if len(matches) == 1 else None
 
-    def _index_tail(self, conn, rollout, thread_id, size, limit):
+    def _index_tail(self, conn, rollout, thread_id, size, limit, segments=None):
         # Newer rollouts can be branches: their filename supplies the physical
         # index key, while every segment's header identifies the logical chat.
         segment = thread_id
@@ -766,9 +806,13 @@ class SessionStore:
                     re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', segment)
                     and rollout.name.endswith('-' + thread_id + '_' + segment + '.jsonl')):
                 return None
-        rows, seen, end = [], set(), None
+        rows, seen, end, path = [], set(), None, rollout
         while segment not in seen:
             seen.add(segment)
+            if segments is not None:
+                if end is not None and segment == thread_id:
+                    path = self._parent_rollout(thread_id, segment)
+                segments[segment] = (path, size)
             projection = conn.execute('SELECT next_rollout_byte_offset FROM thread_history_projection_state '
                                       'WHERE thread_id=?', (segment,)).fetchone()
             if projection is None or (end is None and projection[0] != size):
@@ -804,6 +848,91 @@ class SessionStore:
                 header = self._segment_header(path)
         return None
 
+    def history_revision(self, thread_id):
+        rollout = Path(self.get(thread_id)['rollout_path']).resolve()
+        if not self._rollout_in_home(rollout):
+            raise ValueError('会话记录路径不在 Codex 数据目录中')
+        stat = rollout.stat()
+        return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+    def transfer_snapshot(self, thread_id):
+        """Pin the existing rollout prefix. A later append cannot enter this read."""
+        meta = self.get(thread_id)
+        path = Path(meta['rollout_path']).resolve(strict=True)
+        if not self._rollout_in_home(path):
+            raise ValueError('会话记录路径不在 Codex 数据目录中')
+        segments, seen, end = [], set(), None
+        while True:
+            with path.open('rb') as stream:
+                stamp = os.fstat(stream.fileno())
+                offset = stamp.st_size if end is None else end
+                if not 0 <= offset <= stamp.st_size:
+                    raise ValueError('聊天历史分界点无效')
+                while offset:
+                    start = max(0, offset - 65536)
+                    stream.seek(start)
+                    last_newline = stream.read(offset - start).rfind(b'\n')
+                    if last_newline >= 0:
+                        offset = start + last_newline + 1
+                        break
+                    offset = start
+                if end is not None and offset != end:
+                    raise ValueError('聊天历史分界点不在记录边界')
+            segments.append([str(path), stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, offset])
+            header = self._segment_header(path)
+            base = header.get('history_base')
+            if not base:
+                break
+            parent = base.get('thread_id') if isinstance(base, dict) else None
+            end = base.get('end_byte_offset') if isinstance(base, dict) else None
+            if (header.get('id') != thread_id or not isinstance(parent, str) or parent in seen
+                    or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parent)
+                    or type(end) is not int or end < 0):
+                raise ValueError('无法核验聊天历史来源')
+            if end == 0:
+                break
+            seen.add(parent)
+            path = self._parent_rollout(thread_id, parent)
+            if path is None:
+                raise ValueError('找不到原会话历史分段')
+        return {'meta': {key: meta.get(key) for key in ('name', 'title', 'cwd', 'model', 'model_provider')},
+                'segments': list(reversed(segments))}
+
+    def transfer_page(self, thread_id, meta, segment, offset=0, page_bytes=2 * 1024 * 1024, record_reader=None,
+                      join_text=None):
+        """Read complete turns from a pinned segment and preserve native row identities."""
+        name, dev, ino, size, modified, end = segment
+        path = Path(name)
+        if not self._rollout_in_home(path) or path.resolve(strict=True) != path:
+            raise ValueError('会话记录路径不在 Codex 数据目录中')
+        def verify(stream):
+            stamp = os.fstat(stream.fileno())
+            if ((stamp.st_dev, stamp.st_ino) != (dev, ino) or stamp.st_size < size
+                    or stamp.st_size == size and stamp.st_mtime_ns != modified):
+                raise ValueError('聊天记录已改写，请重新准备传输')
+        records = []
+        with path.open('rb') as stream:
+            verify(stream)
+            stream.seek(offset)
+            while stream.tell() < end:
+                position = stream.tell()
+                if record_reader:
+                    record = record_reader(stream, end)
+                else:
+                    record = next(_records([stream.readline(end - position)]), {})
+                if stream.tell() <= position:
+                    raise ValueError('聊天记录已经缩短，请重新准备传输')
+                if records and position - offset >= page_bytes:
+                    if record.get('type') == 'event_msg' and (record.get('payload') or {}).get('type') == 'task_started':
+                        stream.seek(position)
+                        break
+                if record.get('type') in ('event_msg', 'turn_context', 'response_item'):
+                    records.append(record)
+            verify(stream)
+            next_offset = stream.tell()
+        return {'state': self._decode_history(thread_id, meta, records, next_offset == end, join_text=join_text),
+                'next': next_offset}
+
     def history(self, thread_id, turn_limit=None, item_limit=None):
         meta = self.get(thread_id)
         if item_limit is not None:
@@ -833,7 +962,10 @@ class SessionStore:
             with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=.2)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute('BEGIN')
-                rows = self._index_tail(conn, rollout, thread_id, rollout_stat.st_size, item_limit + 1)
+                segments, sources = {}, {}
+                columns = {row[1] for row in conn.execute('PRAGMA table_info(thread_turns)')}
+                has_offsets = 'rollout_byte_offset' in columns
+                rows = self._index_tail(conn, rollout, thread_id, rollout_stat.st_size, item_limit + 1, segments)
                 if not rows:
                     return None
                 more = len(rows) > item_limit
@@ -841,11 +973,15 @@ class SessionStore:
                 turns = {}
                 for row in selected:
                     if row['turn_id'] not in turns:
-                        header = conn.execute('SELECT turn_id, status, error_json, started_at, first_user_item_id '
-                                              'FROM thread_turns WHERE thread_id=? AND turn_id=?',
+                        header = conn.execute('SELECT turn_id, status, error_json, started_at, first_user_item_id, '
+                                              + ('rollout_byte_offset ' if has_offsets else 'NULL AS rollout_byte_offset ')
+                                              + 'FROM thread_turns WHERE thread_id=? AND turn_id=?',
                                               (row['thread_id'], row['turn_id'])).fetchone()
                         if header is None:
                             return None
+                        path, size = segments[row['thread_id']]
+                        if path is not None and type(header['rollout_byte_offset']) is int:
+                            sources[row['turn_id']] = (path, header['rollout_byte_offset'], size)
                         # Native index clocks use Unix seconds, like thread/read.
                         # Normalize here before joining rollout ISO completion times.
                         turns[row['turn_id']] = {'turnId': row['turn_id'], 'status': header['status'],
@@ -866,7 +1002,35 @@ class SessionStore:
                         # Legacy raw items need their call to keep row identities
                         # stable. Fall back to a complete-turn tail at this edge.
                         return None
-            message_times, completed_turns = self._indexed_message_times(thread_id, rollout, rollout_stat, True)
+            message_times, completed_turns, labels, token_usage = self._indexed_message_times(
+                thread_id, rollout, rollout_stat, include_usage=True)
+            for turn_id, (path, offset, end) in sources.items():
+                if 0 <= offset < end:
+                    with path.open('rb') as stream:
+                        stream.seek(offset)
+                        turn_seen = False
+                        while stream.tell() < end:
+                            line = stream.readline(end - stream.tell())
+                            if not line:
+                                break
+                            if b'"task_started"' not in line and b'"turn_context"' not in line:
+                                continue
+                            try:
+                                record = json.loads(line)
+                            except ValueError:
+                                continue
+                            payload = record.get('payload') or {}
+                            if record.get('type') == 'event_msg' and payload.get('type') == 'task_started':
+                                if turn_seen or payload.get('turn_id') != turn_id:
+                                    break
+                                turn_seen = True
+                            if (record.get('type') == 'turn_context'
+                                    and payload.get('thread_id', thread_id) == thread_id
+                                    and (payload.get('turn_id') == turn_id or not payload.get('turn_id') and turn_seen)):
+                                labels[turn_id] = recorded_turn_label(payload)
+                                break
+            for turn in turns.values():
+                turn['_recordedReplyLabel'] = labels.get(turn['turnId'], {})
             apply_rollout_message_times(turns.values(), message_times)
             for turn in turns.values():
                 if turn['status'] in ('completed', 'interrupted', 'failed') and turn['turnId'] in completed_turns:
@@ -876,30 +1040,37 @@ class SessionStore:
                 return None
             return {'id': thread_id, 'title': meta.get('name') or meta.get('title'), 'cwd': meta['cwd'],
                     'modelProvider': meta.get('model_provider'), 'latestModel': meta.get('model'),
+                    'latestTokenUsageInfo': token_usage, 'tokenUsageFromHistory': True,
                     'turns': list(turns.values()), 'turnsPagination': {'hasLoadedOldest': not more},
                     'requests': [], 'threadRuntimeStatus': {'type': 'notLoaded'}, 'historyReadSource': 'native-index'}
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
             return None
 
-    def _indexed_message_times(self, thread_id, rollout, stat, include_turns=False):
+    def _indexed_message_times(self, thread_id, rollout, stat, include_turns=False, include_labels=False,
+                               *, include_usage=False):
+        def result(data):
+            return data if include_usage else data[:3] if include_labels else data[:2] if include_turns else data[0]
+
         key = ('message-times', thread_id, str(rollout), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
         with self.history_lock:
             if key in self.history_cache:
                 self.history_cache.move_to_end(key)
-                times = self.history_cache[key]
-                return times if include_turns else times[0]
+                return result(self.history_cache[key])
         with rollout.open('rb') as stream:
             offset = max(0, stat.st_size - ROLLOUT_TIME_BYTES)
             stream.seek(offset)
             raw = stream.read(ROLLOUT_TIME_BYTES)
         if offset:
             raw = raw.partition(b'\n')[2]  # The first record may start before the bounded tail.
-        times = rollout_message_times(raw, thread_id, True)
+        usage = next((value for record in _records(line for line in reversed(raw.splitlines()) if b'"token_count"' in line)
+                      if record.get('type') == 'event_msg' and (payload := record.get('payload') or {}).get('type') == 'token_count'
+                      and (value := _recorded_token_usage(payload)) is not None), None)
+        times = (*rollout_message_times(raw, thread_id, True, True), usage)
         with self.history_lock:
             self.history_cache[key] = times
             while len(self.history_cache) > 8:
                 self.history_cache.popitem(last=False)
-        return times if include_turns else times[0]
+        return result(times)
 
     @staticmethod
     def _agent_source(meta):
@@ -965,29 +1136,36 @@ class SessionStore:
                     result['latestModel'] = meta['model']
                 return result
         raw, complete = self._history_tail(resolved, thread_id, turn_limit)
+        lines = raw.splitlines()
+        result = self._decode_history(thread_id, meta, _records(lines), complete, clock_records=_records(lines))
+        with self.history_lock:
+            if len(raw) <= 4 * 1024 * 1024:
+                self.history_cache[cache_key] = result
+            while len(self.history_cache) > 8:
+                self.history_cache.popitem(last=False)
+        return copy.deepcopy(result)
+
+    @staticmethod
+    def _decode_history(thread_id, meta, records, complete, clock_records=None, join_text=None):
         items, turns, current = [], [], None
         persisted_user_ids = []
         token_usage = None
-        for line in raw.splitlines():
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
+        for record in records:
             payload = record.get("payload", {})
             if record.get("type") == "event_msg" and payload.get("type") == "task_started":
                 current = {"turnId": payload.get("turn_id"), "status": "inProgress", "items": [],
-                           "startedAt": record.get("timestamp")}
+                           "startedAt": record.get("timestamp"), "_recordedReplyLabel": {}}
                 turns.append(current)
                 items = current["items"]
             elif record.get("type") == "event_msg" and payload.get("type") == "token_count":
-                info = payload.get('info')
-                if isinstance(info, dict) and isinstance(info.get('last_token_usage'), dict):
-                    token_usage = {'last': {'totalTokens': info['last_token_usage'].get('total_tokens')},
-                                   'modelContextWindow': info.get('model_context_window')}
+                token_usage = _recorded_token_usage(payload) or token_usage
             elif record.get("type") == "turn_context" and current is not None:
                 settings = (payload.get('collaboration_mode') or {}).get('settings') or {}
                 current['params'] = {'model':payload.get('model') or settings.get('model'),
                                      'effort':payload.get('effort') or settings.get('reasoning_effort')}
+                if (payload.get('thread_id', thread_id) == thread_id and
+                        payload.get('turn_id', current['turnId']) == current['turnId']):
+                    current['_recordedReplyLabel'] = recorded_turn_label(payload)
             elif record.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
                 if (current and payload.get('thread_id', thread_id) == thread_id
                         and payload.get('turn_id', current['turnId']) == current['turnId']):
@@ -1025,31 +1203,34 @@ class SessionStore:
                     if role == "user":
                         items.append({**identity, "type": "userMessage", "content": payload.get("content", []), "timestamp": record.get("timestamp")})
                     else:
-                        items.append({**identity, "type": "agentMessage", "text": "\n".join(x.get("text", "") for x in payload.get("content", []) if isinstance(x, dict)), "phase": payload.get("phase"), "timestamp": record.get("timestamp")})
+                        texts = [x.get('text', '') for x in payload.get('content', []) if isinstance(x, dict)]
+                        text = (join_text or '\n'.join)(texts)
+                        items.append({**identity, "type": "agentMessage", "text": text, "phase": payload.get("phase"), "timestamp": record.get("timestamp"),
+                                      **{k: payload[k] for k in ('model', 'effort') if k in payload}})
                 elif payload.get("type") in ("agent_message", "agentMessage"):
                     native_id = payload.get('id')
                     items.append({"id": native_id if isinstance(native_id, str) and native_id else str(len(items)),
                                   '_syntheticId': not isinstance(native_id, str) or not native_id,
                                   '_timestampSource': 'rollout-response-item',
-                                  "type": "agentMessage", "text": payload.get("text", ""), "timestamp": record.get("timestamp")})
+                                  "type": "agentMessage", "text": payload.get("text", ""), "timestamp": record.get("timestamp"),
+                                  **{k: payload[k] for k in ('model', 'effort') if k in payload}})
                 elif payload.get("type") in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
                     items.append({"id": payload.get("call_id", str(len(items))), "type": "storedToolEvent", **payload})
-        apply_rollout_message_times(turns, rollout_message_times(raw, thread_id))
+                elif payload.get('type') == 'reasoning':
+                    summary = [x.get('text') if isinstance(x, dict) else x for x in payload.get('summary') or ()]
+                    if any(isinstance(x, str) and x.strip() for x in summary):
+                        items.append({'id': payload.get('id') or str(len(items)), 'type': 'reasoning', 'summary': summary})
+        apply_rollout_message_times(turns, rollout_message_times(b'', thread_id,
+                                    records=records if clock_records is None else clock_records))
         # Rollout parsing already visited these records. Retain the native patch
         # projection once so a later bounded item window need not reopen bodies.
         for turn in turns:
             turn['_nativeFileChanges'] = native_turn_file_changes(turn)
             turn['_nativeFileChangesBasis'] = 'recorded'
-        result = {"id": thread_id, "title": meta.get("name") or meta.get("title"), "cwd": meta["cwd"],
+        return {"id": thread_id, "title": meta.get("name") or meta.get("title"), "cwd": meta["cwd"],
                 "latestModel": meta.get('model') or next((t['params']['model'] for t in reversed(turns) if (t.get('params') or {}).get('model')), None),
                 "latestReasoningEffort": next((t['params']['effort'] for t in reversed(turns) if (t.get('params') or {}).get('effort')), None),
                 "modelProvider": meta.get("model_provider"),
                 "latestTokenUsageInfo": token_usage, "tokenUsageFromHistory": True,
                 "persistedUserMessageIds": persisted_user_ids,
                 "turns": turns, "turnsPagination": {"hasLoadedOldest": complete}, "requests": [], "threadRuntimeStatus": {"type": "notLoaded"}}
-        with self.history_lock:
-            if len(raw) <= 4 * 1024 * 1024:
-                self.history_cache[cache_key] = result
-            while len(self.history_cache) > 8:
-                self.history_cache.popitem(last=False)
-        return copy.deepcopy(result)

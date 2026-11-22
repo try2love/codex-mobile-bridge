@@ -49,6 +49,56 @@ class ZCodeSavedHistoryTests(unittest.TestCase):
                        '{"type":"text","text":"private runtime context","synthetic":true}')""")
             db.commit()
 
+    def test_sync_can_use_saved_prefix_at_an_exact_existing_native_boundary(self):
+        from bridge.clients.zcode.adapter import saved_prefix
+        native = [{'visibility': 'visible', 'kind': 'assistantText', 'entityId': '2'}]
+        self.assertEqual(saved_prefix(self.home, 'sess_ok', self.workspace, native), '2')
+        self.assertIsNone(saved_prefix(self.home, 'sess_ok', self.workspace + '-other', native))
+        self.assertIsNone(saved_prefix(self.home, 'sess_ok', self.workspace, [dict(native[0], entityId='unknown')]))
+        saved = saved_detail(self.home, 'sess_ok', {'historyBefore': '2'})
+        self.assertEqual([row['id'] for row in saved['messages']], ['0'])
+
+    def test_sync_pages_native_anchored_tool_and_reasoning_parts_without_private_metadata(self):
+        from bridge.clients.manager import DesktopSessions
+        from bridge.features.sessions import sync
+        from bridge.features.sessions.timeline import Timeline
+        with closing(sqlite3.connect(self.transcript)) as db:
+            db.execute("UPDATE message SET data=json_set(data,'$.anchor.turnId','turn-a') WHERE id IN ('0','2')")
+            middle = {'role': 'assistant', 'semantics': {'uiVisibility': 'visible'},
+                      'anchor': {'turnId': 'turn-a'}, 'finish': 'tool-calls'}
+            db.execute("INSERT INTO message VALUES ('middle','sess_ok',1,10,?)", (json.dumps(middle),))
+            parts = [
+                {'type': 'reasoning', 'text': 'visible reasoning', 'metadata': {'anthropic': {'private': 'secret'}}},
+                {'type': 'tool', 'tool': 'fixture-tool', 'state': {'status': 'completed', 'input': {'value': 'input'},
+                                                                 'output': 'saved tool result', 'metadata': {'private': 'secret'}}},
+                {'type': 'tool', 'tool': 'fixture-tool', 'metadata': {'visibility': 'model-only'},
+                 'state': {'status': 'completed', 'output': 'private tool result'}},
+                {'type': 'reasoning', 'synthetic': True, 'text': 'synthetic hidden reasoning'},
+            ]
+            db.executemany("INSERT INTO part VALUES (?, 'sess_ok', 'middle', ?, 0, ?)",
+                           [(f'part{i}', i, json.dumps(part)) for i, part in enumerate(parts)])
+            db.commit()
+        self.assertEqual(len(saved_detail(self.home, 'sess_ok')['messages']), 2)
+        options = {'historySync': True, 'historyLimit': 1}
+        newest = saved_detail(self.home, 'sess_ok', options)
+        source = saved_detail(self.home, 'sess_ok', {**options, 'historyBefore': newest['history']['before']})
+        self.assertEqual([row['kind'] for row in source['messages']], ['reasoning', 'toolCall'])
+        self.assertTrue(source['history']['hasMore'])
+        older = saved_detail(self.home, 'sess_ok', {**options, 'historyBefore': source['history']['before']})
+        messages = older['messages'] + source['messages'] + newest['messages']
+        timeline = Timeline()
+        timeline.update({'sequence': 1, 'turns': DesktopSessions._history_turns(messages, {'status': 'idle'})}, conversation=True)
+        recent = sync.read(timeline, 'recent')
+        group = recent['turns'][0]['processes'][0]['key']
+        self.assertNotIn('saved tool result', json.dumps(recent))
+        page = sync.read(timeline, 'process', key=group, limit=1)
+        self.assertEqual(page['rows'][0]['text'], 'visible reasoning')
+        tool = sync.read(timeline, 'process', key=group, after=page['next'])['rows'][0]
+        body = sync.read(timeline, 'body', key=tool['key'])
+        self.assertIn('saved tool result', body['text'])
+        self.assertNotIn('secret', json.dumps(body))
+        self.assertNotIn('private tool result', json.dumps(messages))
+
     def test_saved_composer_labels_preserve_routing_ids_without_live_permissions(self):
         for model, display, effort in [
                 ('account:zai-start-plan/GLM-5.3-Flash$low', 'GLM-5.3-Flash', 'low'),

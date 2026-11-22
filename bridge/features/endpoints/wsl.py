@@ -22,6 +22,7 @@ from bridge.features.sessions import linux_permissions
 from bridge.features.accounts.draft_identity import draft_identity
 from bridge.features.sessions.model import normalize_state, normalize_request, computer_use_approval
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.store import StoreUnavailable
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
@@ -73,6 +74,7 @@ class Session:
         self.condition = threading.Condition(threading.RLock())
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
+        self.sync_timeline = Timeline()
         self.sequence = 0
         self.state = {'id': identifier, 'turns': [], 'threadRuntimeStatus': {'type': 'notLoaded'}}
         self.connected = False
@@ -82,6 +84,7 @@ class Session:
         self.viewers = 0
         self.touched = time.monotonic()
         self.history_limit = 20
+        self.sync_source_revision = None
         self.refreshing = False
         self.stamp = None
         self.watched = False
@@ -541,28 +544,96 @@ class WslEntry(WslFeatures):
             result['readOnlyReason'] = result.get('error') or '点击重新连接以恢复 WSL 会话'
         return self._view_features(session, result)
 
+    def sync_watch_source(self, identifier):
+        session = self.session(identifier, attach=False)
+
+        def probe():
+            try:
+                revision = self.store.history_revision(identifier)
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                revision = None
+            return session.sequence, revision
+
+        def wait(previous, delay):
+            with session.condition:
+                session.condition.wait_for(lambda: session.sequence != previous[0], timeout=delay)
+
+        return probe, wait, 2
+
+    def _sync_saved_history(self, session, *, refresh):
+        revision = self.store.history_revision(session.id)
+        if not refresh:
+            with session.condition:
+                if session.connected or session.sync_source_revision == revision:
+                    return
+        state = self.store.history(session.id, turn_limit=session.history_limit)
+        with session.condition:
+            if not session.connected:
+                changed = session.state != state or session.loading
+                session.state = state
+                session.loading = False
+                session.sync_source_revision = revision
+                if changed:
+                    session.changed()
+
     def timeline_read(self, identifier, mode='page', **options):
-        session = self.session(identifier, background=True)
-        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        sync_mode = options.pop('sync_mode', None)
+        session = (self.session(identifier, attach=False) if sync_mode
+                   else self.session(identifier, background=True))
+        timeline = session.sync_timeline if sync_mode else session.timeline
+        if sync_mode:
+            with session.condition:
+                connected, loading = session.connected, session.loading
+            if connected and sync_mode == 'watch':
+                self.session(identifier, background=True)
+            elif not connected and (loading or sync_mode in ('recent', 'watch')):
+                self._sync_saved_history(session, refresh=loading)
+        conversation = options.get('projection') == 'conversation' or mode == 'process' or bool(sync_mode)
         if mode == 'detail':
             options.pop('projection', None)
-        if options.get('before') and not session.view()['historyComplete']:
+        if not sync_mode and options.get('before') and not session.view()['historyComplete']:
             with session.action_lock:
                 session.history_limit += 50
             self._refresh(session)
         # view() reads write receipts; do not take the entry write gate while
         # holding the session condition (writers acquire them in reverse order).
         snapshot = self.view(identifier, attach=False, process_bodies=not conversation)
+        if sync_mode:
+            while not snapshot.get('historyComplete'):
+                with session.condition:
+                    if snapshot['sequence'] >= timeline.sequence:
+                        timeline.update(snapshot, conversation=True)
+                    expand = history_sync.needs_older(timeline, sync_mode, options)
+                if not expand:
+                    break
+                loaded_turns = len(snapshot.get('turns', ()))
+                with session.action_lock:
+                    session.history_limit += max(50, session.history_limit)
+                if session.connected:
+                    self._refresh(session)
+                else:
+                    self._sync_saved_history(session, refresh=True)
+                snapshot = self.view(identifier, attach=False, process_bodies=False)
+                if len(snapshot.get('turns', ())) <= loaded_turns:
+                    break
         with session.condition:
-            if snapshot['sequence'] >= session.timeline.sequence:
-                session.timeline.update(snapshot, conversation=conversation)
+            if snapshot['sequence'] >= timeline.sequence:
+                timeline.update(snapshot, conversation=conversation)
+            if sync_mode:
+                timeline.meta['syncSourceComplete'] = bool(snapshot.get('historyComplete') and not snapshot.get('loadingHistory'))
+                timeline.meta['syncSourceRevision'] = history_sync.digest(session.sync_source_revision)
+                result = history_sync.read(timeline, sync_mode, **options)
+                if sync_mode in ('watch', 'process') or result.get('notModified') and sync_mode == 'body':
+                    return result
+                messages = result['rows'] if sync_mode != 'body' else [{'role': 'assistant', 'text': result['text']}]
+                return {**result, 'files': workspace_references(messages, snapshot.get('cwd'), host_files=True)}
             if mode == 'process':
-                return {**session.timeline.process(**options), 'files': []}
+                return {**timeline.process(**options), 'files': []}
             if mode == 'detail':
-                result = session.timeline.detail(**options)
-                messages = [{'role': 'assistant', 'text': session.timeline.details[result['key']]}]
+                result = timeline.detail(**options)
+                messages = [{'role': 'assistant', 'text': timeline.details[result['key']]}]
             else:
-                result = session.timeline.changes(**options) if mode == 'changes' else session.timeline.page(**options)
+                result = timeline.changes(**options) if mode == 'changes' else timeline.page(**options)
                 messages = result['rows']
             return {**result, 'files': workspace_references(messages, snapshot.get('cwd'), host_files=True)}
 

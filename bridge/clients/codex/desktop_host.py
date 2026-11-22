@@ -13,6 +13,7 @@ import secrets
 import signal
 import socket
 import struct
+import tempfile
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ from .app_server import (AppServerError, AppServerRequestNotSent, AppServerUnava
                          AppServerUnknownResult, response_result)
 from .cli_session import CliSessions
 from .desktop_stdio import DesktopStdio, MAX_LINE, METADATA_METHODS
+from .ipc_json import FrameReader, JsonLine, iter_wire_json
 from .ipc import DesktopIPC, IPCError, validate_stream_state
 from . import desktop_runtime as runtime
 
@@ -35,14 +37,13 @@ CONTROL_METHODS = frozenset(('thread/loaded/list', 'thread/turns/list', 'thread/
 def _forward_native_output(stream, router, stopped):
     # Popen keeps stdin unbuffered; reading lines from its raw stdout would
     # issue one OS read per byte and stall all replies behind large histories.
-    stream = io.BufferedReader(stream)
-    while not stopped.is_set():
-        line = stream.readline(MAX_LINE + 2)
-        if not line:
-            return
-        if len(line.rstrip(b'\r\n')) > MAX_LINE:
-            raise ValueError('原生桌面回执过大')
-        router.from_native(json.loads(line))
+    with io.BufferedReader(stream) as buffered:
+        while not stopped.is_set():
+            reader = FrameReader(JsonLine(buffered), None, DesktopIPC.READ_CHUNK, native_rpc=True)
+            message = reader.read(allow_eof=True)
+            if message is None:
+                return
+            router.from_native(message)
 
 
 HISTORY_TURN_LIMIT = 40
@@ -389,11 +390,17 @@ class _Follower:
         self.revision = 0
 
     def send(self, message):
-        data = json.dumps(message, ensure_ascii=False, separators=(',', ':')).encode()
-        if len(data) > DesktopIPC.MAX_FRAME:
-            raise ValueError('桌面快照超过接入容量限制')
-        with self.write_lock:
-            self.stream.sendall(struct.pack('<I', len(data)) + data)
+        with tempfile.SpooledTemporaryFile(max_size=DesktopIPC.READ_CHUNK) as encoded:
+            for chunk in iter_wire_json(message):
+                encoded.write(chunk)
+                if encoded.tell() > DesktopIPC.MAX_FRAME:
+                    raise ValueError('桌面快照超过原生帧长度')
+            length = encoded.tell()
+            encoded.seek(0)
+            with self.write_lock:
+                self.stream.sendall(struct.pack('<I', length))
+                while chunk := encoded.read(DesktopIPC.READ_CHUNK):
+                    self.stream.sendall(chunk)
 
     def snapshot(self, thread_id, state):
         with self.condition:
@@ -577,8 +584,13 @@ def serve(config, app, host, arguments, initialize, env=None, dispatcher=None):
 
     def emit(message):
         with output_lock:
-            sys.stdout.buffer.write(json.dumps(message, ensure_ascii=False).encode() + b'\n')
-            sys.stdout.buffer.flush()
+            # The App still receives the complete native reply. Hold the output
+            # lock across all chunks to preserve the original JSONL boundaries.
+            output = sys.stdout.buffer
+            for chunk in iter_wire_json(message):
+                output.write(chunk)
+            output.write(b'\n')
+            output.flush()
 
     def write(data):
         remaining = memoryview(data)

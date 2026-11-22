@@ -14,6 +14,7 @@ from bridge.api.html_preview import SHELL_PATH, SHELL_FILE, SHELL_CSP
 from bridge.api.visualize import SHELL_PATH as VISUALIZE_SHELL_PATH, SHELL_CSP as VISUALIZE_CSP, shell_bytes as visualization_shell_bytes
 from bridge.api.mermaid_render import SHELL_PATH as MERMAID_SHELL_PATH, shell_csp as mermaid_shell_csp, shell_bytes as mermaid_shell_bytes, is_public_renderer_script
 from .protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type, download_headers
+from .protocol import SESSION_SYNC_HEADER, SESSION_SYNC_PATH, sync_gateway, phone_sync
 from .registry import Registry, token, PHONE_LIFETIME
 from .stream import WINDOW, unpack
 
@@ -37,6 +38,7 @@ class Relay:
         self.registry = Registry(directory)
         self.devices = {}
         self.protocols = {}
+        self.sync_gateways = {}
         self.discovery = {}
         self.pending = {}
         self.timeout = timeout
@@ -179,11 +181,13 @@ class Relay:
             return web.json_response({'authenticated': False, 'relay': True, 'passwordRequired': False,
                                       'passwordless': False, 'instanceId': 'relay:' + identifier,
                                       'online': identifier in self.devices})
+        gateway = self.sync_gateways.get(phone['device'])
+        sync = {'sessionSync': phone_sync(gateway, phone['id'])} if gateway else {}
         return self.renew(request, web.json_response({'authenticated': True, 'csrf': phone['csrf'], 'relay': True,
                                   'trustedDevice': True, 'passwordless': False, 'instanceId': 'relay:' + phone['device'],
                                   'computer': {'name': phone['computer_name']},
                                   'transport': 'poll', 'deviceId': phone['device'],
-                                  'online': phone['device'] in self.devices}), phone)
+                                  'online': phone['device'] in self.devices, **sync}), phone)
 
     async def logout(self, request):
         phone = self.phone_auth(request)
@@ -217,6 +221,10 @@ class Relay:
         self.devices[device['id']] = ws
         self.discovery.pop(device['id'], None)
         self.protocols[device['id']] = request.query.get('protocol') == '2'
+        self.sync_gateways.pop(device['id'], None)
+        gateway = sync_gateway(request.headers.get(SESSION_SYNC_HEADER, ''))
+        if self.protocols[device['id']] and gateway:
+            self.sync_gateways[device['id']] = gateway
         if old is not None:
             self.fail(device['id'])
             await old.close()
@@ -293,6 +301,7 @@ class Relay:
             if self.devices.get(device['id']) is ws:
                 del self.devices[device['id']]
                 self.protocols.pop(device['id'], None)
+                self.sync_gateways.pop(device['id'], None)
                 self.discovery.pop(device['id'], None)
                 self.fail(device['id'])
             await ws.close()
@@ -312,6 +321,8 @@ class Relay:
         ws = self.devices.get(phone['device'])
         if ws is None:
             return web.json_response({'error': '电脑离线，请保持 Codex 和电脑网关运行。', 'code': 'device_offline'}, status=503)
+        if SESSION_SYNC_PATH.fullmatch(urlsplit(path).path) and phone['device'] not in self.sync_gateways:
+            return web.json_response({'error': '当前电脑网关未提供会话同步。'}, status=404)
         if len(self.pending) >= 64 or sum(i['device'] == phone['device'] for i in self.pending.values()) >= 12:
             raise web.HTTPTooManyRequests()
         if self.buffered + length > 128 * 1024 * 1024:

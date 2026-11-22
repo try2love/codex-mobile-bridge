@@ -8,6 +8,7 @@ import time
 import uuid
 from concurrent.futures import Future, TimeoutError
 
+from bridge.clients.codex.ipc_json import FrameReader
 from bridge.clients.codex.transport import connect_stream, endpoint_identity
 
 
@@ -86,9 +87,8 @@ class IPCError(Exception):
 
 
 class DesktopIPC:
-    # Desktop snapshots include the loaded history and can exceed 64 MiB.
-    # Keep a bounded receive budget without enlarging outbound operations.
-    MAX_FRAME = 256 * 1024 * 1024
+    # The native protocol has an unsigned 32-bit little-endian frame length.
+    MAX_FRAME = (1 << 32) - 1
     MAX_REQUEST = 64 * 1024 * 1024
     READ_CHUNK = 1024 * 1024
     VERSIONS = {
@@ -319,7 +319,12 @@ class DesktopIPC:
                     logging.getLogger(__name__).warning(
                         "Codex desktop IPC frame rejected: bytes=%s limit=%s", length, self.MAX_FRAME)
                     raise IPCError("桌面 IPC 帧长度不兼容")
-                message = json.loads(self._exact(sock, length))
+                if length <= 64 * 1024:
+                    message = json.loads(self._exact(sock, length))
+                    if not isinstance(message, dict):
+                        raise ValueError('Invalid JSON frame')
+                else:
+                    message = FrameReader(sock, length, self.READ_CHUNK).read()
                 if message.get("type") == "response":
                     with self.lock:
                         if self.socket is not sock:

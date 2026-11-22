@@ -6,13 +6,13 @@ The parent contributes only workspace access and catalog settings.
 from types import SimpleNamespace
 
 from bridge.features.workspace.files import artifact_paths, host_file_links
-from bridge.features.sessions import message_management
+from bridge.features.sessions import message_management, sync as history_sync
 
 
 class TemporarySession:
     capabilities = {'notifications': False}
     temporary = True
-    actions = {None, 'timeline', 'conversation', 'process', 'detail', 'changes', 'poll', 'events', 'catalog',
+    actions = {None, 'timeline', 'conversation', 'process', 'detail', 'changes', 'sync', 'poll', 'events', 'catalog',
                'send', 'settings', 'permissions', 'stop', 'respond', 'queue', 'uploads', 'notifications', 'message-management'}
 
     def __init__(self, bridge, chat):
@@ -41,9 +41,20 @@ class TemporarySession:
                     'canChangeModel': writable, 'canSelectSkills': writable, 'canUseModes': writable,
                     'canUseGoal': False, 'canUseSideChat': False, 'canEditMessages': False}}
 
+    def sync_watch_source(self, identifier):
+        chat = self.session(identifier)
+
+        def wait(previous, delay):
+            with chat.condition:
+                chat.condition.wait_for(lambda: chat.sequence != previous, timeout=delay)
+
+        return lambda: chat.sequence, wait, 8
+
     def timeline_read(self, identifier, mode='page', **options):
         chat = self.session(identifier)
-        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        sync_mode = options.pop('sync_mode', None)
+        timeline = chat.sync_timeline if sync_mode else chat.timeline
+        conversation = options.get('projection') == 'conversation' or mode == 'process' or bool(sync_mode)
         if mode == 'detail':
             options.pop('projection', None)
         with chat.condition:
@@ -54,12 +65,18 @@ class TemporarySession:
                 for row in turn['messages']:
                     row['attachments'] = [dict(a, type='image' if a.get('image') else 'file')
                                           for a in row.get('attachments', [])]
-            chat.timeline.update(view, conversation=conversation)
+            timeline.update(view, conversation=conversation)
             if mode == 'process':
-                return {**chat.timeline.process(**options), 'files': []}
-            result = (chat.timeline.detail(**options) if mode == 'detail' else
-                      chat.timeline.changes(**options) if mode == 'changes' else chat.timeline.page(**options))
-            if mode != 'detail':
+                return {**timeline.process(**options), 'files': []}
+            if sync_mode:
+                timeline.meta['syncSourceComplete'] = True
+                result = history_sync.read(timeline, sync_mode, **options)
+                if sync_mode in ('watch', 'process') or result.get('notModified') and sync_mode == 'body':
+                    return result
+            else:
+                result = (timeline.detail(**options) if mode == 'detail' else
+                          timeline.changes(**options) if mode == 'changes' else timeline.page(**options))
+            if mode != 'detail' and sync_mode != 'body':
                 # Reuse the same upload preview endpoint as the ordinary composer.
                 uploads = {t['id']: next((m.get('attachments', []) for m in t['messages'] if m['role'] == 'user'), [])
                            for t in view['turns']}

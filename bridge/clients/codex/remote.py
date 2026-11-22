@@ -224,8 +224,17 @@ class RemoteStore:
     def get(self, thread_id):
         return self.call('get', {'thread_id': thread_id})
 
+    def history_revision(self, thread_id):
+        return self.call('history_revision', {'thread_id': thread_id})
+
     def history(self, thread_id, turn_limit=None, item_limit=None):
         return self.call('history', {'thread_id': thread_id, 'turn_limit': turn_limit, 'item_limit': item_limit})
+
+    def transfer_snapshot(self, thread_id):
+        return self.call('transfer_snapshot', {'thread_id': thread_id})
+
+    def transfer_page(self, thread_id, meta, segment, offset):
+        return self.call('transfer_page', {'thread_id': thread_id, 'meta': meta, 'segment': segment, 'offset': offset})
 
     def subagents(self, thread_id):
         return self.call('subagents', {'thread_id': thread_id})

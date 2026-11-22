@@ -19,6 +19,7 @@ from .presentation import COMPOSER_CAPABILITIES, composer_presentation
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
+SAVED_SYNC_CURSOR = 'zcode-saved-sync.'
 LOOPBACK_PLATFORMS = ('darwin', 'win32')
 
 
@@ -61,6 +62,23 @@ def _project_available(workspace):
         return bool(workspace) and Path(workspace).is_absolute() and Path(workspace).is_dir()
     except (OSError, TypeError, ValueError):
         return False
+
+
+def saved_prefix(home, sid, workspace, native_rows):
+    """Find the exact predecessor boundary when both native sources agree."""
+    from .history import saved_detail
+    oldest = next((row for row in native_rows if row.get('visibility') == 'visible'
+                   and row.get('kind') in ('userInput', 'assistantText')), None)
+    identifier = oldest.get('entityId') if oldest else None
+    if not isinstance(identifier, str) or not identifier:
+        return None
+    try:
+        saved = saved_detail(home, sid, {'historyBefore': identifier, 'historyLimit': 1, 'historySync': True})
+    except (OSError, ValueError, BridgeUnavailable):
+        return None
+    if not same_cwd(workspace, saved['session']['cwd'], sys.platform == 'win32') or not saved['messages']:
+        return None
+    return identifier
 
 
 def project_snapshot(snapshot, workspace, reply_models=None):
@@ -507,6 +525,15 @@ class ZCodePrototype(ZCodeDesktop):
     def call(self, action, sid=None, body=None):
         if action == 'image':
             return super().call(action, sid, body)
+        before = (body or {}).get('historyBefore') or ''
+        if action == 'detail' and (body or {}).get('historySync') and before.startswith(SAVED_SYNC_CURSOR):
+            from .history import saved_detail
+            value = saved_detail(self.home, sid, {**body, 'historyBefore': before.removeprefix(SAVED_SYNC_CURSOR)})
+            history = value['history']
+            history['complete'] = False  # The native window and saved prefix can have different process evidence.
+            if history.get('before'):
+                history['before'] = SAVED_SYNC_CURSOR + history['before']
+            return value
         if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
                 ready = self._try_window_resume(sid, body)
@@ -819,6 +846,7 @@ class ZCodePrototype(ZCodeDesktop):
                     message.update(models.get(message['id'], {}))
                 session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, workspace)
                 return {'session': session, 'messages': messages, 'capabilities': session['capabilities'],
+                        'history': {'hasMore': False, 'complete': False},
                         'notice': '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'}
             from .reply_metadata import native_reply_models
             snapshot = result['snapshot']
@@ -838,7 +866,12 @@ class ZCodePrototype(ZCodeDesktop):
             value['draftAccountIdentity'] = _dict(result.get('account')).get('identity', '')
             if value['history']['hasMore']:
                 value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
-                value['history']['hasMore'] = False
+                value['history'].update(hasMore=False, complete=False)
+                if body.get('historySync'):
+                    boundary = saved_prefix(self.home, sid, workspace, snapshot['rows']['window'])
+                    if boundary:
+                        value['history'].update(hasMore=True, before=SAVED_SYNC_CURSOR + boundary)
+                        value['notice'] = '更早内容和可用的执行过程来自 ZCode 已保存的记录。'
             return value
         if action in ('send', 'stop', 'respond', 'settings', 'access', 'work-mode', 'goal', 'compact', 'stop-task', 'fork', 'edit-message', 'rename'):
             status = result['status']

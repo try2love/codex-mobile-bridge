@@ -7,6 +7,7 @@ import json
 import threading
 from collections import OrderedDict
 
+from bridge.clients.codex.ipc_json import StoredString, has_stored_text
 from bridge.features.workspace.uploads import image_type
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -42,6 +43,48 @@ def decode_tool_image(data, mime):
     return raw if len(raw) <= MAX_IMAGE_BYTES and image_type(raw) == mime else None
 
 
+class _StoredImage:
+    __slots__ = ('data', 'start')
+
+    def __init__(self, data, start=0):
+        self.data, self.start = data, start
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __eq__(self, other):
+        return (isinstance(other, _StoredImage) and self.start == other.start
+                and self.data.digest == other.data.digest)
+
+    @property
+    def size(self):
+        return self.data.chars - self.start
+
+    def chunks(self):
+        step = 64 * 1024  # a multiple of four base64 characters
+        for start in range(self.start, self.data.chars, step):
+            end = min(start + step, self.data.chars)
+            text = self.data.slice(start, end)
+            if end < self.data.chars and '=' in text:
+                raise ValueError('Premature base64 padding')
+            yield base64.b64decode(text, validate=True)
+
+    def evidence(self, mime):
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            for chunk in self.chunks():
+                if not size and image_type(chunk) != mime:
+                    return None
+                size += len(chunk)
+                if size > MAX_IMAGE_BYTES:
+                    return None
+                digest.update(chunk)
+        except (ValueError, binascii.Error):
+            return None
+        return (digest.hexdigest(), size) if size else None
+
+
 def extract_tool_images(output, *, remember=None):
     """Return sanitized output and image descriptors for native or JSON-wrapped MCP results."""
     images, seen_data = [], {}
@@ -71,6 +114,11 @@ def extract_tool_images(output, *, remember=None):
             return unscanned(value)
         if isinstance(value, str):
             candidate = value.lstrip()
+            if isinstance(value, StoredString) and candidate.startswith(('{', '[')):
+                body = value.read(MAX_JSON_CHARS - parsed_chars)
+                if body is None:
+                    return unscanned({'type': 'omitted', 'reason': 'toolOutputBudget'})
+                value, candidate = body, body.lstrip()
             if not candidate.startswith(('{', '[')):
                 return value
             if parsed_chars + len(value) > MAX_JSON_CHARS:
@@ -100,34 +148,41 @@ def extract_tool_images(output, *, remember=None):
             if isinstance(url, dict):
                 url = url.get('url')
             if isinstance(url, str) and url.startswith('data:'):
-                header, _, data = url.partition(',')
-                mime = header[5:-7] if header.endswith(';base64') else None
+                header, comma, inline = url.partition(',')
+                mime = header[5:-7] if comma and header.endswith(';base64') else None
+                data = _StoredImage(url, len(header) + 1) if mime and isinstance(url, StoredString) else inline
+            elif isinstance(data, StoredString):
+                data = _StoredImage(data)
             elif not isinstance(data, str):
                 return value
+
             placeholder = {'type': 'image', 'preview': 'unavailable'}
-            if not isinstance(data, str) or not isinstance(mime, str) or mime not in RASTER_TYPES:
+            if not isinstance(mime, str) or mime not in RASTER_TYPES:
                 return placeholder
-            known = seen_data.get((mime, data))
+            stored = isinstance(data, _StoredImage)
+            key = (mime, data.data.digest, data.start) if stored else (mime, data)
+            known = seen_data.get(key)
             if known is not None:
                 return {'type': 'image', 'mimeType': mime, 'preview': known}
             # Base64 length bounds decoded bytes before allocating them. A
             # repeated accepted payload was handled above even at the limit.
             remaining = min(MAX_IMAGE_BYTES, MAX_TOTAL_BYTES - total)
-            if (len(images) >= MAX_IMAGES or remaining <= 0 or
-                    len(data) > ((remaining + 2) // 3) * 4):
+            size = data.size if stored else len(data)
+            if (len(images) >= MAX_IMAGES or remaining <= 0 or size > ((remaining + 2) // 3) * 4):
                 return placeholder
-            raw = decode_tool_image(data, mime)
-            if raw is None:
+            raw = None if stored else decode_tool_image(data, mime)
+            evidence = data.evidence(mime) if stored else (hashlib.sha256(raw).hexdigest(), len(raw)) if raw else None
+            if evidence is None:
                 return placeholder
-            identifier = hashlib.sha256(raw).hexdigest()
-            if total + len(raw) > MAX_TOTAL_BYTES:
+            identifier, decoded_size = evidence
+            if total + decoded_size > MAX_TOTAL_BYTES:
                 return placeholder
-            seen_data[(mime, data)] = identifier
+            seen_data[key] = identifier
             if identifier not in (image['desktopId'] for image in images):
-                total += len(raw)
+                total += decoded_size
                 images.append({'type': 'toolImage', 'desktopId': identifier, 'mime': mime,
                                'name': 'Image ' + str(len(images) + 1) + '.' + RASTER_TYPES[mime], 'data': data})
-                if remember is not None:
+                if remember is not None and raw is not None:
                     remember(identifier, mime, data, raw)
             return {'type': 'image', 'mimeType': mime, 'preview': identifier}
         # Only decode known result envelopes and text content blocks, never arbitrary fields.
@@ -202,6 +257,8 @@ class ToolImageCache:
     def extract(self, output):
         # Key by content, not mutable item identity: live patches can replace or
         # edit an output in place without changing its tool-call id.
+        if has_stored_text(output):
+            return extract_tool_images(output)
         digest = hashlib.sha256()
         input_size = 0
         encoder = json.JSONEncoder(ensure_ascii=True, separators=(',', ':'))
@@ -228,6 +285,12 @@ class ToolImageCache:
 
     def preview(self, attachment):
         identifier, mime, data = attachment['desktopId'], attachment.get('mime'), attachment.get('data')
+        if isinstance(data, _StoredImage):
+            try:
+                raw = b''.join(data.chunks())
+            except (ValueError, binascii.Error):
+                return None
+            return raw if hashlib.sha256(raw).hexdigest() == identifier else None
         # Serialize cold decodes so simultaneous thumbnail/viewer requests share
         # the same bytes. This lock never acquires a session lock.
         with self.lock:

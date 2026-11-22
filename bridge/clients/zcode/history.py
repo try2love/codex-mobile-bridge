@@ -1,5 +1,7 @@
 """Read the original local ZCode task index and its visible saved transcript."""
 import os
+import hashlib
+import json
 import sqlite3
 import stat
 from contextlib import closing, contextmanager
@@ -152,12 +154,50 @@ _VISIBLE_TEXT = """
 """
 
 
+_VISIBLE_PROCESS = """
+    json_extract(p.data, '$.type') IN ('reasoning', 'tool')
+    AND coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
+    AND coalesce(json_extract(p.data, '$.ignored'), 0) = 0
+    AND coalesce(json_extract(p.data, '$.metadata.visibility'), 'visible') = 'visible'
+"""
+
+
+def _process_part(part, parent):
+    value = json.loads(part['data'])
+    row = {'id': 'part:' + str(part['id']), 'role': 'reasoning', 'kind': 'reasoning',
+           'title': '思考摘要', 'text': value.get('text') if isinstance(value.get('text'), str) else ''}
+    if value['type'] == 'tool':
+        state = value.get('state') if isinstance(value.get('state'), dict) else {}
+        tool = str(value.get('tool') or '工具')
+        fields = [field if isinstance(field, str) else json.dumps(field, ensure_ascii=False)
+                  for field in (state.get('input'), state.get('output'), state.get('error')) if field]
+        row.update(role='activity', kind='toolCall', toolName=tool[:160], title=tool[:160],
+                   status=state.get('status'), text='\n\n'.join(fields))
+    if parent.get('turnId'):
+        row['turnId'] = parent['turnId']
+    return row
+
+
+def _revision(home):
+    path = Path(home).absolute().parent / 'cli' / 'db' / 'db.sqlite'
+    stamps = []
+    for member in (path, Path(str(path) + '-wal')):
+        try:
+            info = member.stat()
+        except FileNotFoundError:
+            continue
+        stamps.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return hashlib.sha256(repr(stamps).encode()).hexdigest()[:24]
+
+
 def saved_detail(home, sid, body=None):
-    import json
     from .attachments import attachments
 
     body = body or {}
     before = body.get('historyBefore')
+    include_process = body.get('historySync') is True
+    visible_parts = '(' + _VISIBLE_TEXT + ' OR ' + _VISIBLE_PROCESS + ')' if include_process else _VISIBLE_TEXT
+    revision = _revision(home) if include_process else None
     limit = max(1, min(100, int(body.get('historyLimit', 40))))
     with _history(home) as db:
         session = _target(db, sid, allow_index_only=True)
@@ -177,6 +217,7 @@ def saved_detail(home, sid, body=None):
         rows = db.execute("""
             SELECT m.id, m.time_created, json_extract(m.data, '$.role') AS role,
                    json_extract(m.data, '$.anchor.turnId') AS turn_id,
+                   json_extract(m.data, '$.finish') AS finish,
                    CASE WHEN json_type(m.data, '$.metadata.conversationInputIntent.attachments')='array'
                         THEN json_extract(m.data, '$.metadata.conversationInputIntent.attachments')
                         WHEN json_type(m.data, '$.metadata.inputIntent.attachmentRefs')='array'
@@ -189,7 +230,7 @@ def saved_detail(home, sid, body=None):
               AND coalesce(json_extract(m.data, '$.synthetic'), 0) = 0
               AND ((json_extract(m.data, '$.role')='user' AND json_array_length(files)>0) OR
                    EXISTS (SELECT 1 FROM cli.part AS p WHERE p.message_id = m.id
-                          AND p.session_id = m.session_id AND """ + _VISIBLE_TEXT + '))'
+                          AND p.session_id = m.session_id AND """ + visible_parts + '))'
             + page + ' ORDER BY m.sequence DESC, m.time_created DESC, m.id DESC LIMIT ?',
             (*args, limit + 1)).fetchall()
         messages = []
@@ -197,28 +238,42 @@ def saved_detail(home, sid, body=None):
             message = {'id': row['id'], 'role': row['role'], 'text': '', 'timestamp': row['time_created']}
             if isinstance(row['turn_id'], str) and row['turn_id']:
                 message['turnId'] = row['turn_id']
+            if include_process and row['role'] == 'assistant' and row['finish'] == 'tool-calls':
+                message['phase'] = 'commentary'
             if row['role'] == 'user' and row['files']:
                 message['attachments'] = attachments(sid, json.loads(row['files']), row['command'])
             messages.append(message)
         if messages:
             ids = [row['id'] for row in messages]
             parts = db.execute("""
-                SELECT p.message_id, json_extract(p.data, '$.text') AS text
+                SELECT p.id, p.message_id, json_extract(p.data, '$.text') AS text,
+                       json_extract(p.data, '$.type') AS kind, """ + ('p.data' if include_process else 'NULL AS data') + """
                 FROM cli.part AS p WHERE p.session_id = ? AND p.message_id IN ("""
-                + ','.join('?' for _ in ids) + ') AND ' + _VISIBLE_TEXT
+                + ','.join('?' for _ in ids) + ') AND ' + visible_parts
                 + ' ORDER BY p.message_id, p.sequence, p.time_created, p.id', (sid, *ids))
             texts = {mid: [] for mid in ids}
+            process = {mid: [] for mid in ids}
+            by_id = {message['id']: message for message in messages}
             for part in parts:
-                if isinstance(part['text'], str):
+                if part['kind'] == 'text' and isinstance(part['text'], str):
                     texts[part['message_id']].append(part['text'])
+                elif include_process and by_id[part['message_id']]['role'] == 'assistant':
+                    process[part['message_id']].append(_process_part(part, by_id[part['message_id']]))
             from .reply_metadata import reply_models
             models = reply_models(db, sid, (m['id'] for m in messages if m['role'] == 'assistant'))
             for message in messages:
                 message.update(models.get(message['id'], {}))
                 message['text'] = '\n'.join(texts[message['id']])
+            if include_process:
+                messages = [row for message in messages
+                            for row in (*process[message['id']], message)
+                            if row is not message or message['text'] or message.get('attachments')]
+    if include_process and _revision(home) != revision:
+        raise ValueError('ZCode 历史已变化，请重新打开聊天')
     return {'session': session, 'readOnly': True, 'messages': messages, 'requests': [],
             'capabilities': session['capabilities'],
-            'history': {'hasMore': len(rows) > limit, 'before': messages[0]['id'] if len(rows) > limit else None},
+            'history': {'hasMore': len(rows) > limit, 'before': rows[limit - 1]['id'] if len(rows) > limit else None,
+                        **({'revision': revision} if revision else {})},
             'notice': '当前为本机保存的聊天文字，仅供查看。'}
 
 

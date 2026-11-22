@@ -10,6 +10,7 @@ import subprocess
 import threading
 from concurrent.futures import Future, TimeoutError
 from bridge.clients.websocket import WebSocket
+from bridge.clients.codex.ipc_json import FrameReader
 from pathlib import Path, PurePosixPath
 
 
@@ -70,6 +71,9 @@ class _WebSocket(WebSocket):
     def __init__(self, reader, writer):
         super().__init__(reader, writer, error=AppServerError,
                          unavailable=AppServerUnavailable, unsupported=AppServerUnsupported)
+
+    def receive(self):
+        return FrameReader(self.message_stream(), None, 1024 * 1024, native_rpc=True).read()
 
 
 class CodexAppServer:

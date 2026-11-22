@@ -14,6 +14,8 @@ import threading
 from concurrent.futures import Future, TimeoutError
 
 from bridge.clients.codex.ipc import IPCError
+from bridge.clients.codex.ipc_json import FrameReader
+from bridge.clients.websocket import WebSocketMessage
 
 
 class SharedServer:
@@ -127,44 +129,10 @@ class SharedServer:
                 self.pending.pop(identifier, None)
 
     def _read(self):
-        fragments = bytearray()
-        fragmented = False
         try:
             while not self.closed:
-                first, second = self.exact(2)
-                opcode = first & 15
-                size = second & 127
-                if first & 0x70 or second & 128:
-                    raise ValueError('Invalid WebSocket frame')
-                if size == 126:
-                    size = struct.unpack('!H', self.exact(2))[0]
-                elif size == 127:
-                    size = struct.unpack('!Q', self.exact(8))[0]
-                if size > self.LIMIT or len(fragments) + size > self.LIMIT:
-                    raise ValueError('Frame too large')
-                if opcode >= 8 and (not first & 128 or size > 125):
-                    raise ValueError('Invalid control frame')
-                data = self.exact(size)
-                if opcode == 8:
-                    break
-                if opcode == 9:
-                    self.frame(data, 10)
-                    continue
-                if opcode == 10:
-                    continue
-                if opcode == 1 and not fragmented:
-                    fragments = bytearray(data)
-                elif opcode == 0 and fragmented:
-                    fragments.extend(data)
-                else:
-                    raise ValueError('Invalid message fragment')
-                fragmented = not bool(first & 128)
-                if fragmented:
-                    continue
-                value = json.loads(fragments)
-                fragments.clear()
-                if not isinstance(value, dict):
-                    raise ValueError('Invalid RPC message')
+                stream = WebSocketMessage(self.exact, ValueError, lambda data: self.frame(data, 10))
+                value = FrameReader(stream, None, 1024 * 1024, native_rpc=True).read()
                 if 'method' in value:
                     self.event(value)
                 else:

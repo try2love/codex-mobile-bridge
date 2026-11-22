@@ -131,12 +131,13 @@ def transcript(value):
         first_part = len(result)
         texts = []
         text_part = 0
+        reply_label = {key: message[key] for key in ('model', 'effort') if isinstance(message.get(key), str)}
         event_id=event.get('uuid') or message.get('id') or str(index)
         def flush():
             nonlocal text_part
             if texts:
                 result.append({'id':str(event_id)+':text:'+str(text_part), 'eventId':str(event_id), 'role':role,'text':'\n'.join(texts),
-                               **{key: message[key] for key in ('model', 'effort') if isinstance(message.get(key), str)}})
+                               **reply_label})
                 text_part += 1
                 texts.clear()
         for part,block in enumerate(blocks):
@@ -197,7 +198,7 @@ def transcript(value):
             elif block.get('type') == 'thinking_summary':
                 flush()
                 summary=block.get('text') or block.get('summary')
-                if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary)})
+                if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary), **reply_label})
         flush()
         # One native event can contain multiple text/image/tool blocks.
         for row in result[first_part:]:

@@ -32,6 +32,7 @@ from bridge.features.sessions.pins import SessionPins
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.projects import Projects
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.display_metadata import DisplayMetadata, RenameCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
 from bridge.features.sessions.organization import OrganizationNotSent
@@ -267,6 +268,8 @@ class DesktopSessions:
         self.read_lock = threading.Lock()
         self.reads = {}
         self.history_timelines = OrderedDict()
+        self.history_scans = OrderedDict()
+        self.history_views = OrderedDict()
         self.history_cursor_secret = secrets.token_bytes(32)
         self.pending_resumes = {provider: {} for provider in self.locks}
         self.activity = {}
@@ -1544,6 +1547,316 @@ class DesktopSessions:
             pending.pop(rid, None)
         return result
 
+    @staticmethod
+    def _history_turns(messages, session):
+        # Native adapters may expose only one loaded window. Do not invent an
+        # older source cursor or connect/resume a writer to obtain one.
+        turns = []
+        boundary = 'history'
+        for index, message in enumerate(messages):
+            if message.get('turnId') and message['turnId'] != 'history':
+                boundary = message['turnId']
+            elif (message.get('role') == 'user' and message.get('interaction') not in ('response', 'steer', 'supplement')
+                  and message.get('kind') != 'steeringUserMessage'
+                  and (not turns or not turns[-1]['messages'] or
+                       message.get('eventId') != turns[-1]['messages'][-1].get('eventId') or not message.get('eventId'))):
+                boundary = 'user:' + str(message.get('id', index))
+            if not turns or turns[-1]['id'] != boundary:
+                turns.append({'id': boundary, 'messages': [], 'actionable': False,
+                              'status': message.get('turnStatus'),
+                              'completionKnown': message.get('turnStatus') in ('completed', 'interrupted', 'failed')})
+            if message.get('turnStatus'):
+                turns[-1]['status'] = message['turnStatus']
+                turns[-1]['completionKnown'] = message['turnStatus'] in ('completed', 'interrupted', 'failed')
+            normalized = dict(message, kind=message.get('kind') or message.get('type') or message.get('role', 'unknown'))
+            turns[-1]['messages'].append(normalized)
+            for source, target in (('turnStartedAt', 'startedAt'), ('turnCompletedAt', 'completedAt')):
+                if message.get(source) is not None:
+                    turns[-1][target] = message[source]
+        for turn in turns[:-1]:
+            if not turn.get('status') and any(row.get('phase') == 'final_answer' for row in turn['messages']):
+                turn.update(status='completed', completionKnown=True)
+        if turns and not turns[-1].get('status'):
+            turns[-1]['status'] = session.get('turnStatus') or ('inProgress' if session.get('status') == 'active' else 'completed')
+        return turns
+
+    def sync_watch_source(self, provider, sid):
+        self.require_enabled(provider)
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            return None
+        try:
+            raw = adapter.record_path(sid)
+            path = Path(raw) if raw else None
+        except (OSError, ValueError, KeyError, BridgeUnavailable):
+            path = None
+        if not path or not path.is_absolute():
+            # Older or unbound connectors can still use their existing tail
+            # read at a conservative interval.
+            return None
+        paths = [path]
+        if path.name == 'transcript.jsonl':
+            paths.append(path.with_name('transcript_full.jsonl'))
+        if path.suffix in ('.db', '.sqlite'):
+            paths.append(path.with_name(path.name + '-wal'))
+
+        def probe():
+            self.require_enabled(provider)
+            stamps = tuple(history_sync.watch_file(item) for item in paths)
+            if any(stamps):
+                with self.read_lock:
+                    return self.binding_epochs[provider], stamps
+            return None
+
+        return probe, lambda old, delay: time.sleep(delay), .2
+
+    @staticmethod
+    def _history_source_revision(provider, page):
+        history = page.get('history') or {}
+        revision = history.get('revision')
+        if isinstance(revision, (str, int)) and not isinstance(revision, bool) and revision != '':
+            return 'native', revision
+        before = history.get('before')
+        # Claude CLI local and remote cursors bind every page to the transcript
+        # file's identity and modification stamp. Desktop UUID cursors do not.
+        if provider == 'claude' and isinstance(before, str) and len(before) <= 1024 and '.' not in before:
+            try:
+                origin, fingerprint, end = json.loads(base64.urlsafe_b64decode(before + '=' * (-len(before) % 4)))
+                if (isinstance(origin, str) and isinstance(fingerprint, list) and len(fingerprint) == 5
+                        and all(type(value) is int for value in fingerprint) and type(end) is int and end > 0):
+                    return 'claude-file', origin, tuple(fingerprint)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    @staticmethod
+    def _history_transcript_revision(provider, adapter, sid):
+        # Antigravity's detail reader reconciles exactly these two local log
+        # files. A summary DB or a renderer's unverified path is insufficient.
+        if provider != 'antigravity' or adapter is None:
+            return None
+        try:
+            raw = adapter.record_path(sid)
+            path = Path(raw) if raw else None
+        except (OSError, ValueError, KeyError, BridgeUnavailable):
+            return None
+        if path is None or not path.is_absolute() or path.name != 'transcript.jsonl':
+            return None
+        compact = history_sync.watch_file(path)
+        if compact is None:
+            return None
+        return 'antigravity-files', str(path), compact, history_sync.watch_file(
+            path.with_name('transcript_full.jsonl'))
+
+    @staticmethod
+    def _history_page_fingerprint(page):
+        session = page.get('session') or {}
+        return history_sync.digest([page.get('history'), page.get('messages', []),
+                                    session.get('status'), session.get('turnStatus')])
+
+    @staticmethod
+    def _project_history(batches, newest, more, complete):
+        session = newest.get('session') or {}
+        history = newest.get('history') or {}
+        messages = [message for batch in reversed(batches) for message in batch]
+        timeline = Timeline()
+        timeline.update({'sequence': len(batches) - 1, 'turns': DesktopSessions._history_turns(messages, session),
+                         'historyWindowMore': more, 'syncSourceComplete': complete,
+                         'syncPartialHead': not complete,
+                         'syncSourceRevision': history.get('revision') or history.get('before'),
+                         'syncControl': {key: session.get(key) for key in
+                                         ('status', 'turnStatus', 'requests', 'connected', 'queue', 'access', 'model', 'effort',
+                                          *history_sync.CONTEXT_FIELDS)},
+                         **{key: session[key] for key in history_sync.CONTEXT_FIELDS if key in session}},
+                        conversation=True, retain_attachments=True)
+        order_origin = len(timeline.rows)
+        for row in timeline.rows:
+            row['order'] -= order_origin
+        for row in timeline.conversation_rows:
+            if row.get('kind') == 'processPage':
+                row['order'] -= order_origin
+        return timeline
+
+    def history_sync(self, provider, sid, mode, options):
+        self.require_enabled(provider)
+        options = dict(options)
+        transfer_attachments = options.pop('transfer', False)
+        scan = options.pop('scan', None)
+        with self.read_lock:
+            binding = self.binding_epochs[provider]
+            adapter = getattr(self, 'adapters', {}).get(provider)
+            identity = (provider, sid, binding, id(adapter))
+            scope = (identity, mode, options)
+            now = time.monotonic()
+            if not hasattr(self, 'history_views'):
+                self.history_views = OrderedDict()
+            for shelf in (self.history_scans, self.history_views):
+                for token, record in tuple(shelf.items()):
+                    if record['expires'] <= now:
+                        shelf.pop(token)
+            record = self.history_scans.get(scan)
+            if scan and (not record or record['scope'] != scope):
+                return {'pending': True, 'scanReset': True}
+            if record:
+                self.history_scans.pop(scan)
+            cached = self.history_views.get(identity)
+
+        native_options = {'historySync': True} if provider == 'zcode' else {}
+        # A single stable native tail shape lets subsequent process, body or
+        # older requests independently revalidate the scan against its source.
+        file_revision = DesktopSessions._history_transcript_revision(provider, adapter, sid)
+        newest = self.call(provider, 'detail', sid, {'historyLimit': 40, **native_options})
+        if adapter is None:
+            with self.read_lock:
+                constructed = getattr(self, 'adapters', {}).get(provider)
+                if constructed is not None:
+                    if self.binding_epochs[provider] != binding:
+                        raise BridgeUnavailable('客户端状态已变化，请重试')
+                    if record:
+                        return {'pending': True, 'scanReset': True}
+                    # The first authorized detail read may instantiate a
+                    # deferred adapter. Bind the new view to that adapter.
+                    adapter = constructed
+                    identity = (provider, sid, binding, id(adapter))
+                    scope = (identity, mode, options)
+                    cached = None
+        tail = DesktopSessions._history_page_fingerprint(newest)
+        revision = DesktopSessions._history_source_revision(provider, newest) or file_revision
+        native_history = newest.get('history') or {}
+        if file_revision and 'revision' not in native_history:
+            newest = {**newest, 'history': {**native_history, 'revision': history_sync.digest(file_revision)}}
+        native_cursor = native_history.get('before') if native_history.get('hasMore') else None
+        if record:
+            if tail != record['tail'] or revision != record['revision']:
+                return {'pending': True, 'scanReset': True}
+            native_cursor, batches, seen, signatures, checkpoint, revision_bound = record['state']
+        else:
+            batches, seen, signatures, checkpoint = [], set(), [], 1
+            revision_bound = revision is not None
+
+        timeline = None
+        watch_version = None
+        if mode in ('recent', 'watch'):
+            watch_timeline = DesktopSessions._project_history([newest.get('messages', [])], newest,
+                bool(native_history.get('hasMore')),
+                not native_history.get('hasMore') and native_history.get('complete', True))
+            watch_version = history_sync.watch(watch_timeline)['version']
+            if mode == 'watch':
+                timeline = watch_timeline
+
+        proved_view = cached and cached['tail'] == tail and cached['revision'] == revision
+        if proved_view:
+            proved_view = not history_sync.needs_older(cached['timeline'], mode, options) if mode != 'watch' else False
+        if proved_view and cached['revision_bound']:
+            timeline = cached['timeline']
+
+        if timeline is None:
+            matches_view = bool(proved_view and tuple(signatures) == cached['signatures'][:len(signatures)])
+            # Checkpoints grow geometrically while looking for an anchor.
+            # A long turn is not projected again for every native 100-row page.
+            budget = 5 if record else 6
+            for _ in range(budget):
+                if not batches:
+                    native = newest
+                    current_signature = tail
+                else:
+                    try:
+                        native = self.call(provider, 'detail', sid, {
+                            'historyLimit': 100, 'historyBefore': native_cursor, **native_options})
+                    except ValueError:
+                        if scan:
+                            return {'pending': True, 'scanReset': True}
+                        raise
+                    current_signature = DesktopSessions._history_page_fingerprint(native)
+                native_history = native.get('history') or {}
+                observed_revision = (file_revision if revision == file_revision else
+                                     DesktopSessions._history_source_revision(provider, native))
+                if revision is not None and observed_revision is not None and observed_revision != revision:
+                    return {'pending': True, 'scanReset': True}
+                if observed_revision is None and revision and revision[0] != 'claude-file':
+                    revision_bound = False
+                batches.append(native.get('messages', []))
+                signatures.append(current_signature)
+                more = bool(native_history.get('hasMore'))
+                native_cursor = native_history.get('before') if more else None
+                complete = not more and native_history.get('complete', True)
+                stalled = not native_cursor or native_cursor in seen
+                if native_cursor:
+                    seen.add(native_cursor)
+                if matches_view:
+                    position = len(signatures) - 1
+                    matches_view = (position < len(cached['signatures']) and
+                                    current_signature == cached['signatures'][position])
+                    if matches_view and len(signatures) == len(cached['signatures']):
+                        # An unversioned source must reproduce all contributing
+                        # native pages before its existing projection is reused.
+                        timeline = cached['timeline']
+                        break
+                if not more or stalled or len(batches) >= checkpoint and not matches_view:
+                    candidate = (watch_timeline if mode == 'recent' and len(batches) == 1 else
+                                 DesktopSessions._project_history(batches, newest, more, complete))
+                    if not more or stalled or not history_sync.needs_older(candidate, mode, options):
+                        timeline = candidate
+                        break
+                    checkpoint = len(batches) * 2
+            if timeline is None:
+                if file_revision and DesktopSessions._history_transcript_revision(provider, adapter, sid) != file_revision:
+                    return {'pending': True, 'scanReset': True}
+                token = secrets.token_hex(16)
+                with self.read_lock:
+                    if self.binding_epochs[provider] != binding:
+                        raise BridgeUnavailable('客户端状态已变化，请重试')
+                    self.history_scans[token] = {'scope': scope, 'expires': time.monotonic() + 75,
+                                                'tail': tail, 'revision': revision,
+                                                'state': (native_cursor, batches, seen, signatures, checkpoint, revision_bound)}
+                    while len(self.history_scans) > 8:
+                        self.history_scans.popitem(last=False)
+                return {'pending': True, 'scan': token}
+
+        if file_revision and DesktopSessions._history_transcript_revision(provider, adapter, sid) != file_revision:
+            return {'pending': True, 'scanReset': True}
+        with self.read_lock:
+            if self.binding_epochs[provider] != binding or getattr(self, 'adapters', {}).get(provider) is not adapter:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+            if getattr(self, 'closed', None) is not None and self.closed.is_set():
+                raise BridgeUnavailable('客户端连接已关闭')
+            if mode != 'watch':
+                view = cached if cached and timeline is cached['timeline'] else {
+                    'timeline': timeline, 'revision': revision, 'tail': tail,
+                    'revision_bound': revision_bound, 'signatures': tuple(signatures), 'lock': threading.RLock()}
+                self.history_views[identity] = {**view, 'expires': time.monotonic() + 45}
+                self.history_views.move_to_end(identity)
+                while len(self.history_views) > 4:
+                    self.history_views.popitem(last=False)
+            else:
+                view = None
+        if view:
+            with view['lock']:
+                result = history_sync.read(timeline, mode, **options,
+                                           **({'from_start': True} if transfer_attachments and mode == 'process' else {}))
+        else:
+            result = history_sync.read(timeline, mode, **options)
+        with self.read_lock:
+            if self.binding_epochs[provider] != binding or getattr(self, 'adapters', {}).get(provider) is not adapter:
+                raise BridgeUnavailable('客户端状态已变化，请重试')
+        if mode == 'recent':
+            result['sourceVersion'] = watch_version
+        if transfer_attachments:
+            result['transferAttachments'] = {row['key']: timeline.source_attachments[row['key']]
+                                             for row in result.get('rows', ()) if row['key'] in timeline.source_attachments}
+            result['transferSourceComplete'] = timeline.meta.get('syncSourceComplete', False)
+        if mode in ('watch', 'process') or result.get('notModified') and mode == 'body':
+            return result
+        from bridge.features.workspace.files import workspace_references
+        session = newest.get('session') or {}
+        if mode == 'body':
+            result['files'] = workspace_references([{'text': result['text']}], session.get('cwd'), host_files=True)
+            return result
+        result['files'] = workspace_references(result['rows'], session.get('cwd'), host_files=True)
+        result['meta'].update({key: session[key] for key in history_sync.CONTEXT_FIELDS if key in session})
+        control = {key: value for key, value in newest.items() if key not in ('messages', 'turns', 'files', 'history')}
+        return {**control, **result, 'history': {'before': result['before'], 'hasMore': result['hasMore']}}
+
     def _conversation(self, provider, sid, body):
         """Project existing native pages; retained display never grants control."""
         allowed = {'historyMode', 'historyBefore', 'historyLimit', 'historyProcess', 'historyDetail',
@@ -1577,31 +1890,8 @@ class DesktopSessions:
         if native_body is None:
             native_body = {key: body[key] for key in ('historyBefore', 'historyLimit') if key in body}
         value = self.call(provider, 'detail', sid, native_body)
-        messages = value.get('messages', [])
-        # Native adapters may expose only one loaded window. Do not invent an
-        # older source cursor or connect/resume a writer to obtain one.
-        turns = []
-        boundary = 'history'
-        for index, message in enumerate(messages):
-            if message.get('turnId') and message['turnId'] != 'history':
-                boundary = message['turnId']
-            elif message.get('role') == 'user' and message.get('interaction') != 'response':
-                boundary = 'user:' + str(message.get('id', index))
-            if not turns or turns[-1]['id'] != boundary:
-                turns.append({'id': boundary, 'messages': [], 'actionable': False,
-                              'status': message.get('turnStatus'),
-                              'completionKnown': message.get('turnStatus') in ('completed', 'interrupted', 'failed')})
-            if message.get('turnStatus'):
-                turns[-1]['status'] = message['turnStatus']
-                turns[-1]['completionKnown'] = message['turnStatus'] in ('completed', 'interrupted', 'failed')
-            normalized = dict(message, kind=message.get('kind') or message.get('type') or message.get('role', 'unknown'))
-            turns[-1]['messages'].append(normalized)
-            for source, target in (('turnStartedAt', 'startedAt'), ('turnCompletedAt', 'completedAt')):
-                if message.get(source) is not None:
-                    turns[-1][target] = message[source]
+        turns = DesktopSessions._history_turns(value.get('messages', []), value.get('session') or {})
         session = value.get('session') or {}
-        if turns and not turns[-1].get('status'):
-            turns[-1]['status'] = session.get('turnStatus') or ('inProgress' if session.get('status') == 'active' else 'completed')
         before = native_body.get('historyBefore')
         with self.read_lock:
             if self.binding_epochs[provider] != binding:

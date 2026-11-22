@@ -1,15 +1,18 @@
 """Shared relay boundary. No caller-selected HTTP destinations or raw IPC."""
 import base64
+import hashlib
 import re
 from urllib.parse import urlsplit
 
 MAX_BODY = 20 * 1024 * 1024
 MAX_FRAME = (MAX_BODY + 2) // 3 * 4 + 16384
 UUID = r'[0-9a-f-]{36}'
+SESSION_SYNC_HEADER = 'X-Bridge-Session-Sync'
+SESSION_SYNC_PATH = re.compile(r'/api/(?:sessions/' + UUID + r'/sync|desktop-sessions/(?:claude|deepseek|zcode|antigravity)/sync|session-transfers|history-transfer/(?:catalog|manifest|chunk|content))')
 DIAGNOSTIC_UUID = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 THREAD = re.compile(r'/api/sessions/' + UUID + r'(?:/(.*))?')
 DESKTOP = re.compile(r'/api/desktop-sessions/(?:deepseek|claude|antigravity)/(.*)')
-READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'notifications',
+READ = {'', 'catalog', 'poll', 'timeline', 'detail', 'changes', 'sync', 'notifications',
         'side-chat', 'terminal', 'subagents', 'workspace', 'workspace/preview',
         'workspace/download', 'workspace/info', 'workspace/git-status', 'workspace/git-diff',
         'workspace/git-history', 'workspace/git-commit', 'workspace/git-history-diff',
@@ -20,6 +23,16 @@ WRITE = {'send', 'stop', 'history', 'respond', 'reconnect', 'queue', 'settings',
          'workspace/upload', 'workspace/git-action'}
 DESKTOP_READ = {'list', 'detail', 'catalog', 'projects', 'account', 'access', 'terminal', 'notifications'} | {action for action in READ if action.startswith('workspace')}
 DESKTOP_WRITE = {'pin', 'send', 'stop', 'settings', 'respond', 'create', 'access', 'uploads', 'terminal', 'notifications', 'workspace/upload', 'workspace/git-action', 'archive'}
+
+
+def sync_gateway(header):
+    match = re.fullmatch(r'1\.([0-9a-f]{32})', header)
+    return match[1] if match else None
+
+
+def phone_sync(gateway, phone):
+    identity = hashlib.sha256(('relay-phone-v1\0' + gateway + '\0' + phone).encode()).hexdigest()
+    return {'version': 1, 'gatewayId': gateway, 'identity': identity}
 
 
 def origin(value, test_http=False):
@@ -44,6 +57,14 @@ def validate(method, path, size=0):
         raise ValueError('Unsupported request or body too large')
     if method == 'GET' and size:
         raise ValueError('GET body is not allowed')
+    if p.path == '/api/session-transfers':
+        if method == 'GET' and not p.query:
+            return
+        raise PermissionError('This operation is not available through the shared relay')
+    if (method == 'GET' and p.path in ('/api/history-transfer/catalog', '/api/history-transfer/manifest',
+                                      '/api/history-transfer/chunk', '/api/history-transfer/content')
+            or method == 'POST' and p.path == '/api/history-transfer/manifest' and not p.query):
+        return
     if p.path == '/api/sessions/diagnostics':
         if method == 'GET' and (not p.query or re.fullmatch('thread=' + DIAGNOSTIC_UUID, p.query)):
             return
@@ -61,6 +82,8 @@ def validate(method, path, size=0):
     if p.path == '/api/clients/claude/reconnect' and method == 'POST':
         return
     if p.path == '/api/cli-access' and not p.query:
+        return
+    if method == 'GET' and re.fullmatch(r'/api/desktop-sessions/(?:deepseek|claude|zcode|antigravity)/sync', p.path):
         return
     desktop = DESKTOP.fullmatch(p.path)
     if desktop:
@@ -102,7 +125,7 @@ def content_type(value):
 
 def download_headers(value, response=False):
     """Only range negotiation crosses the relay; never credentials or cookies."""
-    allowed = {'ETag', 'Content-Range', 'Accept-Ranges'} if response else {'Range', 'If-Range'}
+    allowed = {'ETag', 'Content-Range', 'Accept-Ranges', 'X-Chunk-SHA256'} if response else {'Range', 'If-Range'}
     if not isinstance(value, dict) or any(key not in allowed for key in value):
         raise ValueError('Invalid download headers')
     for key, item in value.items():
@@ -114,4 +137,6 @@ def download_headers(value, response=False):
             raise ValueError('Invalid content range')
         if key == 'ETag' and not re.fullmatch(r'(?:W/)?"[^"\\]*"', item):
             raise ValueError('Invalid entity tag')
+        if key == 'X-Chunk-SHA256' and not re.fullmatch(r'[0-9a-f]{64}', item):
+            raise ValueError('Invalid history chunk checksum')
     return dict(value)

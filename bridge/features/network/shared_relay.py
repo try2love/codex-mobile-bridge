@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from relay.protocol import MAX_BODY, MAX_FRAME, origin, validate, decode, content_type, download_headers
+from relay.protocol import SESSION_SYNC_HEADER, sync_gateway, phone_sync
 from relay.stream import CHUNK, WINDOW, frame
 from bridge.features.auth.tls import client_context
 
@@ -122,9 +123,14 @@ class Connector:
         self.gateway = gateway
         self.origin = origin(self.config['url'], test_http)
         config = {'auth': {'mode': 'password', 'sessionHours': 0}, 'origins': [], 'localAccess': True}
-        self.server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir)
+        auth = getattr(gateway, 'auth', None)
+        sync = getattr(auth, 'session_sync', {})
+        self.sync_gateway = sync_gateway('1.' + str(sync.get('gatewayId', ''))) if sync.get('version') == 1 else None
+        self.server = GatewayServer(('127.0.0.1', 0), gateway.bridge, config, gateway.web_dir,
+                                    transfer_usage=auth.usage if self.sync_gateway else None)
         # Share the live file policy while keeping relay authentication private.
         self.server.transfer_directory = getattr(gateway, 'transfer_directory', None)
+        self.server.history_transfer = getattr(gateway, 'history_transfer', None)
         self.server.mobile_updates = getattr(gateway, 'mobile_updates', None)
         self.server.notifications = gateway.notifications
         self.server.desktop_sessions = getattr(gateway, 'desktop_sessions', None)
@@ -160,7 +166,10 @@ class Connector:
                 raise ValueError('Invalid phone authorizations')
             for previous in list(self.sessions):
                 if previous not in phones:
-                    self.server.auth.logout(self.sessions.pop(previous)[0])
+                    secret, retired = self.sessions.pop(previous)
+                    self.server.auth.logout(secret)
+                    if retired.get('transferOwner'):
+                        self.server.auth.usage.discard(retired['transferOwner'])
             body = decode(message.get('body'))
             validate(message.get('method'), message.get('path'), len(body))
             mime = content_type(message.get('contentType'))
@@ -170,7 +179,9 @@ class Connector:
             if phone not in self.sessions:
                 if len(self.sessions) >= 16:
                     raise ValueError('Too many local phone sessions; reconnect the gateway')
-                self.sessions[phone] = self.server.auth.new_session('127.0.0.1', 'Shared relay phone')
+                owner = {'transferOwner': phone_sync(self.sync_gateway, phone)['identity']} if self.sync_gateway else {}
+                self.sessions[phone] = self.server.auth.new_session('127.0.0.1', 'Shared relay phone',
+                    client={'ip': '127.0.0.1', 'peer': '127.0.0.1', 'source': 'direct', **owner})
             secret, session = self.sessions[phone]
             headers = {'Cookie': self.server.auth.COOKIE + '=' + secret,
                        'Origin': self.local_origin, 'X-CSRF-Token': session['csrf'],
@@ -186,7 +197,7 @@ class Connector:
                                         'contentType': response.headers.get('Content-Type', 'application/octet-stream'),
                                         'disposition': response.headers.get('Content-Disposition', ''),
                                         'headers': download_headers({key: response.headers[key] for key in
-                                            ('ETag', 'Content-Range', 'Accept-Ranges') if key in response.headers}, response=True)})
+                                            ('ETag', 'Content-Range', 'Accept-Ranges', 'X-Chunk-SHA256') if key in response.headers}, response=True)})
                     streaming = True
                     async for chunk in response.content.iter_chunked(CHUNK):
                         await asyncio.wait_for(credit.acquire(), timeout=90)
@@ -210,7 +221,7 @@ class Connector:
                         'contentType': response.headers.get('Content-Type', 'application/octet-stream'),
                         'disposition': response.headers.get('Content-Disposition', ''),
                         'headers': download_headers({key: response.headers[key] for key in
-                            ('ETag', 'Content-Range', 'Accept-Ranges') if key in response.headers}, response=True)}
+                            ('ETag', 'Content-Range', 'Accept-Ranges', 'X-Chunk-SHA256') if key in response.headers}, response=True)}
         except (ValueError, PermissionError, KeyError, TypeError) as exc:
             return result(403, {'error': str(exc)})
         except Exception:
@@ -236,8 +247,11 @@ class Connector:
                 while self.enabled():
                     pending = set()
                     try:
+                        headers = {'Authorization': 'Bearer ' + self.config['deviceToken']}
+                        if self.sync_gateway:
+                            headers[SESSION_SYNC_HEADER] = '1.' + self.sync_gateway
                         async with remote.ws_connect(self.origin + '/relay/device/ws?protocol=2',
-                                                     headers={'Authorization': 'Bearer ' + self.config['deviceToken']},
+                                                     headers=headers,
                                                      heartbeat=25, max_msg_size=MAX_FRAME, compress=0) as ws:
                             delay = 1
                             seen = set()

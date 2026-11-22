@@ -33,7 +33,7 @@ from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.clients.codex.native_queue import read_native_queue
-from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
+from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times, prepend_saved_process
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
 from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
@@ -62,6 +62,7 @@ from bridge.features.sessions.question_skips import QuestionSkips
 from bridge.features.sessions.organization import organization as native_organization
 from bridge.features.sessions.projects import Projects
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
@@ -102,6 +103,9 @@ class LiveSession:
         self.next_title_read = 0
         self.saved_file_changes = {}
         self.history_limit = 2
+        self.sync_history_lock = threading.Lock()
+        self.sync_history_revision = None
+        self.sync_history_item_limit, self.sync_history_turn_limit = 40, 2
         self.timeline_limit = 40
         self.timeline_source = None
         self.timeline_source_limit = None
@@ -142,6 +146,7 @@ class LiveSession:
         self.timeline = Timeline()
         self.tool_image_cache = image_cache if image_cache is not None else TOOL_IMAGE_CACHE
         self.timeline.image_cache = self.tool_image_cache
+        self.sync_timeline = Timeline(self.tool_image_cache)
         self.tool_images = {}
         self.tool_images_sequence = -1
 
@@ -167,7 +172,7 @@ class LiveSession:
         finally:
             self.condition.release()
 
-    def timeline_view(self, conversation=False):
+    def timeline_view(self, conversation=False, *, sync_history=False):
         # Presentation only. Actions still call view() against current state.
         with self.condition:
             source = self.state if self.connected else self.history_state or self.state
@@ -194,10 +199,10 @@ class LiveSession:
                         after += int(found)
                 if found:
                     self.timeline_limit = max(self.timeline_limit, after)
-            source_limit = (self.timeline_limit, conversation)
+            source_limit = (self.timeline_limit, conversation, sync_history)
             if self.timeline_source is None or self.timeline_source_limit != source_limit:
                 self.timeline_source = self.view(item_limit=None if conversation else self.timeline_limit,
-                                                 process_bodies=not conversation)
+                                                 process_bodies=not conversation, sync_history=sync_history)
                 self.timeline_source_limit = source_limit
             return dict(self.timeline_source)
 
@@ -220,7 +225,7 @@ class LiveSession:
         requests = pending_requests(self.state or {})
         return self.question_skips.project(self.id, requests) if self.question_skips else requests
 
-    def view(self, *, item_limit=None, process_bodies=True):
+    def view(self, *, item_limit=None, process_bodies=True, sync_history=False):
         with self.condition:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
@@ -250,6 +255,12 @@ class LiveSession:
                 for turn in result['turns']:
                     saved = saved_labels.get(turn['id'])
                     label_known = (self.history_state or {}).get('historyReadSource') != 'native-index' or saved and saved.get('model')
+                    if saved is not None:
+                        # Indexed rollouts can recover historical labels independently
+                        # of the metadata used by earlier clients' body versions.
+                        recorded = saved.get('_recordedReplyLabel') or {}
+                        if self.runtime != 'cli' or recorded.get('model'):
+                            turn['_recordedReplyLabel'] = recorded
                     if saved is not None and label_known and (self.runtime != 'cli' or saved.get('model')):
                         # Desktop history hydration can substitute today's model.
                         # Recorded turn_context is authoritative for past replies.
@@ -257,13 +268,18 @@ class LiveSession:
                         turn['model'], turn['effort'] = saved.get('model'), saved.get('effort')
             # Native paginated snapshots only contain the loaded tail. Keep the
             # saved prefix in the presentation, never in the IPC patch base.
-            if self.saved_view and (not result['historyComplete'] or self.origin in ('cli', 'ide') and self.runtime == 'desktop'):
-                saved = self.saved_view['turns']
+            saved_prefix = self.saved_view
+            if sync_history and self.connected and self.history_state and (not result['historyComplete']
+                    or any(turn.get('itemsComplete') is False for turn in result['turns'])):
+                saved_prefix = normalize_state(self.history_state, False, image_cache=self.tool_image_cache, process_bodies=False)
+                prepend_saved_process(result['turns'], saved_prefix['turns'])
+            if saved_prefix and (not result['historyComplete'] or self.origin in ('cli', 'ide') and self.runtime == 'desktop'):
+                saved = saved_prefix['turns']
                 turns = result['turns']
                 first = next((i for i, turn in enumerate(saved) if turns and turn['id'] == turns[0]['id']), None)
                 if not turns or first is not None:
                     result['turns'] = saved[:first] + turns if turns else saved
-                    result['historyComplete'] = self.saved_view['historyComplete']
+                    result['historyComplete'] = saved_prefix['historyComplete']
             result["savedHistoryMore"] = bool(self.saved_view and not result["historyComplete"] and not self.saved_view["historyComplete"])
             result["sequence"] = self.sequence
             result["connectionError"] = self.error
@@ -1232,11 +1248,23 @@ class Bridge:
             session = self._target(thread_id)
             with session.action_lock:
                 with session.condition:
-                    session.timeline.update(session.view(), limit=session.timeline_limit)
-                    position = session.timeline.position(body.get('key', ''))
+                    cursor = body.get('key', '')
+                    if isinstance(cursor, str) and cursor.startswith('sync.'):
+                        # Synchronization keys are locators only. Rebuild from
+                        # the current owner while holding the original write gate.
+                        timeline = Timeline()
+                        owner_turns = {turn.get('turnId') for turn in ordered_turns(session.state or {})}
+                        view = session.view(process_bodies=False)
+                        view['turns'] = [turn for turn in view['turns'] if turn['id'] in owner_turns]
+                        timeline.update(view, conversation=True)
+                        position = timeline.positions.get(cursor.partition('.')[2])
+                    else:
+                        timeline = session.timeline
+                        timeline.update(session.view(), limit=session.timeline_limit)
+                        position = timeline.position(cursor)
                     if position is None:
                         raise ValueError('消息位置已变化，请刷新后重试')
-                    row = session.timeline.rows[position]
+                    row = timeline.rows[position]
                     if row['version'] != body.get('version'):
                         raise ValueError('消息内容已变化，请重新打开编辑')
                     if action == 'fork' and not row['forkable'] or action != 'fork' and not row['editable']:
@@ -1244,7 +1272,7 @@ class Bridge:
                     if row.get('turnStatus') == 'inProgress':
                         raise ValueError('请先停止当前任务，再编辑或分支')
                     if action == 'edit':
-                        if session.timeline.meta['latestUserTurnId'] != row['turnId']:
+                        if timeline.meta['latestUserTurnId'] != row['turnId']:
                             raise ValueError('只有最近一条消息可原地编辑，请使用编辑并新建分支')
                         if session.state.get('threadRuntimeStatus', {}).get('type') == 'active':
                             raise ValueError('请先停止当前任务，再编辑或分支')
@@ -4816,9 +4844,97 @@ class Bridge:
             view["goal"] = None
         return view
 
+    def sync_watch_source(self, thread_id):
+        session = self.session(thread_id, background=True, attach=False)
+
+        def probe():
+            try:
+                revision = self.store.history_revision(thread_id)
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                revision = None
+            return session.sequence, revision
+
+        def wait(previous, delay):
+            with session.condition:
+                session.condition.wait_for(lambda: session.sequence != previous[0], timeout=delay)
+
+        return probe, wait, .2 if self.local else 2
+
+    def _sync_history_source(self, session, mode, options):
+        # History synchronization is passive. Use the already established owner
+        # or bounded persistent history; explicit control reconnect is separate.
+        with session.condition:
+            refresh = not session.connected and (not session.history_state or mode in ('watch', 'recent'))
+            saved_limit = max(session.history_limit, session.sync_history_turn_limit)
+            item_limit = max(session.timeline_limit, session.sync_history_item_limit)
+            revision = session.sync_history_revision
+        if mode in ('watch', 'recent') or refresh:
+            try:
+                revision = self.store.history_revision(session.id)
+            except FileNotFoundError:
+                # A newly opened native session can be visible to its owner
+                # before its first rollout file is present.
+                if refresh and not session.history_state:
+                    return revision
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                if refresh and not session.history_state and mode != 'watch':
+                    raise
+            with session.condition:
+                refresh = refresh and (session.history_state is None or session.sync_history_revision != revision)
+                if mode != 'watch' and session.connected and session.sync_history_revision != revision:
+                    live = session.timeline_view(True)
+                    refresh = not live.get('historyComplete') or any(
+                        turn.get('itemsComplete') is False for turn in live.get('turns', ()))
+        if mode == 'watch':
+            return revision
+        expanding = False
+        while True:
+            if refresh:
+                try:
+                    saved = self.store.history(session.id, turn_limit=saved_limit, item_limit=item_limit)
+                except (FileNotFoundError, RemoteUnavailable, StoreUnavailable):
+                    if not session.connected:
+                        raise
+                    break
+                with session.condition:
+                    session.sync_history_turn_limit = max(session.sync_history_turn_limit, saved_limit)
+                    session.sync_history_item_limit = max(session.sync_history_item_limit, item_limit)
+                    if session.history_state != saved:
+                        session.set_history(saved)
+                    elif expanding:
+                        # A partial native source may have reached its own read boundary.
+                        # A larger request returning the same snapshot cannot extend it.
+                        break
+                    session.sync_history_revision = revision
+            with session.condition:
+                view = session.timeline_view(True, sync_history=True)
+                partial_head = bool(view.get('turns') and view['turns'][0].get('itemsComplete') is False)
+                if view.get('historyComplete') and not partial_head:
+                    break
+                session.sync_timeline.update(view, conversation=True)
+                session.sync_timeline.meta['syncPartialHead'] = partial_head
+                if not history_sync.needs_older(session.sync_timeline, mode, options):
+                    break
+                if refresh and not partial_head and session.saved_view and session.saved_view['historyComplete']:
+                    break
+                # A single turn can contain tens of thousands of process rows
+                # between its input and answer. Grow until the requested interval
+                # is covered, keeping the resulting projection for later pages.
+                saved_limit += max(20, saved_limit)
+                item_limit += max(100, item_limit)
+                expanding = refresh = True
+        return revision
+
     def timeline_read(self, thread_id, mode='page', **options):
-        session = self.session(thread_id, background=True)
-        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        sync_mode = options.pop('sync_mode', None)
+        session = (self.session(thread_id, background=True, attach=False) if sync_mode
+                   else self.session(thread_id, background=True))
+        conversation = options.get('projection') == 'conversation' or mode == 'process' or bool(sync_mode)
+        if sync_mode:
+            with session.sync_history_lock if sync_mode != 'watch' else nullcontext():
+                sync_revision = self._sync_history_source(session, sync_mode, options)
+            if sync_mode == 'watch':
+                self._refresh_async(session)
         if mode == 'detail':
             options.pop('projection', None)
         goal_available = self._refresh_session_goal(session)
@@ -4839,10 +4955,17 @@ class Bridge:
                     session.set_history(saved)
         with session.condition:
             session.access = self._access(session.origin, session)
-            projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view(conversation))
+            projection = session.sync_timeline if sync_mode else session.timeline
+            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view(conversation, sync_history=bool(sync_mode)))
             authoritative_view['access'] = dict(session.access)
-            projection.update(authoritative_view, limit=session.timeline_limit, conversation=conversation)
+            projection.update(authoritative_view, limit=None if sync_mode else session.timeline_limit, conversation=conversation)
+            if sync_mode:
+                projection.meta['syncPartialHead'] = bool(authoritative_view.get('turns') and
+                    authoritative_view['turns'][0].get('itemsComplete') is False)
+                projection.meta['syncSourceComplete'] = bool(authoritative_view.get('historyComplete')
+                    and not authoritative_view.get('loadingHistory')
+                    and all(turn.get('itemsComplete', True) for turn in authoritative_view['turns']))
+                projection.meta['syncSourceRevision'] = history_sync.digest(sync_revision)
             # Goals/access may change independently of the history revision.
             projection.meta.update(goal=authoritative_view.get('goal'), access=authoritative_view['access'])
             # Annotate the full projection, not only the returned page. Otherwise
@@ -4851,11 +4974,21 @@ class Bridge:
             self._merge_submission_attachments(session, projection.rows)
             if mode == 'process':
                 return {**projection.process(**options), 'files': []}
-            if mode == 'detail':
-                result = projection.detail(**options)
-                file_items = [{'type': 'agentMessage', 'text': projection.details[result['key']]}]
+            if sync_mode:
+                result = history_sync.read(projection, sync_mode, **options)
+                if sync_mode in ('watch', 'process') or sync_mode == 'body' and result.get('notModified'):
+                    return result
+            detail = mode == 'detail' or sync_mode == 'body'
+            if detail:
+                if not sync_mode:
+                    result = projection.detail(**options)
+                session.tool_images.update({attachment['desktopId']: attachment for attachment in
+                                            projection.detail_image_evidence.get(result['key'], ())})
+                self._annotate_upload_attachments(session, [result])
+                file_items = [{'type': 'agentMessage', 'text': result['text']}]
             else:
-                result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
+                if not sync_mode:
+                    result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
                 result['meta'] = dict(result['meta'], host=self.host,
                                       hostLabel=self.host_label,
                                       goalRuntimeAvailable=goal_available)
@@ -4870,11 +5003,11 @@ class Bridge:
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
             media_items = [{'type': 'ImageView', 'path': path}
-                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if mode == 'detail' else result['rows'])
+                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if detail else result['rows'])
                            for path in projection.image_views.get(row['key'], [])]
         # Resolve links in the delivered page, plus runtime ImageView evidence
         # retained separately from the paged message text.
-        if mode != 'detail':
+        if not detail:
             result['meta']['draftAccountIdentity'] = self._draft_account_identity(authoritative_view)
         file_state = {'cwd': cwd, 'turns': [
             {'items': file_items},
@@ -4883,7 +5016,7 @@ class Bridge:
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
         result['files'] = visualization_files(file_state, host_file_links(file_state, result['files']))
-        if mode != 'detail':
+        if not detail:
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)
         return result

@@ -176,6 +176,35 @@ class RolloutMessageTimeTests(unittest.TestCase):
         self.write(self.records(native_id=None))
         self.assertTrue(self.store._history('thread', self.meta)['turns'][0]['items'][0]['_syntheticId'])
 
+    def test_indexed_replies_recover_exact_turn_labels_outside_rollout_tail(self):
+        source, offsets = [], {}
+        for number, label in enumerate(({'model': 'first-model', 'effort': 'max'},
+                                       {'model': 'second-model', 'effort': None,
+                                        'collaboration_mode': {'settings': {'reasoning_effort': 'high'}}},
+                                       {})):
+            turn = f'turn-{number}'
+            offsets[turn] = sum(map(len, source))
+            events = [{'type': 'event_msg', 'payload': {'type': 'task_started', 'thread_id': 'thread', 'turn_id': turn}},
+                      {'type': 'turn_context', 'payload': {'thread_id': 'thread', 'turn_id': turn, **label}},
+                      {'type': 'irrelevant', 'payload': {'content': 'x' * 2048}}]
+            source.extend((json.dumps(event) + '\n').encode() for event in events)
+        self.path.write_bytes(b''.join(source))
+        self.make_index([])
+        with closing(sqlite3.connect(self.home / 'thread_history_1.sqlite')) as conn, conn:
+            conn.execute('DELETE FROM thread_turns')
+            conn.execute('ALTER TABLE thread_turns ADD COLUMN rollout_byte_offset')
+            for number, (turn, offset) in enumerate(offsets.items()):
+                conn.execute('INSERT INTO thread_turns VALUES(?,?,?,?,?,?,?)',
+                             ('thread', turn, 'completed', None, None, None, offset))
+                conn.execute('INSERT INTO thread_items VALUES(?,?,?,?)',
+                             ('thread', turn, number, json.dumps({'id': turn, 'type': 'agentMessage', 'text': turn})))
+        with patch('bridge.features.sessions.store.ROLLOUT_TIME_BYTES', 128):
+            state = self.store._indexed_history('thread', self.meta, 20)
+        self.assertEqual(state['historyReadSource'], 'native-index')
+        self.assertEqual([turn['_recordedReplyLabel'] for turn in state['turns']],
+                         [{'model': 'first-model', 'effort': 'max'}, {'model': 'second-model', 'effort': None},
+                          {'model': None, 'effort': None}])
+
     def test_index_retains_bounded_rollout_time_evidence_and_stat_invalidates_cache(self):
         self.write(self.records())
         self.make_index([{'id': 'native-reply', 'type': 'agentMessage', 'text': 'same reply'}])
