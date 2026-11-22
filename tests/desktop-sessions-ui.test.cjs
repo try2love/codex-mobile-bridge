@@ -445,13 +445,13 @@ test('Claude recent list compares Desktop milliseconds and CLI seconds as the sa
  const ui=fixture();await ui.view.choose('claude');
  const desktopOlder=Date.UTC(2026,9,14,12),cliNewest=Date.UTC(2026,9,16,12),desktopMiddle=Date.UTC(2026,9,15,12);
  ui.view.rows=[{id:'code',title:'Desktop Code',backend:'code',cwd:'/same',updatedAt:desktopOlder},
-  {id:'cli',title:'CLI latest',backend:'cli',cwd:'/same',updatedAt:cliNewest/1000},
+  {id:'cli',title:'CLI latest',backend:'cli',cwd:'/same',updatedAt:cliNewest/1000,lastUserInputAt:desktopOlder},
   {id:'cowork',title:'Desktop Cowork',backend:'cowork',cwd:'/same',updatedAt:desktopMiddle}];
  ui.view.renderList();
  const ids=()=>ui.view.rowsRoot.querySelectorAll('.session').map(row=>row.dataset.id);
  assert.deepEqual(ids(),['cli','cowork','code']);
  assert.equal(ui.view.rowsRoot.querySelector('.session').querySelector('time').textContent,
-  new Date(cliNewest).toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'}));
+  [new Date(desktopOlder).getHours(),new Date(desktopOlder).getMinutes()].map(n=>String(n).padStart(2,'0')).join(':')+' 10:14');
  ui.view.surface.value='cli';ui.view.surface.onchange();assert.deepEqual(ids(),['cli']);
  ui.view.surface.value='all';ui.view.surface.onchange();ui.view.search.value='Desktop';ui.view.renderList();assert.deepEqual(ids(),['cowork','code']);
  ui.view.search.value='';ui.view.listMode.value='project';ui.view.renderList();assert.deepEqual(ids(),['cli','cowork','code']);

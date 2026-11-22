@@ -41,3 +41,11 @@ test('Claude connector preserves native timestamp while sanitizing the transcrip
  const rows=sanitize('getTranscript',[{type:'user',uuid:'u',timestamp:'2026-11-09T09:24:00Z',secret:'private',message:{role:'user',content:'Hello'}}]);
  assert.equal(rows[0].timestamp,'2026-11-09T09:24:00Z');assert.equal(rows[0].secret,undefined);
 });
+
+test('chat list time always includes HH:mm MM:dd using only a native clock',()=>{
+ const ctx=vm.createContext({});vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),ctx);
+ const now=new Date();now.setHours(3,4,0,0);const pad=n=>String(n).padStart(2,'0');
+ assert.equal(ctx.chatListTime(now.getTime()),'03:04 '+pad(now.getMonth()+1)+':'+pad(now.getDate()));
+ const previous=new Date(2020,0,2,9,8);assert.equal(ctx.chatListTime(previous.getTime()),'09:08 01:02');
+ for(const absent of [null,undefined,0,true,'yesterday','2026-11-22T03:04:05'])assert.equal(ctx.chatListTime(absent),'');
+});

@@ -6,6 +6,11 @@ function chatMessageDate(value){
   if(typeof value==='string'&&/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value))return new Date(value);
   return null;
 }
+function chatListTime(value){
+  const date=chatMessageDate(value);if(!date||!Number.isFinite(date.getTime()))return '';
+  const pad=n=>String(n).padStart(2,'0');
+  return pad(date.getHours())+':'+pad(date.getMinutes())+' '+pad(date.getMonth()+1)+':'+pad(date.getDate());
+}
 function renderChatMessageTime(container,value,now=new Date()){
   const date=chatMessageDate(value);if(!date||!Number.isFinite(date.getTime()))return;
   const locale=typeof BridgeI18n==='undefined'?'zh-CN':BridgeI18n.locale();

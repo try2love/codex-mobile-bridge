@@ -367,6 +367,7 @@ def _saved(path, origin):
     context_events = deque(maxlen=3)
     command_chain = {}
     command_title = None
+    last_user_input = None
     try:
         with path.open(encoding='utf-8', errors='replace') as source:
             for line in source:
@@ -384,6 +385,12 @@ def _saved(path, origin):
                 if custom_title is not None:
                     title = custom_title
                 if kind == 'user' and not event.get('isSidechain'):
+                    message = event.get('message') if isinstance(event.get('message'), dict) else {}
+                    content = message.get('content')
+                    if (not any(event.get(key) for key in ('isMeta', 'isSynthetic', 'isCompactSummary'))
+                            and (isinstance(content, str) or isinstance(content, list) and
+                                 any(isinstance(part, dict) and part.get('type') in ('text', 'image', 'document') for part in content))):
+                        last_user_input = event.get('timestamp')
                     if title is None and command is None and not event.get('isMeta') and not event.get('isSynthetic'):
                         message = event.get('message') if isinstance(event.get('message'), dict) else {}
                         lines = _text(message.get('content')).strip().splitlines()
@@ -448,7 +455,7 @@ def _saved(path, origin):
     return {'id': model.gateway_id('cli:' + origin, native), 'nativeId': native, 'backend': 'cli', 'mode': 'cli',
             'host': 'local', 'title': title, 'cwd': cwd, 'model': selected_model,
             'permissionMode': permission or 'default', 'permissionKnown': permission is not None,
-            'updatedAt': stamp[3] / 1_000_000_000, 'archived': False, 'origin': origin, 'path': path,
+            'updatedAt': stamp[3] / 1_000_000_000, 'lastUserInputAt': last_user_input, 'archived': False, 'origin': origin, 'path': path,
             'stamp': stamp,
             'events': list(recent), 'contextEvents': list(context_events)}
 

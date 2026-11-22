@@ -1291,7 +1291,7 @@ class DesktopSessions:
                 signature = (row.get('updatedAt'), row.get('status'))
                 cached = self.activity.get(key)
                 if cached:
-                    row.update(cached[1])
+                    row.update({name: value for name, value in cached[1].items() if name != 'lastUserInputAt' or name not in row})
                 if cached is None or cached[0] != signature or (cached[1].get('turnStatus') == 'inProgress' and row.get('status') != 'active'):
                     candidates.append((key, signature))
             # Keep only current-account/current-list presentation state.
@@ -1314,6 +1314,23 @@ class DesktopSessions:
                             continue
                         row = detail.get('session') or {}
                         fields = {name: row[name] for name in ('turnId', 'turnStatus') if name in row}
+                        # Reuse the existing bounded asynchronous detail enrichment.
+                        # Missing native message clocks must never become activity time.
+                        user = next((message for message in reversed(detail.get('messages') or [])
+                                     if message.get('role') == 'user'), None)
+                        stamp = user.get('timestamp') if user else None
+                        # Claude and DSH split one native event into text/image
+                        # rows, and only its first visible row carries the clock.
+                        if stamp is None and user and provider in ('claude', 'deepseek') and ':' in str(user.get('id', '')):
+                            event_id = user['id'].split(':', 1)[0]
+                            for message in reversed(detail.get('messages') or []):
+                                if message.get('role') != 'user':
+                                    continue
+                                if str(message.get('id', '')).split(':', 1)[0] != event_id:
+                                    break
+                                if message.get('timestamp') is not None:
+                                    stamp = message['timestamp']; break
+                        fields['lastUserInputAt'] = stamp
                         with self.read_lock:
                             if not self.closed.is_set() and self.binding_epochs[provider] == binding:
                                 self.activity[key] = (signature, fields)

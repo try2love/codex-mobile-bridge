@@ -91,6 +91,17 @@ class ClaudeCliContract(unittest.TestCase):
         self.assertTrue(detail['capabilities']['resume'])
         self.assertFalse(detail['capabilities']['send'])
 
+    def test_saved_list_keeps_last_real_user_clock_across_assistant_and_tool_result(self):
+        events = [
+            {'type':'user','timestamp':'2026-11-22T03:04:05Z','message':{'content':[{'type':'text','text':'new input'}]}},
+            {'type':'assistant','timestamp':'2026-11-22T08:00:00Z','message':{'content':[{'type':'text','text':'reply'}]}},
+            {'type':'user','timestamp':'2026-11-22T09:00:00Z','message':{'content':[{'type':'tool_result','content':'automatic result'}]}},
+            {'type':'user','isMeta':True,'timestamp':'2026-11-22T10:00:00Z','message':{'content':'injected context'}},
+        ]
+        with self.path.open('a') as stream:
+            for event in events: stream.write(json.dumps(event)+'\n')
+        self.assertEqual(self.cli.listing()['sessions'][0]['lastUserInputAt'],'2026-11-22T03:04:05Z')
+
     def test_synthetic_assistant_model_does_not_replace_real_model(self):
         with self.path.open('a') as target:
             target.write(json.dumps({'type': 'assistant', 'cwd': str(self.cwd),

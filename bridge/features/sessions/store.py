@@ -211,6 +211,7 @@ class SessionStore:
         self.source = source
         self.home = Path(codex_home).resolve()
         self.history_cache = OrderedDict()
+        self.input_time_cache = OrderedDict()
         self.history_lock = threading.Lock()
         self.cli_inputs_lock = threading.Lock()
         self.cli_inputs_cache = None
@@ -303,7 +304,7 @@ class SessionStore:
         labels, matches = self._cli_inputs(query)
         with self._connect() as conn:
             columns = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
-            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "thread_source", "archived", "is_pinned", "project_id", "attached_thread_parent_id") if name in columns]
+            fields = [name for name in ("id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "thread_source", "archived", "is_pinned", "project_id", "attached_thread_parent_id", "rollout_path") if name in columns]
             where = ["archived = ?"]
             params = [int(archived)]
             where.append(self._user_origin_filter(columns))
@@ -352,6 +353,7 @@ class SessionStore:
                     'SELECT id,name FROM projects WHERE id IN (' + ','.join('?' for _ in identifiers) + ')', identifiers)} if identifiers else {}
             for row in rows:
                 item = dict(row)
+                item['lastUserInputAt'] = self.last_user_input(item.pop('rollout_path', None), item['id'])
                 if native_projects is not None:
                     item['_nativeProject'] = native_projects.get(item.get('project_id'))
                 origin = self._origin(item)
@@ -365,6 +367,59 @@ class SessionStore:
                     item['display_title'] = item.get('name') or labels.get(item['id']) or item.get('title')
                 result.append(item)
             return result
+
+    def last_user_input(self, path, thread_id):
+        """Read native input events backwards, independently of activity/mtime."""
+        if not isinstance(path, str) or not path:
+            return None
+        try:
+            resolved = Path(path).resolve()
+            if not self._rollout_in_home(resolved):
+                return None
+            with resolved.open('rb') as stream:
+                before = os.fstat(stream.fileno())
+                identity = (str(resolved), thread_id, before.st_dev, before.st_ino,
+                            before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                with self.history_lock:
+                    if identity in self.input_time_cache:
+                        self.input_time_cache.move_to_end(identity)
+                        return self.input_time_cache[identity]
+                position, pending, found, value = before.st_size, b'', False, None
+                while position and not found:
+                    length = min(position, 64 * 1024)
+                    position -= length
+                    stream.seek(position)
+                    lines = (stream.read(length) + pending).split(b'\n')
+                    pending = lines.pop(0)
+                    if not position:
+                        lines.insert(0, pending); pending = b''
+                    for line in reversed(lines):
+                        if b'"user_message"' not in line and b'"item_completed"' not in line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except (ValueError, UnicodeError):
+                            continue
+                        payload = event.get('payload')
+                        if event.get('type') != 'event_msg' or not isinstance(payload, dict) or payload.get('thread_id', thread_id) != thread_id:
+                            continue
+                        if payload.get('type') == 'user_message':
+                            found, value = True, event.get('timestamp')
+                        elif payload.get('type') == 'item_completed' and (payload.get('item') or {}).get('type') == 'UserMessage':
+                            found, value = True, payload.get('completed_at_ms', event.get('timestamp'))
+                        if found:
+                            break
+                after = os.fstat(stream.fileno())
+                if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    return None
+            with self.history_lock:
+                self.input_time_cache[identity] = value
+                while len(self.input_time_cache) > 512:
+                    self.input_time_cache.popitem(last=False)
+            return value
+        except OSError:
+            return None
 
     def available_sources(self):
         """Original sources across the complete visible inventory, independent of list filters."""
