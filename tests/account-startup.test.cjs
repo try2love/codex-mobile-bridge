@@ -384,7 +384,7 @@ test('legacy model fields are normalized and a failed directory ends the loading
  assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='string-model'));
  ui.run("api=async()=>{throw Error('Offline')}");await ui.nodes.get('model-refresh').onclick();
  assert.ok(ui.nodes.get('model-options').children.some(row=>row.children[0].value==='legacy'),'failed refresh keeps visible rows');
- assert.match(ui.nodes.get('model-updated').textContent,/Offline/);
+ assert.match(ui.nodes.get('model-updated').textContent,/Offline|离线/);
  assert.equal(ui.nodes.get('model-save').disabled,true);assert.equal(ui.nodes.get('model-refresh').disabled,false);
 });
 

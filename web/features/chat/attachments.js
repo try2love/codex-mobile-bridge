@@ -1,16 +1,34 @@
 'use strict';
 // Native adapters supply identifiers; each chat surface supplies its authorized
 // preview route. Keep attachment markup and the existing image viewer shared.
-function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
+function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offlineTurnId,deferOriginals=false}={}){
   if(!items?.length)return;
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
+  const offline=()=>globalThis.window?.OfflineChatReader?.enabled;
+  const originalLinks=new Map();
+  const openOffline=(target,item)=>target.addEventListener('click',event=>{
+    if(!offline())return;
+    event.preventDefault();
+    const label=target.textContent,button=target.localName==='button';
+    if(button){if(target.disabled)return;target.disabled=true;target.textContent=t('正在读取本机附件…');}
+    window.OfflineChatReader.openAttachment(item,offlineTurnId,target).catch(error=>{
+      if(button)target.textContent=error.message;
+    }).then(()=>{
+      if(button){target.disabled=false;if(target.textContent===t('正在读取本机附件…'))target.textContent=label;}
+    });
+  });
   for(const item of items){
     const kind=item.type||item.kind;
     if(kind==='toolImage'&&!showToolImages)continue;
     if(!['localImage','image','toolImage'].includes(kind)&&!(kind==='file'&&item.desktopId))continue;
+    if(offline())continue;
     const source=url(item);if(!source)continue;
     const link=document.createElement('a');link.href=source.original;link.target='_blank';link.rel='noopener';
     link.dataset.imagePreview=source.original;link.dataset.imageName=item.name||t('图片附件');
+    if(offlineTurnId)openOffline(link,item);
+    if(deferOriginals&&(!item.thumb||source.preview===source.original)){
+      link.textContent=link.dataset.imageName;originalLinks.set(item,link);continue;
+    }
     const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||t('图片附件');
     image.loading='lazy';image.decoding='async';image.src=source.preview;
     image.onerror=()=>link.remove();link.append(image);attachments.append(link);
@@ -18,11 +36,18 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true}={}){
   const label=document.createElement('small');label.className='muted';label.append(document.createTextNode(t('附件：')));
   items.forEach((item,index)=>{
     if(index)label.append(document.createTextNode('、'));
-    const kind=item.type||item.kind,name=item.name||kind;
+    if(originalLinks.has(item)){label.append(originalLinks.get(item));return;}
+    const kind=item.type||item.kind,name=item.name||item.path?.split(/[\\/]/).pop()||kind||t('文件');
+    if(offline()&&offlineTurnId){
+      const button=document.createElement('button');
+      button.type='button';button.className='plain';button.textContent=name;
+      openOffline(button,item);label.append(button);return;
+    }
     if(kind!=='file'||!item.path){label.append(document.createTextNode(name));return;}
     const href=fileUrl?.(item),link=document.createElement(href?'a':'button');link.textContent=name;
     if(href)link.href=href;
     else{link.type='button';link.className='plain';link.dataset.unavailableFile='true';}
+    if(offlineTurnId)openOffline(link,item);
     label.append(link);
     const player=href && window.BridgeChatMedia?.create(name,href);
     if(player)attachments.append(player);

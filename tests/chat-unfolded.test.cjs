@@ -1,14 +1,14 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=file=>fs.readFileSync('web/'+file,'utf8');
-test('chat starts from the ordinary bounded timeline rather than a folded conversation projection',async()=>{
+test('ordinary chat uses the bounded native timeline and the shared flat renderer',async()=>{
  const ctx=vm.createContext({window:{},AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s}});
  for(const name of ['activity','timeline'])vm.runInContext(source('features/chat/'+name+'.js'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx),reads=[];
  const view=Object.assign(Object.create(Type.prototype),{abort:new AbortController(),sequence:-1,older:{},
   read:async(action,params)=>{reads.push({action,params});return {rows:[],meta:{},hasMore:false};},apply(){},updates(){}});
  await view.start();assert.equal(reads[0].action,'timeline');assert.equal(reads[0].params.limit,20);
- assert.doesNotMatch(source('features/chat/timeline.js'),/this\.url\('process'\)|projection:'conversation'|renderChatProcessPage/);
+ assert.doesNotMatch(source('features/chat/timeline.js'),/this\.url\('process'\)|projection:'conversation'|renderChatProcessPage\b/);
 });
 test('desktop details and history use native rows and a separate unfolded cache generation',async()=>{
  const ctx=vm.createContext({window:{},URLSearchParams});vm.runInContext(source('features/clients/desktop-sessions.js'),ctx);
@@ -16,7 +16,7 @@ test('desktop details and history use native rows and a separate unfolded cache 
  const view=Object.assign(Object.create(Type.prototype),{readEpoch:1,providerReadEpochs:new Map(),readTasks:new Map(),
   path:(action,sid)=>'/'+action+'?sessionId='+sid,request:async url=>{requests.push(url);return {};}});
  await view.sharedRead('zcode','detail','sess_new');assert.equal(requests[0],'/detail?sessionId=sess_new');
- const text=source('features/clients/desktop-sessions.js');assert.doesNotMatch(text,/historyMode:'conversation'|renderChatProcessPage|conversation-recent-v1/);
+ const text=source('features/clients/desktop-sessions.js');assert.doesNotMatch(text,/historyMode:'conversation'|renderChatProcessPage\b|conversation-recent-v1/);
  assert.match(text,/timeline-recent-v1/);
 });
 test('message synchronization keeps direct chronological siblings and does not invent grouping',()=>{

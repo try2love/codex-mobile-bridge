@@ -409,7 +409,7 @@ function register(){
     authorize(event);
     const grant=await worker('pairing',payload);
     if(payload.action!=='create')return grant;
-    try{return await pairingImage(grant);}
+    try{return await pairingImage(payload.purpose==='history-transfer'?{...grant,url:grant.url+'&transfer=local'}:grant);}
     catch(error){await worker('pairing',{action:'revoke',id:grant.id});throw error;}
   });
   ipcMain.handle('bridge:export-deployment',async(event,payload)=>{

@@ -1,0 +1,554 @@
+'use strict';
+const {test,expect}=require('@playwright/test');
+const {spawn}=require('node:child_process');
+const {createInterface}=require('node:readline');
+const path=require('node:path');
+
+async function mappedBytes(pages){
+  const bytes={};
+  for(const mode of ['recent','older','process','body']){
+    const responses=pages.filter(page=>page.mode===mode);
+    bytes[mode]=await Promise.all(responses.map(async({response})=>(await response.body()).length));
+  }
+  return bytes;
+}
+
+const syncResponse=(page,mode)=>page.waitForResponse(response=>{
+  const url=new URL(response.url());
+  return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')===mode;
+});
+
+for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-codex','legacy-claude']){
+  const legacy=name.startsWith('legacy-'),provider=name.replace(/^legacy-/,'');
+  const title=legacy?'normal '+provider+' history opens when the gateway does not advertise sync':
+    'production HTTP and IndexedDB reuse '+provider+' history and details after reload';
+  test(title,async({page,context},info)=>{
+    const root=path.resolve(__dirname,'../..');
+    const args=['-B','tests/browser/session-transfer-http-fixture.py','--provider',provider];
+    if(legacy)args.push('--legacy');
+    const env={...process.env};
+    if(legacy&&env.CMB_LEGACY_GATEWAY_SOURCE)env.CMB_FIXTURE_GATEWAY_SOURCE=env.CMB_LEGACY_GATEWAY_SOURCE;
+    const server=spawn(process.platform==='win32'?'python':'python3',args,{cwd:root,env});
+    let error='';
+    server.stderr.setEncoding('utf8');server.stderr.on('data',chunk=>{error+=chunk;});
+    const lines=createInterface({input:server.stdout});
+    try{
+      const origin=await new Promise((resolve,reject)=>{
+        lines.once('line',resolve);
+        server.once('error',reject);
+        server.once('exit',code=>reject(Error('Gateway fixture exited '+code+' '+error)));
+      });
+      await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+      const pages=[];
+      page.on('response',response=>{
+        const url=new URL(response.url());
+        if(url.pathname.endsWith('/sync'))pages.push({mode:url.searchParams.get('mode'),response});
+      });
+      await page.goto(origin);
+      await page.locator('#username').fill('fixture');
+      await page.locator('#password').fill('session-transfer-test-only');
+      await page.locator('#login-button').click();
+      const codex=provider==='codex';
+      const listSelector=codex?'#sessions':'.ds-list .sessions';
+      const chatSelector=codex?'#messages':'.ds-conversation .ds-messages';
+      const entry=page.locator(listSelector+' .session').filter({hasText:'Transfer HTTP fixture'});
+      const selectProvider=async()=>{
+        if(codex)return;
+        await page.waitForFunction(provider=>typeof clientNavigation!=='undefined'&&clientNavigation.managementClients().some(row=>row.id===provider),provider);
+        if(!await entry.isVisible())await page.evaluate(provider=>clientNavigation.choose(provider,{activate:false}),provider);
+      };
+      await selectProvider();
+      await expect(entry).toBeVisible();
+      const chat=page.locator(chatSelector);
+      if(legacy){
+        const legacyRoute=response=>new URL(response.url()).pathname.endsWith(codex?'/timeline':'/detail');
+        const response=page.waitForResponse(legacyRoute);
+        await entry.click();
+        expect((await response).status()).toBe(200);
+        await expect(chat.locator('.message.assistant').last()).toContainText('Answer 89');
+        expect(pages).toHaveLength(0);
+        return;
+      }
+      const loadedSteps=chat.locator('.activity:not(.chat-process-collapsed)');
+      const contentTime=()=>page.evaluate(({listSelector,chatSelector})=>{
+        const list=document.querySelector(listSelector);
+        const messages=document.querySelector(chatSelector);
+        let started;
+        window.transferContentTime=new Promise(resolve=>{
+          list.addEventListener('click',()=>started=performance.now(),{capture:true,once:true});
+          const observer=new MutationObserver(()=>{
+            if(started!==undefined&&[...messages.querySelectorAll('.message-body')].some(node=>node.textContent==='Answer 89')){
+              observer.disconnect();resolve(performance.now()-started);
+            }
+          });
+          observer.observe(messages,{childList:true,subtree:true,characterData:true});
+        });
+      },{listSelector,chatSelector});
+      const payload=async response=>{expect(response.status(),await response.text()).toBe(200);return response.json();};
+      async function recent(){
+        await contentTime();
+        const response=syncResponse(page,'recent');await entry.click();
+        await expect(chat.locator('.message.assistant').last()).toContainText('Answer 89');
+        return {page:await payload(await response),visibleMs:await page.evaluate(()=>window.transferContentTime)};
+      }
+      async function older(){
+        const response=syncResponse(page,'older');await page.locator(codex?'#older':'.ds-history-older').evaluate(button=>button.click());
+        await expect(chat.locator('.message.user').first()).toContainText('Question 30');
+        return payload(await response);
+      }
+      async function processPages(){
+        const first=syncResponse(page,'process');await chat.getByRole('button',{name:'已完成',exact:true}).last().click();
+        await expect(loadedSteps).toHaveCount(20);
+        const next=syncResponse(page,'process');await chat.getByRole('button',{name:'加载后续过程'}).click();
+        await expect(loadedSteps).toHaveCount(24);
+        return [await payload(await first),await payload(await next)];
+      }
+      async function body(){
+        const tool=loadedSteps.last();
+        await tool.locator('summary').click();
+        await expect(tool.locator('.activity-body')).toContainText('Long detail marker');
+        await tool.getByRole('button',{name:'继续加载正文'}).click();
+        await expect(tool.locator('.activity-body')).toContainText('SECOND CHUNK');
+      }
+      const cold=await recent();
+      expect(cold.page.rows.filter(row=>['user','assistant'].includes(row.role))).toHaveLength(20);
+      const coldOlder=await older();
+      expect(coldOlder.rows.filter(row=>['user','assistant'].includes(row.role))).toHaveLength(100);
+      const coldProcesses=await processPages();
+      expect(coldProcesses.map(result=>result.rows.length)).toEqual([20,4]);
+      await body();
+      expect(pages.filter(value=>value.mode==='body')).toHaveLength(2);
+
+      const coldBytes=await mappedBytes(pages);
+      await page.goto(origin+'/?round=warm');
+      await selectProvider();
+      await expect(entry).toBeVisible();
+      pages.length=0;
+      const watchReply=syncResponse(page,'watch');
+      const warm=await recent();
+      expect(warm.page.rows).toHaveLength(0);
+      for(const [index,effort] of [[87,''],[88,''],[89,' high']]){
+        const row=chat.locator('.message.assistant').filter({has:page.locator('.message-body').getByText('Answer '+index,{exact:true})});
+        await expect(row.locator('.who')).toHaveText(new RegExp('历史模型 '+index+effort+'$'));
+      }
+      const warmOlder=await older();
+      expect(warmOlder.rows).toHaveLength(0);
+      const warmProcesses=await processPages();
+      expect(warmProcesses.map(result=>result.rows.length)).toEqual([0,0]);
+      await body();
+      expect(pages.filter(value=>value.mode==='body')).toHaveLength(0);
+      const watch=await payload(await watchReply);
+      expect(watch.waitSupported).toBe(true);
+      expect(watch.rows).toBeUndefined();
+      await expect.poll(()=>page.evaluate(codex=>{
+        const timeline=codex?chatTimeline:desktopSessions.syncTimeline;
+        return !!(timeline?.receivedFreshPage&&timeline.syncEnabled);
+      },codex)).toBe(true);
+      const warmBytes=await mappedBytes(pages);
+      await info.attach('session-transfer-evidence',{contentType:'application/json',body:JSON.stringify({
+        provider,coldBytes,warmBytes,coldVisibleMs:cold.visibleMs,warmVisibleMs:warm.visibleMs,
+        recent:{cold:cold.page.rows.length,warm:warm.page.rows.length},
+        older:{cold:coldOlder.rows.length,warm:warmOlder.rows.length},
+        process:{cold:coldProcesses.map(result=>result.rows.length),warm:warmProcesses.map(result=>result.rows.length)},
+        bodyRequests:{cold:2,warm:0},
+      })});
+      if(codex){
+        await page.evaluate(async()=>{
+          const [group]=await BridgeChatSyncCache.inventory();
+          await BridgeChatSyncCache.erase(new Set([group.id]),null);
+        });
+        await expect(chat.locator('.message.assistant')).toHaveCount(0);
+        await expect(page.locator('#newer')).toBeVisible();
+        await page.locator('#newer').click();
+        await expect(chat.locator('.message.assistant').last()).toContainText('Answer 89');
+      }
+    }finally{
+      lines.close();
+      server.kill('SIGINT');
+      if(server.exitCode===null&&server.signalCode===null)await new Promise(resolve=>server.once('exit',resolve));
+    }
+  });
+}
+
+test('device usage is requested on open and signed-out users can clear selected local turns',async({page,context})=>{
+  const root=path.resolve(__dirname,'../..');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  try{
+    const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);server.once('exit',c=>reject(Error('fixture exit '+c)));});
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    let summaries=0;page.on('request',request=>{if(new URL(request.url()).pathname==='/api/session-transfers')summaries++;});
+    await page.goto(origin);
+    await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');
+    await page.locator('#login-button').click();
+    await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).first().click();
+    await expect(page.locator('#messages')).toContainText('Answer 89');
+    expect(summaries).toBe(0);
+    await page.locator('[data-open-appearance]:visible').first().click();
+    await page.locator('#transfer-usage').click();
+    await expect(page.locator('#transfer-usage-dialog [data-usage]')).toContainText(/\d[\d,.]* [KMGT]?B/);
+    expect(summaries).toBe(1);
+    await page.locator('[data-close="transfer-usage-dialog"]').click();
+    const logout=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/logout');
+    await page.locator('#transfer-logout').click();
+    expect((await logout).status()).toBe(200);
+    await expect(page.locator('#app')).toBeHidden();await page.locator('#logged-out-cache').click();
+    const dialog=page.locator('#transfer-clear-dialog');
+    await expect(dialog).toBeVisible();await expect(dialog.locator('[data-confirm]')).toBeDisabled();
+    await dialog.locator('input').first().check();
+    const all=dialog.getByLabel(/全部日期|All dates/);await expect(all).not.toBeChecked();await all.check();
+    await dialog.locator('[data-confirm]').click();
+    await expect(dialog.locator('[data-clear]')).toContainText(/全部日期|All dates/);
+    await dialog.locator('[data-confirm]').click();
+    await expect(dialog).not.toBeVisible();await page.locator('#logged-out-cache').click();
+    await expect(dialog.locator('[data-clear]')).toContainText(/暂无|No turns/);
+    expect(summaries).toBe(1);
+  }finally{lines.close();server.kill();}
+});
+
+test('the foreground session watches external rollout turns without watching other sessions',async({page,context},info)=>{
+  const root=path.resolve(__dirname,'../..');
+  const {appendFile}=require('node:fs/promises'),{pathToFileURL}=require('node:url');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py','--live-watch'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  const main='12345678-1234-4234-9234-123456789012',other='22345678-1234-4234-9234-123456789012';
+  try{
+    const [origin,source]=await new Promise((resolve,reject)=>{
+      const output=[];
+      lines.on('line',line=>{output.push(line);if(output.length===2)resolve([output[0],JSON.parse(output[1])]);});
+      server.once('error',reject);server.once('exit',code=>reject(Error('Fixture exited '+code)));
+    });
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    const watches=[],aborted=[];
+    function watchId(request){
+      const url=new URL(request.url());
+      return url.searchParams.get('mode')==='watch'&&url.searchParams.get('waitMs')==='8000'
+        ?url.pathname.split('/')[3]:null;
+    }
+    page.on('request',request=>{const id=watchId(request);if(id)watches.push(id);});
+    page.on('requestfailed',request=>{const id=watchId(request);if(id)aborted.push(id);});
+    const listening=id=>page.waitForRequest(request=>watchId(request)===id,{timeout:10000});
+    async function append(file,...records){await appendFile(file,records.map(record=>JSON.stringify(record)+'\n').join(''));}
+    const event=(type,turn_id)=>({type:'event_msg',payload:{type,turn_id}});
+    const message=(role,text)=>({type:'response_item',payload:{type:'message',role,content:[{type:'text',text}]}});
+    await page.goto(origin);
+    await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');
+    await page.locator('#login-button').click();
+    const session=id=>page.locator('#sessions .session[data-id="'+id+'"]');
+    const firstWatch=listening(main);await session(main).click();await firstWatch;
+    await expect(page.locator('#messages')).toContainText('Answer 89');
+    expect(watches.every(id=>id===main)).toBe(true);
+    const samples=[];
+    for(let index=1;index<=3;index++){
+      const label='Outside question '+index,asset='outside image '+index,turn='outside-'+index;
+      // This write happens in the Node test process, outside the browser or gateway.
+      const start=Date.now();
+      await append(source.rollout,event('task_started',turn),message('user',label),
+        message('assistant','Outside answer '+index+'\n\n!['+asset+']('+pathToFileURL(source.image).href+')'));
+      const at=await page.waitForFunction(({label,asset})=>{
+        const messages=document.getElementById('messages');
+        const image=messages.querySelector('img[alt="'+asset+'"]');
+        const question=[...messages.querySelectorAll('.message.user')].find(node=>node.textContent.includes(label));
+        const viewport=document.getElementById('timeline').getBoundingClientRect();
+        const visible=node=>{
+          const rect=node?.getBoundingClientRect();
+          return rect?.width&&rect.height&&rect.bottom>viewport.top&&rect.top<viewport.bottom;
+        };
+        return visible(question)&&visible(image)&&image.naturalWidth&&
+          document.getElementById('status').textContent==='运行中'&&Date.now();
+      },{label,asset}).then(value=>value.jsonValue());
+      samples.push(at-start);
+      expect(at-start).toBeLessThan(1800);
+      const nextWatch=listening(main);
+      await append(source.rollout,event('task_complete',turn));
+      await expect(page.locator('#status')).toHaveText('已连接');
+      await nextWatch;
+    }
+    expect(watches.every(id=>id===main)).toBe(true);
+    if(!await session(other).isVisible())await page.locator('#back').click();
+    const secondWatch=listening(other);await session(other).click();await secondWatch;
+    await expect.poll(()=>aborted.includes(main)).toBe(true);
+    await expect(page.locator('#messages')).toContainText('Other session answer');
+    const offset=watches.length;
+    await append(source.rollout,event('task_started','unselected'),message('user','Unselected session update'));
+    await page.evaluate(()=>{
+      window.BridgeChatForeground=false;
+      window.dispatchEvent(new CustomEvent('bridge-chat-foreground',{detail:{foreground:false}}));
+    });
+    await expect.poll(()=>aborted.includes(other)).toBe(true);
+    await append(source.other,event('task_started','paused'),message('user','Paused other update'));
+    await page.waitForTimeout(450);
+    expect(watches.slice(offset)).toEqual([]);
+    await expect(page.locator('#messages')).not.toContainText('Paused other update');
+    await page.evaluate(()=>{
+      window.BridgeChatForeground=true;
+      window.dispatchEvent(new CustomEvent('bridge-chat-foreground',{detail:{foreground:true}}));
+    });
+    await expect(page.locator('#messages')).toContainText('Paused other update');
+    await expect(page.locator('#messages')).not.toContainText('Unselected session update');
+    expect(watches.slice(offset).every(id=>id===other)).toBe(true);
+
+    // Reload during a pending watch. Browser navigation cancels the old fetch,
+    // but this is still the same authenticated tab and selected session.
+    await append(source.other,event('task_complete','paused'));
+    await expect(page.locator('#status')).toHaveText('已连接');
+    await expect.poll(()=>page.evaluate(()=>Boolean(chatTimeline.sync?.watch&&!chatTimeline.sync.watch.signal.aborted))).toBe(true);
+    const epoch=await page.evaluate(()=>BridgeChatSyncCache.epoch);
+    await page.goto(origin+'/?phase=watch-reload');
+    await page.waitForFunction(()=>!!window.BridgeChatSyncCache);
+    expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch);
+    let release;
+    const hold=new Promise(resolve=>{release=resolve;});
+    const recent=url=>url.pathname.endsWith('/'+other+'/sync')&&url.searchParams.get('mode')==='recent';
+    await page.route(recent,async route=>{await hold;await route.continue();});
+    try{
+      await session(other).click();
+      await expect(page.locator('#messages')).toContainText('Other session answer');
+      expect(await page.evaluate(()=>chatTimeline.cached)).toBe(true);
+      const attachment=await page.evaluate(()=>{
+        const row=chatTimeline.renderRow({key:'cached-image',role:'user',text:'',attachments:[
+          {type:'localImage',desktopId:'a'.repeat(64),name:'cached.png'}
+        ]});
+        return {label:row.querySelector('[data-image-preview]')?.textContent,images:row.querySelectorAll('img').length};
+      });
+      expect(attachment).toEqual({label:'cached.png',images:0});
+      release();
+      await expect.poll(()=>page.evaluate(()=>chatTimeline?.receivedFreshPage)).toBe(true);
+    }finally{
+      release();
+      await page.unroute(recent);
+    }
+    await page.evaluate(()=>window.dispatchEvent(new Event('offline')));
+    expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch+1);
+
+    await info.attach('external-write-to-readable-ms',{contentType:'application/json',body:JSON.stringify(samples)});
+  }finally{
+    lines.close();
+    server.kill('SIGINT');
+    if(server.exitCode===null&&server.signalCode===null)await new Promise(resolve=>server.once('exit',resolve));
+  }
+});
+
+test('a reopened running turn reuses exactly 100 cached steps and reads across a larger gap on demand',async({page,context},info)=>{
+  const root=path.resolve(__dirname,'../..'),{appendFile}=require('node:fs/promises');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py','--live-watch'],{cwd:root});
+  const lines=createInterface({input:server.stdout}),payloads=[];
+  const step=number=>'Step '+String(number).padStart(3,'0');
+  const steps=(first,last)=>Array.from({length:last-first+1},(_,offset)=>step(first+offset));
+  const turn='step-transfer';
+  const turnStart=Date.now()-3799000,stamp=offset=>new Date(turnStart+offset).toISOString();
+  const event=(type,offset,id=turn)=>({type:'event_msg',...(offset===undefined?{}:{timestamp:stamp(offset)}),payload:{type,turn_id:id}});
+  const usage=used=>({type:'event_msg',payload:{type:'token_count',info:{last_token_usage:{total_tokens:used},model_context_window:2048}}});
+  const message=(role,text,phase,offset)=>({type:'response_item',...(offset===undefined?{}:{timestamp:stamp(offset)}),payload:{type:'message',role,phase,content:[{type:'text',text}]}});
+
+  try{
+    const [origin,source]=await new Promise((resolve,reject)=>{
+      const output=[];
+      lines.on('line',line=>{output.push(line);if(output.length===2)resolve([output[0],JSON.parse(output[1])]);});
+      server.once('error',reject);server.once('exit',code=>reject(Error('Fixture exited '+code)));
+    });
+    const append=records=>appendFile(source.rollout,records.map(record=>JSON.stringify(record)+'\n').join(''));
+    const appendSteps=(first,last)=>steps(first,last).map(text=>message('assistant',text,'commentary'));
+    await append([event('task_started',0),message('user','Read this process'),usage(512),...appendSteps(1,100)]);
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    page.on('response',response=>{
+      const url=new URL(response.url());
+      if(url.pathname.endsWith('/sync')&&['process','body'].includes(url.searchParams.get('mode'))&&response.ok())
+        payloads.push(response.json().then(body=>({mode:url.searchParams.get('mode'),url:url.searchParams,body})));
+    });
+    await page.goto(origin);
+    await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');
+    await page.locator('#login-button').click();
+    const entry=title=>page.locator('#sessions .session').filter({hasText:title});
+    const open=async title=>{
+      const button=entry(title);
+      if(!await button.isVisible()&&await page.locator('#back').isVisible())await page.locator('#back').click();
+      await button.click();
+    };
+    const messages=page.locator('#messages');
+    const contents=messages.locator('.message-body').filter({hasText:/^Step \d{3}$/});
+    const earlier=messages.getByRole('button',{name:'加载更早过程'}).last();
+    const older=async(first,last)=>{
+      await earlier.click();
+      await expect(contents).toHaveText(steps(first,last));
+    };
+    await open('Transfer HTTP fixture');
+    await expect(contents).toHaveText(steps(81,100));
+    const contextBadge=page.locator('#composer .context-usage');
+    await expect(contextBadge).toHaveAttribute('aria-label',/25%$/);
+    await append([usage(768)]);
+    await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
+    await expect(messages.locator('.sync-process')).toHaveCount(0);
+    for(const first of [61,41,21,1])await older(first,100);
+    // Read the actual IndexedDB records, not merely the rendered rows.
+    const diskCount=await page.evaluate(async()=>{
+      const {scope}=chatTimeline.syncTarget,cache=BridgeChatSyncCache;
+      if(!await cache.disk.open())return -1;
+      await cache.pending.get(scope);
+      const key=[...chatTimeline.sync.processes.values()].at(-1).cursor;
+      const manifests=(await cache.disk.list('page',scope)).filter(record=>{
+        const [mode,...params]=JSON.parse(record.key);
+        return mode==='process'&&Object.fromEntries(params).key===key;
+      });
+      const keys=[...new Set(manifests.flatMap(record=>record.value.index.map(row=>row.key)))];
+      const rows=await cache.disk.get(scope,'row',keys);
+      return rows.filter(row=>/^Step \d{3}$/.test(row?.text||'')).length;
+    });
+    expect(diskCount).toBe(100);
+    await open('Other transfer fixture');await expect(page.locator('#messages')).toContainText('Other session answer');
+    let offset=payloads.length;
+    await append(appendSteps(101,120));
+    await page.goto(origin+'/?process=reopen');
+    await open('Transfer HTTP fixture');
+    await expect(contents).toHaveText(steps(1,120));
+    const onePage=await Promise.all(payloads.slice(offset));
+    const bodyText=onePage.flatMap(({mode,body})=>mode==='body'?[body.text]:body.rows.map(row=>row.text));
+    expect(bodyText).toEqual(steps(101,120));
+    expect(onePage).toHaveLength(1);
+    expect(onePage[0].url.has('before')).toBe(false);
+    expect(onePage[0].body.unchanged).toHaveLength(100);
+    const oldBodyBytes=bodyText.filter(text=>steps(1,100).includes(text)).reduce((bytes,text)=>bytes+Buffer.byteLength(text),0);
+    expect(oldBodyBytes).toBe(0);
+
+    await open('Other transfer fixture');await expect(page.locator('#messages')).toContainText('Other session answer');
+    offset=payloads.length;
+    await append(appendSteps(121,165));
+    await open('Transfer HTTP fixture');
+    await expect(contents).toHaveText(steps(146,165));
+    await older(126,165);await older(106,165);
+    for(const first of [86,66,46,26,6,1])await older(first,165);
+    const acrossGap=(await Promise.all(payloads.slice(offset))).flatMap(({mode,body})=>mode==='body'?[body.text]:body.rows.map(row=>row.text));
+    expect([...acrossGap].sort()).toEqual(steps(121,165));
+
+    const anchor=contents.getByText(step(35),{exact:true});
+    await anchor.evaluate(node=>{
+      const viewport=document.getElementById('timeline');
+      viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-50;
+    });
+    await expect.poll(()=>page.evaluate(()=>chatTimeline.following)).toBe(false);
+    const y=await anchor.evaluate(node=>node.getBoundingClientRect().top);
+    const finalText='Final answer after the process';
+    const pendingLabel='用时 1 小时 3 分钟 17 秒',doneLabel='已完成，用时 1 小时 3 分钟 19 秒';
+    await page.evaluate(({finalText,pendingLabel})=>{
+      const messages=document.getElementById('messages');
+      window.firstAnswerFrame=null;
+      const observer=new MutationObserver(()=>{
+        if(!messages.textContent.includes(finalText))return;
+        observer.disconnect();
+        requestAnimationFrame(()=>{
+          const answer=[...messages.querySelectorAll('.message.assistant')].find(node=>node.textContent.includes(finalText));
+          const samples=[...messages.querySelectorAll('.chat-turn-completion')].filter(node=>node.getAttribute('aria-label')===pendingLabel);
+          const control=samples[0],firstStep=control?.nextElementSibling;
+          window.firstAnswerFrame={label:control?.getAttribute('aria-label'),count:samples.length,
+            beforeSteps:firstStep?.classList.contains('chat-process-page')&&firstStep.dataset.key.startsWith('process-earlier:'),
+            clickable:!!answer&&!!control&&!control.disabled};
+          window.answerDurationControl=control;
+        });
+      });
+      observer.observe(messages,{childList:true,subtree:true,characterData:true});
+    },{finalText,pendingLabel});
+    await append([message('assistant',finalText,'final_answer',3797000)]);
+    const final=page.locator('#messages .message-body').getByText(finalText,{exact:true});
+    await expect(final).toHaveCount(1);
+    await expect.poll(()=>page.evaluate(()=>window.firstAnswerFrame)).toEqual({label:pendingLabel,count:1,beforeSteps:true,clickable:true});
+    const control=page.getByRole('button',{name:pendingLabel,exact:true});
+    await expect(control).toBeEnabled();
+    await expect(contents.last()).toBeVisible();
+    await expect(page.locator('#status')).toHaveText('运行中');
+    // A genuine separate rollout event arrives after at least 1.2 seconds.
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    const completionReceipt=page.waitForResponse(async response=>{
+      const url=new URL(response.url());
+      return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')==='recent'&&response.ok()&&
+        (await response.json()).turns?.some(row=>row.id===turn&&row.status==='completed');
+    });
+    await append([event('task_complete',3799000)]);
+    const completionWire=await (await completionReceipt).json();
+    const answerKey=completionWire.index.find(row=>row.turnId===turn&&row.phase==='final_answer').key;
+    expect(completionWire.unchanged).toContain(answerKey);
+    expect(completionWire.rows.some(row=>row.key===answerKey)).toBe(false);
+    const finished=page.getByRole('button',{name:doneLabel,exact:true});
+    await expect(finished).toHaveCount(1);
+    expect(await finished.evaluate(node=>node===window.answerDurationControl)).toBe(true);
+    await expect(contents).toHaveText(steps(1,165));
+    const anchorDeltaPx=Math.abs(await anchor.evaluate(node=>node.getBoundingClientRect().top)-y);
+    expect(anchorDeltaPx).toBeLessThan(3);
+    const jump=page.getByRole('button',{name:'查看最终答复'});
+    await expect(jump).toBeInViewport();
+    await jump.click();
+    await expect(final).toBeInViewport();
+    await expect(finished).toHaveAttribute('aria-expanded','false');
+    await expect(contents).toHaveCount(0);
+    offset=payloads.length;
+    await finished.click();
+    await expect(contents).toHaveText(steps(1,20));
+    const completed=await Promise.all(payloads.slice(offset));
+    expect(completed.flatMap(({body})=>body.rows)).toHaveLength(0);
+
+    const follow='follow-current',followSteps=Array.from({length:18},(_,index)=>'Following step '+(index+1));
+    const latest=async()=>{
+      const backToLatest=page.getByRole('button',{name:'回到最新',exact:true});
+      if(await backToLatest.isVisible())await backToLatest.click();
+      else await page.locator('#timeline').evaluate(node=>{node.scrollTop=node.scrollHeight;});
+      await expect.poll(()=>page.evaluate(()=>chatTimeline.following)).toBe(true);
+    };
+    await latest();
+    await append([event('task_started',3800000,follow),message('user','Follow this process'),
+      ...followSteps.slice(0,9).map(text=>message('assistant',text,'commentary')),
+      message('user','Supplement without ending the turn'),
+      ...followSteps.slice(9).map(text=>message('assistant',text,'commentary'))]);
+    const followContents=messages.locator('.message-body').filter({hasText:/^Following step \d+$/});
+    await expect(followContents).toHaveText(followSteps);
+    const returnToInput=page.getByRole('button',{name:'回到本轮输入'});
+    await expect(returnToInput).toBeVisible();await returnToInput.click();
+    await expect(messages.getByText('Follow this process',{exact:true})).toBeInViewport();
+    await latest();
+    await append([message('assistant','Final while following','final_answer',3807000)]);
+    const followLabel=page.getByRole('button',{name:'用时 7 秒',exact:true});
+    await expect(followLabel).toBeInViewport();
+    await expect(messages.getByText('Final while following',{exact:true})).toBeInViewport();
+    const firstAnswerImage=info.outputPath('22bce-first-answer.png');
+    await page.screenshot({path:firstAnswerImage});
+    await info.attach('22bce-first-answer',{path:firstAnswerImage,contentType:'image/png'});
+    await followLabel.click();
+    await expect(followContents.first()).toBeInViewport();
+    const openedImage=info.outputPath('22bce-open-process.png');
+    await page.screenshot({path:openedImage});
+    await info.attach('22bce-open-process',{path:openedImage,contentType:'image/png'});
+    await latest();
+    await append([event('task_complete',3809000,follow)]);
+    const followDone=page.getByRole('button',{name:'已完成，用时 9 秒',exact:true});
+    await expect(followDone).toBeInViewport();
+    await expect(followDone).toHaveAttribute('aria-expanded','false');
+    await followDone.click();
+    await expect(followContents).toHaveText(followSteps);
+    await latest();
+
+    const stopped='interrupted-turn';
+    await append([event('task_started',3810000,stopped),message('user','Stop this process'),
+      message('assistant','Last interrupted step','commentary')]);
+    const lastStep=messages.getByText('Last interrupted step',{exact:true});
+    await expect(lastStep).toBeVisible();
+    await append([event('turn_aborted',3811000,stopped)]);
+    const stopControl=messages.getByRole('button',{name:'已停止',exact:true}).last();
+    await expect(stopControl).toHaveAttribute('aria-expanded','true');
+    const outcome=messages.locator('.chat-turn-outcome').last();
+    await expect(outcome).toHaveText('已停止');
+    await expect(outcome).toBeVisible();
+    expect(await outcome.evaluate(node=>node.previousElementSibling?.querySelector('.message-body')?.textContent)).toBe('Last interrupted step');
+    await expect(lastStep).toBeVisible();
+    await stopControl.click();
+    await expect(lastStep).toBeHidden();
+    await expect(outcome).toBeHidden();
+    await stopControl.click();
+    await expect(lastStep).toBeVisible();
+    await expect(outcome).toBeVisible();
+    await info.attach('process-reopen-receipts',{contentType:'application/json',body:JSON.stringify({
+      cachedSteps:diskCount,adjacentNewBodies:bodyText.length,oldBodyBytes,largeGapNewBodies:acrossGap.length,
+      anchorDeltaPx
+    })});
+  }finally{
+    lines.close();server.kill('SIGINT');
+    if(server.exitCode===null&&server.signalCode===null)await new Promise(resolve=>server.once('exit',resolve));
+  }
+});

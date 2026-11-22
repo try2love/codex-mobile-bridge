@@ -21,73 +21,143 @@ function renderChatMessageTime(container,value,now=new Date()){
   time.title=new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'short'}).format(date);
   time.setAttribute('aria-label',time.title);container.append(time);
 }
+function chatTurnStopped(status){return ['failed','interrupted','cancelled','canceled'].includes(status);}
 function chatTurnCompletionLabel(turn){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
-  if(turn.status==='interrupted')return t('已停止');
-  if(turn.status==='failed')return t('运行失败');
-  if(turn.status!=='completed')return '';
-  const start=chatMessageDate(turn.start),end=chatMessageDate(turn.end);
-  if(!start||!end||!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return t('已完成');
-  const seconds=Math.floor((end-start)/1000),minutes=Math.floor(seconds/60);
-  return t(minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒')
-    .replace('{minutes}',minutes).replace('{seconds}',seconds%60);
+  if(chatTurnStopped(turn.status))return t(turn.status==='failed'?'运行失败':'已停止');
+  if(!['completed','inProgress'].includes(turn.status))return '';
+  const done=turn.status==='completed';
+  const start=chatMessageDate(turn.start),end=chatMessageDate(done?turn.end:turn.answerAt);
+  if(!start||!end||!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return done?t('已完成'):'';
+  const seconds=Math.floor((end-start)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds/60)%60;
+  const doneLabel=hours?'已完成，用时 {hours} 小时 {minutes} 分钟 {seconds} 秒':minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒';
+  const liveLabel=hours?'用时 {hours} 小时 {minutes} 分钟 {seconds} 秒':minutes?'用时 {minutes} 分钟 {seconds} 秒':'用时 {seconds} 秒';
+  return t(done?doneLabel:liveLabel).replace('{hours}',hours).replace('{minutes}',minutes).replace('{seconds}',seconds%60);
+}
+function chatMessageHeading(row,agent){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(row.role==='user')return t('你');
+  if(row.role==='error')return t('执行错误');
+  const model=typeof row.model==='string'?row.model.trim():'',effort=typeof row.effort==='string'?row.effort.trim():'';
+  const label=model?[model,effort&&!/^(none|off|disabled|false|0|关闭|无)$/i.test(effort)?effort:''].filter(Boolean).join(' '):'';
+  return [agent,chatActivityKind(row)==='reasoning'?chatActivityLabel(row):'',label].filter(Boolean).join(' · ');
+}
+function chatProcessPagerLabel(row){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  return t(row.pageError?'读取失败，点击重试':row.pageDirection==='earlier'?'加载更早过程':'加载后续过程');
+}
+function renderChatPartialOfflineNote(){
+  const node=document.createElement('p');node.className='muted';node.textContent=BridgeI18n.t('本机仅保存了部分内容');
+  return node;
+}
+function renderChatProcessPager(row,activate){
+  const node=document.createElement('button');
+  node.type='button';node.className='plain timeline-row chat-process-page';
+  node.textContent=chatProcessPagerLabel(row);node.onclick=()=>activate(row.processKey,row.pageDirection);
+  return node;
+}
+function chatFinalAnswer(row){
+  return row.role==='assistant'&&(row.phase==='final_answer'||row.forkable===true&&row.phase!=='commentary')&&
+    (row.text?.trim()||row.attachments?.length);
 }
 // Use native turn and answer identities. Missing evidence keeps the flat rows visible.
 function chatTurnProcessRow(row){
-  return !row.fileSummary&&(row.role==='activity'||row.role==='reasoning'||
+  return !row.fileSummary&&(row.role==='activity'||chatActivityKind(row)==='reasoning'||
     row.role==='assistant'&&row.phase==='commentary');
 }
-function chatNodesWithTurnCompletions(container,nodes,rows){
+function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=true,onDisclosure}={}){
   const turns=new Map(),nodeByKey=new Map(nodes.map(node=>[node.dataset.key,node])),managed=new Set();
   for(const [index,row] of rows.entries()){
     const key=String(row.key??row.id??index);
-    if(row.turnId===undefined||row.turnId===null||row.turnId==='history'||row.turnCompletionKnown===false)continue;
+    if(row.turnId===undefined||row.turnId===null||row.turnId==='history'||row.turnCompletionKnown===false&&row.turnStatus!=='inProgress')continue;
     const id=String(row.turnId),turn=turns.get(id)||{id,rows:[]};
     turn.last=key;turn.rows.push({row,key,index});
     if(row.turnStatus)turn.status=row.turnStatus;
     if(row.turnStartedAt!==undefined)turn.start=row.turnStartedAt;
     if(row.turnCompletedAt!==undefined)turn.end=row.turnCompletedAt;
-    if(row.role==='assistant'&&(row.phase==='final_answer'||row.forkable===true&&row.phase!=='commentary')){
-      turn.answerKey=key;turn.answerIndex=index;
+    if(row.turnError||row.role==='error'&&row.text)turn.error=String(row.turnError||row.text).slice(0,500);
+    if(chatFinalAnswer(row)){
+      turn.answerKey=key;turn.answerIndex=index;turn.answerAt=row.timestamp;
     }
     turns.set(id,turn);
   }
-  const existing=new Map([...container.children].filter(node=>node.classList?.contains('chat-turn-completion')).map(node=>[node.dataset.key,node]));
-  const before=new Map(),after=new Map();
+  const existing=new Map([...container.children].map(node=>[node.dataset.key,node]));
+  const before=new Map(),after=new Map(),outcomes=new Set();
   for(const turn of turns.values()){
     const process=turn.rows.filter(({row,index})=>chatTurnProcessRow(row)&&
       (turn.answerIndex===undefined||index<turn.answerIndex));
-    const label=turn.status==='inProgress'&&process.length
-      ?(typeof BridgeI18n==='undefined'?'正在思考与执行…':BridgeI18n.t('正在思考与执行…'))
-      :chatTurnCompletionLabel(turn);
+    if(turn.status==='completed'&&!process.length)continue;
+    const running=turn.status==='inProgress',stopped=chatTurnStopped(turn.status);
+    const locate=running&&!!turn.answerKey&&process.length>0;
+    const duration=chatTurnCompletionLabel(turn);
+    const runningLabel=typeof BridgeI18n==='undefined'?'正在思考与执行…':BridgeI18n.t('正在思考与执行…');
+    const label=running&&process.length?(locate&&duration||runningLabel):duration;
     if(!label)continue;
-    const key='turn-completion:'+turn.id,foldable=turn.status==='completed'&&!!turn.answerKey&&process.length>0;
+    const key='turn-completion:'+turn.id;
+    const foldable=process.length>0&&(turn.status==='completed'&&!!turn.answerKey||stopped&&!turn.answerKey);
     const control=existing.get(key)||document.createElement('button');
+    const finished=control.__chatTurn?.status==='inProgress'&&turn.status==='completed';
     control.type='button';control.className='chat-turn-completion';control.dataset.key=key;control.__chatTurn=turn;
-    if(control.__chatAnswer!==turn.answerKey||turn.status==='inProgress')control.__chatProcessOpen=undefined;
+    control.classList.toggle('chat-turn-locator',locate);
+    if(control.__chatAnswer!==turn.answerKey||running)control.__chatProcessOpen=undefined;
     control.__chatAnswer=turn.answerKey;
     const processNodes=process.map(({key})=>nodeByKey.get(key)).filter(Boolean);
     for(const node of processNodes)managed.add(node);
+    let outcome;
+    if(stopped&&!turn.answerKey&&process.length){
+      const tail=process.findLast(({row,key})=>row.kind!=='syncProcessPage'&&!nodeByKey.get(key)?.hidden)||process.at(-1);
+      const error=turn.rows.findLast(({row})=>row.role==='error'&&row.text?.slice(0,500)===turn.error);
+      const native=error&&nodeByKey.get(error.key),key='turn-outcome:'+turn.id;
+      outcome=native||existing.get(key)||document.createElement('p');
+      if(!native){
+        outcome.dataset.key=key;
+        const text=turn.error||label;
+        if(outcome.textContent!==text)outcome.textContent=text;
+      }
+      outcome.classList.add('chat-turn-outcome');outcomes.add(outcome);managed.add(outcome);
+      after.set(tail.key,outcome);
+    }
     const selected=document.getSelection?.();
-    const reading=selected&&!selected.isCollapsed&&processNodes.some(node=>node.contains(selected.anchorNode));
-    if(reading)control.__chatProcessOpen=true;
+    const selecting=selected&&!selected.isCollapsed&&processNodes.some(node=>(existing.get(node.dataset.key)||node).contains(selected.anchorNode));
+    const region=finished&&!following&&viewport?.getBoundingClientRect();
+    const reading=region&&processNodes.some(node=>{
+      const prior=existing.get(node.dataset.key);
+      if(!prior||prior.hidden)return false;
+      const rect=prior.getBoundingClientRect();
+      return rect.bottom>region.top&&rect.top<region.bottom;
+    });
+    if(selecting||reading)control.__chatProcessOpen=true;
+    if(finished&&(reading||selecting))control.__chatRetained=true;
     const update=()=>{
-      const open=!foldable||control.__chatProcessOpen===true;
+      const open=!foldable||(control.__chatProcessOpen??stopped);
       for(const node of processNodes)node.classList.toggle('chat-process-collapsed',!open);
-      control.disabled=!foldable;
+      outcome?.classList.toggle('chat-process-collapsed',!open);
+      control.disabled=!foldable&&!locate;
       if(foldable)control.setAttribute('aria-expanded',String(open));else control.removeAttribute('aria-expanded');
-      const text=label+(foldable?(open?' ▴':' ▾'):'');
+      const text=label+(foldable?(open?' ▴':' ▾'):locate?' ▾':'');
       if(control.textContent!==text)control.textContent=text;
+      if(control.getAttribute('aria-label')!==label)control.setAttribute('aria-label',label);
     };
-    control.onclick=()=>{control.__chatProcessOpen=control.__chatProcessOpen!==true;update();};
+    const toggle=open=>{
+      control.__chatProcessOpen=open;control.__chatRetained=false;update();onDisclosure?.(turn.id,open);
+    };
+    control.__chatCollapse=()=>toggle(false);
+    control.onclick=()=>{
+      if(locate){processNodes.find(node=>!node.hidden)?.scrollIntoView({block:'start'});return;}
+      toggle(!(control.__chatProcessOpen??stopped));
+    };
     update();
+    if(finished&&foldable&&!control.__chatProcessOpen)onDisclosure?.(turn.id,false);
     if(process.length)before.set(process[0].key,control);else after.set(turn.last,control);
   }
-  for(const node of nodes)if(!managed.has(node))node.classList?.remove('chat-process-collapsed');
+  for(const node of nodes){
+    if(!managed.has(node))node.classList?.remove('chat-process-collapsed');
+    if(!outcomes.has(node))node.classList?.remove('chat-turn-outcome');
+  }
   const result=[];
   for(const node of nodes){
     if(before.has(node.dataset.key))result.push(before.get(node.dataset.key));
-    result.push(node);
+    if(!outcomes.has(node))result.push(node);
     if(after.has(node.dataset.key))result.push(after.get(node.dataset.key));
   }
   return result;
@@ -102,7 +172,7 @@ function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
   for(const node of container.children){
-    if(node.hidden||node.dataset.key===undefined||node.classList?.contains('chat-turn-completion')||!accept(node))continue;
+    if(node.hidden||node.dataset.key===undefined||node.classList?.contains('chat-turn-completion')||node.classList?.contains('chat-turn-outcome')||node.classList?.contains('chat-process-collapsed')||!accept(node))continue;
     const rect=node.getBoundingClientRect();
     anchor={key:node.dataset.key,offset:rect.top-top};
     if(rect.bottom>top)break;
@@ -228,13 +298,15 @@ function syncChatMessageNodes(container,nodes){
   for(const [node,state] of reading)restoreChatActivityState(node,state);
 }
 // All chat surfaces render native task evidence through this shared indicator.
-function renderChatProgress(node,{agentName='',active=false,waiting=false,blocked=false,connected=true,fresh=true}={}){
+function renderChatProgress(node,{agentName='',active=false,waiting=false,blocked=false,connected=true,fresh=true,onInput}={}){
   const state=!connected||!fresh?'unknown':waiting?'waiting':active?'working':blocked?'blocked':'idle';
   const text={unknown:'运行状态暂不可用',waiting:'等待你的确认',blocked:'任务受阻，请查看提示',working:'正在工作…',idle:''}[state];
   node.hidden=state==='idle';node.dataset.state=state;node.setAttribute('role','status');node.setAttribute('aria-live','polite');
-  const key=JSON.stringify([state,agentName,BridgeI18n.language()]);if(node.dataset.progress===key)return state;node.dataset.progress=key;
+  const key=JSON.stringify([state,agentName,BridgeI18n.language(),!!onInput]);if(node.dataset.progress===key)return state;node.dataset.progress=key;
   node.replaceChildren();if(state==='working'){const dot=document.createElement('i');dot.setAttribute('aria-hidden','true');node.append(dot);}
-  const label=document.createElement('span');label.textContent=[agentName,BridgeI18n.t(text)].filter(Boolean).join(' ');node.append(label);return state;
+  const label=document.createElement('span');label.textContent=[agentName,BridgeI18n.t(text)].filter(Boolean).join(' ');node.append(label);
+  if(state==='working'&&onInput){const button=document.createElement('button');button.type='button';button.className='plain working-input';button.textContent=BridgeI18n.t('回到本轮输入');button.onclick=onInput;node.append(button);}
+  return state;
 }
 class SessionActivity {
   constructor({storage=localStorage,key='bridge-session-activity'}={}){this.storage=storage;this.key=key;try{this.rows=JSON.parse(storage.getItem(key)||'{}');}catch{this.rows={};}}

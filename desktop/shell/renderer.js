@@ -323,6 +323,12 @@ function render(value,watchRevision=watchPanel.revision){
   $('data-dir').textContent=value.dataDir;
   $('addresses').replaceChildren();
   prunePairing(value.urls);
+  const transferEntries=$('local-transfer-entries');
+  if(transferEntries){
+    transferEntries.replaceChildren();
+    for(const url of value.urls)if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(transferEntries,url,running,true);
+    if(!transferEntries.childElementCount)transferEntries.textContent=t('开启局域网或外网访问后，可扫码传输。');
+  }
   for(const url of value.urls){const card=document.createElement('div');card.className='address';const text=document.createElement('div'),label=document.createElement('small'),address=document.createElement('strong');const fixed=(value.preferences.connections||[]).some(c=>c.enabled&&url===c.publicUrl+'/');label.textContent=(fixed?t('固定 HTTPS · 请检测入口'):url.startsWith('https:')?t('临时外网 HTTPS'):url.includes('127.0.0.1')?t('此电脑'):t('局域网'))+(running?'':t(' · 网关未启动'));address.textContent=url;text.append(label,address);card.append(text);for(const [name,action] of [[t('复制'),()=>api.copy(url)],[t('打开'),()=>api.open(url)]]){const button=document.createElement('button');button.textContent=name;button.onclick=()=>action().catch(e=>feedback(e.message,true));card.append(button);}if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(card,url,running);$('addresses').append(card);}
   watchPanel.render(value,watchRevision);
   if(!dirty){
@@ -673,6 +679,35 @@ $('install-update').onclick=async()=>{
 $('update-releases').onclick=()=>api.open('releases').catch(error=>feedback(error.message,true));
 
 let devicesState=null,devicesDirty=false,devicesBusy=false;
+function renderTransferTable(container,data){
+  if(!data.sessions.length){container.textContent=t('暂无会话传输记录。');return;}
+  const total=document.createElement('p');
+  total.className='transfer-total';
+  total.textContent=t('累计传输 {size}').replace('{size}',updateCacheSize(data.totalBytes));
+  if(Number.isFinite(data.totalReusedBytes))total.textContent+=' · '+t('缓存复用')+' '+updateCacheSize(data.totalReusedBytes);
+  const viewport=document.createElement('div'),table=document.createElement('table');
+  viewport.className='transfer-table-scroll';viewport.tabIndex=0;
+  viewport.setAttribute('role','region');viewport.setAttribute('aria-label',t('传输用量'));
+  const header=table.createTHead().insertRow();
+  for(const name of ['Agent 平台与连接方式','已同步数据量','聊天名称']){
+    const cell=document.createElement('th');cell.scope='col';cell.textContent=t(name);header.append(cell);
+  }
+  const providers={codex:'Codex',claude:'Claude',deepseek:'DeepSeek',zcode:'ZCode',antigravity:'Antigravity'};
+  const methods={app:'APP',cli:'CLI',ide:'IDE',code:'Code',cowork:'Cowork'};
+  const body=table.createTBody();
+  for(const item of data.sessions){
+    const row=body.insertRow(),source=row.insertCell(),bytes=row.insertCell(),chat=row.insertCell();
+    const family=item.provider.split(':')[0],method=methods[item.method];
+    let host=item.hostLabel||item.host;
+    if(host==='local')host=family==='codex'||item.hostLabel||method?t('此电脑'):'';
+    else if(host==='此电脑')host=t('此电脑');
+    source.textContent=[providers[family]||family,method,host].filter(Boolean).join(' · ');
+    source.title=source.textContent;bytes.textContent=updateCacheSize(item.bytes);
+    bytes.title=Number(item.bytes).toLocaleString(BridgeI18n.locale())+' B';
+    chat.textContent=item.title||item.sessionId;chat.title=chat.textContent;
+  }
+  viewport.append(table);container.replaceChildren(total,viewport);
+}
 function devicePolicy(){
   const lines=id=>$(id).value.split('\n').map(value=>value.trim()).filter(Boolean);
   return {allowlistEnabled:$('allowlist-enabled').checked,allowlist:lines('ip-allowlist'),blocklist:lines('ip-blocklist'),trustedProxies:lines('trusted-proxies')};
@@ -713,7 +748,20 @@ function renderDevices(value){
       };
       actions.append(button);
     }
-    row.append(address,browser,detail,actions);$('device-list').append(row);
+    const usage=document.createElement('details'),summary=document.createElement('summary'),totals=document.createElement('div');
+    usage.className='device-transfer';
+    summary.textContent=t('传输用量');
+    usage.append(summary,totals);
+    usage.ontoggle=async()=>{
+      if(!usage.open)return;
+      totals.textContent=t('正在读取…');
+      try{
+        const data=await api.devices({action:'usage',id:session.id});
+        if(!usage.isConnected||!usage.open)return;
+        renderTransferTable(totals,data);
+      }catch(error){totals.textContent=error.message;}
+    };
+    row.append(address,browser,detail,actions,usage);$('device-list').append(row);
   }
 }
 async function loadDevices(){

@@ -82,6 +82,8 @@ async function runChatReadingStateChecks(){
         .map(message=>({...message,turnId:'native-first',turnStatus:'inProgress',turnStartedAt:start}));
       apply(rows,true);await frame();
       check(root.querySelector('.chat-turn-completion')?.disabled===true&&!getNode('turn-tool').classList.contains('chat-process-collapsed'),provider+' running task keeps its process visible');
+      if(timeline)timeline.jumpBottom();
+      else{viewport.scrollTop=viewport.scrollHeight;view.reading={top:viewport.scrollTop,following:true};}
       rows=rows.map(message=>({...message,turnStatus:'completed',turnCompletedAt:start+125000,...(message.id==='turn-answer'?{phase:'final_answer'}:{})}));
       apply(rows);await frame();
       const footer=root.querySelector('.chat-turn-completion');
@@ -98,8 +100,8 @@ async function runChatReadingStateChecks(){
       check(!getNode('turn-tool').classList.contains('chat-process-collapsed'),provider+' refresh preserves manual expansion');
       rows=[...rows,{...row('partial-history',3,'assistant','Older task without start'),turnId:'native-second',turnStatus:'completed',turnCompletedAt:start+500000}];
       apply(rows);await frame();
-      check([...root.querySelectorAll('.chat-turn-completion')].at(-1).textContent===BridgeI18n.t('已完成'),provider+' missing native start does not fabricate elapsed time');
-      if(timeline){timeline.setVisibility({showProcess:false});timeline.setVisibility({showProcess:true});check(root.querySelectorAll('.chat-turn-completion').length===2,provider+' process visibility preserves completion metadata');}
+      check(root.querySelectorAll('.chat-turn-completion').length===1&&root.querySelector('.chat-turn-completion')===footer,provider+' a completed turn without steps does not add a footer');
+      if(timeline){timeline.setVisibility({showProcess:false});timeline.setVisibility({showProcess:true});check(root.querySelectorAll('.chat-turn-completion').length===1,provider+' process visibility preserves completion metadata');}
     }finally{view?.clear();timeline?.dispose();root.remove();}
   }
   return {width:innerWidth,passed:checks.length,checks};

@@ -15,12 +15,17 @@
   "/manifest.webmanifest": "manifest.webmanifest",
   "/manifest-dark.webmanifest": "manifest-dark.webmanifest",
   "/app.js": [
+    "features/chat/offline-reader/hot-offline.js",
     "shared/dialog-dismiss.js",
     "features/chat/session-menu.js",
     "shared/quota-continuation.js",
+    "features/chat/sync-cache.js",
+    "features/chat/session-transfer.js",
+    "features/chat/history-transfer-task.js",
+    "features/chat/history-transfer.js",
     "shell/app.js"
   ],
-  "/bootstrap.js": ["shared/bootstrap.js", "shared/brand-icons.js"],
+  "/bootstrap.js": ["features/chat/offline-reader/offline-reader.js", "shared/bootstrap.js", "shared/brand-icons.js"],
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",
@@ -35,7 +40,7 @@
     "features/chat/session-menu.css",
     "shared/visualize.css"
   ],
-  "/activity.js": ["features/chat/history-cache.js", "features/chat/activity.js"],
+  "/activity.js": ["features/chat/history-cache.js", "features/chat/sync-transport.js", "features/chat/activity.js"],
   "/attachments.js": [
     "features/chat/composer-state.js",
     "features/chat/composer-preferences.js",
@@ -57,7 +62,7 @@
     "shared/composer-icons.js",
     "features/chat/permissions.js"
   ],
-  "/timeline.js": "features/chat/timeline.js",
+  "/timeline.js": ["features/chat/timeline-sync.js", "features/chat/timeline.js"],
   "/account.css": ["features/accounts/account.css", "features/accounts/quota-display.css"],
   "/account.js": ["features/accounts/quota-display.js", "features/accounts/account.js"],
   "/accounts.js": ["features/accounts/api-editor.js", "features/accounts/accounts.js"],
@@ -132,7 +137,8 @@
     "shared/presentation-controls.css",
     "hosts/mobile-footer.css",
     "hosts/mobile-controls.css",
-    "features/chat/composer-toolbar.css"
+    "features/chat/composer-toolbar.css",
+    "features/chat/history-transfer.css"
   ],
   "/host.js": [
     "hosts/environment.js",

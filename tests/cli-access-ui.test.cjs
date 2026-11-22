@@ -138,7 +138,7 @@ test('connection diagnostics is secondary to settings and keeps the original exp
 test('dismissed SSH faults stay hidden on refresh, then return after recovery or on another gateway',()=>{
   const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{children:[],replaceChildren(){this.children=[];},append(child){this.children.push(child);child.remove=()=>{this.children=this.children.filter(item=>item!==child);};},get childElementCount(){return this.children.length;}});return nodes.get(id);};
   const ctx={$,window:{BridgeRelayBase:'/relay/a'},location:{origin:'https://bridge.example'},dismissedHostFaults:new Map(),t:value=>value,el:(tag,cls,text)=>({tag,cls,textContent:text,children:[],append(child){this.children.push(child);},setAttribute(){}})};
-  vm.createContext(ctx);vm.runInContext(extract('function renderHostErrors(hosts){','function authLost()'),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function renderHostErrors(hosts){','function authLost('),ctx);
   const fault=[{host:'remote-1',label:'Remote',error:'SSH unavailable'}];ctx.renderHostErrors(fault);
   assert.equal($('host-errors').childElementCount,1);
   $('host-errors').children[0].children.find(child=>child.textContent==='×').onclick();ctx.renderHostErrors(fault);
