@@ -10,6 +10,14 @@ if($('quota-continue-enabled')){
   setInterval(()=>toggle.refresh(),10000);toggle.refresh();
 }
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
+let appearanceRevision=0,appearanceTheme='system';
+async function updateAppearance(theme){
+  if(typeof api.appearance!=='function')return;
+  const revision=++appearanceRevision,directory=snapshot?.dataDir;
+  try{const value=await api.appearance(theme);if(revision===appearanceRevision&&directory===snapshot?.dataDir){appearanceTheme=value.theme;$('appearance').value=value.theme;}}
+  catch(error){if(revision===appearanceRevision){$('appearance').value=appearanceTheme;feedback(error.message,true);}}
+}
+$('appearance').onchange=()=>updateAppearance($('appearance').value);
 let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',activeMaintenanceTab='general',savedFields={},feedbackKind='',lastFeedback;
 let networkAdaptationState,networkAdaptationBusy=false,networkAdaptationRevision=0,networkAdaptationError='';
 const defaultWebhookBodyTemplate=JSON.stringify({event:'{{event}}',title:'{{title}}',body:'{{body}}',session_name:'{{session_name}}',url:'{{url}}'},null,2);
@@ -276,7 +284,8 @@ function render(value,watchRevision=watchPanel.revision){
   $('login-startup-hint').textContent=t(value.loginStartup?.requiresApproval?'请在系统设置的登录项中允许此应用。':'开启后，登录电脑时自动启动网关。');
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir)){resetPairing();connectionSetupState.clear();}
   if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts'&&!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
-  snapshot=value;const running=value.runtime.running;
+  const appearanceChanged=snapshot?.dataDir!==value.dataDir;
+  snapshot=value;if(appearanceChanged)void updateAppearance();const running=value.runtime.running;
   if(!networkAdaptationBusy){if(typeof value.networkAdaptation?.enabled==='boolean')networkAdaptationError='';renderNetworkAdaptation(value.networkAdaptation??null);}
   if(running||value.runtime.portOccupied)startingUntil=0;
   const starting=Date.now()<startingUntil;
@@ -561,7 +570,8 @@ function renderUpdateVersions(){
   $('update-versions-state').classList.toggle('state-error',!!state.error);
   const selected=value.selected&&state.candidateId&&state.candidateId===value.candidateId&&!!updateVersionAsset();
   $('update-versions-download').disabled=busy||!selected;
-  $('update-versions-install').disabled=busy||!selected;
+  $('update-versions-install').disabled=busy||!selected||value.canInstall===false;
+  $('update-versions-install').hidden=value.canInstall===false;
   $('update-versions-install').textContent=t(value.manualInstall?(value.path?'打开安装包':'下载并打开安装包'):'切换版本并重启');
 }
 async function loadUpdateVersions(force=false){
@@ -604,14 +614,14 @@ function renderUpdate(){
   $('update-channel').value=updateChannel;
   $('update-channel').disabled=busy||value.state==='unsupported';
   $('update-version').textContent=t('当前版本：')+value.current+(value.version?' → '+value.version:'');
-  $('update-state').textContent=(value.selected&&value.state==='available'?t('已选择安装版本。'):value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.selected&&!value.manualInstall&&value.state==='downloaded'?'所选安装包已校验并缓存，点击“切换版本并重启”完成安装。当前版本仍在运行。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
+  $('update-state').textContent=(value.canInstall===false?t('Test 版支持下载和缓存管理，请手动安装所选版本。')+'\n':'')+(value.selected&&value.state==='available'?t('已选择安装版本。'):value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.selected&&!value.manualInstall&&value.state==='downloaded'?'所选安装包已校验并缓存，点击“切换版本并重启”完成安装。当前版本仍在运行。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
   $('update-badge').hidden=value.state!=='available'||!!value.selected;
   $('update-banner').hidden=value.state!=='available'||!!value.selected||activeTab==='advanced';
   $('update-banner').textContent=t('发现新版本，点击查看：')+(value.version||'');
   $('check-update').disabled=busy||value.state==='checking'||value.state==='unsupported';
   $('skip-update').hidden=value.state!=='available'||value.skipped===true||!!value.selected;
   $('skip-update').disabled=busy||value.state==='checking';
-  $('install-update').hidden=!value.version||value.selected||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
+  $('install-update').hidden=value.canInstall===false||!value.version||value.selected||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
   $('install-update').textContent=t(value.manualRelease?'打开官方发布页':value.manualInstall?'下载所选版本':value.intent==='return-stable'?'返回稳定版并重启':value.intent==='opt-in-preview'?'安装预览版并重启':'更新并重启');
   $('install-update').disabled=busy||value.state==='checking';
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';

@@ -27,7 +27,7 @@ STOP_RETRY_SECONDS = 8
 DATA_FORMAT = 'bridge-data-v1'
 # Only this source family has been reviewed against the pre-format stable app.
 RETURN_STABLE_SOURCE = re.compile(r'2\.2\.2-preview\.\d+')
-CONFIG_FILES = ('config.json', 'desktop.json', 'auth-sessions.json', 'connection-vault.json',
+CONFIG_FILES = ('config.json', 'desktop.json', 'desktop-appearance.json', 'auth-sessions.json', 'connection-vault.json',
                 'notifications.json', 'notification-watches.json', 'notification-policies.json',
                 'network-adaptation.json', 'desktop-sessions/settings.json', 'desktop-sessions/settings.user.json',
                 'client-instances/entries.json', 'codex-entries/entries.json', 'cli-access/index.json',

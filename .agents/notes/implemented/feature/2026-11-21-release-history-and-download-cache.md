@@ -39,3 +39,5 @@ Mac/Windows 的自动 ZIP 替换继续要求有效发布签名、包摘要、平
 ## 既有记录
 
 检索现有记录后，两篇均属部分重叠：[明确选择更新渠道](2026-11-20-explicit-update-channels.md)中的普通检查、签名、备份和当前资料保留仍有效，其特定回退组合由新的显式历史选择扩展；[Windows 配置、缓存与卸载边界](../bug-fix/2026-11-21-windows-settings-update-cache-uninstall-scope.md)中的配置权限和卸载决定仍有效，成功后自动清理缓存的决定由本记录替代。其他网络或页面缓存记录不涉及安装包生命周期，无需改动。
+
+[桌面入口与 Test 下载管理](2026-11-22-desktop-controls-and-test-updates.md)补充共享连接区块位置、主题持久化和独立 Test 安装边界；本篇仍有效的协议及安全约束保持。

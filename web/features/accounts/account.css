@@ -182,3 +182,5 @@
 #quota-continue-enabled:focus-visible{outline:2px solid var(--accent,#5b5ce2);outline-offset:3px}
 #quota-continue-enabled:disabled{opacity:.5;cursor:wait}
 @media(prefers-reduced-motion:reduce){#quota-continue-enabled,#quota-continue-enabled::before{transition:none}}
+
+.accounts-native-runtime{padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--border,#dfe3ea)}.accounts-native-runtime>h3{margin-top:0}

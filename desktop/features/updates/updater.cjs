@@ -191,9 +191,9 @@ async function cleanDownloadStaging(directory){
   }catch(error){if(error.code!=='ENOENT')throw error;}
 }
 class Updater{
-  constructor({current,platform=process.platform,arch=process.arch,format=platform==='linux'?'deb':'zip',key,fetch,catalogueFetch=fetch,directory,install,preflight,supported=true,skipFile}){
+  constructor({current,platform=process.platform,arch=process.arch,format=platform==='linux'?'deb':'zip',key,fetch,catalogueFetch=fetch,directory,install,preflight,supported=true,installSupported=supported,skipFile}){
     if(platform!=='linux'&&format==='deb')format='zip';
-    Object.assign(this,{current,platform,arch,format,key,fetch,catalogueFetch,directory,apply:install,preflight,supported,skipFile});
+    Object.assign(this,{current,platform,arch,format,key,fetch,catalogueFetch,directory,apply:install,preflight,supported,installSupported,skipFile});
     this.currentChannel=currentChannel(current);this.channel=this.currentChannel;this.checkToken=0;
     this.catalogueAssets=new Map();this.cacheHandoffs=new Set();this.catalogueToken=0;
     this.set(supported?'idle':'unsupported');
@@ -201,7 +201,7 @@ class Updater{
   get skipIdentity(){return this.platform+'-'+this.arch+(this.platform==='linux'?'-'+this.format:'')+':'+this.channel;}
   status(){return {...this.state};}
   get busy(){return ['downloading','preparing','restarting'].includes(this.state.state);}
-  set(state,extra={}){this.state={current:this.current,currentChannel:this.currentChannel,channel:this.channel,...extra,state};return this.status();}
+  set(state,extra={}){this.state={current:this.current,currentChannel:this.currentChannel,channel:this.channel,canInstall:this.supported&&this.installSupported,...extra,state};return this.status();}
   details(candidate){return {version:candidate.version,notes:candidate.notes,candidateId:candidate.id,intent:candidate.transition.intent,
     requiresConfirmation:candidate.transition.intent!=='update',...(candidate.selected?{selected:true,format:candidate.format,assetName:candidate.asset.name,manualInstall:!!candidate.manualInstall}:this.platform==='linux'?{manualInstall:true}:{}),...(candidate.manualRelease?{manualRelease:true}:{})};}
   async listVersions(){
@@ -408,6 +408,7 @@ class Updater{
     }catch(error){return this.set('error',{...details,message:error.message});}
   }
   async install({candidateId,confirmed=false}={}){
+    if(!this.installSupported)throw Error('此运行方式仅支持下载，请手动安装所选版本。');
     if(this.busy)return this.status();
     if(!this.candidate||this.checking||this.skipping||candidateId!==undefined&&candidateId!==this.candidate.id)throw Error('请先检查更新。');
     if(this.candidate.transition.intent!=='update'&&(!confirmed||candidateId!==this.candidate.id))throw Error('请确认所选版本后再安装。');

@@ -571,3 +571,14 @@ test('download, selection and checks cannot replace the active immutable package
   release();assert.equal((await pending).state,'downloaded');assert.equal(f.applied.length,0);
   assert.equal(packageRequests,1);
 });
+
+test('download-only installations verify and retain packages without invoking an installer',async t=>{
+ const directory=await fs.mkdtemp(path.resolve(__dirname,'../.tmp/download-only-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ let installed=0,preflight=0;
+ const fetch=async url=>new Response(url===RELEASES?JSON.stringify([{tag_name:'v'+next,assets:[{name:'bridge-update.json'}]}]):url.endsWith('.json')?signed(info()):bytes);
+ const u=new Updater({current,platform,arch,key:keys.publicKey,fetch,directory,supported:true,installSupported:false,preflight:()=>{preflight++;},install:()=>{installed++;}});
+ const state=await u.check();assert.equal(state.state,'available');assert.equal(state.canInstall,false);
+ await assert.rejects(u.install({candidateId:state.candidateId,confirmed:true}),/仅支持下载/);
+ const downloaded=await u.download({candidateId:state.candidateId});assert.equal(downloaded.state,'downloaded');assert.deepEqual(await fs.readFile(downloaded.path),bytes);
+ assert.equal(installed,0);assert.equal(preflight,0);assert.equal(u.cacheStatus().entries.length,1);
+});

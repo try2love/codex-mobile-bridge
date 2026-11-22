@@ -6,7 +6,7 @@ const requireMain=require('node:module').createRequire(main);
 
 // Exercise the real controller with a virtual helper and clock. No app, files,
 // gateway, or actual update process is started by these failure-path tests.
-function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false,confirm=async()=>({response:0}),shellError=''}={}){
+function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exited=false,platform='win32',packaged=true,environment={},execPath='/fixture/app/Bridge.exe',userData='/fixture/user',fixtureFiles=false,packageName='codex-mobile-bridge-desktop',confirm=async()=>({response:0}),shellError=''}={}){
   let now=0;
   const calls={exit:[],quit:0,closed:0,managementClosed:0,workers:[],dialogs:[],opened:[],revealed:[]},timers=[],intervals=[],handlers=new Map();
   const app={isPackaged:packaged,setPath(){},requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},
@@ -21,6 +21,7 @@ function controller({ready='valid',readyAt=0,pending=false,spawnError=false,exit
     },
     setInterval(fn,ms){intervals.push(ms);return {unref(){}};},
     require(name){
+      if(name===path.resolve(__dirname,'../package.json'))return {...requireMain(name),name:packageName};
       if(name==='electron')return {app,ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},
         dialog:{showMessageBox:async(parent,options)=>{calls.dialogs.push(options);return confirm();}},
         shell:{openExternal:async url=>calls.opened.push(url),openPath:async file=>{calls.opened.push(file);return shellError;},showItemInFolder:file=>calls.revealed.push(file)}};
@@ -60,7 +61,7 @@ for(const platform of ['darwin','win32','linux'])for(const packaged of [true,fal
     assert.equal(updater.apply,f.context.installUpdate);
     assert.equal(typeof updater.preflight,platform==='win32'?'function':'undefined');
     assert.equal(typeof updater.fetch,'function');
-    assert.deepEqual(f.timers,[5000]);assert.deepEqual(f.intervals,[6*60*60*1000]);
+    assert.deepEqual(f.timers,packaged?[5000]:[]);assert.deepEqual(f.intervals,packaged?[6*60*60*1000]:[]);
   });
 }
 
@@ -329,4 +330,12 @@ test('only the matching unfinished update binds the GUI data directory and ackno
   assert.equal(directory(launch({CMB_DATA_DIR:undefined})),saved);
   const rollback=launch({CMB_UPDATE_TRANSACTION:undefined,CMB_UPDATE_TOKEN:undefined});
   assert.equal(directory(rollback),data);assert.equal(rollback.updateManaged(),false);await rollback.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);
+});
+
+test('Test packages browse releases and caches without automatic checks or installation',async()=>{
+ const f=controller({packageName:'codex-mobile-bridge-test'});f.context.setupUpdater();
+ const u=vm.runInContext('updater',f.context);assert.equal(u.supported,true);assert.equal(u.status().canInstall,false);
+ assert.deepEqual(f.timers,[]);assert.deepEqual(f.intervals,[]);
+ f.register(u);await assert.rejects(f.invoke('bridge:install-update',{candidateId:'untrusted'}),/Test/);
+ assert.equal(f.calls.dialogs.length,0);assert.equal(f.calls.workers.length,0);
 });

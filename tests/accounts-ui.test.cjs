@@ -567,3 +567,10 @@ test('shared account confirmation keeps other clients quiet until synchronizatio
  assert.match(ui.prompts[0],/切换完成前请勿从其他客户端发起任务/);
  assert.match(ui.prompts[0],/仅在需要时/);
 });
+
+for(const desktop of [false,true])test(`${desktop?'desktop':'web'} native connection is visible outside reminder disclosure`,()=>{
+ const ui=fixture(desktop);ui.panel.accept({...ui.value(),desktopRuntime:{supported:true},switch:{phase:'complete'}});
+ assert.equal(ui.root.children[0],ui.panel.desktopRuntime);assert.equal(ui.panel.desktopRuntime.parentNode,ui.root);
+ assert.equal(ui.panel.desktopRuntime.hidden,false);assert.equal(ui.panel.tools.children.includes(ui.panel.desktopRuntime),false);
+ assert.equal(ui.panel.tools.open,undefined);assert.equal(ui.panel.initializeRuntime.disabled,false);
+});

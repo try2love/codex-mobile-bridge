@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('bridgeDesktop',{
   updateVersions:value=>ipcRenderer.invoke('bridge:update-versions',value),
   downloadUpdate:value=>ipcRenderer.invoke('bridge:download-update',value),
   updateCache:value=>ipcRenderer.invoke('bridge:update-cache',value),
+  appearance:theme=>ipcRenderer.invoke('bridge:appearance',theme),
   language:()=>ipcRenderer.invoke('bridge:language'),
   setLanguage:value=>ipcRenderer.invoke('bridge:set-language',value),
   notificationWatches:value=>ipcRenderer.invoke('bridge:notification-watches',value),

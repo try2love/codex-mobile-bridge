@@ -58,3 +58,5 @@ Status: implemented
 - [共享运行时旧提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)：标签同步未在本次实现，保留独有缺口。
 
 跨分支的历史保留与实时发布整合见[有界历史整合](2026-11-22-hosted-history-integration.md)；其他执行身份、安全和恢复边界保留。
+
+[桌面入口与 Test 下载管理](../feature/2026-11-22-desktop-controls-and-test-updates.md)补充共享连接区块位置、主题持久化和独立 Test 安装边界；本篇仍有效的协议及安全约束保持。

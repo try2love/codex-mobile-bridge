@@ -1393,5 +1393,27 @@ test('desktop update cache and official version controls keep download and insta
  }
  await page.evaluate(()=>{fixtureEntries=[];});await page.locator('#update-cache-refresh').click();await expect(page.locator('#update-cache-state')).toHaveText('No downloaded packages.');
  await expect(page.locator('#update-cache-all')).toBeDisabled();await expect(page.locator('#update-cache-delete')).toBeDisabled();
+ await expect(page.getByLabel('Theme',{exact:true})).toBeVisible();
+ await expect(page.locator('#appearance option')).toHaveText(['System','Light','Dark']);
+ await page.evaluate(()=>{fixtureSnapshot.update.canInstall=false;render(fixtureSnapshot);});
+ await expect(page.locator('#update-versions-install')).toBeHidden();await expect(page.locator('#install-update')).toBeHidden();
+ await expect(page.locator('#update-versions-download')).toBeEnabled();
+ await expect(page.locator('#update-state')).toContainText('Test app supports downloads');
  expect(errors).toEqual([]);
+});
+
+test('native connection section remains visible outside reminders on desktop and remote accounts',async({page})=>{
+ await ready(page,'session-menu');await page.evaluate(()=>BridgeFeatures.load('accounts'));
+ for(const desktop of [true,false]){
+  await page.evaluate(desktop=>{
+   const root=document.createElement('div');root.id='standalone-native-fixture';root.style.cssText='position:fixed;inset:10px;overflow:auto;background:white;z-index:9999';document.body.append(root);
+   const value={accounts:[],current:{status:'ready',kind:'signedOut'},switch:{phase:'complete'},desktopRuntime:{supported:true,configured:true},canManageDesktop:true};
+   const panel=new AccountsPanel({root,desktop,read:async()=>value,request:async()=>{throw Error('Unexpected write');}});panel.accept(value);panel.tools.open=false;
+   window.standaloneNativePanel=panel;
+  },desktop);
+  await expect(page.locator('#standalone-native-fixture .accounts-native-runtime')).toBeVisible();
+  expect(await page.locator('#standalone-native-fixture .accounts-native-runtime').evaluate(node=>node.parentElement.firstElementChild===node&&!node.closest('details'))).toBe(true);
+  await expect(page.locator('#standalone-native-fixture .accounts-native-runtime button').first()).toBeVisible();
+  await page.evaluate(()=>{standaloneNativePanel.clear();document.getElementById('standalone-native-fixture').remove();});
+ }
 });

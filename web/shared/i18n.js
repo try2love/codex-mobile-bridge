@@ -2,6 +2,12 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"主题":"Theme",
+"跟随系统":"System",
+"浅色":"Light",
+"深色":"Dark",
+"主题设置无效。":"Invalid theme setting.",
+"Test 版支持下载和缓存管理，请手动安装所选版本。":"The Test app supports downloads and cache management. Install the selected version manually.",
 "撤回到此消息":"Revert to this message",
 "同时回退这条消息之后的文件改动":"Also revert file changes after this message",
 "原客户端已接受撤回":"Revert accepted by the original client",

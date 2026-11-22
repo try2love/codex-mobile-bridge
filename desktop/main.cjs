@@ -9,6 +9,7 @@ const {createTray}=require('./shell/tray.cjs');
 const {createIconTheme}=require('./shell/icons.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
+const {readAppearance,saveAppearance}=require('./shell/appearance.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
 const {Updater,allowedMirrorUrl,allowedCatalogueUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {relaunchMacUpdate,restoreMacUpdate}=require('./features/updates/mac-handoff.cjs');
@@ -172,17 +173,25 @@ async function installUpdate(candidate){
   }
   throw Error('无法启动应用更新进程。');
 }
+function appearance(theme){
+  if(theme!==undefined)saveAppearance(dataDir,theme);
+  nativeTheme.themeSource=readAppearance(dataDir);
+  return {theme:nativeTheme.themeSource};
+}
 function setupUpdater(){
   const updateDirectory=path.join(app.getPath('userData'),'updates');
   const updateTools=require('./features/updates/updater.cjs');
   startupCleanup.catch(()=>{});
   // Remove incomplete downloads left by a crash. Complete verified packages
   // remain available until the user explicitly deletes them.
+  const packageName=require(path.join(root,'package.json')).name;
+  const supported=app.isPackaged&&['codex-mobile-bridge-desktop','codex-mobile-bridge-test'].includes(packageName)&&['darwin','win32','linux'].includes(process.platform);
+  const installSupported=supported&&packageName==='codex-mobile-bridge-desktop';
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:updateDirectory,
     catalogueFetch:cloudflared.electronFetch(net,allowedCatalogueUrl),
     skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.platform==='linux'?(process.env.APPIMAGE?'AppImage':'deb'):'zip',
-    supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32','linux'].includes(process.platform),
+    supported,installSupported,
     preflight:process.platform==='win32'?async()=>{
       await startupCleanup;
       await updateTools.cleanDownloadStaging(updateDirectory);
@@ -190,8 +199,10 @@ function setupUpdater(){
     }:undefined,install:installUpdate});
   startupCleanup=updateTools.cleanDownloadStaging(updateDirectory);
   startupCleanup.catch(()=>{});
-  setTimeout(()=>updater.check(),5000).unref();
-  setInterval(()=>updater.check(),6*60*60*1000).unref();
+  if(installSupported){
+    setTimeout(()=>updater.check(),5000).unref();
+    setInterval(()=>updater.check(),6*60*60*1000).unref();
+  }
 }
 function showWindow(){
   if(!window)createWindow();
@@ -199,6 +210,7 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
+  ipcMain.handle('bridge:appearance',(event,theme)=>{authorize(event);return appearance(theme);});
   ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
   ipcMain.handle('bridge:update-versions',async(event,payload)=>{
@@ -242,6 +254,7 @@ function register(){
   });
   ipcMain.handle('bridge:install-update',async(event,payload)=>{
     authorize(event);
+    if(updater.status().canInstall===false)throw Error('Test 版支持下载和缓存管理，请手动安装所选版本。');
     const blocked=()=>installPending||workerWrites||setupPending||cacheDeleting||updateManaged();
     if(blocked()||updateConfirmation||updateStarting)throw Error('请等待当前操作完成后再更新。');
     const value=updater.status(),candidateId=payload?.candidateId;
@@ -429,7 +442,7 @@ function register(){
       installStatus={};connectionSecrets={};
       const changed=selected!==dataDir;
       if(changed){officialRemote?.dispose();officialRemote=null;}
-      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);
+      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);appearance();
       if(changed)restoreOfficialService();
     }
     return selected;
@@ -504,7 +517,7 @@ else{
     try{
       language=normalize(app.getLocale());
       try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-      dataDir=loadDataDir();publishLanguage(dataDir,language);
+      dataDir=loadDataDir();publishLanguage(dataDir,language);appearance();
       setupUpdater();register();
       if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
       if(['win32','darwin'].includes(process.platform)){
