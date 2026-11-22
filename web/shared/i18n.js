@@ -2,6 +2,7 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"展开":"Expand",
 "文件排序":"Sort files",
 "名称升序":"Name ascending",
 "名称降序":"Name descending",
