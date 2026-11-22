@@ -131,7 +131,7 @@ class DownloadHttpTests(unittest.TestCase):
             stream.truncate(MAX_TRANSFER + 1)
         self.assertEqual(self.get({**auth, 'Range': 'bytes=0-15'}, url+'?preview=1')[0], 400)
 
-    def test_host_file_scope_requires_auth_and_never_grants_write_or_git_access(self):
+    def test_host_scope_keeps_auth_upload_collision_and_project_only_git(self):
         project = self.root/'project'; project.mkdir()
         self.server.bridge.workspace = lambda thread, action, params: operate(str(project), action, params)
         base = '/api/sessions/'+support.THREAD+'/workspace'
@@ -144,7 +144,8 @@ class DownloadHttpTests(unittest.TestCase):
         status, headers, data = self.get({**auth, 'Range': 'bytes=0-3'}, base+'/download'+target)
         self.assertEqual((status, data), (206, self.data[:4]))
         self.assertEqual(self.get(auth, base+'/git-status'+target)[0], 403)
-        self.assertEqual(self.request('POST', base+'/upload'+target, {}, auth)[0], 403)
+        self.assertEqual(self.request('POST', base+'/upload'+target, {}, auth)[0], 400)  # Existing host file is never overwritten.
+        self.assertEqual(self.file.read_bytes(), self.data)
         self.assertEqual(self.get(auth, base+'?scope=unknown')[0], 400)
 
     def test_media_workspace_preview_is_typed_without_enabling_inline_html(self):
