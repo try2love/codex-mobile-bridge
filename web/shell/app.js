@@ -96,7 +96,9 @@ function authLost(){hideWebhookUrl();clearListSnapshot();if(!$('app').hidden)doc
 async function api(path,body,signal,authCurrent){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}let response;try{response=await fetch(hostUrl(path),options);}catch(error){if(!signal?.aborted&&error.name!=='AbortError')window.BridgeMobileHandoff?.unreachable();throw error;}if([502,503,504,522,523,524,530].includes(response.status))window.BridgeMobileHandoff?.unreachable();let data;try{data=await response.json();}catch(error){throw Object.assign(error,{status:response.status});}if(!response.ok){if(response.status===401&&(!authCurrent||authCurrent()))authLost();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,status:response.status,code:data.code});}return data;}
 const workbench=window.BridgeWorkbench=new Workbench({chat:$('chat'),request:api,csrf:()=>csrf,notify:toast,onUnauthorized:authLost,openChat,composer:$('message'),onReference:()=>window.BridgePresentation?.openChat()});
 // Account quota is shared display data; automatic continuation has its own fresh preflight.
+let codexQuotaDialog=null;
 const codexQuota=new AccountQuotaIndicator({
+  open:()=>openCodexQuota(),
   context:()=>{
     if($('app').hidden||!isCodexClient(clientNavigation.provider)||!workbench.current||window.BridgeSharedRelay)return null;
     const host=workbench.current.host;
@@ -105,15 +107,27 @@ const codexQuota=new AccountQuotaIndicator({
   },
   visible:()=>!document.hidden&&!$('app').hidden&&$('app').classList.contains('chat-open'),
   read:(context,force)=>api('/api/account?cached='+(force?'0':'1')+(context.host==='local'?'':'&entry='+encodeURIComponent(context.host))),
-  onChange:()=>{if($('model-dialog').open)renderCodexQuota();}
+  onChange:()=>{
+    if($('model-dialog').open)renderCodexQuota();
+    if(codexQuotaDialog?.root.open){if(codexQuotaDialog.scope!==codexQuota.key)codexQuotaDialog.close();else renderCodexQuotaDetails();}
+    composerToolbar?.requestSync();
+  }
 });
-$('model-button').append(codexQuota.root);
+codexQuota.root.id='quota-button';$('model-button').after(codexQuota.root);
 function renderCodexQuota(){
   const root=$('model-quota-summary'),value=codexQuota.value;
   QuotaDisplay.summary(root,{groups:value?.visible?value.limits:[],checkedAt:value?.updatedAt,status:codexQuota.error?'stale':'ready'});
   if(codexQuota.error)root.append(el('p','error',codexQuota.error));
   if(value?.visible){const refresh=el('button','tool-button',t('刷新额度'));refresh.type='button';refresh.disabled=codexQuota.loading;refresh.onclick=()=>codexQuota.refresh(true);root.append(refresh);}
 }
+function renderCodexQuotaDetails(){
+  const value=codexQuota.value;codexQuotaDialog.render({groups:value?.visible?value.limits:[],checkedAt:value?.updatedAt,status:codexQuota.error?'stale':'ready'},{loading:codexQuota.loading,error:codexQuota.error});
+}
+function openCodexQuota(){
+  if(codexQuota.root.hidden)return;
+  codexQuotaDialog ||= new QuotaDetailsDialog({refresh:()=>codexQuota.refresh(true)});codexQuotaDialog.scope=codexQuota.key;renderCodexQuotaDetails();codexQuotaDialog.show();codexQuota.refresh();
+}
+
 {
   const refresh=()=>codexQuota.refresh();
   if(workbench.tabs)new MutationObserver(refresh).observe(workbench.tabs,{childList:true});
@@ -1351,7 +1365,7 @@ function chatCommandActions(chat,provider,button){
   const context=sessionMenuContext(chat,provider);
   return ComposerCommands.session(context,view=>getSessionMenu().show(context,{element:button},view));
 }
-composerToolbar=new ComposerToolbar({form:$('composer'),tools:$('composer').querySelector('.composer-tools'),bottom:$('composer').querySelector('.compose-bottom'),actions:$('composer').querySelector('.compose-actions'),input:$('message'),body:$('composer-body'),hint:$('mode-hint'),onPreferenceChange:()=>renderCodexWorkModes(),sendState:()=>({running:state?.status==='active',hasDraft:!!$('message').value.trim()||attachments.rows.length>0||!!codexQuotes?.quotes.length,pending:sending,sending}),workMode:$('work-mode'),controls:{model:$('model-button'),skills:$('skills-button'),permissions:$('permissions-button'),context:contextUsageControl.button,attachments:$('attach-button'),sendMode:$('send-mode')}});
+composerToolbar=new ComposerToolbar({form:$('composer'),tools:$('composer').querySelector('.composer-tools'),bottom:$('composer').querySelector('.compose-bottom'),actions:$('composer').querySelector('.compose-actions'),input:$('message'),body:$('composer-body'),hint:$('mode-hint'),onPreferenceChange:()=>renderCodexWorkModes(),sendState:()=>({running:state?.status==='active',hasDraft:!!$('message').value.trim()||attachments.rows.length>0||!!codexQuotes?.quotes.length,pending:sending,sending}),workMode:$('work-mode'),controls:{model:$('model-button'),quota:codexQuota.root,skills:$('skills-button'),permissions:$('permissions-button'),context:contextUsageControl.button,attachments:$('attach-button'),sendMode:$('send-mode')}});
 workModes.onRender=()=>composerToolbar.requestSync();
 const composerCommands=new ComposerCommands({input:$('message'),
   scope:()=>currentId&&desktopSessions.provider==='codex'&&!$('chat').hidden?JSON.stringify([listIdentity,currentHost,currentId,codexActiveAccountId]):null,

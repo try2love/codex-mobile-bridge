@@ -2210,11 +2210,27 @@ test('ordinary writes and duplicate stop stay blocked while stop is pending even
  receipts.stop({status:'accepted'});await stopping;
 });
 
-test('native model toolbar shares quota windows without depending on the provider name',async()=>{
+test('native remaining quota tool shares windows independently of model settings and provider name',async()=>{
  for(const provider of ['antigravity','claude','zcode']){
   const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',model:'model-a',status:'idle',quotaWindows:[{windowDurationMins:300,remainingPercent:60},{windowDurationMins:10080,remainingPercent:0}],capabilities:{send:true,models:true}},messages:[]}:{sessions:[]});
   await ui.view.choose(provider);await ui.view.open('a');
-  assert.equal(ui.view.modelQuotaRings.hidden,false);assert.equal(ui.view.modelQuotaRings.querySelectorAll('.quota-pie-ring').length,2);
-  assert.match(ui.view.modelButton.title,/60%.*0%/);
+  assert.equal(ui.view.quotaButton.hidden,false);assert.equal(ui.view.quotaButton.querySelectorAll('.quota-pie-ring').length,2);
+  assert.match(ui.view.quotaButton.title,/60%[\s\S]*0%/);assert.doesNotMatch(ui.view.modelButton.title,/%/);
+  assert.equal(ui.view.modelButton.contains(ui.view.quotaButton),false);
  }
+});
+
+test('remaining quota closes on an identity switch and rejects the old catalog response',async()=>{
+ const ui=await opened(),view=ui.view;
+ view.state.modelCatalogIdentity='account-a';view.listCacheIdentity='gateway-a';view.listCacheHost='host-a';
+ const summary={groups:[{name:'Private account A',windows:[{windowDurationMins:300,remainingPercent:61}]}],checkedAt:123};
+ view.recordQuota({usageSummary:summary,models:[{id:view.state.model,quotaWindows:summary.groups[0].windows}]});
+ let resolve;ui.setHandler(()=>new Promise(done=>resolve=done));
+ view.quota();const dialog=view.quotaDialog;assert.equal(dialog.root.open,true);assert.match(dialog.content.textContent,/Private account A/);
+ view.state={...view.state,modelCatalogIdentity:'account-b',quotaWindows:[]};view.updateComposer();
+ assert.equal(dialog.root.open,false);assert.equal(view.quotaButton.hidden,true);
+ resolve({usageSummary:{...summary,tier:'LATE ACCOUNT A'},cache:{identity:'account-a'},models:[]});
+ await new Promise(setImmediate);
+ assert.equal(view.quotaSnapshot.value,summary);assert.equal(view.quotaValue().groups.length,0);
+ assert.doesNotMatch(ui.root.textContent,/LATE ACCOUNT A/);
 });

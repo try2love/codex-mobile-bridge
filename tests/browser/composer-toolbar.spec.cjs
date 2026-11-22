@@ -189,7 +189,7 @@ test('mouse drag persists layout while preserving original controls and drafts',
     await page
       .locator('[data-drop-zone=bottomLeft] [data-drag-tool]')
       .evaluateAll((nodes) => nodes.map((n) => n.dataset.dragTool)),
-  ).toEqual(['model', 'attachments']);
+  ).toEqual(['model', 'attachments', 'quota']);
   const preserved = await page.evaluate(() => ({
     sameModel: __toolbarTest.main.controls.model === __toolbarTest.model,
     sameSelect: __toolbarTest.main.controls.sendMode === __toolbarTest.select,
@@ -211,13 +211,14 @@ test('mouse drag persists layout while preserving original controls and drafts',
     layout: __toolbarTest.main.layout,
     other: __toolbarTest.other.layout,
   }));
-  expect(result.layout.bottomLeft).toEqual(['model', 'attachments']);
+  expect(result.layout.bottomLeft).toEqual(['model', 'attachments', 'quota']);
   expect(result.other).toEqual(result.layout);
   await page.reload();
   await page.waitForFunction(() => document.getElementById('bootstrap-status')?.hidden);
   expect(await page.evaluate(() => composerToolbar.layout.bottomLeft)).toEqual([
     'model',
     'attachments',
+    'quota',
   ]);
 });
 test('touch distinguishes long press, cancellation and ordinary scrolling', async ({
@@ -436,7 +437,7 @@ test('eight bottom controls scroll between fixed endpoints in both languages and
         topLeft: [], topRight: [],
         bottomLeft: ['more', 'model', 'skills', 'permissions'],
         bottomRight: ['sendMode', 'context', 'attachments'],
-        more: ['collapse', 'plan', 'goal'],
+        more: ['collapse', 'plan', 'goal', 'quota'],
       },
       display: Object.fromEntries(['more', 'model', 'skills', 'permissions', 'sendMode', 'context', 'attachments'].map(id => [id, 'both'])),
     });

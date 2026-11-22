@@ -112,7 +112,7 @@ class ComposerToolbar {
       wrapper.dataset.tool = id;
       wrapper.append(control);
       this.wrappers[id] = wrapper;
-      if (id === 'model' && !control.querySelector('svg')) {
+      if (['model', 'quota'].includes(id) && !control.querySelector('svg')) {
         control.prepend(ComposerUI.icon(id));
       }
       if (id === 'sendMode') {

@@ -182,7 +182,7 @@ test('layout presets keep every tool accessible, persist and retain the send pre
   }
   const preset = composerPreset('single');
   preset.layout.bottomLeft.length = 0;
-  assert.deepEqual(composerPreset('single').layout.bottomLeft, ['more', 'model']);
+  assert.deepEqual(composerPreset('single').layout.bottomLeft, ['more', 'model', 'quota']);
   assert.deepEqual(composerPreset('single').layout.bottomRight, ['context', 'attachments']);
   assert.throws(() => f.store.applyPreset('invalid'), /Unknown composer preset/);
 });
@@ -250,4 +250,13 @@ test('a current native stop allowance survives a concurrent write without enabli
  const action=deriveComposerAction({running:true,hasDraft:false,pending:true,stopEnabled:true,sendEnabled:false});
  assert.equal(action.stop,true);assert.equal(action.stopDisabled,false);assert.equal(action.sendDisabled,true);
  assert.equal(deriveComposerAction({running:true,hasDraft:false,pending:true,stopEnabled:false}).stopDisabled,true);
+});
+
+
+test('legacy layouts keep their order while quota follows model until explicitly customized',()=>{
+ const old={topLeft:['permissions','model'],topRight:['context','collapse'],bottomLeft:['attachments','more'],bottomRight:[],more:['skills','sendMode','plan','goal']};
+ const migrated=normalizeComposerLayout(old);assert.deepEqual(migrated.topLeft,['permissions','model','quota']);
+ for(const zone of composerZones)assert.deepEqual(migrated[zone].filter(id=>id!=='quota'),old[zone]);
+ const moved=moveComposerTool({layout:migrated,display:{}},'quota','bottomRight',0);assert.deepEqual(normalizeComposerLayout(moved.layout).bottomRight,['quota']);
+ const hidden=normalizeComposerPreferences({...moved,display:{quota:'hidden'}});assert.ok(hidden.layout.more.includes('quota'));assert.equal(hidden.display.quota,'hidden');
 });

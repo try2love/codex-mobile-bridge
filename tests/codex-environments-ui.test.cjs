@@ -24,12 +24,12 @@ function fixture({native=true,listSource='all',host='local',wslSupported=true}={
  const entries=[{id:'desktop',kind:'desktop',enabled:native},{id:ubuntu,kind:'wsl-cli',enabled:true,name:'Ubuntu'},{id:debian,kind:'wsl-cli',enabled:true,name:'Debian'},{id:disabled,kind:'wsl-cli',enabled:false,name:'Stopped'}];
  let handler=async(url,body)=>url.startsWith('/api/projects')?{projects:[]}:{id:'created',host:new URL(url,'https://fixture').searchParams.get('entry')||'local'};
  const api=async(url,body)=>{calls.push({url,body:body===undefined?undefined:JSON.parse(JSON.stringify(body))});return handler(url,body);};
- class AccountsPanel{constructor(options){Object.assign(this,options);this.clears=0;this.refreshButton=node('button');}attachApiAccess(panel,details){this.apiPanel=panel;this.apiDetails=details;}clear(){this.clears++;}visible(){return nodes.get('accounts-dialog').open&&!nodes.get('accounts-content').hidden;}refresh(){return this.read();}}
+ class AccountsPanel{constructor(options){Object.assign(this,options);this.clears=0;this.refreshButton=node('button');this.desktopRuntime=node('details');}attachApiAccess(panel,details){this.apiPanel=panel;this.apiDetails=details;}clear(){this.clears++;}visible(){return nodes.get('accounts-dialog').open&&!nodes.get('accounts-content').hidden;}refresh(){return this.read();}}
  class CliAccessPanel{constructor(options){Object.assign(this,options);this.clears=0;this.refreshes=0;}clear(){this.clears++;}refresh(){this.refreshes++;return this.read();}}
  class WslAccountsPanel{constructor(options){Object.assign(this,options);}clear(){}select(entry){this.entry=entry;return this.read(entry);}}
  const close=node('button'),context=vm.createContext({$,api,Option,AccountsPanel,CliAccessPanel,WslAccountsPanel,URL,Event:class{constructor(type){this.type=type;}},window:{BridgeFeatures:{load:async name=>{calls.push({feature:name});}}},BridgeI18n:{t:value=>value,locale:()=> 'zh'},document:{getElementById:$,createElement:node,querySelector:()=>close},
   t:value=>value,el:(tag,_class='',text='')=>Object.assign(node(tag),{textContent:text}),
-  clientNavigation:{wslSupported,provider:'codex',clients:[{id:'codex',entries}]},currentHost:host,currentId:null,listSource,listRows:[],
+  quotaContinuationToggle:null,clientNavigation:{wslSupported,provider:'codex',clients:[{id:'codex',entries}]},currentHost:host,currentId:null,listSource,listRows:[],
   renderSourceFilter(){},uuid:()=> '11111111-1111-4111-8111-111111111111',setLanguageBusy(){},loadList:async()=>{},openChat:async(id,where)=>opened.push({id,host:where}),toast:message=>notices.push(message),isCodexClient:id=>id==='codex',
   sessionStorage:{getItem:key=>store.get(key)||null,setItem:(key,value)=>store.set(key,value),removeItem:key=>store.delete(key)}});
  require('./fixtures/codex-entry-predicates.cjs')(context);

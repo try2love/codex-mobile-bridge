@@ -15,6 +15,7 @@ const composerTools = Object.freeze(
       zone: 'bottomLeft',
       display: 'text',
     },
+    { id: 'quota', label: '剩余额度', zone: 'bottomLeft', display: 'both' },
     { id: 'sendMode', label: '发送方式', zone: 'more', display: 'text' },
     { id: 'plan', label: '计划模式', zone: 'more' },
     { id: 'goal', label: '目标模式', zone: 'more' },
@@ -49,7 +50,7 @@ function composerPreset(id) {
   if (id === 'single') {
     layout.topLeft = [];
     layout.topRight = [];
-    layout.bottomLeft = ['more', 'model'];
+    layout.bottomLeft = ['more', 'model', 'quota'];
     layout.bottomRight = ['context', 'attachments'];
     layout.more = ['permissions', 'collapse', 'skills', 'sendMode', 'plan', 'goal'];
     display.collapse = 'hidden';
@@ -83,6 +84,9 @@ function normalizeComposerLayout(value) {
     if (!seen.has(id)) {
       if (id === 'more') {
         layout.topLeft.unshift(id);
+      } else if (id === 'quota') {
+        const zone = composerZones.find((key) => layout[key].includes('model')) || 'bottomLeft';
+        layout[zone].splice(layout[zone].indexOf('model') + 1, 0, id);
       } else {
         layout.more.push(id);
       }

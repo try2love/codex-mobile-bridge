@@ -69,14 +69,22 @@ const QuotaDisplay=(()=>{
     for(const row of root.querySelectorAll?.('.quota-pool')||[])row.open=opened.has(row.dataset.quotaKey);
     return root.children.length>0;
   }
+  function tool(open){
+    const button=node('button','tool-button remaining-quota');button.type='button';button.hidden=true;button.disabled=true;button.onclick=open;button.setAttribute('aria-haspopup','dialog');
+    button.quotaLabel=node('span','quota-tool-label',t('剩余额度'));button.quotaValues=node('span','quota-tool-values');button.append(button.quotaLabel,button.quotaValues);return button;
+  }
+  function renderTool(button,rows,{stale=false}={}){
+    const values=windows(rows);button.dataset.hasQuota=String(values.length>0);button.quotaLabel.textContent=t('剩余额度');button.quotaValues.replaceChildren(badges(rows,{stale}));
+    button.title=[t('剩余额度'),...values.map(description),stale?t('保留上次结果，数据尚未更新'):''].filter(Boolean).join('\n');button.setAttribute('aria-label',button.title);
+  }
   function accountWindows(value){if(!value?.visible||!Array.isArray(value.limits))return [];const bucket=value.limits.find(row=>row.id==='codex')||(value.limits.length===1?value.limits[0]:null);return bucket?.windows||[];}
-  return {windows,label,columns,badges,details,pools,summary,accountWindows,description,time,t};
+  return {windows,label,columns,badges,details,pools,summary,tool,renderTool,accountWindows,description,time,t};
 })();
 
 class AccountQuotaIndicator {
-  constructor({read,context,visible,onChange=()=>{},now=()=>Date.now()}){
+  constructor({read,context,visible,open=()=>{},onChange=()=>{},now=()=>Date.now()}){
     Object.assign(this,{read,context,visible,onChange,now});this.key=null;this.generation=0;this.value=null;this.loading=false;this.checkedAt=0;this.retryAt=0;this.error='';
-    this.root=document.createElement('span');this.root.className='model-quota-indicator';this.root.hidden=true;
+    this.root=QuotaDisplay.tool(open);
   }
   clear(){this.generation++;this.key=null;this.value=null;this.checkedAt=0;this.retryAt=0;this.loading=false;this.error='';this.render();}
   async refresh(force=false){
@@ -95,9 +103,26 @@ class AccountQuotaIndicator {
     finally{if(generation===this.generation){this.loading=false;this.render();}}
   }
   render(){
-    const rows=QuotaDisplay.accountWindows(this.value);this.root.hidden=!rows.length||!this.key||this.context()?.key!==this.key||!this.visible();
-    this.root.replaceChildren(QuotaDisplay.badges(rows,{compact:true,stale:!!this.error}));this.root.title=QuotaDisplay.windows(rows).map(QuotaDisplay.description).join('\n');
-    if(this.error)this.root.title+='\n'+QuotaDisplay.t('保留上次结果，数据尚未更新');this.onChange(this.value,this.error,this.loading);
+    const rows=QuotaDisplay.accountWindows(this.value);this.root.hidden=!this.value?.visible||!this.key||this.context()?.key!==this.key||!this.visible();
+    this.root.disabled=!this.value?.visible||!this.key||this.context()?.key!==this.key;
+    QuotaDisplay.renderTool(this.root,rows,{stale:!!this.error});this.onChange(this.value,this.error,this.loading);
   }
 }
-if(typeof module!=='undefined')module.exports={QuotaDisplay,AccountQuotaIndicator};
+// Independent containers reuse presentation; the owning view retains query and identity state.
+class QuotaDetailsDialog {
+  constructor({refresh,onClose=()=>{}}){
+    const make=(tag,cls,text)=>{const node=document.createElement(tag);node.className=cls;if(text!==undefined)node.textContent=text;return node;};
+    this.root=make('dialog','picker quota-details-dialog');this.root.setAttribute('aria-label',QuotaDisplay.t('剩余额度'));
+    const head=make('div','picker-head');this.title=make('h2','',QuotaDisplay.t('剩余额度'));const close=make('button','icon-button','×');close.type='button';close.setAttribute('aria-label',QuotaDisplay.t('关闭'));close.onclick=()=>this.close();head.append(this.title,close);
+    this.content=make('div','quota-summary');this.error=make('p','error');this.error.setAttribute('role','status');this.refresh=make('button','tool-button',QuotaDisplay.t('刷新额度'));this.refresh.type='button';this.refresh.onclick=refresh;this.root.append(head,this.content,this.error,this.refresh);this.root.addEventListener('close',onClose);document.body.append(this.root);
+  }
+  render(value,{loading=false,error='',models=[]}={}){
+    this.title.textContent=QuotaDisplay.t('剩余额度');this.root.setAttribute('aria-label',this.title.textContent);QuotaDisplay.summary(this.content,value,{models});
+    if(!this.content.children.length){const text=document.createElement('p');text.className='account-muted';text.textContent=QuotaDisplay.t(loading?'正在读取额度…':'暂未提供额度信息');this.content.append(text);}
+    this.error.textContent=error;this.error.hidden=!error;this.refresh.textContent=QuotaDisplay.t('刷新额度');this.refresh.disabled=loading;
+  }
+  show(){this.root.showModal();}
+  close(){if(this.root.open)this.root.close();}
+  dispose(){this.close();this.root.remove();}
+}
+if(typeof module!=='undefined')module.exports={QuotaDisplay,AccountQuotaIndicator,QuotaDetailsDialog};
