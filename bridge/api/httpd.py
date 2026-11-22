@@ -1289,7 +1289,7 @@ class Handler(BaseHTTPRequestHandler):
                 if write:
                     if operation == 'git-action':
                         body = self.read_json()
-                        if set(body) - {'action', 'version', 'path', 'branch', 'message'} or not {'action', 'version'} <= set(body):
+                        if set(body) - {'action', 'version', 'path', 'branch', 'message', 'limit'} or not {'action', 'version'} <= set(body):
                             raise ValueError('Git 操作请求无效')
                         return self.output(200, bridge.workspace(thread_id, operation, body))
                     if operation != 'upload': return self.output(405, {'error': '不支持此文件操作'})
@@ -1308,7 +1308,14 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'git-history-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'revision': query.get('revision', [''])[0], 'path': relative}))
                 if operation == 'git-branches': return self.output(200, bridge.workspace(thread_id, operation, {}))
-                if operation == 'git-status': return self.output(200, bridge.workspace(thread_id, operation, {}))
+                if operation == 'git-status':
+                    options = {}
+                    for key in ('limit', 'offset'):
+                        if key in query: options[key] = int(query[key][0])
+                    for source, target in (('section', 'section'), ('untrackedPath', 'untracked_path'), ('version', 'version')):
+                        if source in query: options[target] = query[source][0]
+                    if 'collapseUntracked' in query: options['collapse_untracked'] = query['collapseUntracked'] == ['true']
+                    return self.output(200, bridge.workspace(thread_id, operation, options))
                 if operation == 'git-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:

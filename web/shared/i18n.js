@@ -2,6 +2,20 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"Git 变更分页":"Git change pages",
+"返回项目变更":"Back to project changes",
+"全部暂存、取消暂存和提交作用于整个项目":"Stage all, unstage all and commit apply to the entire project",
+"展开未跟踪目录":"Expand untracked directory",
+"当前筛选没有变更":"No changes in this view",
+"提交整个项目全部已暂存内容，保留未暂存改动。":"Commit all staged changes in the project and keep unstaged changes.",
+"请等待暂存列表加载完成":"Wait for the staged list to finish loading",
+"仓库已发生变化，请刷新并核对后继续查看":"The repository changed. Refresh and review it before continuing.",
+"Git 状态读取超时，请稍后刷新或在电脑上检查仓库":"Reading Git status timed out. Refresh later or inspect the repository on the computer.",
+"Git 状态无法读取，请检查仓库和目录访问权限":"Unable to read Git status. Check repository and directory permissions.",
+"Git 状态记录不完整，请刷新后重试":"Git status is incomplete. Refresh and try again.",
+"Git 列表分页参数无效":"Invalid Git list paging parameters",
+"未跟踪目录无效":"Invalid untracked directory",
+
 "主题":"Theme",
 "跟随系统":"System",
 "浅色":"Light",
