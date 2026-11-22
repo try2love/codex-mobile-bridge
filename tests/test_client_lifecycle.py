@@ -28,7 +28,7 @@ class ClientLifecycleTests(unittest.TestCase):
         self.bridge.desktop_connection_ready.return_value = True
         client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
         self.assertTrue(client['connected'])
-        self.assertFalse(client['canInitializeDesktop'])
+        self.assertTrue(client['canInitializeDesktop'])
 
     def test_codex_initialization_state_blocks_duplicate_buttons_until_worker_finishes(self):
         self.running = True
@@ -42,6 +42,35 @@ class ClientLifecycleTests(unittest.TestCase):
         client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
         self.assertTrue(client['canInitializeDesktop'])
         self.assertTrue(client['confirmTaskState'])
+
+    def test_codex_initialization_failure_is_visible_even_when_transport_is_connected(self):
+        self.running=True
+        self.bridge.desktop_connection_ready=Mock(return_value=True)
+        self.accounts.desktop_runtime_status=Mock(return_value={'supported':True,'preparation':{}})
+        self.accounts.state={'operation':'desktopRuntime','phase':'failed','taskStateUnavailable':True,
+                             'error':'部分任务状态无法核验'}
+        client=self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+        self.assertEqual(client['reason'],'部分任务状态无法核验')
+
+    def test_codex_management_initialization_delegates_without_toggling_or_exposing_accounts(self):
+        self.accounts.control=Mock(return_value={'accounts':['private-inventory']})
+        value={'provider':'codex','enabled':True,'initializeDesktop':True,'requestId':'fixture',
+               'confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True}
+        config=deepcopy(self.manager.config)
+        result=self.manager.toggle_client(value)
+        self.accounts.control.assert_called_once_with({'action':'initializeDesktopRuntime',
+            'requestId':'fixture','confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True})
+        self.assertNotIn('accounts',result)
+        self.assertEqual(self.manager.config,config)
+        self.stop.assert_not_called();self.launch.assert_not_called()
+        self.accounts.prepare_desktop_runtime.assert_not_called()
+        self.accounts.control.reset_mock()
+        for extra in ({'quitDesktop':True},{'forceDesktop':True},{'home':'/other'}):
+            with self.assertRaises(ValueError):self.manager.toggle_client({**value,**extra})
+        self.accounts.control.assert_not_called()
 
     def test_wsl_is_a_codex_entry_and_never_uses_native_desktop_lifecycle(self):
         from bridge.features.endpoints.registry import Entries

@@ -6,7 +6,7 @@ async function runCodexInitializationChecks(){
     connected:false,canInitializeDesktop:true,setupStatus:'needs-initialization'};
   let clients=[native];
   nav.request=async(path,body)=>{
-    if(path==='/api/accounts/desktop-runtime'){
+    if(path==='/api/clients'&&body?.initializeDesktop===true){
       calls.push({path,body});clients=[{...native,canInitializeDesktop:false,connectionState:'connecting'}];
       return {switch:{phase:'preparing',operation:'desktopRuntime'}};
     }
@@ -26,11 +26,11 @@ async function runCodexInitializationChecks(){
     check(calls.length===0,'cancel makes no initialization request');
     pending=nav.initialize('codex');dialog=document.querySelector('dialog.client-disable-dialog[open]');
     [...dialog.querySelectorAll('button')].find(button=>button.textContent==='开始初始化').click();await pending;
-    check(calls.length===1&&calls[0].path==='/api/accounts/desktop-runtime','accept uses exactly one shared native transaction');
+    check(calls.length===1&&calls[0].path==='/api/clients'&&calls[0].body.provider==='codex','accept uses exactly one relay-compatible native transaction');
     check(calls[0].body.confirmed&&calls[0].body.tasksConfirmed&&/^[0-9a-f-]{36}$/.test(calls[0].body.requestId),'request carries explicit confirmation and a unique operation ID');
     check(!initialize(),'pending preparation does not offer a duplicate initialization');
-    clients=[{...native,connected:true,canInitializeDesktop:false,setupStatus:'ready'}];nav.applyClients({clients});
-    check(!initialize()&&row().textContent.includes('已连接'),'native connection removes the recovery action');
+    clients=[{...native,connected:true,setupStatus:'ready'}];nav.applyClients({clients});
+    check(row().textContent.includes('重新初始化连接')&&row().textContent.includes('已连接'),'reported connection retains explicit manual recovery');
     return {width:innerWidth,passed:checks.length,checks};
   }finally{
     nav.manager?.dialog.close();nav.request=originalRequest;nav.applyClients({clients:originalClients});
@@ -55,8 +55,8 @@ async function runCodexGatewayInitializationChecks(){
     check(!!dialog,'gateway uses the same native initialization confirmation');
     [...dialog.querySelectorAll('button')].find(button=>button.textContent==='开始初始化').click();await pending;
     check(calls.length===1&&calls[0].action==='initializeDesktopRuntime','gateway calls the same account transaction once');
-    panel.clients[0]={...panel.clients[0],connected:true,canInitializeDesktop:false};panel.renderClients();
-    check(![...root.querySelectorAll('button')].some(button=>button.textContent==='初始化连接'),'working gateway connection hides initialization');
+    panel.clients[0]={...panel.clients[0],connected:true};panel.renderClients();
+    check([...root.querySelectorAll('button')].some(button=>button.textContent==='重新初始化连接'),'gateway retains explicit manual recovery for reported connections');
     return {width:innerWidth,passed:checks.length,checks};
   }finally{root.remove();}
 }

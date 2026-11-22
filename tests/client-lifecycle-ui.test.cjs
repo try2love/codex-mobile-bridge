@@ -16,11 +16,12 @@ function fixture(language='zh'){
  for(const file of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  return {context,document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
 }
-test('Codex initialization depends on actual Desktop access and is hidden for working connections',()=>{
+test('Codex initialization remains a manual recovery option for a reported connection',()=>{
  const lifecycle=require('../web/features/clients/client-lifecycle.js');
  const client={id:'codex',enabled:true,installed:true,configured:true,running:true,connected:false,canInitializeDesktop:true};
  assert.equal(lifecycle.connection(client).canInitialize,true);
- assert.equal(lifecycle.connection({...client,connected:true}).canInitialize,false);
+ assert.equal(lifecycle.connection({...client,connected:true}).canInitialize,true);
+ assert.equal(lifecycle.connection({...client,connected:true}).initializeLabel,'重新初始化连接');
  assert.equal(lifecycle.connection({...client,canInitializeDesktop:false}).canInitialize,false);
  assert.equal(lifecycle.connection({...client,connectionState:'connecting'}).canInitialize,false);
 });

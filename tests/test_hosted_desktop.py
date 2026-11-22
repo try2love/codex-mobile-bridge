@@ -47,7 +47,8 @@ class HostedOwnerTests(unittest.TestCase):
     def test_primary_app_and_its_bundled_host_have_the_same_verified_owner(self):
         app = {'pid': 1, 'parent': 99, 'image': '/Applications/Codex.app/Contents/MacOS/Codex'}
         host = {'pid': 2, 'parent': 1, 'image': '/Applications/Codex.app/Contents/Frameworks/Runtime.framework/Helpers/Host.app/Contents/MacOS/Host'}
-        with patch.object(runtime, 'process_identity', side_effect=lambda pid: dict({1: app, 2: host}[pid])):
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+             patch.object(runtime, 'process_identity', side_effect=lambda pid: dict({1: app, 2: host}[pid])):
             self.assertEqual(runtime.desktop_owner(app, app['image']), (app, None))
             self.assertEqual(runtime.desktop_owner(host, app['image']), (app, host))
 

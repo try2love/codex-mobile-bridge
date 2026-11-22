@@ -614,7 +614,16 @@ class Handler(BaseHTTPRequestHandler):
                     value = self.read_json()
                     if value == {'action': 'scan-wsl'}:
                         return self.output(200, manager.scan_wsl())
-                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}:
+                    allowed = {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}
+                    if isinstance(value, dict) and value.get('provider') == 'codex' and value.get('initializeDesktop') is True:
+                        allowed |= {'requestId', 'confirmed', 'tasksConfirmed'}
+                        if (not {'requestId', 'confirmed', 'tasksConfirmed'} <= set(value)
+                                or value.get('enabled') is not True or value.get('confirmed') is not True
+                                or value.get('tasksConfirmed') is not True):
+                            raise ValueError('Codex 初始化确认无效')
+                        if self.server.auth.config.get('mode') == 'none':
+                            raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - allowed:
                         raise ValueError('应用开关无效')
                     if (value.get('provider') == 'zcode' and value.get('enabled') is True
                             and self.server.auth.config.get('mode') == 'none'):

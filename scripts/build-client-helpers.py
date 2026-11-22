@@ -29,11 +29,13 @@ def build():
     elif sys.platform == 'win32':
         framework = Path(os.environ.get('WINDIR', 'C:/Windows'))/'Microsoft.NET/Framework64/v4.0.30319'
         for native_source, output_name in [(source/'windows/claude-helper.cs', 'claude-bridge-helper.exe'),
-                                           (source/'windows/codex-quit-helper.cs', 'codex-quit-helper.exe')]:
+                                           (source/'windows/codex-quit-helper.cs', 'codex-quit-helper.exe'),
+                                           (source/'windows/codex-launcher.cs', 'codex-launcher.exe')]:
             subprocess.run([str(framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
                             '/out:'+str(target/output_name),
                             *['/reference:'+str(framework/'WPF'/name) for name in
                               ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll']],
+                            '/reference:System.Web.Extensions.dll',
                             str(native_source)], check=True)
             subprocess.run([str(target/output_name), '--self-check'], check=True)
     return target

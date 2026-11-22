@@ -40,7 +40,7 @@ for relative in json.loads((root/'scripts/gateway-resources.json').read_text(enc
     source_file = root/relative
     command.extend(['--add-data', str(source_file)+':'+str(Path(relative).parent)])
 helpers = {'darwin': ('claude-bridge-helper', 'zcode-bridge-helper', 'codex-launcher', 'update-launcher'),
-           'win32': ('claude-bridge-helper.exe', 'codex-quit-helper.exe')}
+           'win32': ('claude-bridge-helper.exe', 'codex-quit-helper.exe', 'codex-launcher.exe')}
 for name in helpers.get(sys.platform, ()):
     command.extend(['--add-binary', str(root/'dist/client-helpers'/name)+':client-helpers'])
 command.append(str(root/'desktop.py'))

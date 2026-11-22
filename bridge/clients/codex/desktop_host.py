@@ -519,7 +519,7 @@ class MetadataClient:
         self.client.close()
 
 
-def serve(config, app, host, arguments, initialize, env=None):
+def serve(config, app, host, arguments, initialize, env=None, dispatcher=None):
     """The App-owned adapter is the sole native stdin holder on both platforms."""
     home = Path(config['home'])
     root = runtime.directory(home)
@@ -535,6 +535,8 @@ def serve(config, app, host, arguments, initialize, env=None):
         'transport': 'desktop-stdio', 'socket': endpoint, 'generation': generation, 'controlToken': token}
     if host is not None:
         record['host'] = host
+    if dispatcher is not None:
+        record['dispatcher'] = dispatcher
     runtime._write(active, json.dumps(record))
     stopped = threading.Event()
     previous = {sig: signal.signal(sig, lambda *_: stopped.set()) for sig in (signal.SIGTERM, signal.SIGINT)}

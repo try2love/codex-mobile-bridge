@@ -3,6 +3,8 @@ import configparser
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -56,6 +58,17 @@ class LinuxDesktopTests(unittest.TestCase):
         self.assertEqual(config['Desktop Entry']['DBusActivatable'], 'false')
         self.assertIn('DBusActivatable=true', self.entry.read_text())
 
+    def test_path_menu_launcher_resolves_to_the_selected_real_gui(self):
+        binary = self.root/'bin';binary.mkdir()
+        (binary/'chatgpt').symlink_to(self.app)
+        self.entry.write_text(self.original.replace('"'+str(self.app)+'"', 'chatgpt'))
+        with patch.dict(os.environ, {'PATH':str(binary)}):
+            codex_launch.install(self.app,self.home,self.home/'launcher')
+        config=configparser.ConfigParser(interpolation=None)
+        config.read(self.user/'applications/codex.desktop')
+        self.assertTrue(config['Desktop Entry']['Exec'].endswith('chatgpt %U'))
+        self.assertEqual(config['Desktop Entry']['X-CMB-Original-Exec'],'chatgpt %U')
+
     def test_missing_ambiguous_and_symlinked_entries_are_not_overwritten(self):
         self.entry.unlink()
         with self.assertRaisesRegex(ValueError, '唯一'):
@@ -108,6 +121,15 @@ class LinuxDesktopTests(unittest.TestCase):
 
     def test_exec_paths_escape_percent_and_reserved_characters(self):
         self.assertEqual(codex_launch.quoted('/tmp/a%"`$\\'), '"/tmp/a%%\\"\\`\\$\\\\"')
+
+    @unittest.skipUnless(sys.platform == 'linux', 'real Linux /proc required')
+    def test_exited_unreaped_process_is_absent_instead_of_an_unknown_live_owner(self):
+        from bridge.platforms.linux.codex_runtime import identity
+        child=subprocess.Popen([sys.executable,'-c','pass'])
+        self.addCleanup(child.wait)
+        os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOWAIT)
+        with self.assertRaises(ProcessLookupError):
+            identity(child.pid)
 
 
 if __name__ == '__main__':

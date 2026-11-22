@@ -295,8 +295,8 @@ class ClientNavigation {
     if(confirmed&&id==='codex'){
       this.pending.add(id);this.operationFailures??=new Map();this.operationFailures.delete(id);++this.revision;this.paint();
       try{
-        await ClientLifecycle.request(signal=>this.request('/api/accounts/desktop-runtime',{
-          ...ClientLifecycle.codexInitialization(confirmed)},signal),{timeout:this.lifecycleTimeout??45000});
+        await ClientLifecycle.request(signal=>this.request('/api/clients',{
+          provider:'codex',enabled:true,initializeDesktop:true,...ClientLifecycle.codexInitialization(confirmed)},signal),{timeout:this.lifecycleTimeout??45000});
         this.notify('正在初始化 Codex 连接');
       }catch(error){this.operationFailures.set(id,ClientLifecycle.failure('initialize',error));this.notify(error.message);}
       finally{this.pending.delete(id);++this.revision;await this.refresh();}

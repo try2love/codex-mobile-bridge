@@ -60,7 +60,11 @@ npm run test:browser
 
 Codex 初始化连接使用 `test_desktop_runtime_accounts.py`、`test_client_lifecycle.py` 和 `test_hosted_desktop.py` 验证同一初始化事务、实时连接证据、任务保护与过期通道；`test_codex_desktop_runtime.py` 和 `test_hosted_desktop.py` 还覆盖新增启动参数、字段、消息类型和通知后保留既有读取与发送，不使用 App 版本白名单。浏览器 `critical.spec.cjs` 会实际执行 `codex-initialization.browser.js`，检查远程与桌面网关的按钮、确认、取消零请求和在途操作去重；合成请求不会初始化真实 Codex。
 
-Linux 的定向源码入口为 `test_codex_linux_desktop.py`，覆盖已解包 Electron 布局、XDG 用户菜单入口及原文件保全。它不代表真实 Linux 菜单启动、原生执行器或 AppImage 已验收。Windows 初始化复用既有 MSIX/执行别名与私有管道，普通图标启动的持久环境接入仍需独立实现和实机验收；macOS 的验证结果不能代替它。
+Linux 的定向源码入口为 `test_codex_linux_desktop.py`，覆盖已解包 Electron 布局、PATH 启动器、XDG 用户菜单入口、退出进程识别及原文件保全。`python3 -B scripts/smoke-codex-linux-launch.py --area <独立临时目录> --application <真实GUI路径> --cli <原生CLI路径> --desktop <系统desktop文件>` 在已有图形会话中，以独立 home/userData 和 XDG 目录连续两次执行 `gio launch`、核验原生列表和正常退出；不改系统菜单或退出原 App。该入口需要真实 GUI 环境变量，不适用于尚未支持的 AppImage。
+
+Windows 的定向源码入口为 `test_codex_windows_ordinary_launch.py`。`python -B scripts/smoke-codex-windows-launch.py --area <独立临时目录>` 需要 .NET Framework 编译器和用户交互桌面，实际验证 Explorer 环境继承、主进程/utility host、独立下载 CLI 与原生只读连接。普通 SSH 会话 0 不能替代交互桌面；可在获准后使用该用户的临时交互任务执行。测试暂时登记并恢复用户 `CODEX_CLI_PATH`，不替换正式网关或 Codex 安装包。可选 `--application <已安装GUI路径> --cli <原生CLI路径>` 使用安装副本、独立配置测试真实 GUI；只清理测试拥有的副本，不扩大产品退出权限。源码及原生夹具通过不等于完整 Windows 安装器、旧版 GUI 或注销重登验收。
+
+初始化回归同时覆盖共享中继的 `/api/clients` 显式请求；账号接口仍不允许经过中继。客户端列表与远程应用管理在已连接时保留“重新初始化连接”，在途事务去重。平台原生结果见[Windows/Linux 接入记录](../.agents/notes/implemented/feature/2026-11-22-codex-windows-linux-ordinary-launch.md)，不能由 macOS 或合成浏览器结果代替。
 
 macOS 普通启动的源码回归为 `test_codex_ordinary_launch.py`。原生分派器编译后，`python3 -B scripts/smoke-codex-ordinary-launch.py` 使用独立合成 App 实际验证 Launch Services 环境继承、安装/profile 分派及缺少网关时的原生透传。它临时设置并恢复当前用户的 `CODEX_CLI_PATH`，不启动真实 Codex，不读取账号、不发送模型消息；不随纯源码 discovery 自动执行。
 

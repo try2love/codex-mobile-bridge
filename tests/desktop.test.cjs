@@ -713,7 +713,7 @@ test('Windows packaging requires the complete locked ConPTY pair',async()=>{
     await fs.mkdir(path.join(root,'scripts'));
     await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2'}));
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway.exe'),'fixture');
-    for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe'])
+    for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe','codex-launcher.exe'])
       await fs.writeFile(path.join(runtime,'client-helpers',name),'fixture');
     await fs.writeFile(path.join(root,'scripts/cloudflared-lock.json'),JSON.stringify({version:'fixture'}));
     await fs.writeFile(path.join(runtime,'cloudflared/version.json'),JSON.stringify({platform:'win32',arch:'amd64',version:'fixture'}));

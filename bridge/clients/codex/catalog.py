@@ -542,14 +542,9 @@ class Catalog:
         if sys.platform == 'linux':
             return Catalog.find_linux_runtime()
         if os.name == 'nt':
+            from bridge.platforms.windows.discovery import cached_runtime_candidates
             local = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local')))
-            versions = []
-            for path in (local / 'OpenAI/Codex/bin').glob('*/codex.exe'):
-                try:
-                    versions.append((path.stat().st_mtime, path))
-                except OSError:
-                    continue  # An update can remove a candidate during discovery.
-            candidates = [path for _, path in sorted(versions, reverse=True)]
+            candidates = cached_runtime_candidates()
             candidates += [local / 'Programs/Codex/resources/codex.exe',
                            local / 'Programs/ChatGPT/resources/codex.exe']
             for candidate in candidates:

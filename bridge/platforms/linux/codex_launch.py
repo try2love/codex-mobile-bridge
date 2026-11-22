@@ -3,7 +3,10 @@ import configparser
 import os
 from pathlib import Path
 import shlex
+import shutil
 import tempfile
+
+from .discovery import candidate
 
 
 def supported(application):
@@ -37,8 +40,11 @@ def install(application, home, launcher):
                 entry = config['Desktop Entry']
                 original = entry.get('X-CMB-Original-Exec') or entry.get('Exec', '')
                 arguments = shlex.split(original)
-                if (not arguments or not Path(arguments[0]).is_absolute() or
-                        Path(arguments[0]).resolve() != application):
+                if not arguments:
+                    continue
+                executable = arguments[0] if Path(arguments[0]).is_absolute() else shutil.which(arguments[0])
+                installation = candidate(Path(executable), 'codex') if executable else None
+                if not installation or Path(installation['executable']).resolve() != application:
                     continue
                 matches[path.name] = (config, original)
             except (OSError, ValueError, KeyError, configparser.Error):

@@ -71,6 +71,7 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.server_arguments(arguments, '/private/control.sock'),
                          [*arguments, '--listen', 'unix:///private/control.sock'])
         for tail in (['--new-option'], ['--future-feature', 'enabled'],
+                     ['--future-feature', 'daemon'], ['--future-feature', 'proxy'],
                      ['--plugin-mcp-launch-cwd', 'future-plugin', 'future-server', '/future'],
                      ['--future-config={"feature":true}', '--listen=stdio://']):
             arguments = ['-c', 'features.existing=true', 'app-server', *tail]

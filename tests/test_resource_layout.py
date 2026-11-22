@@ -75,7 +75,8 @@ NATIVE_SOURCES = {'bridge/platforms/macos/claude-helper.swift',
                   'bridge/platforms/macos/codex-launcher.swift',
                   'bridge/platforms/macos/update-launcher.swift',
                   'bridge/platforms/windows/claude-helper.cs',
-                  'bridge/platforms/windows/codex-quit-helper.cs'}
+                  'bridge/platforms/windows/codex-quit-helper.cs',
+                  'bridge/platforms/windows/codex-launcher.cs'}
 
 ISOLATED_DEFINITIONS = r'''
 import importlib.util, json, pathlib, shutil, sys

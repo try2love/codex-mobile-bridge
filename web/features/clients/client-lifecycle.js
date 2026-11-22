@@ -41,11 +41,11 @@ const ClientLifecycle=(()=>{
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
     const pipe=client.id==='zcode'&&client.pipeSupported===true;
     const canInitialize=client.id==='codex'
-      ?client.canInitializeDesktop===true&&client.installed!==false&&!ready&&!pending
+      ?client.canInitializeDesktop===true&&client.installed!==false&&!pending
       :client.id==='zcode'
       ?pipe&&client.canInitializeDesktop===true&&client.installed!==false&&!ready&&!pending
       :client.id==='claude'&&!canStartDesktop&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','needs-unlock','needs-desktop','cancelled','failed'].includes(setup)||stage==='needs-initialization'||client.canInitializeDesktop===true&&!canReconnect);
-    const initializeLabel=canReconnect?'重新初始化连接':'初始化连接';
+    const initializeLabel=canReconnect||client.id==='codex'&&ready?'重新初始化连接':'初始化连接';
     const retryable=client.retryable===true&&client.enabled&&!ready&&!pending&&!canInitialize&&!canReconnect&&!canStartDesktop&&!['recovery-required','restart-required'].includes(setup);
     const canConnectWsl=['wsl-cli','wsl-claude-cli'].includes(client.kind)&&client.enabled===true&&!ready&&!pending&&client.distributionRunning!==true;
     return {label,modeLabel:connectionModeLabel(client),reason,ready,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,canConnectWsl,error:!pending&&!ready&&(['error','timeout'].includes(stage)||setup==='failed')};

@@ -376,6 +376,11 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(owners[0], owners[1])
             self.assertEqual(owners[0], owners[2])
         self.assertEqual(uploads, [data, data])
+        initialize = {'provider': 'codex', 'enabled': True, 'initializeDesktop': True,
+                      'requestId': 'fixture', 'confirmed': True, 'tasksConfirmed': True}
+        self.assertEqual((await self.client.post('/api/clients', json=initialize, headers=p)).status, 200)
+        self.assertIn(('toggle', initialize), calls)
+        self.assertEqual((await self.client.post('/api/accounts/desktop-runtime', json=initialize, headers=p)).status, 403)
         self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=p)).status, 200)
         self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/list', headers=p)).status, 400)
         for path in ('/api/clients/scan', '/api/desktop-sessions/deepseek/install', '/api/desktop-sessions/claude/eval'):

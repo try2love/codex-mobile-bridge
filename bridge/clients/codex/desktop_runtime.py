@@ -293,11 +293,27 @@ def ordinary_launch_helper():
     root = project_root()
     if not getattr(sys, 'frozen', False):
         root = root / 'dist'
-    return root / 'client-helpers' / 'codex-launcher'
+    return root / 'client-helpers' / ('codex-launcher.exe' if sys.platform == 'win32' else 'codex-launcher')
 
 
 def enable_ordinary_launch(home, application):
     """Prepare normal GUI opening without changing the App or restarting it."""
+    if sys.platform == 'win32':
+        value = settings(home)
+        if value is None:
+            return False
+        if value['application'] != os.path.normcase(str(Path(application).resolve())):
+            raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
+        from bridge.platforms.windows.codex_launch import install
+        with exclusive_lock(home, 'ordinary-launch'):
+            command = [sys.executable]
+            if not getattr(sys, 'frozen', False):
+                command.append(str(project_root()/'desktop.py'))
+            command += ['codex-desktop-launch', '--configuration', str(directory(home)/'settings.json'), '--']
+            install(directory(home), value, ordinary_launch_helper(), command)
+            if value['launcher'] != str(Path(sys.executable).resolve()):
+                _write(directory(home)/'settings.json', json.dumps({**value, 'launcher': str(Path(sys.executable).resolve())}))
+        return True
     if sys.platform == 'linux':
         from bridge.platforms.linux.codex_launch import install
         install(application, home, directory(home)/'codex-cli')
@@ -385,12 +401,15 @@ def desktop_owner(parent, application):
 def verify_record(record):
     """Recheck every process generation, including the optional utility host."""
     parent = record.get('host', record['app'])
-    if (record['adapter']['parent'] != parent['pid'] or
+    dispatcher = record.get('dispatcher')
+    if dispatcher is not None and (sys.platform != 'win32' or dispatcher['parent'] != parent['pid']):
+        raise ValueError('Shared runtime dispatcher ancestry changed')
+    if (record['adapter']['parent'] != (dispatcher or parent)['pid'] or
             record['runtime']['parent'] != record['adapter']['pid']):
         raise ValueError('Shared runtime process ancestry changed')
     if 'host' in record and desktop_owner(record['host'], record['app']['image']) != (record['app'], record['host']):
         raise ValueError('Shared runtime host changed')
-    for kind in ('app', 'host', 'adapter', 'runtime'):
+    for kind in ('app', 'host', 'dispatcher', 'adapter', 'runtime'):
         if kind in record and process_identity(record[kind]['pid']) != record[kind]:
             raise ValueError('Shared runtime generation changed')
 
@@ -445,7 +464,7 @@ def connect(home, cli):
                 record.get('home') != value['home'] or
                 record.get('cli') != value['cli'] or value['cli'] != str(Path(cli).resolve()) or
                 record['app']['image'] != value['application'] or
-                record['adapter']['parent'] != record.get('host', record['app'])['pid'] or
+                record['adapter']['parent'] != record.get('dispatcher', record.get('host', record['app']))['pid'] or
                 record['runtime']['parent'] != record['adapter']['pid']):
             raise ValueError('Shared runtime owner mismatch')
         verify_record(record)
@@ -519,10 +538,13 @@ def server_arguments(arguments, socket_path):
         return None
     result = args[:i + 1]
     i += 1
+    auxiliary_position = True
     while i < len(args):
         token = args[i]
         if token in ('-c', '--config') and i + 1 < len(args):
             result.extend(args[i:i + 2]); i += 2
+        elif token.startswith('--config=') or token == '--analytics-default-enabled':
+            result.append(token); i += 1
         elif token in ('--plugin-mcp-launch-cwd', '--mcp-launch-cwd'):
             if i + 3 >= len(args):
                 return None
@@ -534,12 +556,14 @@ def server_arguments(arguments, socket_path):
         elif token == '--listen=stdio://':
             i += 1
         elif (token == '--listen' or token.startswith('--listen=') or
-              token in ('--print-startup-config', '--help', '-h', '--version', '-V',
-                        'proxy', 'daemon', 'generate-ts', 'generate-json-schema')):
+              token in ('--print-startup-config', '--help', '-h', '--version', '-V') or
+              auxiliary_position and token in ('proxy', 'daemon', 'generate-ts', 'generate-json-schema')):
             return None  # Auxiliary commands and explicit other transports stay native.
         else:
             # Feature additions may add startup flags while keeping the same
             # stdio/initialize contract. Preserve them for the native parser;
             # the App's primary initialize and owner proof still gate sharing.
+            # A value after an unknown flag may itself spell "proxy"/"daemon".
+            auxiliary_position = False
             result.append(token); i += 1
     return [*result, '--listen', 'unix://' + str(socket_path)]

@@ -3047,14 +3047,17 @@ class DesktopSessions:
                     preparing = (operation.get('operation') == 'desktopRuntime' and
                                  operation.get('phase') in ('preparing', 'stopping', 'applying', 'starting', 'verifying'))
                     row['canInitializeDesktop'] = bool(runtime_status.get('supported') and row['installed']
-                        and row['enabled'] and self.gateway_running and not row['connected'] and not preparing)
+                        and row['enabled'] and self.gateway_running and not preparing)
                     row['confirmTaskState'] = bool(preparation.get('taskStateUnavailable') or
                         operation.get('operation') == 'desktopRuntime' and operation.get('taskStateUnavailable'))
                     if preparing:
                         row.update(connectionState='connecting', reason='正在初始化 Codex 连接')
-                    elif row['canInitializeDesktop']:
+                    elif row['canInitializeDesktop'] and not row['connected']:
                         row.update(setupStatus='needs-initialization', reason=preparation.get('reason') or
                                    operation.get('error') or 'Codex 尚未建立原生连接，可初始化连接。')
+                    if (operation.get('operation') == 'desktopRuntime' and operation.get('phase') == 'failed'
+                            and operation.get('error')):
+                        row['reason'] = operation['error']
                 if row['id'] == 'deepseek':
                     self._deepseek_progress(row, native_states.get('deepseek'))
                 elif row['id'] == 'claude':
@@ -3238,6 +3241,21 @@ class DesktopSessions:
     def toggle_client(self, value, *, startup=False):
         self._require_client_settings()
         provider, enabled = value.get('provider'), value.get('enabled')
+        confirmations = {'requestId', 'confirmed', 'tasksConfirmed'}
+        if provider == 'codex' and value.get('initializeDesktop') is True:
+            allowed = {'action', 'provider', 'enabled', 'initializeDesktop', 'acknowledgeUnavailable'} | confirmations
+            if (startup or self.instance is not None or not self.gateway_running or not self.enabled('codex')
+                    or enabled is not True or not confirmations <= set(value) or set(value) - allowed):
+                raise ValueError('Codex 初始化请求无效')
+            accounts = getattr(self.bridge, 'accounts', None)
+            if accounts is None:
+                raise ValueError('Codex 原生连接初始化不可用')
+            accounts.control({'action': 'initializeDesktopRuntime', **{
+                key: value[key] for key in confirmations | {'acknowledgeUnavailable'} if key in value}})
+            self.client_cache = None
+            return self.clients(refresh=True)  # Do not expose account inventory over client management.
+        if confirmations & set(value):
+            raise ValueError('应用开关包含不支持的初始化字段')
         if self.instance is None and isinstance(provider, str) and provider.startswith(('claude:', 'deepseek:', 'zcode:')):
             family = provider.split(':')[0]
             if enabled is False and value.get('quitDesktop') is False and not value.get('forceDesktop'):
