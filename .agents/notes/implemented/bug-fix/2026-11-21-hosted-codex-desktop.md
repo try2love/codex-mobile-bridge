@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续的账号独立准备、持续恢复、有界实时同步与编辑支持见[原生连接恢复](2026-11-21-desktop-connection-recovery.md)；本篇保留原决定及其约束。
+
 ## 问题
 
 新版 Codex 将桌面会话管理移入 utility host，不再参加原有的聊天 owner 发现和状态订阅。旧 IPC 端点仍可能由 VS Code 持有，因此套接字存在和初始化成功都不能证明 Codex Desktop 已接入。发布提交 `ad5e929d` 的原始 owner 查询在该环境中超时。
@@ -57,3 +59,5 @@ macOS 只接受主 App 或其应用包 Frameworks 内、直接隶属于该主 Ap
 ## 历史笔记核对
 
 [共享运行时数据删除](../architecture/2026-11-08-codex-shared-runtime-data-deletion.md)、[Windows 原生 stdio](2026-11-12-windows-native-side-chat-writer.md)、[自动准备](../feature/2026-11-12-native-runtime-startup-preparation.md)与本篇部分重叠，保留其原决定并互链；[桌面状态结构兼容](2026-11-14-desktop-stream-v13.md)继续约束旧通道。旧[共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)仍保留其独有标签同步缺口，本次未实现该目标，不删除或归档。
+
+跨分支的历史保留与实时发布整合见[有界历史整合](2026-11-22-hosted-history-integration.md)；其他执行身份、安全和恢复边界保留。

@@ -160,6 +160,7 @@ class RuntimeRefreshTests(unittest.TestCase):
         old.parent.mkdir(parents=True); old.touch()
         windows = SimpleNamespace(name='nt', environ={'LOCALAPPDATA': str(local)})
         with patch.object(catalog_module, 'os', windows), \
+                patch.dict('os.environ', windows.environ), \
                 patch.object(catalog_module, 'sys', SimpleNamespace(platform='win32')), \
                 patch.object(catalog_module.subprocess, 'run', side_effect=AssertionError('No PowerShell')) as run:
             reader = Catalog(self.root)
@@ -179,6 +180,7 @@ class RuntimeRefreshTests(unittest.TestCase):
         old.parent.mkdir(parents=True); old.touch()
         windows = SimpleNamespace(name='nt', environ={'LOCALAPPDATA': str(local)})
         with patch.object(catalog_module, 'os', windows), \
+                patch.dict('os.environ', windows.environ), \
                 patch.object(catalog_module, 'sys', SimpleNamespace(platform='win32')), \
                 patch.object(Catalog, 'find_runtime', wraps=Catalog.find_runtime) as find, \
                 patch.object(catalog_module.subprocess, 'run', side_effect=AssertionError('No PowerShell')) as run:

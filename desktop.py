@@ -4,6 +4,14 @@ import argparse
 import json
 import os
 import sys
+if sys.argv[1:2] == ['codex-desktop-launch']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.codex.desktop_runtime_windows import ordinary_run
+    arguments = options.arguments[1:] if options.arguments[:1] == ['--'] else options.arguments
+    raise SystemExit(ordinary_run(options.configuration, arguments))
 if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
     from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
     raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))

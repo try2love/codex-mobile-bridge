@@ -16,7 +16,7 @@ def _identity(pid):
     return (int(fields[19]), tuple(int(uid) for uid in uids), str(image))
 
 
-def read_process_environment(pid, record, executable, names, record_path):
+def read_process_environment(pid, record, executable, names, record_path=None):
     before = _identity(pid)
     if (before[1][0] != os.getuid() or before[1][1] != os.geteuid() or
             before[2] != str(Path(executable).resolve())):

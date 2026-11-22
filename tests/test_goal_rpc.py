@@ -167,6 +167,7 @@ class RuntimeDiscoveryTests(unittest.TestCase):
             fake_os=SimpleNamespace(name='nt',environ={'LOCALAPPDATA':str(local)})
             fake_subprocess=SimpleNamespace(CREATE_NO_WINDOW=0x08000000,run=lambda *args,**kwargs:None)
             with patch('bridge.clients.codex.catalog.os',fake_os), \
+                 patch.dict('os.environ', fake_os.environ), \
                  patch('bridge.clients.codex.catalog.sys.platform','nt'), \
                  patch('bridge.clients.codex.catalog.subprocess',fake_subprocess):
                 self.assertEqual(Catalog.find_runtime().resolve(),candidate.resolve())

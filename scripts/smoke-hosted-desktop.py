@@ -178,6 +178,18 @@ def main():
                 bridge._attach(session, timeout=10)
                 assert session.connected, session.error
                 assert len(calls) == 2, len(calls)
+                current = bridge.ipc.request('native-metadata', {'method': 'thread/read',
+                    'params': {'threadId': thread_id, 'includeTurns': False}})['result']['result']['thread']
+                assert current['historyMode'] == 'paginated'
+                with session.condition:
+                    assert session.condition.wait_for(lambda: session.state['threadRuntimeStatus']['type'] == 'idle', 10)
+                    turn_id = session.state['turns'][-1]['turnId']
+                bridge._call(session, 'thread-follower-edit-last-user-turn', {
+                    'turnId': turn_id, 'message': 'Synthetic edited input'})
+                assert completed()['status'] == 'completed'
+                assert len(calls) == 3, len(calls)
+                with session.condition:
+                    assert session.condition.wait_for(lambda: session.state['threadRuntimeStatus']['type'] == 'idle', 10)
                 receipt = bridge.send(thread_id, 'Synthetic hold', str(uuid.uuid4()))
                 assert entered.wait(10), 'Native turn did not reach loopback fixture'
                 with session.condition:
@@ -204,7 +216,7 @@ def main():
                 assert completed()['status'] in ('completed', 'interrupted')
                 assert config_file.read_bytes() == original
                 print('PASS: production Bridge reads paginated history, sends once, observes native completion, '
-                      'reconnects, interrupts and cancels a native approval on the same App-owned runtime; '
+                      'reconnects, edits, interrupts and cancels a native approval on the same App-owned runtime; '
                       'configuration unchanged, loopback model only.')
             finally:
                 hold.set()

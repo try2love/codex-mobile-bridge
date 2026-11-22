@@ -117,6 +117,24 @@ class AccountsHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST', path, value, headers)[0], 403)
         manager.control.assert_not_called()
 
+    def test_client_management_initialization_keeps_auth_csrf_and_password_boundaries(self):
+        manager=SimpleNamespace(toggle_client=Mock(return_value={'clients':[]}))
+        self.server.desktop_sessions=manager
+        value={'provider':'codex','enabled':True,'initializeDesktop':True,'requestId':'fixture',
+               'confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True}
+        path='/api/clients'
+        self.assertEqual(self.request('POST',path,value)[0],401)
+        headers=self.login()
+        self.assertEqual(self.request('POST',path,value,{'Cookie':headers['Cookie']})[0],403)
+        self.assertEqual(self.request('POST',path,{**value,'home':'/other'},headers)[0],400)
+        self.assertEqual(self.request('POST',path,{**value,'provider':'claude'},headers)[0],400)
+        self.assertEqual(self.request('POST',path,value,headers)[0],200)
+        manager.toggle_client.assert_called_once_with(value)
+        manager.toggle_client.reset_mock()
+        self.server.auth.config['mode']='none'
+        self.assertEqual(self.request('POST',path,value,headers)[0],403)
+        manager.toggle_client.assert_not_called()
+
     def test_runtime_initialization_forwards_explicit_unavailable_acknowledgement(self):
         manager = self.manager(); manager.control = Mock(return_value={'switch': {'phase': 'preparing'}})
         path = '/api/accounts/desktop-runtime'

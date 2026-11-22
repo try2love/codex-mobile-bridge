@@ -18,6 +18,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ClientLifecycleTests(unittest.TestCase):
+    def test_codex_running_and_configured_is_not_connection_evidence(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported': True, 'preparation': {}})
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertFalse(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.bridge.desktop_connection_ready.return_value = True
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+
+    def test_codex_initialization_state_blocks_duplicate_buttons_until_worker_finishes(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported':True, 'preparation':{}})
+        self.accounts.state = {'operation':'desktopRuntime', 'phase':'verifying'}
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertEqual(client['connectionState'], 'connecting')
+        self.assertFalse(client['canInitializeDesktop'])
+        self.accounts.state.update(phase='failed', taskStateUnavailable=True)
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+
+    def test_codex_initialization_failure_is_visible_even_when_transport_is_connected(self):
+        self.running=True
+        self.bridge.desktop_connection_ready=Mock(return_value=True)
+        self.accounts.desktop_runtime_status=Mock(return_value={'supported':True,'preparation':{}})
+        self.accounts.state={'operation':'desktopRuntime','phase':'failed','taskStateUnavailable':True,
+                             'error':'部分任务状态无法核验'}
+        client=self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+        self.assertEqual(client['reason'],'部分任务状态无法核验')
+
+    def test_codex_management_initialization_delegates_without_toggling_or_exposing_accounts(self):
+        self.accounts.control=Mock(return_value={'accounts':['private-inventory']})
+        value={'provider':'codex','enabled':True,'initializeDesktop':True,'requestId':'fixture',
+               'confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True}
+        config=deepcopy(self.manager.config)
+        result=self.manager.toggle_client(value)
+        self.accounts.control.assert_called_once_with({'action':'initializeDesktopRuntime',
+            'requestId':'fixture','confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True})
+        self.assertNotIn('accounts',result)
+        self.assertEqual(self.manager.config,config)
+        self.stop.assert_not_called();self.launch.assert_not_called()
+        self.accounts.prepare_desktop_runtime.assert_not_called()
+        self.accounts.control.reset_mock()
+        for extra in ({'quitDesktop':True},{'forceDesktop':True},{'home':'/other'}):
+            with self.assertRaises(ValueError):self.manager.toggle_client({**value,**extra})
+        self.accounts.control.assert_not_called()
+
     def test_wsl_is_a_codex_entry_and_never_uses_native_desktop_lifecycle(self):
         from bridge.features.endpoints.registry import Entries
         from bridge.platforms.windows import wsl
@@ -613,7 +667,8 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertEqual(self.launch.call_args.kwargs, {'allow_unprepared_codex': True})
         self.assertTrue(self.running)
         self.assertTrue(self.manager.enabled('codex'))
-        prepare.assert_not_called()
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.kwargs, {'allow_cold_start': False})
         self.accounts.idle.assert_not_called()
 
     def test_codex_explicit_enable_cancels_preparation_and_keeps_shared_launch_lock(self):
@@ -638,6 +693,7 @@ class ClientLifecycleTests(unittest.TestCase):
 
     def test_codex_background_preparation_waits_for_enabled_selection(self):
         self.manager.config['enabled']['codex'] = False
+        self.accounts.prepare_desktop_runtime.side_effect = lambda *args, **kwargs: self.manager.runtime_preparation_cancel.set()
         self.manager.toggle_client({'provider': 'codex', 'enabled': True}, startup=True)
         self.manager.runtime_preparation_thread.join(3)
         self.assertFalse(self.manager.runtime_preparation_thread.is_alive())
@@ -646,6 +702,25 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertEqual(str(app.executable), self.manager.config['discovered']['codex']['executable'])
         self.assertEqual(app.home, self.accounts.home)
         self.launch.assert_not_called()
+
+    def test_codex_preparation_keeps_monitoring_after_ready_without_cold_relaunch(self):
+        from bridge.clients import manager as module
+        cancelled = threading.Event()
+        checks = []
+        class MonitorEvent:
+            is_set = cancelled.is_set
+            set = cancelled.set
+            def wait(self, delay):
+                self.delay = delay
+                return len(checks) >= 2
+        def ready(app, **options):
+            checks.append(options['allow_cold_start'])
+            return False
+        self.accounts.prepare_desktop_runtime.side_effect = ready
+        with patch.object(module, 'threading', SimpleNamespace(Event=lambda: MonitorEvent(), Thread=threading.Thread)):
+            self.manager._prepare_codex_runtime(self.manager.config['discovered']['codex'])
+            self.manager.runtime_preparation_thread.join(2)
+        self.assertEqual(checks, [True, False])
 
     def test_codex_disable_cancels_preparation_before_waiting_for_its_gate(self):
         entered, cancelled = threading.Event(), threading.Event()

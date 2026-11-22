@@ -246,6 +246,10 @@ def _catalog_source():
         'from bridge.clients.codex.configuration import magpie_managed', '')
     # SSH helpers rediscover their explicit runtime on every request. Local
     # Windows installation inventory is neither available nor needed there.
+    start = source.index("        if os.name == 'nt':\n", source.index('    def find_runtime():\n'))
+    end = source.index('        for app in ("ChatGPT", "Codex"):\n', start)
+    source = (source[:start] + "        if os.name == 'nt':\n"
+              "            raise CatalogError('SSH Windows runtime discovery is unsupported')\n" + source[end:])
     start = source.index('    def _windows_runtime_stamp(self):\n')
     end = source.index('    def invalidate_models(self):\n', start)
     return source[:start] + '    def _windows_runtime_stamp(self):\n        return None\n\n' + source[end:]

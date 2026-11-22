@@ -58,6 +58,16 @@ npm run test:browser
 
 新版 Codex Desktop 接入的定向入口为 `test_hosted_desktop.py`。`python3 -B scripts/smoke-hosted-desktop.py --codex <已安装原生运行时绝对路径>` 在 `.tmp/` 新建私有配置，以真实原生执行器和 loopback 模型验证生产 Bridge 的历史读取、发送、中断、审批取消及同一执行器重连。该入口不连接用户的 App、账号或正式 daemon；原 App 启动握手、真实 GUI 同步与 Windows 成品另行验收。
 
+Codex 初始化连接使用 `test_desktop_runtime_accounts.py`、`test_client_lifecycle.py` 和 `test_hosted_desktop.py` 验证同一初始化事务、实时连接证据、任务保护与过期通道；`test_codex_desktop_runtime.py` 和 `test_hosted_desktop.py` 还覆盖新增启动参数、字段、消息类型和通知后保留既有读取与发送，不使用 App 版本白名单。浏览器 `critical.spec.cjs` 会实际执行 `codex-initialization.browser.js`，检查远程与桌面网关的按钮、确认、取消零请求和在途操作去重；合成请求不会初始化真实 Codex。
+
+Linux 的定向源码入口为 `test_codex_linux_desktop.py`，覆盖已解包 Electron 布局、PATH 启动器、XDG 用户菜单入口、退出进程识别及原文件保全。`python3 -B scripts/smoke-codex-linux-launch.py --area <独立临时目录> --application <真实GUI路径> --cli <原生CLI路径> --desktop <系统desktop文件>` 在已有图形会话中，以独立 home/userData 和 XDG 目录连续两次执行 `gio launch`、核验原生列表和正常退出；不改系统菜单或退出原 App。该入口需要真实 GUI 环境变量，不适用于尚未支持的 AppImage。
+
+Windows 的定向源码入口为 `test_codex_windows_ordinary_launch.py`。`python -B scripts/smoke-codex-windows-launch.py --area <独立临时目录>` 需要 .NET Framework 编译器和用户交互桌面，实际验证 Explorer 环境继承、主进程/utility host、独立下载 CLI 与原生只读连接。普通 SSH 会话 0 不能替代交互桌面；可在获准后使用该用户的临时交互任务执行。测试暂时登记并恢复用户 `CODEX_CLI_PATH`，不替换正式网关或 Codex 安装包。可选 `--application <已安装GUI路径> --cli <原生CLI路径>` 使用安装副本、独立配置测试真实 GUI；只清理测试拥有的副本，不扩大产品退出权限。源码及原生夹具通过不等于完整 Windows 安装器、旧版 GUI 或注销重登验收。
+
+初始化回归同时覆盖共享中继的 `/api/clients` 显式请求；账号接口仍不允许经过中继。客户端列表与远程应用管理在已连接时保留“重新初始化连接”，在途事务去重。平台原生结果见[Windows/Linux 接入记录](../.agents/notes/implemented/feature/2026-11-22-codex-windows-linux-ordinary-launch.md)，不能由 macOS 或合成浏览器结果代替。
+
+macOS 普通启动的源码回归为 `test_codex_ordinary_launch.py`。原生分派器编译后，`python3 -B scripts/smoke-codex-ordinary-launch.py` 使用独立合成 App 实际验证 Launch Services 环境继承、安装/profile 分派及缺少网关时的原生透传。它临时设置并恢复当前用户的 `CODEX_CLI_PATH`，不启动真实 Codex，不读取账号、不发送模型消息；不随纯源码 discovery 自动执行。
+
 原生侧边聊天使用 `test_native_side_chat.py`、`test_store.py` 和浏览器的 `native-side-chat.spec.cjs` 验证持久化创建、父子归属、标准聊天路由与关闭视图不删除。旧 `test_side_chat.py` 中保留临时运行时回归，仅保护升级前已打开的旧页面；新增侧边聊天不再使用该运行时。独立侧边输入区和附件 UI 夹具已移除，现复用标准会话的相应用例。
 
 `node scripts/smoke-wsl-app-ui.cjs` 在独立 Edge 配置目录中加载真实 Web 页面和合成 API，实际执行 `tests/browser/codex-entries.browser.js`，检查独立应用管理、列表隔离、Magpie 模型名称、草稿保留，以及 WSL 手机新建独立聊天、目录浏览器、选择父目录新建文件夹、新建项目和显式翻页。默认使用 Windows Edge，也可用 `CMB_BROWSER` 指定 Chromium 可执行文件；只启动自己的浏览器进程，截图和结果放在 `.tmp/`，不连接真实网关或 Codex。原生共享服务的隔离验证仍由 `scripts/smoke-wsl-shared-server.py --codex <明确的 Linux 运行时>` 单独执行。

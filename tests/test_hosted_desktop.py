@@ -5,6 +5,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,31 @@ from bridge.clients.codex.ipc import DesktopIPC, IPCError, validate_stream_state
 
 
 class HostedOwnerTests(unittest.TestCase):
+    def test_desktop_readiness_uses_native_endpoint_or_real_desktop_snapshot(self):
+        from bridge.app.service import Bridge
+        bridge = SimpleNamespace(local=True, observation_enabled=lambda:True, codex_home=Path('/fixture'),
+            ipc=SimpleNamespace(lock=threading.RLock(), socket=object(), client_id='client'),
+            lock=threading.RLock(), live={})
+        with patch.object(runtime, 'hosted_endpoint', return_value=None) as endpoint:
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['ide'] = SimpleNamespace(origin='ide', runtime='desktop', connected=True)
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['desktop'] = SimpleNamespace(origin='desktop', runtime='desktop', connected=True)
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = None
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.return_value = {'path':'/verified.sock', 'generation':'g'}
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = object()
+            bridge.ipc.hosted = True
+            bridge.ipc.path = '/verified.sock'
+            bridge.ipc.hosted_generation = 'g'
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.hosted_generation = 'previous'
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.side_effect = ValueError('process generation changed')
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+
     def test_primary_app_and_its_bundled_host_have_the_same_verified_owner(self):
         app = {'pid': 1, 'parent': 99, 'image': '/Applications/Codex.app/Contents/MacOS/Codex'}
         host = {'pid': 2, 'parent': 1, 'image': '/Applications/Codex.app/Contents/Frameworks/Runtime.framework/Helpers/Host.app/Contents/MacOS/Host'}
@@ -161,19 +187,43 @@ class HostedSessionTests(unittest.TestCase):
             elif method == 'thread/read': value = {'thread': copy.deepcopy(self.thread)}
             elif method == 'thread/turns/list': value = {'data': copy.deepcopy(list(reversed(self.turns[-params['limit']:]))),
                 'nextCursor': 'older' if len(self.turns) > params['limit'] else None}
-            elif method == 'thread/items/list': value = {'data': [copy.deepcopy(row) for row in self.items
-                if params.get('turnId', row['turnId']) == row['turnId']], 'nextCursor': None}
+            elif method == 'thread/items/list':
+                rows = [copy.deepcopy(row) for row in self.items if params.get('turnId', row['turnId']) == row['turnId']]
+                if params.get('sortDirection') == 'desc': rows.reverse()
+                limit = params.get('limit', len(rows))
+                value = {'data': rows[:limit], 'nextCursor': 'older-items' if len(rows) > limit else None}
             elif method == 'turn/start':
                 if self.drop_start: return
                 value = {'turn': {'id': 'new-turn', 'status': 'inProgress'}}
+            elif method in ('thread/revert', 'thread/rollback'):
+                self.router.from_native({'method': 'thread/status/changed',
+                    'params': {'threadId': 't', 'status': {'type': 'notLoaded'}}})
+                self.turns = []
+                self.items = []
+                value = {'thread': copy.deepcopy(self.thread)}
+            elif method == 'turn/steer': value = {'turnId': params['expectedTurnId']}
             else: raise AssertionError(method)
             self.router.from_native({'id': message['id'], 'result': value})
         self.router = DesktopStdio(write, self.app.append, lambda value: None, control_methods=CONTROL_METHODS)
+        self.state_changed = threading.Event()
         self.sessions = HostedSessions(self.temp.name, self.router,
-            lambda tid, state: self.states.append(state), lambda *args: None)
+            lambda tid, state: (self.states.append(state), self.state_changed.set()), lambda *args: None)
         self.addCleanup(self.sessions._disconnect)
         self.addCleanup(self.router.close)
         self.router.from_app({'id': 1, 'method': 'initialize', 'params': {}})
+
+    def test_additive_features_fields_items_and_notifications_preserve_baseline_control(self):
+        self.thread['newFeature'] = {'enabled': True}
+        self.turns[0]['newFeature'] = {'enabled': True}
+        self.items.append({'turnId': 'turn', 'item': {'id': 'future', 'type': 'futureWidget', 'newField': [1, 2]}})
+        state = self.sessions.attach('t')
+        validate_stream_state(101, {**state, 'futureState': {'enabled': True}})
+        event = {'method': 'futureFeature/progress', 'params': {'threadId':'t', 'newField': {'x':1}}}
+        self.router.from_native(event)
+        self.assertEqual(self.app[-1], event)
+        result = self.sessions.call('t', 'thread-follower-start-turn', {'message':'baseline after additive update'})
+        self.assertIsInstance(result, dict)
+        self.assertTrue(any(packet.get('method') == 'turn/start' for packet in self.writes))
 
     def test_passive_attach_reads_paged_history_without_resuming(self):
         state = self.sessions.attach('t')
@@ -301,6 +351,46 @@ class HostedSessionTests(unittest.TestCase):
         self.assertEqual(state['turns'], [])
         self.assertFalse(any(m.get('method') == 'thread/turns/list' for m in self.writes))
 
+    def test_long_current_turn_connects_without_fetching_every_item_page(self):
+        self.items = [{'turnId': 'turn', 'item': {'type': 'agentMessage', 'id': str(i), 'text': 'x'}} for i in range(2000)]
+        state = self.sessions.attach('t')
+        self.assertEqual(len(state['turns'][0]['items']), 100)
+        self.assertEqual(state['turns'][0]['items'][-1]['id'], '1999')
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+        self.assertEqual(len([m for m in self.writes if m.get('method') == 'thread/items/list']), 1)
+
+    def test_slow_projection_does_not_block_native_app_or_reply(self):
+        self.sessions.attach('t')
+        entered, release, delivered = threading.Event(), threading.Event(), threading.Event()
+        original = self.sessions.publish_state
+        def slow(thread_id, state):
+            entered.set()
+            release.wait(2)
+            return original(thread_id, state)
+        event = {'method': 'item/agentMessage/delta', 'params': {'threadId': 't', 'turnId': 'turn', 'itemId': 'answer', 'delta': '!'}}
+        self.addCleanup(release.set)
+        with patch.object(self.sessions, 'publish_state', side_effect=slow):
+            worker = threading.Thread(target=lambda: (self.router.from_native(event), delivered.set()), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                self.assertTrue(delivered.wait(.2), 'Desktop output waited for history projection')
+                self.assertIn(event, self.app)
+            finally:
+                release.set()
+                worker.join(2)
+
+    def test_last_follower_release_discards_observation_without_closing_runtime(self):
+        follower = _Follower(Mock(), 'owner', 'token', 'generation', self.sessions)
+        follower.authenticated = True
+        request = {'method': 'thread-stream-following-changed', 'sourceClientId': follower.client_id,
+                   'params': {'hostId': 'local', 'conversationId': 't', 'following': True}}
+        follower.handle(request)
+        follower.handle({**request, 'params': {**request['params'], 'following': False}})
+        self.assertNotIn('t', self.sessions.joined)
+        self.assertNotIn('t', self.sessions.states)
+        self.assertTrue(self.router.ready)
+
     def test_unknown_control_state_refuses_attachment_and_mutations(self):
         self.sessions.attach('t')
         self.thread['status'] = {'type': 'future-state'}
@@ -328,18 +418,139 @@ class HostedSessionTests(unittest.TestCase):
         self.assertNotIn('modelProvider', sent[0]['params'])
         self.assertNotIn('cwd', sent[0]['params'])
 
+    def test_native_edit_preserves_attachments_and_reverts_only_the_confirmed_turn(self):
+        self.items.insert(0, {'turnId': 'turn', 'item': {'type': 'userMessage', 'id': 'user',
+            'content': [{'type': 'text', 'text': 'original'}, {'type': 'localImage', 'path': '/fixture/image.png'}]}})
+        self.sessions.attach('t')
+        self.sessions.call('t', 'thread-follower-edit-last-user-turn', {'turnId': 'turn', 'message': 'edited'})
+        writes = [m for m in self.writes if m.get('method') in ('thread/revert', 'turn/start')]
+        self.assertEqual([m['method'] for m in writes], ['thread/revert', 'turn/start'])
+        self.assertEqual(writes[0]['params'], {'threadId': 't', 'beforeTurnId': 'turn'})
+        self.assertEqual(writes[1]['params']['input'], [{'type': 'text', 'text': 'edited', 'text_elements': []},
+                                                     {'type': 'localImage', 'path': '/fixture/image.png'}])
+        self.assertNotIn('modelProvider', writes[1]['params'])
+
+    def test_edit_unknown_send_cannot_report_the_whole_operation_unsent(self):
+        self.items = [{'turnId': 'turn', 'item': {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'old'}]}}]
+        self.sessions.attach('t')
+        self.drop_start = True
+        with self.assertRaises(AppServerUnknownResult):
+            self.sessions.call('t', 'thread-follower-edit-last-user-turn', {'turnId': 'turn', 'message': 'new'}, timeout=.01)
+        self.assertEqual(len([m for m in self.writes if m.get('method') == 'thread/revert']), 1)
+
+    def test_edit_retains_the_native_file_reference_wrapper(self):
+        from bridge.features.sessions.model import attachment_prompt
+        original = attachment_prompt('old', [{'name': 'spec', 'path': '/fixture/spec.txt'}])
+        self.items = [{'turnId': 'turn', 'item': {'type': 'userMessage', 'content': [{'type': 'text', 'text': original}]}}]
+        self.sessions.attach('t')
+        self.sessions.call('t', 'thread-follower-edit-last-user-turn', {'turnId': 'turn', 'message': 'new'})
+        sent = next(m for m in self.writes if m.get('method') == 'turn/start')['params']['input'][0]['text']
+        self.assertEqual(sent, attachment_prompt('new', [{'name': 'spec', 'path': '/fixture/spec.txt'}]))
+
+    def test_edit_rejects_a_changed_turn_before_any_write(self):
+        self.sessions.attach('t')
+        with self.assertRaises(AppServerRequestNotSent):
+            self.sessions.call('t', 'thread-follower-edit-last-user-turn', {'turnId': 'stale', 'message': 'new'})
+        self.assertFalse(any(m.get('method') in ('thread/revert', 'turn/start') for m in self.writes))
+
+    def test_running_followup_preserves_images_and_file_context(self):
+        self.turns[0]['status'] = 'inProgress'
+        self.sessions.attach('t')
+        self.sessions.call('t', 'thread-follower-steer-turn', {
+            'input': [{'type': 'text', 'text': 'follow up'}, {'type': 'localImage', 'path': '/fixture/image.png'}],
+            'attachments': [{'path': '/fixture/image.png'}],
+            'restoreMessage': {'context': {'fileAttachments': [{'path': '/fixture/spec.txt'}]}}})
+        call = next(m for m in self.writes if m.get('method') == 'turn/steer')
+        self.assertEqual(call['params']['expectedTurnId'], 'turn')
+        self.assertIn('/fixture/spec.txt', call['params']['input'][0]['text'])
+        self.assertEqual(call['params']['input'][1], {'type': 'localImage', 'path': '/fixture/image.png'})
+
+    def test_one_follower_leaving_keeps_the_other_subscription_and_state(self):
+        self.sessions.retain('t', 'one')
+        self.sessions.retain('t', 'two')
+        self.sessions.release('t', 'one')
+        self.assertIn('t', self.sessions.joined)
+        self.sessions.release('t', 'two')
+        self.assertNotIn('t', self.sessions.states)
+
+    def test_following_a_cold_chat_does_not_disconnect_other_chats(self):
+        follower = _Follower(Mock(), 'owner', 'token', 'generation', self.sessions)
+        follower.authenticated = True
+        self.sessions.on_disconnect = lambda tid=None: follower.close() if tid in follower.following else None
+        request = {'method': 'thread-stream-following-changed', 'sourceClientId': follower.client_id,
+                   'params': {'hostId': 'local', 'conversationId': 't', 'following': True}}
+        follower.handle(request)
+        with self.assertRaises(AppServerRequestNotSent):
+            follower.handle({**request, 'params': {**request['params'], 'conversationId': 'cold'}})
+        self.assertFalse(follower.closed)
+        self.assertIn('t', self.sessions.joined)
+        self.assertEqual(follower.following, {'t'})
+
+    def test_streamed_new_turn_keeps_previously_observed_history(self):
+        self.sessions.attach('t')
+        for tid in ('second', 'third'):
+            self.turns.append({'id': tid, 'status': 'completed', 'items': []})
+            self.items.append({'turnId': tid, 'item': {'id': tid, 'type': 'agentMessage', 'text': tid}})
+            self.sessions.refresh('t')
+        self.sessions.native_event({'method': 'turn/started', 'params': {'threadId': 't',
+            'turn': {'id': 'fourth', 'status': 'inProgress', 'items': []}}})
+        self.sessions.native_event({'method': 'item/agentMessage/delta', 'params': {'threadId': 't',
+            'turnId': 'fourth', 'itemId': 'output', 'delta': 'new output'}})
+        state = self.sessions.states['t']
+        self.assertEqual([turn['turnId'] for turn in state['turns']], ['turn', 'second', 'third', 'fourth'])
+        self.assertEqual(state['turns'][0]['items'][0]['text'], 'history')
+        self.assertEqual(state['turns'][-1]['items'][0]['text'], 'new output')
+
+    def test_cached_truncated_items_cannot_claim_complete_history(self):
+        self.items = [{'turnId': 'turn', 'item': {'type': 'agentMessage', 'id': str(i), 'text': 'x'}}
+                      for i in range(101)]
+        self.sessions.attach('t')
+        self.turns.append({'id': 'next', 'status': 'inProgress', 'items': []})
+        state = self.sessions.refresh('t')
+        self.assertEqual([turn['turnId'] for turn in state['turns']], ['turn', 'next'])
+        self.assertFalse(state['turns'][0]['_itemsComplete'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_streamed_turns_and_revision_evidence_remain_bounded(self):
+        self.sessions.attach('t')
+        for i in range(45):
+            self.sessions.native_event({'method': 'turn/started', 'params': {'threadId': 't',
+                'turn': {'id': 'stream-' + str(i), 'status': 'inProgress', 'items': []}}})
+        turns = self.sessions.states['t']['turns']
+        self.assertEqual([turn['turnId'] for turn in turns], ['stream-' + str(i) for i in range(5, 45)])
+        self.assertLessEqual(len(self.sessions.turn_revisions['t']), 40)
+        self.assertFalse(self.sessions.states['t']['turnsPagination']['hasLoadedOldest'])
+
+    def test_streaming_state_is_bounded_and_deltas_remain_ordered(self):
+        self.sessions.attach('t')
+        for i in range(250):
+            self.sessions.native_event({'method': 'item/started', 'params': {'threadId': 't', 'turnId': 'turn',
+                'item': {'type': 'agentMessage', 'id': str(i), 'text': ''}}})
+            self.sessions.native_event({'method': 'item/agentMessage/delta', 'params': {'threadId': 't', 'turnId': 'turn',
+                'itemId': str(i), 'delta': str(i)}})
+        state = self.sessions.states['t']
+        self.assertEqual(len(state['turns'][0]['items']), 100)
+        self.assertEqual(state['turns'][0]['items'][-1]['text'], '249')
+        self.assertFalse(state['turns'][0]['_itemsComplete'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
     def test_native_events_and_approvals_reach_both_views(self):
         self.sessions.attach('t')
+        self.state_changed.clear()
         event = {'method': 'turn/started', 'params': {'threadId': 't',
                  'turn': {'id': 'active', 'status': 'inProgress', 'items': []}}}
         self.router.from_native(event)
         self.router.from_native({'method': 'item/agentMessage/delta',
             'params': {'threadId': 't', 'turnId': 'active', 'itemId': 'output', 'delta': 'live text'}})
+        self.assertTrue(self.state_changed.wait(2))
+        self.state_changed.clear()
         self.assertEqual(self.states[-1]['turns'][-1]['items'][0]['text'], 'live text')
         self.assertIn(event, self.app)
         approval = {'id': 41, 'method': 'item/commandExecution/requestApproval',
                     'params': {'threadId': 't', 'turnId': 'active'}}
         self.router.from_native(approval)
+        self.assertTrue(self.state_changed.wait(2))
+        self.state_changed.clear()
         self.assertEqual(self.states[-1]['requests'], [approval])
         self.sessions.call('t', 'thread-follower-command-approval-decision', {'requestId': 41, 'decision': 'decline'})
         self.assertEqual([m for m in self.writes if m.get('id') == 41],
@@ -367,6 +578,10 @@ class HostedSessionTests(unittest.TestCase):
             self.assertTrue(delivered.wait(2))
             self.assertEqual(snapshots[-1]['params']['change']['conversationState']['id'], 't')
             ipc.follow('t', owner, False)
+            with patch.object(ipc, '_legacy_connection') as old:
+                with self.assertRaisesRegex(IPCError, 'no-client-found'):
+                    ipc.request('thread-owner-discovery', {'hostId': 'local', 'conversationId': 'cold'})
+                old.assert_not_called()
             legacy = Mock()
             legacy.request.return_value = {'resultType': 'success', 'handledByClientId': 'original-ide-owner',
                                            'result': {'ok': True}}
@@ -394,7 +609,7 @@ class HostedSessionTests(unittest.TestCase):
         threading.Thread(target=follower.read, daemon=True).start()
         bridge = Bridge.__new__(Bridge)
         bridge.host = 'local'; bridge.codex_home = Path(self.temp.name)
-        bridge.ipc = SimpleNamespace(path='/fixture/old.sock', codex_home=self.temp.name)
+        bridge.ipc = SimpleNamespace(path='/fixture/old.sock', original_path='/fixture/old.sock', codex_home=self.temp.name)
         bridge.accounts = Mock(); bridge.accounts.blockers.return_value = []
         bridge.live = {}; bridge.remote_bridges = {}; bridge.lock = threading.RLock()
         observed = []

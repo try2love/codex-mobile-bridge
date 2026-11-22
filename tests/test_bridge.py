@@ -260,6 +260,61 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(sends[0]['targetClientId'], 'new-owner')
         self.assertEqual(sends[0]['params']['conversationId'], THREAD)
 
+    def test_native_host_appearing_is_detected_without_closing_a_live_follower(self):
+        self.bridge.session(THREAD)
+        ipc = self.bridge.ipc
+        original = ipc.socket
+        ipc.codex_home = self.root
+        with patch('bridge.clients.codex.desktop_runtime.hosted_endpoint', return_value={
+                'path': 'new-native-endpoint', 'generation': 'new-generation'}):
+            self.assertTrue(ipc.endpoint_changed())
+        self.assertIs(ipc.socket, original)
+
+    def test_native_chat_unload_does_not_invalidate_another_chat_with_same_owner(self):
+        session = self.bridge.session(THREAD)
+        another = self.bridge.live['other'] = LiveSession('other')
+        another.connected = True
+        another.owner = session.owner
+        self.bridge._event({'method': 'client-status-changed', 'params': {'status': 'disconnected',
+            'clientId': session.owner, 'hostId': 'local', 'conversationId': 'other'}})
+        self.assertTrue(session.connected)
+        self.assertFalse(another.connected)
+
+    def test_hosted_cold_chat_checks_owner_before_joining_shared_follower(self):
+        session = self.bridge.session(THREAD)
+        session.connected = False
+        self.bridge.ipc.hosted = True
+        with patch.object(self.bridge.ipc, 'owner', side_effect=IPCError('no-client-found')) as owner, \
+                patch.object(self.bridge.ipc, 'follow') as follow:
+            self.bridge._attach(session, timeout=0)
+        owner.assert_called_once_with(THREAD, host='local', legacy_discovery=False)
+        follow.assert_not_called()
+        self.assertIsNotNone(self.bridge.ipc.socket)
+
+    def test_passive_transport_recovery_defers_while_a_write_is_in_flight(self):
+        from bridge.features.accounts.accounts import Accounts
+        self.bridge.accounts = Accounts(self.bridge)
+        entered, release = threading.Event(), threading.Event()
+        def writing():
+            with self.bridge.accounts.gate.host('local'):
+                entered.set()
+                release.wait(3)
+        worker = threading.Thread(target=writing)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            with patch.object(self.bridge.ipc, 'endpoint_changed', return_value=True), \
+                    patch.object(self.bridge, '_rebuild_desktop_transport') as rebuild:
+                self.bridge._recover_desktop_transport()
+                rebuild.assert_not_called()
+                release.set()
+                worker.join(2)
+                self.bridge._recover_desktop_transport()
+                rebuild.assert_called_once()
+        finally:
+            release.set()
+            worker.join(3)
+
     def test_external_provider_change_does_not_use_stale_managed_account_to_block_send(self):
         from bridge.features.accounts.accounts import Accounts
         manager = Accounts(self.bridge)

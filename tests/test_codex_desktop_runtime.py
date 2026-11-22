@@ -63,8 +63,24 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertEqual(result, arguments[:-2] + ['--listen', 'unix:///private/control.sock'])
         for arguments in (['--version'], ['app-server', '--print-startup-config'],
                           ['app-server', 'proxy', '--sock', '/elsewhere'], ['exec-server'],
-                          ['app-server', '--listen', 'ws://localhost:1234'], ['app-server', '--new-option']):
+                          ['app-server', '--listen', 'ws://localhost:1234']):
             self.assertIsNone(runtime.server_arguments(arguments, '/private/control.sock'))
+
+    def test_additive_native_startup_flags_are_forwarded_without_a_version_table(self):
+        arguments = ['--future-global', 'enabled', 'app-server', '--future-setting=true']
+        self.assertEqual(runtime.server_arguments(arguments, '/private/control.sock'),
+                         [*arguments, '--listen', 'unix:///private/control.sock'])
+        for tail in (['--new-option'], ['--future-feature', 'enabled'],
+                     ['--future-feature', 'daemon'], ['--future-feature', 'proxy'],
+                     ['--plugin-mcp-launch-cwd', 'future-plugin', 'future-server', '/future'],
+                     ['--future-config={"feature":true}', '--listen=stdio://']):
+            arguments = ['-c', 'features.existing=true', 'app-server', *tail]
+            expected = [value for value in arguments if value != '--listen=stdio://']
+            self.assertEqual(runtime.server_arguments(arguments, '/private/control.sock'),
+                             [*expected, '--listen', 'unix:///private/control.sock'])
+        for tail in (['daemon', 'version'], ['proxy', '--sock', '/existing'],
+                     ['generate-json-schema'], ['--help'], ['--version']):
+            self.assertIsNone(runtime.server_arguments(['app-server', *tail], '/private/control.sock'))
 
     def test_settings_reject_public_permissions_and_symlink(self):
         path = self.root / 'settings.json'

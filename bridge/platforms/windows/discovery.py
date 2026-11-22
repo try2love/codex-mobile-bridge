@@ -54,6 +54,23 @@ def runtime_candidates(executable):
             yield folder/name
 
 
+def cached_runtime_candidates(selected=None, *, env=None):
+    """The App's downloaded native runtimes, preserving explicit outside CLIs."""
+    env=os.environ if env is None else env
+    local=Path(env.get('LOCALAPPDATA', str(Path.home()/'AppData/Local')))
+    root=local/'OpenAI/Codex/bin'
+    if selected is not None:
+        selected=Path(selected)
+        if selected.parent.parent!=root or selected.name.casefold()!='codex.exe':
+            return []
+    versions=[]
+    for path in root.glob('*/codex.exe'):
+        try:
+            if path.is_file():versions.append((path.stat().st_mtime,path))
+        except OSError:continue
+    return [path for _,path in sorted(versions,reverse=True)]
+
+
 def codex_runtime_stamp(executable, previous=None, env=None):
     """Watch cached CLI versions, keeping the previous stamp on query failure."""
     if not executable:

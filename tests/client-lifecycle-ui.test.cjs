@@ -16,6 +16,21 @@ function fixture(language='zh'){
  for(const file of ['web/shared/i18n.js','web/features/clients/client-lifecycle.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  return {context,document,choose:client=>vm.runInContext('ClientLifecycle',context).chooseDisable(client),initialize:client=>vm.runInContext('ClientLifecycle',context).chooseInitialize(client),dialog:()=>document.body.children[0]};
 }
+test('Codex initialization remains a manual recovery option for a reported connection',()=>{
+ const lifecycle=require('../web/features/clients/client-lifecycle.js');
+ const client={id:'codex',enabled:true,installed:true,configured:true,running:true,connected:false,canInitializeDesktop:true};
+ assert.equal(lifecycle.connection(client).canInitialize,true);
+ assert.equal(lifecycle.connection({...client,connected:true}).canInitialize,true);
+ assert.equal(lifecycle.connection({...client,connected:true}).initializeLabel,'重新初始化连接');
+ assert.equal(lifecycle.connection({...client,canInitializeDesktop:false}).canInitialize,false);
+ assert.equal(lifecycle.connection({...client,connectionState:'connecting'}).canInitialize,false);
+});
+test('Codex initialization explains automatic preparation and keeps cancellation write-free',async()=>{
+ const ui=fixture(),pending=ui.initialize({id:'codex',name:'Codex',running:true});
+ const dialog=ui.dialog();assert.match(dialog.textContent,/Codex.*正常.*重新启动/);
+ assert.doesNotMatch(dialog.textContent,/Claude|开发者工具|ZCode/);
+ dialog.children.at(-1).children.at(-1).onclick();assert.equal(await pending,false);
+});
 test('WSL clients distinguish a stopped environment, a pending CLI connection and unknown status',()=>{
  const lifecycle=require('../web/features/clients/client-lifecycle.js');
  for(const kind of ['wsl-cli','wsl-claude-cli']){

@@ -2279,7 +2279,7 @@ class DesktopSessions:
             self.startup_thread = threading.Thread(target=self.start_enabled, daemon=True)
             self.startup_thread.start()
 
-    def _prepare_codex_runtime(self, descriptor):
+    def _prepare_codex_runtime(self, descriptor, *, allow_cold_start=True):
         if (self.runtime_preparation_thread and self.runtime_preparation_thread.is_alive()
                 and not self.runtime_preparation_cancel.is_set()):
             return
@@ -2287,13 +2287,17 @@ class DesktopSessions:
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp(descriptor['executable'], descriptor['dataDirectory'])
         def prepare():
+            cold_start = allow_cold_start
             while not self.closed.is_set() and not cancelled.is_set():
                 with self.client_lock:
                     if not self.config.get('enabled', {}).get('codex', True):
                         return
-                if not self.bridge.accounts.prepare_desktop_runtime(app, cancelled=lambda: self.closed.is_set() or cancelled.is_set()):
-                    return
-                if cancelled.wait(60):
+                self.bridge.accounts.prepare_desktop_runtime(app,
+                    cancelled=lambda: self.closed.is_set() or cancelled.is_set(), allow_cold_start=cold_start)
+                # Continue observing after success, including a later ordinary
+                # App launch. Only gateway startup may open a stopped App.
+                cold_start = False
+                if cancelled.wait(30):
                     return
         self.runtime_preparation_thread = threading.Thread(target=prepare, daemon=True, name='native-side-chat-preparation')
         self.runtime_preparation_thread.start()
@@ -3037,7 +3041,9 @@ class DesktopSessions:
                             require_owned(self._descriptor(row['id']), native)
                             self.instance = self.instance_owner.registry.pin_initialized_roots(self.instance.id)
                         if row['id'] == 'codex':
-                            row['connected'] = row['configured'] and native['running']
+                            connection_ready = getattr(self.bridge, 'desktop_connection_ready', None)
+                            row['connected'] = bool(native['running'] and callable(connection_ready)
+                                                    and connection_ready() is True)
                         if row['id'] == 'deepseek' and (row['backgroundCount'] > 1 or row['backgroundRunning'] and not row['mainRunning']):
                             row.update(setupStatus='recovery-required', reason='Harness 存在残留或多个后台实例，请在桌面使用完整退出并重新接入')
                     except (ValueError, OSError, subprocess.SubprocessError):
@@ -3045,6 +3051,27 @@ class DesktopSessions:
                 if row['id'] == 'zcode':
                     row['canInitializeDesktop'] = bool(row['canInitializeDesktop'] and native and
                         native.get('unknown') is False and (not native['running'] or len(native.get('mainPids', [])) == 1))
+                if row['id'] == 'codex' and self.instance is None:
+                    accounts = getattr(self.bridge, 'accounts', None)
+                    runtime_status = getattr(accounts, 'desktop_runtime_status', lambda: {})()
+                    runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
+                    preparation = runtime_status.get('preparation') or {}
+                    operation = getattr(accounts, 'state', {})
+                    operation = operation if isinstance(operation, dict) else {}
+                    preparing = (operation.get('operation') == 'desktopRuntime' and
+                                 operation.get('phase') in ('preparing', 'stopping', 'applying', 'starting', 'verifying'))
+                    row['canInitializeDesktop'] = bool(runtime_status.get('supported') and row['installed']
+                        and row['enabled'] and self.gateway_running and not preparing)
+                    row['confirmTaskState'] = bool(preparation.get('taskStateUnavailable') or
+                        operation.get('operation') == 'desktopRuntime' and operation.get('taskStateUnavailable'))
+                    if preparing:
+                        row.update(connectionState='connecting', reason='正在初始化 Codex 连接')
+                    elif row['canInitializeDesktop'] and not row['connected']:
+                        row.update(setupStatus='needs-initialization', reason=preparation.get('reason') or
+                                   operation.get('error') or 'Codex 尚未建立原生连接，可初始化连接。')
+                    if (operation.get('operation') == 'desktopRuntime' and operation.get('phase') == 'failed'
+                            and operation.get('error')):
+                        row['reason'] = operation['error']
                 if row['id'] == 'deepseek':
                     self._deepseek_progress(row, native_states.get('deepseek'))
                 elif row['id'] == 'claude':
@@ -3228,6 +3255,21 @@ class DesktopSessions:
     def toggle_client(self, value, *, startup=False):
         self._require_client_settings()
         provider, enabled = value.get('provider'), value.get('enabled')
+        confirmations = {'requestId', 'confirmed', 'tasksConfirmed'}
+        if provider == 'codex' and value.get('initializeDesktop') is True:
+            allowed = {'action', 'provider', 'enabled', 'initializeDesktop', 'acknowledgeUnavailable'} | confirmations
+            if (startup or self.instance is not None or not self.gateway_running or not self.enabled('codex')
+                    or enabled is not True or not confirmations <= set(value) or set(value) - allowed):
+                raise ValueError('Codex 初始化请求无效')
+            accounts = getattr(self.bridge, 'accounts', None)
+            if accounts is None:
+                raise ValueError('Codex 原生连接初始化不可用')
+            accounts.control({'action': 'initializeDesktopRuntime', **{
+                key: value[key] for key in confirmations | {'acknowledgeUnavailable'} if key in value}})
+            self.client_cache = None
+            return self.clients(refresh=True)  # Do not expose account inventory over client management.
+        if confirmations & set(value):
+            raise ValueError('应用开关包含不支持的初始化字段')
         if self.instance is None and isinstance(provider, str) and provider.startswith(('claude:', 'deepseek:', 'zcode:')):
             family = provider.split(':')[0]
             if enabled is False and value.get('quitDesktop') is False and not value.get('forceDesktop'):
@@ -3434,12 +3476,12 @@ class DesktopSessions:
                         raise ValueError('此系统不支持 Claude 桌面连接')
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
-                elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')
+                elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32', 'linux')
                       and getattr(self.bridge, 'host', 'local') == 'local'):
                     self._prepare_codex_runtime(descriptor)
                 else:
                     launch_gate = nullcontext()
-                    if provider == 'codex' and sys.platform in ('darwin', 'win32'):
+                    if provider == 'codex' and sys.platform in ('darwin', 'win32', 'linux'):
                         from bridge.clients.codex.desktop_runtime import initialization_lock
                         launch_gate = initialization_lock(descriptor['dataDirectory'])
                     with launch_gate:
@@ -3464,6 +3506,9 @@ class DesktopSessions:
             if provider == 'codex' and not enabled and self.bridge is not None:
                 self.bridge.suspend_observation()
             self._save_client_settings(self.config)
+            if (enabled and not startup and provider == 'codex' and accounts and descriptor['installed']
+                    and sys.platform in ('darwin', 'win32', 'linux') and getattr(self.bridge, 'host', 'local') == 'local'):
+                self._prepare_codex_runtime(descriptor, allow_cold_start=False)
             if not enabled and hasattr(self, 'terminals'):
                 identifiers = {str(uuid.uuid5(uuid.NAMESPACE_URL, p + ':' + sid)) for p, sid in self.workspace_roots if p == provider}
                 with self.terminals.lock:

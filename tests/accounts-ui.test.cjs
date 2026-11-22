@@ -95,7 +95,7 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly in
  ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('native initialization remains unavailable for passwordless remote access',async()=>{
- const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
+ const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,canManageDesktop:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('automatic native preparation stays passive and offers unknown-task recovery',()=>{
@@ -115,8 +115,8 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} offers a conf
  ui.confirm(true);await ui.panel.forceInitializeRuntime.onclick();assert.equal(ui.requests[0].acknowledgeUnavailable,true);assert.match(ui.prompts[0],/正常重启.*可能中断/);
  ui.panel.accept({...state,switch:{phase:'failed',operation:'desktopRuntime',error:'known busy'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
  ui.panel.accept({...state,switch:{...state.switch,phase:'verifying'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
- if(!desktop){ui.panel.accept({...state,canSwitch:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
- ui.panel.accept({...state,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);
+ if(!desktop){ui.panel.accept({...state,canManageDesktop:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
+ ui.panel.accept({...state,canSwitch:false,canManageDesktop:true,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,false);
 });
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{

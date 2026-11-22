@@ -177,6 +177,15 @@ class DesktopConnectionsPanel {
       finally{this.choosingClient=null;this.renderClients();this.renderScan();}
       if(choice===null||initializeDesktop&&!choice)return;
     }
+    if(id==='codex'&&initializeDesktop){
+      this.busy=true;this.operationFailures??=new Map();this.operationFailures.delete(id);this.renderClients();
+      try{
+        await ClientLifecycle.request(()=>this.api.accounts({action:'initializeDesktopRuntime',...ClientLifecycle.codexInitialization(choice)}),{timeout:this.lifecycleTimeout??45000});
+        this.feedback(BridgeI18n.t('正在初始化 Codex 连接'));
+      }catch(error){this.operationFailures.set(id,ClientLifecycle.failure('initialize',error,'desktop'));this.feedback(error.message,true);}
+      finally{this.busy=false;await this.refreshClients(true);}
+      return;
+    }
     const intent={...ClientLifecycle.initializationFields(initializeDesktop&&choice),...(connectionMode?{connectionMode}:{})};
     const acknowledgeUnavailable=!enabled&&choice==='recovery',forceDesktop=choice==='force';
     const quitDesktop=!enabled&&(choice===true||forceDesktop||acknowledgeUnavailable);
@@ -272,7 +281,7 @@ class DesktopConnectionsPanel {
       if(!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=node('button',this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL','primary');connect.type='button';connect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id);buttons.append(connect);}
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
-      if(!failure?.uncertain&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){
+      if(!failure?.uncertain&&['codex','zcode'].includes(client.id)&&state.canInitialize&&this.gatewayRunning!==false){
         const initialize=node('button',state.initializeLabel);initialize.type='button';initialize.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();initialize.onclick=()=>this.toggleClient(client.id,true,{initializeDesktop:true});buttons.append(initialize);
       }
       if(!failure&&client.id==='deepseek'&&client.backgroundRunning&&(!client.mainRunning||['restart-required','failed'].includes(client.setupStatus))){

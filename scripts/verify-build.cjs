@@ -11,7 +11,7 @@ module.exports=async context=>{
   }
   const executable=path.join(root,'dist/gateway',platform==='win32'?'codex-mobile-gateway.exe':'codex-mobile-gateway');
   fs.accessSync(executable,fs.constants.R_OK);
-  const helpers={darwin:['claude-bridge-helper','zcode-bridge-helper'],win32:['claude-bridge-helper.exe','codex-quit-helper.exe']};
+  const helpers={darwin:['claude-bridge-helper','zcode-bridge-helper','codex-launcher'],win32:['claude-bridge-helper.exe','codex-quit-helper.exe','codex-launcher.exe']};
   for(const name of helpers[platform]||[]){
     fs.accessSync(path.join(root,'dist/gateway/_internal/client-helpers',name),fs.constants.R_OK);
   }

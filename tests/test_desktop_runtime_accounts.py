@@ -35,6 +35,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             'validate_runtime': patch.object(desktop_runtime, 'validate_runtime'),
             'launcher_settings': patch.object(desktop_runtime, 'launcher_settings', return_value={}),
             'configure': patch.object(desktop_runtime, 'configure'),
+            'ordinary_launch': patch.object(desktop_runtime, 'enable_ordinary_launch', return_value=True),
             'connect': patch.object(desktop_runtime, 'connect', return_value=Mock()),
             'initialize_lock': patch.object(desktop_runtime, 'initialization_lock', side_effect=lambda home: nullcontext()),
             'identity': patch.object(desktop_runtime, 'process_identity', return_value=self.identity),
@@ -59,6 +60,26 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
     def run_initialization(self):
         self.manager.control(self.value)
         test_accounts.wait_for_account_worker(self)
+
+    def test_external_management_allows_transport_preparation_without_config_writes(self):
+        self.manager.index['accessManagement'] = 'external'
+        before = self.manager.snapshot_files()
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.mocks['configure'].assert_called_once()
+        self.assertEqual(self.manager.snapshot_files(), before)
+        with self.assertRaisesRegex(ValueError, '外部工具管理'):
+            self.manager.require_managed_writes()
+
+    def test_automatic_external_transport_preparation_keeps_task_checks(self):
+        self.manager.index['accessManagement'] = 'external'
+        self.mocks['connect'].side_effect = [None, Mock()]
+        before = self.manager.snapshot_files()
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.bridge.assert_desktop_idle.assert_called_once()
+        self.mocks['configure'].assert_called_once()
+        self.assertEqual(self.manager.snapshot_files(), before)
 
     def test_desktop_ipc_before_native_handshake_does_not_fail_or_restart(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
@@ -106,6 +127,15 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_not_called()
         self.mocks['configure'].assert_not_called()
         self.assertEqual(self.manager.state, original)
+        self.mocks['ordinary_launch'].assert_called_once_with(self.home, self.app.executable)
+
+    def test_ordinary_launch_conflict_keeps_current_connection_and_does_not_restart(self):
+        self.mocks['ordinary_launch'].side_effect = ValueError('其他启动配置')
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
+        self.assertIn('其他启动配置', self.manager.desktop_preparation['ordinaryLaunchError'])
+        self.mocks['stop'].assert_not_called()
+        self.app.start.assert_not_called()
 
     def test_startup_cold_launch_refreshes_configuration_before_start(self):
         from bridge.clients.codex.app_server import AppServerUnavailable
@@ -120,6 +150,22 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.assertEqual(self.manager.desktop_preparation['state'], 'ready')
         self.bridge.assert_desktop_idle.assert_called_once_with(allow_stopped_app=True, desktop_only=True,
             desktop_executable=self.app.executable, timeout=3)
+
+    def test_recovery_monitor_does_not_reopen_an_app_the_user_quit(self):
+        self.mocks['connect'].return_value = None
+        self.mocks['inspect'].side_effect = [self.stopped]
+        self.assertTrue(self.manager.prepare_desktop_runtime(self.app, allow_cold_start=False))
+        self.assertEqual(self.manager.desktop_preparation['state'], 'waiting')
+        self.bridge.assert_desktop_idle.assert_not_called()
+        self.mocks['configure'].assert_not_called()
+        self.app.start.assert_not_called()
+
+    def test_recovery_monitor_prepares_a_running_replacement_after_task_audit(self):
+        self.mocks['connect'].side_effect = [None, Mock()]
+        self.assertFalse(self.manager.prepare_desktop_runtime(self.app, allow_cold_start=False))
+        self.bridge.assert_desktop_idle.assert_called_once()
+        self.mocks['stop'].assert_called_once()
+        self.app.start.assert_called_once()
 
     def test_startup_busy_and_unknown_tasks_defer_without_blocking_account_state(self):
         self.mocks['connect'].return_value = None
@@ -262,7 +308,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
             self.manager.control(self.value)
         self.assertFalse(self.manager.desktop_runtime_status()['supported'])
         self.bridge.host = 'local'
-        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='linux')):
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='other')):
             with self.assertRaisesRegex(ValueError, '不支持'):
                 self.manager.control(self.value)
         self.mocks['stop'].assert_not_called()
@@ -608,7 +654,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         with self.manager.desktop_runtime_lifecycle():
             pass
         self.bridge.host = 'local'
-        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='linux')):
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='other')):
             with self.manager.desktop_runtime_lifecycle():
                 pass
         self.mocks['initialize_lock'].assert_not_called()

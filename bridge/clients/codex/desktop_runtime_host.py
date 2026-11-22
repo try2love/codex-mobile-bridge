@@ -96,7 +96,7 @@ def run(configuration, arguments):
         # A different storage boundary is not an authorized default-home runtime.
         return _passthrough(cli, arguments, first)
     with exclusive_lock(home, 'runtime'):
-        if host is not None:
+        if host is not None or sys.platform == 'linux':
             from bridge.clients.codex.desktop_host import serve
             return serve(value, app, host, arguments, initialize)
         private_directory(endpoint.parent)

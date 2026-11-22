@@ -433,7 +433,10 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None,
         result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
                        "startedAt": started_at, "completedAt": completed_at, "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
-                       "error": turn.get("error"), "diff": turn.get("diff"),
+                       # Native automatic retries keep the turn running. Their last
+                       # warning must not trail every new item as a terminal error.
+                       "error": None if turn.get('willRetry') is True and turn.get('status') == 'inProgress' else turn.get("error"),
+                       "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer
                        # until backfill includes the whole turn; never scan omitted patches.
                        "fileChanges": native_turn_file_changes(turn) if '_nativeFileChanges' in turn or (not omitted and (items_complete or authoritative_diff)) else [],

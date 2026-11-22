@@ -53,8 +53,8 @@ def validate(method, path, size=0):
         return
     if p.path == '/api/sessions' or (p.path in ('/api/projects', '/api/mobile/events') and method == 'GET') or (p.path in ('/api/activity', '/api/mobile/events/read') and method == 'POST'):
         return
-    # /api/clients permits explicit disable, native quit, and confirmed Windows
-    # forceDesktop; the gateway still enforces auth, CSRF and target verification.
+    # /api/clients permits explicit disable, native quit, confirmed initialization
+    # and forceDesktop; the gateway still enforces auth, CSRF and target verification.
     # Discovery, installation, account configuration and DSH recovery stay local.
     if p.path in ('/api/clients', '/api/file-transfer'):
         return
