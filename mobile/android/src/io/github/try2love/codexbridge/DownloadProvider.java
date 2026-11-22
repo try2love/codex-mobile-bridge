@@ -38,9 +38,43 @@ public final class DownloadProvider extends ContentProvider {
   }finally{if(staging!=null)staging.delete();}
   return new Uri.Builder().scheme("content").authority(context.getPackageName()+".downloads").appendPath(folder.getName()).appendPath(copy.getName()).build();
  }
+ interface OfflineWriter { void write(OutputStream output)throws Exception; }
+ static Uri prepareOffline(Context context,long account,long asked,String name,OfflineWriter writer)throws Exception {
+  File root=new File(context.getCacheDir(),"opened-downloads"),folder=new File(root,UUID.randomUUID().toString());
+  Files.createDirectories(folder.toPath());
+  File copy=new File(folder,name),date=new File(folder,".offline-date");
+  try{
+   Files.write(date.toPath(),(account+":"+asked).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+   try(OutputStream output=new BufferedOutputStream(new FileOutputStream(copy))){writer.write(output);}
+   return new Uri.Builder().scheme("content").authority(context.getPackageName()+".downloads")
+      .appendPath(folder.getName()).appendPath(copy.getName()).build();
+  }catch(Exception error){Files.deleteIfExists(copy.toPath());Files.deleteIfExists(date.toPath());Files.deleteIfExists(folder.toPath());throw error;}
+ }
+ static long clearOffline(Context context,java.util.List<Long> accounts,long start,long end)throws IOException {
+  File root=new File(context.getCacheDir(),"opened-downloads");
+  File[] folders=root.listFiles(File::isDirectory);
+  long released=0;
+  if(folders==null)return released;
+  for(File folder:folders){
+   File marker=new File(folder,".offline-date");
+   if(!marker.isFile())continue;
+   String[] scope=new String(Files.readAllBytes(marker.toPath()),java.nio.charset.StandardCharsets.UTF_8).split(":",2);
+   long account,asked;
+   try{account=Long.parseLong(scope[0]);asked=Long.parseLong(scope[1]);}
+   catch(IndexOutOfBoundsException|NumberFormatException invalid){continue;}
+   if(!accounts.contains(account)||asked<start||asked>=end)continue;
+   File[] contents=folder.listFiles();
+   if(contents!=null)for(File file:contents){
+    long bytes=file.length();
+    if(Files.deleteIfExists(file.toPath())&&!file.equals(marker))released+=bytes;
+   }
+   Files.deleteIfExists(folder.toPath());
+  }
+  return released;
+ }
  private File file(Uri uri)throws FileNotFoundException {
   List<String> path=uri.getPathSegments();
-  if(!"content".equals(uri.getScheme())||!(getContext().getPackageName()+".downloads").equals(uri.getAuthority())||path.size()!=2||!path.get(0).matches("[a-f0-9-]{36}"))throw new FileNotFoundException();
+  if(!"content".equals(uri.getScheme())||!(getContext().getPackageName()+".downloads").equals(uri.getAuthority())||path.size()!=2||".offline-date".equals(path.get(1))||!path.get(0).matches("[a-f0-9-]{36}"))throw new FileNotFoundException();
   try{
    File folder=new File(getContext().getCacheDir(),"opened-downloads/"+path.get(0)).getCanonicalFile();
    File file=new File(folder,path.get(1)).getCanonicalFile();

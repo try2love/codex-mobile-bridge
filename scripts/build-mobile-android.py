@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,12 +56,17 @@ java = list((source/'src').rglob('*.java')) + list((work/'gen').rglob('*.java'))
 run(jdk/'bin/javac','-encoding','UTF-8','--release','8','-classpath',str(android)+os.pathsep+str(zxing),'-d',work/'classes',*java)
 run(build_tools/'d8','--lib',android,'--min-api','26','--output',work/'dex',*list((work/'classes').rglob('*.class')),zxing)
 shutil.copy2(work/'base.apk',work/'unsigned.apk')
+shell = work/'offline-shell'
+run(sys.executable, '-B', ROOT/'scripts/build-offline-shell.py', shell)
 with zipfile.ZipFile(work/'unsigned.apk','a') as archive:
     for path in (work/'dex').glob('*.dex'):
         archive.write(path,path.name)
     for directory in (ROOT/'mobile/shared/web', source/'assets', ROOT/'web/client-icons'):
         for asset in directory.glob('*.js'):
             archive.write(asset,'assets/'+asset.name)
+    for asset in sorted(shell.rglob('*')):
+        if asset.is_file():
+            archive.write(asset, 'assets/offline-shell/'+asset.relative_to(shell).as_posix(), zipfile.ZIP_DEFLATED)
     for provider in ('codex', 'claude', 'deepseek', 'zcode', 'antigravity'):
         archive.write(ROOT/'web/client-icons'/f'{provider}.png', 'assets/'+provider+'.png')
     for name in ('LICENSE', 'NOTICE'):

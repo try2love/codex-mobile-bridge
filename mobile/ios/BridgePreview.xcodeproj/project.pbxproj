@@ -22,9 +22,11 @@ FA6000000000000000000001 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileR
 FA6000000000000000000003 /* NOTICE in Resources */ = {isa = PBXBuildFile; fileRef = FA6000000000000000000004; };
 F50000000000000000000003 = {isa = PBXBuildFile; fileRef = F50000000000000000000002; };
 F50000000000000000000001 = {isa = PBXBuildFile; fileRef = F50000000000000000000000; };
+E00000000000000000000021 /* mobile-offline.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000020; };
 E00000000000000000000009 /* mobile-system-bars.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000008; };
 F30000000000000000000001 = {isa = PBXBuildFile; fileRef = F30000000000000000000002; };
 E00000000000000000000002 /* WebScripts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000001; };
+FA7200000000000000000002 /* OfflineArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA7200000000000000000001; };
 FA7100000000000000000002 /* DisplayStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA7100000000000000000001; };
 E00000000000000000000004 /* mobile-ui.js in Resources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000003; };
 FA4400000000000000000006 /* channel-link.js in Resources */ = {isa = PBXBuildFile; fileRef = FA4400000000000000000005; };
@@ -66,9 +68,11 @@ FA6000000000000000000002 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileT
 FA6000000000000000000004 /* NOTICE */ = {isa = PBXFileReference; lastKnownFileType = text; path = ../../NOTICE; sourceTree = SOURCE_ROOT; };
 F50000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshMobile.swift; sourceTree = "<group>"; };
 F50000000000000000000000 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshMobileURL.swift; sourceTree = "<group>"; };
+E00000000000000000000020 /* mobile-offline.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-offline.js; sourceTree = SOURCE_ROOT; };
 E00000000000000000000008 /* mobile-system-bars.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-system-bars.js; sourceTree = SOURCE_ROOT; };
 F30000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionDiscovery.swift; sourceTree = "<group>"; };
 E00000000000000000000001 /* WebScripts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebScripts.swift; sourceTree = "<group>"; };
+FA7200000000000000000001 /* OfflineArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineArchive.swift; sourceTree = "<group>"; };
 FA7100000000000000000001 /* DisplayStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayStorage.swift; sourceTree = "<group>"; };
 E00000000000000000000003 /* mobile-ui.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/mobile-ui.js; sourceTree = SOURCE_ROOT; };
 FA4400000000000000000005 /* channel-link.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = ../shared/web/channel-link.js; sourceTree = SOURCE_ROOT; };
@@ -140,6 +144,7 @@ B00000000000000000000004, F40000000000000000000004,
                 A00000000000000000000020 /* App.swift */,
                 DD1130000000000000000001 /* UURemote.swift */,
 E00000000000000000000001 /* WebScripts.swift */,
+FA7200000000000000000001 /* OfflineArchive.swift */,
 FA7100000000000000000001 /* DisplayStorage.swift */,
 D00000000000000000000001,
 C00000000000000000000001,
@@ -157,8 +162,7 @@ F30000000000000000000002, F40000000000000000000001, F40000000000000000000002,
 			sourceTree = "<group>";
 		};
 B00000000000000000000014 = {isa = PBXGroup; children = (B00000000000000000000003,); path = BridgeActivity; sourceTree = "<group>"; };
-E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, FA4400000000000000000005, E00000000000000000000008,); name = "Shared Web"; sourceTree = "<group>"; };
-E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, E00000000000000000000005, E00000000000000000000008,); name = "Shared Web"; sourceTree = "<group>"; };
+E00000000000000000000007 /* Shared Web */ = {isa = PBXGroup; children = (E00000000000000000000003, FA4400000000000000000005, E00000000000000000000005, E00000000000000000000008, E00000000000000000000020,); name = "Shared Web"; sourceTree = "<group>"; };
 F40000000000000000000014 = {isa = PBXGroup; children = (F40000000000000000000003,); path = BridgeNotifications; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -170,6 +174,7 @@ F40000000000000000000014 = {isa = PBXGroup; children = (F40000000000000000000003
 				A00000000000000000000009 /* Sources */,
 				A0000000000000000000000A /* Frameworks */,
 				A0000000000000000000000B /* Resources */,
+				ED0000000000000000000010 /* Package chat shell */,
 B00000000000000000000017,
 			);
 			buildRules = (
@@ -231,6 +236,7 @@ E00000000000000000000004 /* mobile-ui.js in Resources */,
 FA4400000000000000000006 /* channel-link.js in Resources */,
 E00000000000000000000006 /* mobile-clipboard.js in Resources */,
 E00000000000000000000009 /* mobile-system-bars.js in Resources */,
+E00000000000000000000021 /* mobile-offline.js in Resources */,
 				A00000000000000000000053 /* AppIcon76x76@2x.png in Resources */,
 				A00000000000000000000052 /* AppIcon76x76.png in Resources */,
 				A00000000000000000000051 /* AppIcon60x60@3x.png in Resources */,
@@ -240,6 +246,21 @@ E00000000000000000000009 /* mobile-system-bars.js in Resources */,
 		};
 F40000000000000000000016 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F4000000000000000000000F,F40000000000000000000010,F40000000000000000000011, F40000000000000000000012, F40000000000000000000013,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+ED0000000000000000000010 /* Package chat shell */ = {
+    isa = PBXShellScriptBuildPhase;
+    alwaysOutOfDate = 1;
+    buildActionMask = 2147483647;
+    files = ();
+    inputPaths = ("$(SRCROOT)/../../web", "$(SRCROOT)/../../scripts/build-offline-shell.py", "$(SRCROOT)/../../bridge/api", "$(SRCROOT)/../../bridge/resources.py", "$(SRCROOT)/../../bridge/__init__.py");
+    name = "Package chat shell";
+    outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/offline-shell");
+    runOnlyForDeploymentPostprocessing = 0;
+    shellPath = /bin/sh;
+    shellScript = "/usr/bin/python3 -B \"$SRCROOT/../../scripts/build-offline-shell.py\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/offline-shell\"\n";
+};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A00000000000000000000009 /* Sources */ = {
@@ -251,6 +272,7 @@ F40000000000000000000016 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147
                 A00000000000000000000030 /* App.swift in Sources */,
                 DD1130000000000000000002 /* UURemote.swift in Sources */,
 E00000000000000000000002 /* WebScripts.swift in Sources */,
+FA7200000000000000000002 /* OfflineArchive.swift in Sources */,
 FA7100000000000000000002 /* DisplayStorage.swift in Sources */,
 D00000000000000000000002,
 C00000000000000000000002,

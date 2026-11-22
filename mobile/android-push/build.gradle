@@ -18,4 +18,12 @@ def prepareLicenseAssets = tasks.register('prepareLicenseAssets', Sync) {
  into(licenseAssets)
 }
 android.sourceSets.main.assets.srcDir(licenseAssets)
-tasks.named('preBuild').configure { dependsOn(prepareLicenseAssets) }
+def chatAssets = layout.buildDirectory.dir('generated/chat-assets')
+def prepareChatAssets = tasks.register('prepareChatAssets', Exec) {
+ inputs.dir('../../web')
+ inputs.files('../../scripts/build-offline-shell.py', '../../bridge/api/assets.py', '../../bridge/resources.py')
+ outputs.dir(chatAssets)
+ commandLine('python3', '-B', '../../scripts/build-offline-shell.py', chatAssets.get().dir('offline-shell').asFile)
+}
+android.sourceSets.main.assets.srcDir(chatAssets)
+tasks.named('preBuild').configure { dependsOn(prepareLicenseAssets, prepareChatAssets) }

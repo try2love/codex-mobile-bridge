@@ -5,6 +5,26 @@ import CryptoKit
 enum DisplayStorage {
     static let queue = DispatchQueue(label: "bridge.display-storage")
     static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
+    @discardableResult
+    static func forgetHistory(_ scopes: Set<String>) throws -> Int64 {
+        guard !scopes.isEmpty else { return 0 }
+        var released: Int64 = 0
+        let manager = FileManager.default
+        let root = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("display-cache", isDirectory: true)
+        guard manager.fileExists(atPath: root.path) else { return 0 }
+        for binding in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) {
+            guard try binding.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+            for file in try manager.contentsOfDirectory(at: binding, includingPropertiesForKeys: nil) where file.pathExtension == "json" {
+                let data = try Data(contentsOf: file)
+                guard let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let key = row["key"] as? String,
+                      key.hasPrefix("history:"), let entry = try? JSONSerialization.jsonObject(with: Data(key.dropFirst(8).utf8)) as? [String],
+                      let scope = entry.first, scopes.contains(scope) else { continue }
+                try manager.removeItem(at: file)
+                released += Int64(data.count)
+            }
+        }
+        return released
+    }
     static func execute(binding: String, command: [String: Any]) throws -> Any {
         let manager = FileManager.default
         var root = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("display-cache/" + digest(binding), isDirectory: true)

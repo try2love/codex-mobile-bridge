@@ -18,8 +18,8 @@ enum GatewayURL {
         return n[0] == 10 || n[0] == 127 || (n[0] == 192 && n[1] == 168) || (n[0] == 172 && (16...31).contains(n[1]))
     }
     static func connection(_ input: String) throws -> URL {
-        let base = try origin(input), fragment = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines))?.fragment
-        if let fragment, fragment.range(of: "^pair=[A-Za-z0-9_-]{43}$", options: .regularExpression) == nil { throw InvalidURL() }
+        let base = try origin(input), fragment = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines))?.percentEncodedFragment
+        if let fragment, fragment.range(of: "^pair=[A-Za-z0-9_-]{43}(&transfer=local)?$", options: .regularExpression) == nil { throw InvalidURL() }
         return URL(string: base + "/" + (fragment.map { "#" + $0 } ?? ""))!
     }
     static func httpOrigin(_ base: String) -> String {

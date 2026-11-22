@@ -27,6 +27,9 @@ public final class ArtifactDownload {
    Matcher plain=Pattern.compile("filename=\"([^\"]+)\"|filename=([^;]+)",Pattern.CASE_INSENSITIVE).matcher(disposition);
    try{if(utf.find())name=URLDecoder.decode(utf.group(1).trim().replace("+","%2B"),"UTF-8");else if(plain.find())name=plain.group(1)!=null?plain.group(1):plain.group(2).trim();}catch(Exception ignored){}
   }
+  return safeName(name);
+ }
+ static String safeName(String name) {
   name=name.replace('\\','/');name=name.substring(name.lastIndexOf('/')+1).replaceAll("[\\p{Cntrl}]", "_");
   return name.isEmpty()||name.equals(".")||name.equals("..")?"download":name;
  }

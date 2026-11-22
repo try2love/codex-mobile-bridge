@@ -12,13 +12,17 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_PATHS = ('mobile/ios', 'mobile/shared/web', 'web/client-icons',
+SOURCE_PATHS = ('mobile/ios', 'mobile/shared/web', 'web', 'scripts/build-offline-shell.py',
+                'bridge/api/assets.py', 'bridge/resources.py', 'bridge/__init__.py', 'bridge/api/__init__.py',
                 'mobile/README.md', 'mobile/NOTICE.md', 'mobile/licenses',
                 'LICENSE', 'NOTICE', 'README.md')
 REQUIRED_SOURCES = ('mobile/ios/BridgePreview.xcodeproj/project.pbxproj',
                     'mobile/ios/BridgePreview/Info.plist',
                     'mobile/shared/web/channel-link.js', 'mobile/shared/web/mobile-ui.js', 'mobile/shared/web/mobile-clipboard.js',
-                    'mobile/shared/web/mobile-system-bars.js',
+                    'mobile/shared/web/mobile-system-bars.js', 'mobile/shared/web/mobile-offline.js',
+                    'mobile/ios/BridgePreview/OfflineArchive.swift',
+                    'web/index.html', 'web/assets.json', 'scripts/build-offline-shell.py',
+                    'web/features/chat/offline-reader/offline-reader.js', 'web/features/chat/offline-reader/hot-offline.js',
                     'web/client-icons/codex.png', 'web/client-icons/claude.png',
                     'web/client-icons/deepseek.png', 'web/client-icons/zcode.png', 'mobile/README.md', 'LICENSE', 'NOTICE')
 
@@ -58,7 +62,9 @@ def verify_app(app, version, build):
         if (bundle/'embedded.mobileprovision').exists() or (bundle/'_CodeSignature').exists():
             raise RuntimeError('Expected an unsigned iOS bundle: '+str(bundle))
         subprocess.run(['xcrun', 'lipo', str(executable), '-verify_arch', 'arm64'], check=True)
-    for name in ('channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png', 'LICENSE', 'NOTICE'):
+    for name in ('channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'mobile-offline.js',
+                 'offline-shell/manifest.json', 'offline-shell/index.html', 'offline-shell/bootstrap.js', 'offline-shell/app.js',
+                 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png', 'LICENSE', 'NOTICE'):
         if not (app/name).is_file():
             raise RuntimeError('Missing iOS resource: '+name)
     info = plistlib.loads((app/'Info.plist').read_bytes())
