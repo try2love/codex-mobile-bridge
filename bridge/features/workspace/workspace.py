@@ -182,9 +182,10 @@ class Workspace:
             raise PermissionError('暂不支持通过符号链接访问文件')
         return os.open(path, flags | getattr(os, 'O_BINARY', 0), mode)
 
-    def listing(self, path='', hidden=False, search='', offset=0):
+    def listing(self, path='', hidden=False, search='', offset=0, sort='name-asc'):
         parts = self.parts(path)
-        if not isinstance(search, str) or len(search) > 200 or not isinstance(offset, int) or offset < 0:
+        if (not isinstance(search, str) or len(search) > 200 or type(offset) is not int or offset < 0
+                or sort not in ('name-asc', 'name-desc', 'modified-asc', 'modified-desc', 'size-asc', 'size-desc')):
             raise ValueError('目录查询无效')
         rows = []
         with self.directory(parts) as (directory, fd):
@@ -202,9 +203,12 @@ class Workspace:
                                      'size': info.st_size if kind == 'file' else None, 'modified': info.st_mtime})
                     except OSError:
                         continue
-        rows.sort(key=lambda item: (item['kind'] != 'directory', item['name'].casefold(), item['name']))
+        field = sort.split('-')[0]
+        rows.sort(key=lambda item: (item['name'].casefold() if field == 'name' else item[field] or 0,
+                                   item['name'].casefold(), item['name']), reverse=sort.endswith('-desc'))
+        rows.sort(key=lambda item: item['kind'] != 'directory')
         return {'project': self.root.name, 'path': path, 'entries': rows[offset:offset + 200],
-                'total': len(rows), 'nextOffset': offset + 200 if len(rows) > offset + 200 else None}
+                'total': len(rows), 'nextOffset': offset + 200 if len(rows) > offset + 200 else None, 'sort': sort}
 
     def info(self, path):
         parts = self.parts(path)

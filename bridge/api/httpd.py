@@ -1320,7 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:
                     return self.output(200, bridge.workspace(thread_id, 'list', {**scope, 'path': relative, 'hidden': query.get('hidden') == ['true'],
-                        'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
+                        'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0]), 'sort': query.get('sort', ['name-asc'])[0]}))
                 if operation == 'download':
                     policy = transfer_settings(self.server.transfer_directory)
                     if query.get('info') == ['1']:

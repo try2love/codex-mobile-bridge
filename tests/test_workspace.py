@@ -68,6 +68,23 @@ class WorkspaceTests(unittest.TestCase):
         page = self.work.listing(search='page-'); self.assertEqual(len(page['entries']), 200)
         self.assertEqual(len(self.work.listing(search='page-', offset=page['nextOffset'])['entries']), 5)
 
+    def test_six_sort_orders_are_applied_globally_before_paging(self):
+        for index in range(205):
+            path = self.root/('page-%03d' % index)
+            path.write_bytes(b'x' * (205-index))
+            os.utime(path, (1000000+index, 1000000+index))
+        (self.root/'zzz-folder').mkdir()
+        for sort in ('name-asc','name-desc','modified-asc','modified-desc','size-asc','size-desc'):
+            with self.subTest(sort=sort):
+                first = self.work.listing(sort=sort)
+                rows = first['entries'] + self.work.listing(sort=sort, offset=first['nextOffset'])['entries']
+                self.assertEqual(len(rows), 208)
+                self.assertTrue(all(row['kind']=='directory' for row in rows[:2]))
+                field = sort.split('-')[0]
+                keys = [(row['name'].casefold() if field=='name' else row[field], row['name'].casefold(), row['name']) for row in rows[2:]]
+                self.assertEqual(keys, sorted(keys, reverse=sort.endswith('-desc')))
+        with self.assertRaises(ValueError): self.work.listing(sort='unknown')
+
     def test_read_text_image_binary_and_large_preview(self):
         self.assertEqual(self.work.read('hello.txt')['text'], '你好\nworkspace🙂')
         (self.root / 'image.png').write_bytes(b'\x89PNG\r\n\x1a\nfixture')
@@ -157,6 +174,16 @@ class WorkspaceHttpTests(unittest.TestCase):
         status, _, info = self.request('GET', self.path + '/info?path=../secret', headers=auth)
         self.assertEqual(status, 403)
         self.assertNotIn('absolutePath', info)
+
+    def test_host_directory_sort_parameter_is_validated(self):
+        (self.root/'a').write_bytes(b'xx')
+        (self.root/'b').write_bytes(b'x')
+        from urllib.parse import quote
+        target = self.path + '?scope=host&path=' + quote(str(self.root)) + '&sort=size-asc'
+        status, _, result = self.request('GET', target, headers=self.login())
+        self.assertEqual(status, 200)
+        self.assertEqual([r['name'] for r in result['entries']], ['b', 'a'])
+        self.assertEqual(self.request('GET', target.replace('size-asc','invalid'), headers=self.login())[0], 400)
 
     def test_auth_csrf_and_origin_required_for_upload(self):
         self.assertEqual(self.request('GET', self.path)[0], 401)

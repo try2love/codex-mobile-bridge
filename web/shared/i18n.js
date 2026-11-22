@@ -2,6 +2,14 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"文件排序":"Sort files",
+"名称升序":"Name ascending",
+"名称降序":"Name descending",
+"修改时间降序":"Modified newest first",
+"修改时间升序":"Modified oldest first",
+"大小降序":"Size largest first",
+"大小升序":"Size smallest first",
+
 "Git 变更分页":"Git change pages",
 "返回项目变更":"Back to project changes",
 "全部暂存、取消暂存和提交作用于整个项目":"Stage all, unstage all and commit apply to the entire project",

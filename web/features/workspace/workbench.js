@@ -482,10 +482,15 @@ class Workbench {
       const summary=this.node('div','wb-file-summary');
       tab.project=this.button('返回项目文件夹',()=>{session.search='';this.directory(session,tab,session.project);});
       tab.project.disabled=!session.project||path===session.project;
-      summary.append(tab.status,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
+      const sort=this.node('select','wb-file-sort');sort.setAttribute('aria-label',BridgeI18n.t('文件排序'));sort.dataset.i18nAriaLabel='文件排序';
+      for(const [value,label] of [['name-asc','名称升序'],['name-desc','名称降序'],['modified-desc','修改时间降序'],['modified-asc','修改时间升序'],['size-desc','大小降序'],['size-asc','大小升序']]){
+        const option=this.node('option','',label);option.value=value;sort.append(option);
+      }
+      sort.value=session.sort||'name-asc';sort.onchange=()=>{session.sort=sort.value;this.directory(session,tab,session.directory);};
+      summary.append(tab.status,sort,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
     }
     try {
-      const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0);
+      const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0) + '&sort=' + (session.sort || 'name-asc');
       const result = await this.request(url, undefined, controller.signal);
       if (controller.signal.aborted || tab.controller!==controller || this.sessions.get(session.key)!==session || !session.files.includes(tab) || session.directory!==path) return;
       session.project=result.project;session.directory=result.path;

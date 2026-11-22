@@ -73,8 +73,8 @@ test('upload follows the viewed host directory even without a project or at a fi
   await page.evaluate(async()=>{
     const wb=window.fileWorkbench=Object.create(FileWorkbench.prototype),body=document.createElement('div');body.id='file-host-fixture';body.style.cssText='position:fixed;inset:0;background:var(--page);z-index:99999;overflow:auto';document.body.append(body);
     const tab=window.fileTab={id:'files',body},session=window.fileSession={id:'thread',host:'remote:ssh',key:'fixture',directory:'/outside',project:'',search:'',hidden:false,files:[tab]};
-    Object.assign(wb,{current:session,sessions:new Map([['fixture',session]]),stopThumbnails(){},refreshThumbnails(){},notify(){},uploads:[],
-      async request(url){const path=new URL(url,location.href).searchParams.get('path')||'/outside';return {path,project:'',projectPath:null,parentPath:path==='/'?null:'/',entries:[],total:0,nextOffset:null};},
+    Object.assign(wb,{current:session,sessions:new Map([['fixture',session]]),stopThumbnails(){},refreshThumbnails(){},notify(){},uploads:[],listQueries:[],
+      async request(url){const params=new URL(url,location.href).searchParams;this.listQueries.push(Object.fromEntries(params));const path=params.get('path')||'/outside';return {path,project:'',projectPath:null,parentPath:path==='/'?null:'/',entries:[],total:0,nextOffset:null};},
       async upload(url,file){this.uploads.push({query:Object.fromEntries(new URL(url,location.href).searchParams),name:file.name});return {name:file.name};}
     });
     await wb.directory(session,tab,'/outside');
@@ -92,4 +92,12 @@ test('upload follows the viewed host directory even without a project or at a fi
   expect(await page.evaluate(()=>fileWorkbench.uploads)).toEqual([
     {query:{host:'remote:ssh',path:'/outside/test.txt',scope:'host'},name:'test.txt'},
     {query:{host:'remote:ssh',path:'/test.txt',scope:'host'},name:'test.txt'}]);
+  await expect(root.getByLabel('文件排序')).toHaveValue('name-asc');
+  expect(await root.locator('.wb-file-summary').evaluate(n=>n.children[0].classList.contains('wb-status')&&n.children[1].tagName==='SELECT'&&n.children[2].tagName==='BUTTON')).toBe(true);
+  for(const sort of ['name-asc','name-desc','modified-asc','modified-desc','size-asc','size-desc']){
+    await root.getByLabel('文件排序').selectOption(sort);
+    await expect(root.getByLabel('文件排序')).toHaveValue(sort);
+    expect(await page.evaluate(()=>fileWorkbench.listQueries.at(-1))).toMatchObject({sort,offset:'0',path:'/'});
+  }
+  expect(await root.evaluate(n=>n.scrollWidth<=n.clientWidth+1)).toBe(true);
 });
