@@ -16,6 +16,7 @@ from bridge.platforms.linux import codex_launch
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux desktop fixtures require POSIX paths and locking')
 class LinuxDesktopTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(dir=ROOT/'.tmp')
