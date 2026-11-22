@@ -102,10 +102,10 @@ test('upload follows the viewed host directory even without a project or at a fi
   expect(await root.evaluate(n=>n.scrollWidth<=n.clientWidth+1)).toBe(true);
 });
 
-test('both session lists display last user input as HH:mm MM:dd even today',async({page})=>{
+test('both session lists display last user input as HH:mm MM/dd even today',async({page})=>{
   const result=await page.evaluate(()=>{
     const input=new Date();input.setHours(3,4,0,0);
-    const pad=n=>String(n).padStart(2,'0'),expected='03:04 '+pad(input.getMonth()+1)+':'+pad(input.getDate());
+    const pad=n=>String(n).padStart(2,'0'),expected='03:04 '+pad(input.getMonth()+1)+'/'+pad(input.getDate());
     listRows=[{id:'clock-fixture',host:'local',title:'Clock fixture',projectName:'Project',projectKey:'local|test',recency:Date.now(),lastUserInputAt:input.toISOString()}];
     renderList();const codex=document.querySelector('#sessions .session time').textContent;
     listRows[0].recency+=3600000;renderList();const afterOutput=document.querySelector('#sessions .session time').textContent;

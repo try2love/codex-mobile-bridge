@@ -9,7 +9,7 @@ function chatMessageDate(value){
 function chatListTime(value){
   const date=chatMessageDate(value);if(!date||!Number.isFinite(date.getTime()))return '';
   const pad=n=>String(n).padStart(2,'0');
-  return pad(date.getHours())+':'+pad(date.getMinutes())+' '+pad(date.getMonth()+1)+':'+pad(date.getDate());
+  return pad(date.getHours())+':'+pad(date.getMinutes())+' '+pad(date.getMonth()+1)+'/'+pad(date.getDate());
 }
 function renderChatMessageTime(container,value,now=new Date()){
   const date=chatMessageDate(value);if(!date||!Number.isFinite(date.getTime()))return;
