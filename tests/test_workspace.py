@@ -167,6 +167,19 @@ class WorkspaceHttpTests(unittest.TestCase):
         self.assertEqual(self.raw(target, b'text', auth)[0], 200)
         self.assertEqual(self.request('GET', self.path + '/preview?path=test.txt', headers=auth)[2]['text'], 'text')
 
+    def test_host_upload_keeps_auth_csrf_and_exact_target_without_project(self):
+        from urllib.parse import quote
+        self.server.bridge.workspace = lambda thread, action, params: operate(None, action, params)
+        path = self.root/'host-upload.txt'
+        target = self.path + '/upload?scope=host&path=' + quote(str(path))
+        auth = self.login()
+        self.assertEqual(self.raw(target, b'text', {'Cookie': auth['Cookie']})[0], 403)
+        self.assertEqual(self.raw(target, b'text', {**auth, 'Origin': 'https://evil.example'})[0], 403)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.raw(target, b'text', auth)[0], 200)
+        self.assertEqual(path.read_bytes(), b'text')
+        self.assertEqual(self.raw(target, b'changed', auth)[0], 400)
+
     def test_authenticated_binary_download_and_no_overwrite(self):
         auth = self.login(); data = b'\0binary\xff'; target = self.path + '/upload?path=test.apk'
         self.assertEqual(self.raw(target, data, auth)[0], 200)

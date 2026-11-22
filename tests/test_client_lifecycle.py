@@ -469,6 +469,16 @@ class ClientLifecycleTests(unittest.TestCase):
                     operate.assert_not_called()
                     terminal.assert_not_called()
 
+    def test_rebinding_rejects_host_upload_resolved_before_body_arrives(self):
+        provider = 'claude'
+        workspace = DesktopWorkspace(self.manager, provider, 'one', str(self.root),
+                                     epoch=self.manager.binding_epochs[provider])
+        self.manager.binding_epochs[provider] += 1
+        with patch('bridge.features.workspace.workspace.operate') as operate:
+            with self.assertRaisesRegex(ValueError, '客户端状态已变化'):
+                workspace.workspace(workspace.identifier, 'upload', {'scope': 'host', 'path': '/tmp/new'})
+            operate.assert_not_called()
+
     def test_disable_waits_for_accepted_workspace_mutation(self):
         workspace = DesktopWorkspace(self.manager, 'claude', 'one', str(self.root))
         entered, release, toggling, disabled = (threading.Event() for _ in range(4))

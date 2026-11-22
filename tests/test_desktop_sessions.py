@@ -725,6 +725,15 @@ class HttpAdapters(unittest.TestCase):
         self.assertNotEqual(self.request('GET', path, headers=headers)[0], 200)
         self.assertNotEqual(self.request('POST', path+'&scope=host', {}, headers)[0], 200)
         adapter.record_path.assert_called_once_with('native')
+        import http.client
+        from urllib.parse import quote
+        target = '/api/desktop-sessions/deepseek/workspace/upload?sessionId=native&scope=host&path=' + quote(str(root/'native-host-upload.txt'))
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        conn.request('POST', target, body=b'host bytes', headers={'Origin': self.origin, **headers})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200, response.read())
+        conn.close()
+        self.assertEqual((root/'native-host-upload.txt').read_bytes(), b'host bytes')
 
     def test_client_management_and_workspace_http_are_authenticated_and_scoped(self):
         temp = tempfile.TemporaryDirectory(dir=ROOT/'.tmp'); self.addCleanup(temp.cleanup)

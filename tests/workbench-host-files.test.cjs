@@ -3,14 +3,14 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 const context=vm.createContext({BridgeI18n:{t:x=>x},window:{}});
 vm.runInContext(fs.readFileSync('web/features/workspace/workbench.js','utf8'),context);
 const Workbench=vm.runInContext('Workbench',context);
-test('host reads preserve selected host and project writes do not expand scope',()=>{
+test('host reads and uploads preserve selected host while Git and references retain project scope',()=>{
  const wb=Object.create(Workbench.prototype),session={id:'thread',host:'remote:ssh'};
- for(const action of ['','info','preview','download']){
+ for(const action of ['','info','preview','download','upload']){
   const url=new URL(wb.url(session,action,'F:/outside/file.txt'),'http://fixture');
   assert.equal(url.searchParams.get('host'),'remote:ssh');assert.equal(url.searchParams.get('scope'),'host');
   assert.equal(url.searchParams.get('path'),'F:/outside/file.txt');
  }
- for(const action of ['upload','git-status','git-action','references'])assert.ok(!wb.url(session,action).includes('scope='));
+ for(const action of ['git-status','git-action','references'])assert.ok(!wb.url(session,action).includes('scope='));
  assert.ok(!wb.url(session,'info','folder/file','project').includes('scope='));
 });
 test('host metadata can reference only an original project relative path',()=>{

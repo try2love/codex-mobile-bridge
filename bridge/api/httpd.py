@@ -1217,7 +1217,7 @@ class Handler(BaseHTTPRequestHandler):
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
                 manager, _, _ = self.desktop_context(provider, query)
-                host_files = not write and query.get('scope') == ['host'] and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')
+                host_files = query.get('scope') == ['host'] and ((not write and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')) or (write and operation == 'workspace/upload'))
                 bridge = manager.workspace_bridge(provider, sid, **({'host_files': True, 'path': query.get('path', [''])[0]} if host_files else {}))
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
@@ -1284,7 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get('scope') not in (None, ['host']):
                     raise ValueError('文件浏览范围无效')
                 scope = {'scope': 'host'} if query.get('scope') == ['host'] else {}
-                if scope and (write or operation not in (None, 'info', 'preview', 'download')):
+                if scope and not ((not write and operation in (None, 'info', 'preview', 'download')) or (write and operation == 'upload')):
                     raise PermissionError('宿主机文件浏览仅支持读取')
                 if write:
                     if operation == 'git-action':
@@ -1298,7 +1298,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('每个文件不能超过 20 MB')
                     content = self.rfile.read(int(sizes[0]))
                     if len(content) != int(sizes[0]): raise ValueError('上传中断，请重试')
-                    return self.output(200, bridge.workspace(thread_id, 'upload', {'path': relative, 'encoded': base64.b64encode(content).decode()}))
+                    return self.output(200, bridge.workspace(thread_id, 'upload', {**scope, 'path': relative, 'encoded': base64.b64encode(content).decode()}))
                 if operation == 'upload': return self.output(405, {'error': '请使用上传操作'})
                 if operation == 'git-action': return self.output(405, {'error': 'Git 操作需要 POST 请求'})
                 if operation == 'git-history':

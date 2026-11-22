@@ -3779,7 +3779,7 @@ class DesktopSessions:
         if provider == 'zcode' and root and not Path(root).is_dir():
             if host_files:
                 # Keep the stale session cwd out of host navigation. Its saved
-                # native record is a safe, read-only starting point instead.
+                # native record supplies the initial host directory instead.
                 root = None
             else:
                 raise BridgeUnavailable('ZCode 原会话项目目录已失效，请重新选择有效项目')
@@ -3802,8 +3802,8 @@ class DesktopSessions:
                         row['_recordPath'] = reader(sid) if reader else None
                     history_path = row['_recordPath']
         else:
-            Workspace(root)  # Writes/terminals still require an original local project.
-        return DesktopWorkspace(self, provider, sid, root, history_path=history_path)
+            Workspace(root)  # Project-scoped writes/terminals require an original local project.
+        return DesktopWorkspace(self, provider, sid, root, history_path=history_path, epoch=epoch)
 
     def antigravity_management(self, value):
         adapter = self.adapters.get('antigravity')
@@ -4060,11 +4060,12 @@ class DesktopWorkspace:
     """Use the existing file and terminal services with a desktop-verified root."""
     host = 'local'
 
-    def __init__(self, manager, provider, sid, root, history_path=None):
+    def __init__(self, manager, provider, sid, root, history_path=None, epoch=None):
         from bridge.features.terminals.manager import TerminalManager
         self.manager, self.provider = manager, provider
         self.root = root
         self.history_path = history_path
+        self.epoch = epoch
         self.identifier = str(uuid.uuid5(uuid.NAMESPACE_URL, provider + ':' + sid))
         with manager.client_lock:
             if not hasattr(manager, 'terminals'):
@@ -4083,6 +4084,8 @@ class DesktopWorkspace:
         # again under the same gate used by disabling access before any write.
         with self.manager.locks[self.provider]:
             self.manager.require_enabled(self.provider)
+            if self.epoch is not None and (self.manager.binding_epochs[self.provider] != self.epoch or self.manager.binding_changes[self.provider]):
+                raise BridgeUnavailable('客户端状态已变化，请重试')
             return operate(self.root, action, params, history_path=self.history_path)
 
     def terminal(self, sid, owner, action, params):

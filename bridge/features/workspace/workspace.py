@@ -807,8 +807,8 @@ class GitWorkspace:
 
 
 def host_operation(root, action, params, history_path=None):
-    """Explicit read-only host navigation; project writes keep their old root."""
-    if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream'):
+    """Explicit host file browsing and upload; other writes keep their project root."""
+    if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream', 'upload'):
         raise PermissionError('宿主机文件浏览仅支持读取')
     params = dict(params)
     params.pop('scope')

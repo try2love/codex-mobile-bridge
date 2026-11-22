@@ -67,3 +67,29 @@ test('commit review covers all staged pages and rejects a stale preview',async({
   await expect(dialog.getByRole('button',{name:'确认提交',exact:true})).toBeDisabled();
   expect(await page.evaluate(()=>gitCalls.filter(c=>c.body).length)).toBe(1);
 });
+
+test('upload follows the viewed host directory even without a project or at a filesystem root',async({page})=>{
+  await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/workbench.js'),'utf8')+'\nwindow.FileWorkbench=Workbench;');
+  await page.evaluate(async()=>{
+    const wb=window.fileWorkbench=Object.create(FileWorkbench.prototype),body=document.createElement('div');body.id='file-host-fixture';body.style.cssText='position:fixed;inset:0;background:var(--page);z-index:99999;overflow:auto';document.body.append(body);
+    const tab=window.fileTab={id:'files',body},session=window.fileSession={id:'thread',host:'remote:ssh',key:'fixture',directory:'/outside',project:'',search:'',hidden:false,files:[tab]};
+    Object.assign(wb,{current:session,sessions:new Map([['fixture',session]]),stopThumbnails(){},refreshThumbnails(){},notify(){},uploads:[],
+      async request(url){const path=new URL(url,location.href).searchParams.get('path')||'/outside';return {path,project:'',projectPath:null,parentPath:path==='/'?null:'/',entries:[],total:0,nextOffset:null};},
+      async upload(url,file){this.uploads.push({query:Object.fromEntries(new URL(url,location.href).searchParams),name:file.name});return {name:file.name};}
+    });
+    await wb.directory(session,tab,'/outside');
+  });
+  const root=page.locator('#file-host-fixture');
+  await expect(root.getByRole('button',{name:'上传',exact:true})).toBeEnabled();
+  for(const target of ['/outside','/']){
+    if(target==='/')await page.evaluate(()=>fileWorkbench.directory(fileSession,fileTab,'/'));
+    await root.getByRole('button',{name:'上传',exact:true}).click();
+    await expect(page.locator('.wb-upload-target')).toHaveText('保存到：'+target);
+    await page.getByLabel('选择上传文件',{exact:true}).setInputFiles({name:'test.txt',mimeType:'text/plain',buffer:Buffer.from('hello')});
+    await page.getByRole('button',{name:'上传到此目录',exact:true}).click();
+    await expect(page.locator('.wb-upload')).toHaveCount(0);
+  }
+  expect(await page.evaluate(()=>fileWorkbench.uploads)).toEqual([
+    {query:{host:'remote:ssh',path:'/outside/test.txt',scope:'host'},name:'test.txt'},
+    {query:{host:'remote:ssh',path:'/test.txt',scope:'host'},name:'test.txt'}]);
+});
