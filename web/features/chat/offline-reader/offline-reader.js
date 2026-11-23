@@ -123,15 +123,46 @@
     index.push(...rows);
     return {rows,index,turns,readOnly:true,connected:false,before:state.before,hasMore:!!state.before,files:[],meta:state.meta,session:state.meta};
   }
+  function recordRow(row){
+    return {...row,id:row.id||row.key,editable:false,forkable:false,detailCursor:row.detailCursor||(row.truncated?row.key:undefined),
+      phase:row.phase||(row.role==='assistant'&&row.forkable===true?'final_answer':undefined),
+      attachments:(row.attachments||[]).map(item=>({...item,offlineImage:raster(item.dataUrl)||raster(item.previewData)}))};
+  }
+  function projectPage(payload,state,prepend=false){
+    if(payload?.recordPage!==1)return null;
+    const entries=[...(payload.rows||[]),...(payload.turns||[]).flatMap(turn=>turn.processes||[])];
+    const first=prepend?(state?.first||0)-entries.length:0;
+    if(state)state.first=first;
+    const rows=(payload.rows||[]).map(row=>recordRow({...row,order:first+row.order}));
+    const turns=(payload.turns||[]).map(turn=>({...turn,processes:(turn.processes||[]).map(group=>({...group,order:first+group.order}))}));
+    if(state){
+      for(const row of rows)state.messages.set(row.key,{row});
+      for(const turn of turns){
+        state.turns.set(turn.id,turn);
+        for(const group of turn.processes)state.groups.set(group.key,group);
+      }
+    }
+    const meta=state?.meta||{title:payload.title,readOnly:true,connected:false,requests:[],offlineSync:payload.syncedAt,offlineGaps:payload.gaps===true};
+    return {...payload,rows,index:rows,turns,files:[],readOnly:true,connected:false,meta,session:meta};
+  }
+  async function firstPage(archiveId){
+    for(let attempt=0;attempt<30;attempt++){
+      const page=await host('session',{sessionId:archiveId});
+      if(page?.recordPage!==1||!page.migrating||page.rows?.length||page.turns?.some(turn=>turn.processes?.length))return page;
+      await new Promise(resolve=>setTimeout(resolve,150));
+    }
+    throw Error('离线记录正在转换，请稍后重试。');
+  }
   async function session(item,mode,params){
     if(mode==='recent'){
-      const payload=await host('session',{sessionId:item.archiveId});
+      const payload=await firstPage(item.archiveId);
       if(payload.id!==item.archiveId)throw Error('Offline session mismatch');
       const meta={id:item.id,title:payload.title||item.title,host:item.host,provider:item.provider,cwd:item.cwd||'',status:'idle',connected:false,readOnly:true,
         access:{source:'history'},capabilities:{},requests:[],offlineSync:payload.syncedAt,offlineGaps:payload.gaps===true};
       const reading={id:item.id,meta,groups:new Map(),messages:new Map(),turns:new Map(),before:payload.before};
       reads.set(item.archiveId,reading);
       selected=item.archiveId;
+      if(payload.recordPage===1){reading.native=true;return projectPage(payload,reading);}
       return present(reading,appendTurns(reading,payload.turns),false);
     }
     const state=reads.get(item.archiveId);
@@ -140,11 +171,21 @@
       const payload=await host('session',{sessionId:item.archiveId,before:params.get('before')});
       if(payload.id!==item.archiveId)throw Error('Offline session mismatch');
       state.before=payload.before;
+      if(payload.recordPage===1)return projectPage(payload,state,true);
       return present(state,appendTurns(state,payload.turns),true);
     }
     if(mode==='process'){
       const group=archived(state.groups,params.get('key'));
       if(!group)throw Error('此过程未保存到本机，请联网上看。');
+      if(state.native){
+        const after=params.get('after');
+        const page=await host('session',{sessionId:item.archiveId,mode:'process',key:group.key,
+          ...(after&&after!=='latest'?{after}:{})});
+        if(page?.recordPage!==1)throw Error('此过程未保存到本机，请联网上看。');
+        const rows=page.rows.map(recordRow);
+        for(const row of rows)state.messages.set(row.key,{row});
+        return {...page,rows,index:rows,items:rows,files:[],hasEarlier:false,hasLater:page.hasMore};
+      }
       const rows=(group?.rows||[]).map((row,order)=>({...row,order}));
       return {rows,index:rows,hasMore:false,hasEarlier:false,files:[]};
     }
@@ -152,6 +193,11 @@
       const saved=archived(state.messages,params.get('key')),offset=Number(params.get('offset')||0);
       if(!saved||saved.row.version!==params.get('version')||!Number.isSafeInteger(offset)||offset<0)
         throw Error('此段正文未保存到本机，请联网上看。');
+      if(state.native){
+        const part=await host('session',{sessionId:item.archiveId,mode:'body',key:saved.row.key,version:saved.row.version,offset});
+        if(!part||part.version!==saved.row.version||part.offset!==offset)throw Error('此段正文未保存到本机，请联网上看。');
+        return {...part,files:[],attachments:saved.row.attachments};
+      }
       const part=saved.parts?.[offset]||(offset===0&&!saved.row.offlinePartial?{offset:0,text:saved.row.text,next:null}:null);
       if(!part)throw Error('此段正文未保存到本机，请联网上看。');
       return {...part,key:saved.row.key,version:saved.row.version,files:[],attachments:saved.row.attachments};
@@ -250,7 +296,7 @@
     selected=null;reads.clear();
     void list(true).catch(()=>{});
   }
-  window.OfflineChatReader={receive,request,back,reconnect,raster,leaveSession,openAttachment,
+  window.OfflineChatReader={receive,request,projectPage,back,reconnect,raster,leaveSession,openAttachment,
     enableHot(transport){hot=transport;listing=null;screen(true);},
     disableHot(){hot=null;listing=null;selected=null;reads.clear();screen(cold);},
     refreshList:()=>list(true),

@@ -17,7 +17,8 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
     return target.request(target.url+(target.url.includes('?')?'&':'?')+query,undefined,signal,target.authorized);
   }
   const cache=window.BridgeChatSyncCache;
-  const cached=mode==='body'&&target.scope?await cache?.read(target.scope,mode,params):null;
+  const independent=!!window.CodexBridgeNativeOffline&&source!=='prefetch'&&cache?.onlineKnown;
+  const cached=!independent&&mode==='body'&&target.scope?await cache?.read(target.scope,mode,params):null;
   if(!active()||target.authorized&&!target.authorized())return null;
   if(mode==='body'&&cached?.version===params.version&&cached.offset===params.offset&&Array.isArray(cached.files))return cached;
   const fetchPage=async known=>{
@@ -36,7 +37,7 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   };
   let known;
   if(target.scope){
-    known=await cache?.known(target.scope,mode,params,source,{legacyScope:target.legacyScope});
+    known=independent?cache.onlineKnown(target.scope,mode,params,source):await cache?.known(target.scope,mode,params,source,{legacyScope:target.legacyScope});
     if(known?.skip)return null;
   }
   if(!active())return null;
@@ -53,6 +54,19 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   }
   if(target.authorized&&!target.authorized())return null;
   if(!target.scope||!cache)return wire;
+  if(independent){
+    let page=cache.onlinePage(target.scope,mode,params,wire,known);
+    if(page?.discarded)return null;
+    if(!page){
+      wire=await fetchPage();
+      if(!wire||!active()||target.authorized?.()===false)return null;
+      page=cache.onlinePage(target.scope,mode,params,wire,known);
+      if(page?.discarded)return null;
+    }
+    // Persistence is a separate lane. It cannot delay an authenticated response.
+    void cache.write(target.scope,mode,params,wire,{source,title:target.title,validation:known}).catch(()=>{});
+    return page||wire;
+  }
   const page=await cache.write(target.scope,mode,params,wire,{
     source,title:target.title,legacyScope:target.legacyScope,validation:known
   });
@@ -83,9 +97,9 @@ function beginSelectedChatSync(target,active){
   const cache=window.BridgeChatSyncCache,epoch=cache?.epoch,generation=cache?.generation;
   // An already authorized tab can read its local preview while loading the renderer.
   const mayPreview=()=>valid()&&cache?.active(target.scope)&&cache.epoch===epoch&&
-    cache.generation===generation&&cache.permitted(target.scope);
+    cache.generation===generation;
   const preview=target.scope&&active()&&chatSyncForeground()&&mayPreview()
-    ?cache.read(target.scope,'recent',{}).catch(()=>null):null;
+    ?cache.localPreview(target.scope).catch(()=>null):null;
   return {
     promise,preview,mayPreview,close,get removedTurns(){return removedTurns;},
     valid,

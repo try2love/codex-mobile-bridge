@@ -46,7 +46,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
 
 
  OfflineArchive(Context context) {
-  super(context, new File(context.getNoBackupFilesDir(), "offline-archive.db").getPath(), null, 3);
+  super(context, new File(context.getNoBackupFilesDir(), "offline-archive.db").getPath(), null, 4);
   this.context=context;
  }
  @Override public void onConfigure(SQLiteDatabase db) {
@@ -62,11 +62,206 @@ final class OfflineArchive extends SQLiteOpenHelper {
   createOfflinePreferences(db);
   createTransfers(db);
   createTransferAliases(db);
+  createRecords(db);
  }
  @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-  if(newVersion!=3||oldVersion<1||oldVersion>2)throw new IllegalStateException("Unsupported offline archive version");
+  if(newVersion!=4||oldVersion<1||oldVersion>3)throw new IllegalStateException("Unsupported offline archive version");
   if(oldVersion==1){createOfflinePreferences(db);createTransfers(db);}
-  createTransferAliases(db);
+  if(oldVersion<3)createTransferAliases(db);
+  createRecords(db);
+ }
+ private static void createRecords(SQLiteDatabase db) {
+  db.execSQL("CREATE INDEX IF NOT EXISTS turns_recent ON turns(account,session,suppressed,asked DESC,id DESC);");
+  db.execSQL("CREATE TABLE IF NOT EXISTS archive_records(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,turn TEXT NOT NULL,asked INTEGER NOT NULL,position REAL NOT NULL,visible INTEGER NOT NULL,version TEXT NOT NULL,synced INTEGER NOT NULL,content TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(account,session,key),FOREIGN KEY(account,session,turn) REFERENCES turns(account,session,id) ON DELETE CASCADE);");
+  db.execSQL("CREATE INDEX IF NOT EXISTS archive_recent ON archive_records(account,session,visible,asked DESC,turn DESC,position DESC,key DESC);");
+  db.execSQL("CREATE INDEX IF NOT EXISTS archive_process ON archive_records(account,session,turn,position,key);");
+  db.execSQL("CREATE INDEX IF NOT EXISTS turns_legacy ON turns(account,asked DESC,id DESC) WHERE suppressed=0 AND content IS NOT NULL AND content<>'';");
+  db.execSQL("CREATE INDEX IF NOT EXISTS turns_legacy_session ON turns(account,session) WHERE suppressed=0 AND content IS NOT NULL AND content<>'';");
+  db.execSQL("CREATE TABLE IF NOT EXISTS archive_deleted(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,synced INTEGER NOT NULL,PRIMARY KEY(account,session,key),FOREIGN KEY(account,session) REFERENCES sessions(account,id) ON DELETE CASCADE);");
+  db.execSQL("CREATE TABLE IF NOT EXISTS archive_parts(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,offset INTEGER NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,PRIMARY KEY(account,session,key,offset),FOREIGN KEY(account,session,key) REFERENCES archive_records(account,session,key) ON DELETE CASCADE);");
+ }
+ private static double order(JSONObject message) {
+  return message.has("order")?message.optDouble("order"):message.optJSONObject("row")==null?0:message.optJSONObject("row").optDouble("order",0);
+ }
+ private void storeRecord(SQLiteDatabase db,Account account,String session,String turn,long asked,JSONObject original,long synced)throws JSONException {
+  String key=original.getString("key"),version=original.getString("version");
+  if(version.isEmpty())throw new JSONException("Missing record version");
+  try(Cursor deleted=db.rawQuery("SELECT synced FROM archive_deleted WHERE account=? AND session=? AND key=?",new String[]{""+account.id,session,key})){
+   if(deleted.moveToFirst()){
+    if(synced<=deleted.getLong(0))return;
+    db.execSQL("DELETE FROM archive_deleted WHERE account=? AND session=? AND key=?",new Object[]{account.id,session,key});
+   }
+  }
+  String priorVersion=null;long priorSynced=Long.MIN_VALUE;
+  try(Cursor previous=db.rawQuery("SELECT version,synced FROM archive_records WHERE account=? AND session=? AND key=?",new String[]{""+account.id,session,key})){
+   if(previous.moveToFirst()){priorVersion=previous.getString(0);priorSynced=previous.getLong(1);}
+  }
+  JSONObject message=new JSONObject(original.toString()),row=message.optJSONObject("row");
+  if(row==null)row=new JSONObject();
+  row.put("key",key).put("version",version).put("turnId",turn).put("role",message.optString("role",row.optString("role","assistant")));
+  double position=order(message);
+  JSONObject parts=message.optJSONObject("bodyParts");message.remove("bodyParts");
+  if(parts==null)parts=new JSONObject();
+  JSONObject part=message.optJSONObject("bodyPart");message.remove("bodyPart");
+  if(part!=null)parts.put(Long.toString(part.getLong("offset")),part);
+  String text=message.optString("text",row.optString("text"));
+  int scalarCount=text.codePointCount(0,text.length());
+  if(scalarCount>6000){
+   if(parts.length()==0&&!row.optBoolean("truncated")){
+    int start=0,offset=0,remaining=scalarCount;
+    while(start<text.length()){
+     int count=Math.min(16000,remaining),end=text.offsetByCodePoints(start,count);
+     parts.put(""+offset,new JSONObject().put("offset",offset).put("text",text.substring(start,end)).put("next",end==text.length()?JSONObject.NULL:offset+count));
+     start=end;offset+=count;remaining-=count;
+    }
+   }
+   row.put("truncated",true);
+  }
+  int end=text.offsetByCodePoints(0,Math.min(6000,text.codePointCount(0,text.length())));
+  String preview=text.substring(0,end);
+  row.put("text",preview);message.put("text",preview).put("row",row);message.remove("_syncedAt");
+  if(priorVersion==null||synced>=priorSynced){
+   if(!version.equals(priorVersion))db.execSQL("DELETE FROM archive_parts WHERE account=? AND session=? AND key=?",new Object[]{account.id,session,key});
+   String role=row.optString("role");
+   boolean process=row.optString("kind").equals("processPage")||row.optString("phase").equals("commentary")||row.optString("interaction").equals("response")||
+      !java.util.Arrays.asList("assistant","user","error","fileChanges").contains(role);
+   int visible=row.optString("kind").equals("processPage")||!process?1:0;
+   if(visible==0){
+    String anchor="start";boolean needs=true;
+    try(Cursor prior=db.rawQuery("SELECT key,visible,content FROM archive_records WHERE account=? AND session=? AND turn=? AND position<? ORDER BY position DESC,key DESC LIMIT 1",new String[]{""+account.id,session,turn,""+position})){
+     if(prior.moveToFirst()){anchor=prior.getString(0);needs=prior.getInt(1)==1&&!new JSONObject(prior.getString(2)).getJSONObject("row").optString("kind").equals("processPage");}
+    }
+    if(needs){
+     String header="offline-process:"+turn+":"+anchor;
+     JSONObject headerRow=new JSONObject(row.toString()).put("key",header).put("kind","processPage").put("role","activity").put("text","").put("order",position-.25);
+     storeRecord(db,account,session,turn,asked,new JSONObject().put("key",header).put("version",version).put("role","activity").put("order",position-.25).put("text","").put("row",headerRow),synced);
+    }
+   }
+   String content=message.toString();int bytes=content.getBytes(StandardCharsets.UTF_8).length;
+   db.execSQL("INSERT OR IGNORE INTO archive_records(account,session,key,turn,asked,position,visible,version,synced,content,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      new Object[]{account.id,session,key,turn,asked,position,visible,version,synced,content,bytes});
+   db.execSQL("UPDATE archive_records SET turn=?,asked=?,position=?,visible=?,version=?,synced=?,content=?,bytes=? WHERE account=? AND session=? AND key=?",
+      new Object[]{turn,asked,position,visible,version,synced,content,bytes,account.id,session,key});
+  }else if(!version.equals(priorVersion))return;
+  for(java.util.Iterator<String> offsets=parts.keys();offsets.hasNext();){
+   String offset=offsets.next();long positionOffset=Long.parseLong(offset);
+   if(positionOffset<0)throw new JSONException("Invalid body offset");
+   String operation=priorVersion!=null&&synced<priorSynced?"INSERT OR IGNORE":"INSERT OR REPLACE";
+   JSONObject bodyPart=parts.getJSONObject(offset);String body=bodyPart.getString("text");
+   int start=0,scalarOffset=0,remaining=body.codePointCount(0,body.length());
+   do{
+    int count=Math.min(16000,remaining),bodyEnd=body.offsetByCodePoints(start,count);
+    JSONObject piece=new JSONObject(bodyPart.toString()).put("offset",positionOffset+scalarOffset).put("text",body.substring(start,bodyEnd))
+      .put("next",bodyEnd==body.length()?bodyPart.opt("next"):positionOffset+scalarOffset+count);
+    db.execSQL(operation+" INTO archive_parts(account,session,key,offset,version,content) VALUES(?,?,?,?,?,?)",new Object[]{account.id,session,key,positionOffset+scalarOffset,version,piece.toString()});
+    start=bodyEnd;scalarOffset+=count;remaining-=count;
+   }while(start<body.length());
+  }
+ }
+ private JSONObject storedRecord(Account account,String session,String key,boolean parts)throws JSONException {
+  SQLiteDatabase db=getReadableDatabase();JSONObject message;
+  try(Cursor row=db.rawQuery("SELECT r.content FROM archive_records r JOIN sessions s ON s.account=r.account AND s.id=r.session JOIN turns t ON t.account=r.account AND t.session=r.session AND t.id=r.turn WHERE r.account=? AND r.session=? AND r.key=? AND s.epoch=? AND t.suppressed=0",new String[]{""+account.id,session,key,""+account.epoch})){
+   if(!row.moveToFirst())return null;message=new JSONObject(row.getString(0));
+  }
+  if(parts){
+   JSONObject values=new JSONObject();
+   try(Cursor rows=db.rawQuery("SELECT offset,content FROM archive_parts WHERE account=? AND session=? AND key=? ORDER BY offset",new String[]{""+account.id,session,key})){
+    while(rows.moveToNext())values.put(rows.getString(0),new JSONObject(rows.getString(1)));
+   }
+   if(values.length()>0)message.put("bodyParts",values);
+  }
+  return message;
+ }
+ boolean migrateBatch(Account account,String focus)throws Exception {
+  if(account==null||locked(account))return false;
+  SQLiteDatabase db=getWritableDatabase();String session,id;long asked;int length;
+  try(Cursor row=db.rawQuery("SELECT session,id,asked,length(content) FROM turns WHERE account=? AND suppressed=0 AND content IS NOT NULL AND content<>''"+(focus==null?"":" AND session=?")+" ORDER BY asked DESC,id DESC LIMIT 1",focus==null?new String[]{""+account.id}:new String[]{""+account.id,focus})){
+   if(!row.moveToFirst())return false;session=row.getString(0);id=row.getString(1);asked=row.getLong(2);length=row.getInt(3);
+  }
+  // Only legacy conversion reads a whole turn; foreground queries never enter this path.
+  JSONObject legacy=readTurnContent(db,""+account.id,session,id,length),messages=legacy.optJSONObject("messages");
+  db.beginTransaction();
+  try{
+   if(messages!=null){
+    java.util.List<JSONObject> ordered=new java.util.ArrayList<>();
+    for(java.util.Iterator<String> keys=messages.keys();keys.hasNext();)ordered.add(messages.getJSONObject(keys.next()));
+    ordered.sort((a,b)->Double.compare(order(a),order(b)));
+    for(JSONObject message:ordered)storeRecord(db,account,session,id,asked,message,message.optLong("_syncedAt",0));
+   }else for(String field:new String[]{"question","answer"}){
+    String text=legacy.optString(field);
+    if(!text.isEmpty()){
+     String key=id+":"+field,role=field.equals("question")?"user":"assistant";
+     storeRecord(db,account,session,id,asked,new JSONObject().put("key",key).put("version",ConnectionDiscovery.hash(text)).put("role",role).put("text",text).put("order",field.equals("question")?0:1).put("row",new JSONObject().put("key",key).put("role",role).put("text",text)),0);
+    }
+   }
+   db.execSQL("UPDATE turns SET content=NULL WHERE account=? AND session=? AND id=?",new Object[]{account.id,session,id});
+   db.setTransactionSuccessful();
+  }finally{db.endTransaction();}
+  return true;
+ }
+ JSONObject recordPage(Account account,String session,JSONObject event)throws JSONException {
+  if(account==null||locked(account))return null;
+  SQLiteDatabase db=getReadableDatabase();String title;long synced;boolean complete;
+  try(Cursor row=db.rawQuery("SELECT title,synced,complete FROM sessions WHERE account=? AND id=? AND epoch=?",new String[]{""+account.id,session,""+account.epoch})){
+   if(!row.moveToFirst())return null;title=row.getString(0);synced=row.getLong(1);complete=row.getInt(2)!=0;
+  }
+  String mode=event.optString("mode","recent"),filter=" AND r.visible=1",sort="r.asked DESC,r.turn DESC,r.position DESC,r.key DESC";
+  if(mode.equals("body"))return body(account,new JSONObject().put("sessionId",session).put("body",event));
+  List<String> values=new ArrayList<>(java.util.Arrays.asList(""+account.id,session,""+account.epoch));
+  if(mode.equals("process")){
+   String turn;double position;
+   try(Cursor row=db.rawQuery("SELECT turn,position FROM archive_records WHERE account=? AND session=? AND key=? AND visible=1",new String[]{""+account.id,session,event.getString("key")})){
+    if(!row.moveToFirst())return null;turn=row.getString(0);position=row.getDouble(1);
+   }
+   double end=Double.MAX_VALUE;
+   try(Cursor row=db.rawQuery("SELECT position FROM archive_records WHERE account=? AND session=? AND turn=? AND visible=1 AND position>? ORDER BY position,key LIMIT 1",new String[]{""+account.id,session,turn,""+position})){if(row.moveToFirst())end=row.getDouble(0);}
+   filter=" AND r.turn=? AND r.visible=0 AND r.position>? AND r.position<?";sort="r.position,r.key";values.add(turn);values.add(""+position);values.add(""+end);
+  }
+  String cursor=event.optString(mode.equals("process")?"after":"before","");
+  if(!cursor.isEmpty()&&!cursor.equals("null")){
+   JSONArray p=new JSONArray(new String(Base64.decode(cursor,Base64.DEFAULT),StandardCharsets.UTF_8));
+   if(p.length()!=7||!p.getString(0).equals(session)||!p.getString(1).equals(""+account.clearRevision)||!p.getString(2).equals(""+account.epoch))throw new JSONException("Invalid record cursor");
+   if(mode.equals("process")){filter+=" AND (r.position,r.key)>(?,?)";values.add(p.getString(5));values.add(p.getString(6));}
+   else{filter+=" AND (r.asked,r.turn,r.position,r.key)<(?,?,?,?)";for(int i=3;i<7;i++)values.add(p.getString(i));}
+  }
+  List<JSONObject> selected=new ArrayList<>();int bytes=0;boolean more=false;
+  try(Cursor rows=db.rawQuery("SELECT r.key,r.turn,r.asked,r.position,r.bytes FROM archive_records r JOIN sessions s ON s.account=r.account AND s.id=r.session JOIN turns t ON t.account=r.account AND t.session=r.session AND t.id=r.turn WHERE r.account=? AND r.session=? AND s.epoch=? AND t.suppressed=0"+filter+" ORDER BY "+sort+" LIMIT 41",values.toArray(new String[0]))){
+   while(rows.moveToNext()){
+    if(selected.size()>=40||!selected.isEmpty()&&bytes+rows.getInt(4)>192*1024){more=true;break;}
+    bytes+=rows.getInt(4);selected.add(new JSONObject().put("key",rows.getString(0)).put("turn",rows.getString(1)).put("asked",rows.getLong(2)).put("position",rows.getDouble(3)));
+   }
+  }
+  Object next=JSONObject.NULL;
+  if(more&&!selected.isEmpty()){
+   JSONObject tail=selected.get(selected.size()-1);
+   next=Base64.encodeToString(new JSONArray().put(session).put(""+account.clearRevision).put(""+account.epoch).put(String.valueOf(tail.get("asked"))).put(tail.getString("turn")).put(String.valueOf(tail.get("position"))).put(tail.getString("key")).toString().getBytes(StandardCharsets.UTF_8),Base64.NO_WRAP);
+  }
+  if(!mode.equals("process"))java.util.Collections.reverse(selected);
+  JSONArray result=new JSONArray();JSONObject turns=new JSONObject();
+  int index=0;
+  for(JSONObject item:selected){
+   JSONObject message=storedRecord(account,session,item.getString("key"),false);
+   if(message==null)continue;
+   JSONObject row=message.getJSONObject("row").put("key",message.getString("key")).put("version",message.getString("version")).put("text",message.optString("text")).put("order",index++);
+   String turn=row.getString("turnId");JSONObject meta=turns.optJSONObject(turn);
+   if(meta==null){meta=new JSONObject().put("id",turn).put("processes",new JSONArray());turns.put(turn,meta);}
+   String[][] fields={{"turnStatus","status"},{"turnCompletionKnown","completionKnown"},{"turnStartedAt","startedAt"},{"turnCompletedAt","completedAt"},{"turnError","error"}};
+   for(String[] field:fields)if(row.has(field[0]))meta.put(field[1],row.get(field[0]));
+   if(row.optString("kind").equals("processPage")&&!mode.equals("process"))meta.getJSONArray("processes").put(new JSONObject().put("key",row.getString("key")).put("version",row.getString("version")).put("order",row.getInt("order")).put("processCursor",row.getString("key")));
+   else result.put(row);
+  }
+  JSONArray metas=new JSONArray();for(java.util.Iterator<String> keys=turns.keys();keys.hasNext();)metas.put(turns.getJSONObject(keys.next()));
+  boolean legacy;
+  try(Cursor row=db.rawQuery("SELECT 1 FROM turns WHERE account=? AND session=? AND suppressed=0 AND content IS NOT NULL AND content<>'' LIMIT 1",new String[]{""+account.id,session})){legacy=row.moveToFirst();}
+  return new JSONObject().put("recordPage",1).put("id",session).put("title",title).put("syncedAt",synced).put("gaps",!complete||hasGaps(account,session))
+    .put("rows",result).put("index",result).put("turns",metas).put("before",mode.equals("process")?JSONObject.NULL:next).put("next",mode.equals("process")?next:JSONObject.NULL).put("hasMore",more).put("migrating",legacy).put("readRecords",selected.size());
+ }
+ private JSONObject turnContent(Account account,String session,String turn)throws JSONException {
+  JSONObject messages=new JSONObject();
+  try(Cursor rows=getReadableDatabase().rawQuery("SELECT key FROM archive_records WHERE account=? AND session=? AND turn=? ORDER BY position,key",new String[]{""+account.id,session,turn})){
+   while(rows.moveToNext()){String key=rows.getString(0);JSONObject value=storedRecord(account,session,key,true);if(value!=null)messages.put(key,value);}
+  }
+  return new JSONObject().put("messages",messages);
  }
  private static void createOfflinePreferences(SQLiteDatabase db) {
   db.execSQL("CREATE TABLE offline_preferences(account INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, appearance TEXT)");
@@ -188,13 +383,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
   }
   return result;
  }
- private JSONObject existingTurn(SQLiteDatabase db,long account,String session,String id,boolean manual) throws JSONException {
-  try(Cursor row=db.rawQuery("SELECT length(content),suppressed FROM turns WHERE account=? AND session=? AND id=?",new String[]{Long.toString(account),session,id})) {
-   if(!row.moveToFirst())return new JSONObject();
-   if(row.getInt(1)!=0&&!manual)return null;
-   return row.isNull(0)?new JSONObject():readTurnContent(db,Long.toString(account),session,id,row.getInt(0));
-  }
- }
+
  void merge(Account previous,JSONObject event,boolean manual,String legacy) throws JSONException {
   Account account=previous==null?null:account(previous.id);
   if(account==null||!"valid".equals(account.status))throw new JSONException("Login required");
@@ -215,76 +404,28 @@ final class OfflineArchive extends SQLiteOpenHelper {
     String id=incoming.getString("id");
     if(id.isEmpty()) throw new JSONException("Missing turn identity");
     long asked=incoming.getLong("questionTime");
-    JSONObject merged=existingTurn(db,account.id,session,id,canRestore);
-    if(merged==null) continue;
-    mergeTurn(merged,incoming,synced);
-    db.execSQL("INSERT OR IGNORE INTO turns(account,session,id,asked,content,suppressed) VALUES(?,?,?,?,?,0)",new Object[]{account.id,session,id,asked,merged.toString()});
-    db.execSQL("UPDATE turns SET asked=CASE WHEN asked=0 THEN ? ELSE asked END,content=?,suppressed=0 WHERE account=? AND session=? AND id=?", new Object[]{asked,merged.toString(),account.id,session,id});
+    try(Cursor suppression=db.rawQuery("SELECT suppressed FROM turns WHERE account=? AND session=? AND id=?",new String[]{""+account.id,session,id})){
+     if(suppression.moveToFirst()&&suppression.getInt(0)!=0&&!canRestore)continue;
+    }
+    db.execSQL("INSERT OR IGNORE INTO turns(account,session,id,asked,content,suppressed) VALUES(?,?,?,?,NULL,0)",new Object[]{account.id,session,id,asked});
+    db.execSQL("UPDATE turns SET asked=CASE WHEN asked=0 THEN ? ELSE asked END,suppressed=0 WHERE account=? AND session=? AND id=?",new Object[]{asked,account.id,session,id});
+    try(Cursor current=db.rawQuery("SELECT asked FROM turns WHERE account=? AND session=? AND id=?",new String[]{""+account.id,session,id})){if(current.moveToFirst())asked=current.getLong(0);}
+    db.execSQL("UPDATE archive_records SET asked=? WHERE account=? AND session=? AND turn=? AND asked=0",new Object[]{asked,account.id,session,id});
+    JSONArray messages=incoming.optJSONArray("messages");
+    if(messages!=null){
+     List<JSONObject> ordered=new ArrayList<>();for(int j=0;j<messages.length();j++)ordered.add(messages.getJSONObject(j));
+     ordered.sort((a,b)->Double.compare(order(a),order(b)));
+     for(JSONObject message:ordered)storeRecord(db,account,session,id,asked,message,synced);
+    }
    }
-   removeMessages(db,account.id,session,event.optJSONArray("deletedKeys"));
+   JSONArray deleted=event.optJSONArray("deletedKeys");
+   if(deleted!=null)for(int i=0;i<deleted.length();i++){
+    String key=deleted.getString(i);db.execSQL("DELETE FROM archive_records WHERE account=? AND session=? AND key=?",new Object[]{account.id,session,key});
+    db.execSQL("INSERT OR IGNORE INTO archive_deleted VALUES(?,?,?,?)",new Object[]{account.id,session,key,synced});
+    db.execSQL("UPDATE archive_deleted SET synced=MAX(synced,?) WHERE account=? AND session=? AND key=?",new Object[]{synced,account.id,session,key});
+   }
    db.setTransactionSuccessful();
   } finally { db.endTransaction(); }
- }
- private static void mergeTurn(JSONObject old,JSONObject incoming,long synced)throws JSONException {
-  JSONObject messages=old.optJSONObject("messages");
-  if(messages==null) messages=new JSONObject();
-  JSONArray updates=incoming.optJSONArray("messages");
-  if(updates!=null)for(int i=0;i<updates.length();i++) {
-   JSONObject update=updates.getJSONObject(i);
-   String key=update.getString("key");
-   JSONObject previous=messages.optJSONObject(key);
-   String version=update.getString("version");
-   if(version.isEmpty())throw new JSONException("Missing version");
-   if(previous==null||synced>=previous.optLong("_syncedAt")){
-    JSONObject parts=previous!=null&&version.equals(previous.optString("version"))?previous.optJSONObject("bodyParts"):null;
-    JSONObject imported=update.optJSONObject("bodyParts");
-    if(imported!=null){
-     if(parts==null)parts=new JSONObject();
-     for(java.util.Iterator<String> offsets=imported.keys();offsets.hasNext();){
-      String offset=offsets.next();
-      parts.put(offset,imported.getJSONObject(offset));
-     }
-    }
-    JSONObject part=update.optJSONObject("bodyPart");
-    if(part!=null){
-     if(parts==null)parts=new JSONObject();
-     parts.put(Long.toString(part.getLong("offset")),part);
-    }
-    update.remove("bodyPart");
-    if(parts!=null)update.put("bodyParts",parts);
-    update.put("_syncedAt",synced);messages.put(key,update);
-   }else if(version.equals(previous.optString("version"))){
-    JSONObject verified=update.optJSONObject("bodyParts");
-    if(verified!=null){
-     JSONObject parts=previous.optJSONObject("bodyParts");
-     if(parts==null)parts=new JSONObject();
-     for(java.util.Iterator<String> offsets=verified.keys();offsets.hasNext();){
-      String offset=offsets.next();
-      if(!parts.has(offset))parts.put(offset,verified.getJSONObject(offset));
-     }
-     previous.put("bodyParts",parts);
-    }
-   }
-  }
-  if(incoming.has("question"))old.put("question",incoming.getString("question"));
-  if(incoming.has("answer"))old.put("answer",incoming.getString("answer"));
-  old.put("messages",messages);
- }
- private static void removeMessages(SQLiteDatabase db,long account,String session,JSONArray deleted)throws JSONException {
-  if(deleted==null||deleted.length()==0)return;
-  String accountId=Long.toString(account);
-  try(Cursor row=db.rawQuery("SELECT id,length(content) FROM turns WHERE account=? AND session=? AND suppressed=0",new String[]{accountId,session})) {
-   while(row.moveToNext()) {
-    JSONObject content=readTurnContent(db,accountId,session,row.getString(0),row.getInt(1)),messages=content.optJSONObject("messages");
-    if(messages==null)continue;
-    boolean changed=false;
-    for(int i=0;i<deleted.length();i++)if(messages.remove(deleted.getString(i))!=null)changed=true;
-    if(changed){
-     content.remove("question");content.remove("answer");
-     db.execSQL("UPDATE turns SET content=? WHERE account=? AND session=? AND id=?",new Object[]{content.toString(),account,session,row.getString(0)});
-    }
-   }
-  }
  }
  List<Session> sessions(Account account) {
   List<Session> values=new ArrayList<>();
@@ -324,7 +465,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
    while(rows.moveToNext()){
     String id=rows.getString(0);long asked=rows.getLong(1);int length=rows.getInt(2);
     if(page.size()>=READER_PAGE||!page.isEmpty()&&(long)total+length>READER_CHARS){more=true;break;}
-    JSONObject content=readTurnContent(db,scope[0],session,id,length);
+    JSONObject content=turnContent(account,session,id);
     page.add(new JSONObject().put("id",id).put("questionTime",asked).put("content",content));
     next=new JSONArray().put(asked).put(id).toString();
     total+=length;
@@ -352,62 +493,35 @@ final class OfflineArchive extends SQLiteOpenHelper {
  JSONObject body(Account account,JSONObject command)throws JSONException {
   if(account==null||!"valid".equals(account.status))return null;
   JSONObject wanted=command.getJSONObject("body");
-  String key=wanted.getString("key"),version=wanted.getString("version");
-  String offset=Long.toString(wanted.getLong("offset"));
-  String accountId=Long.toString(account.id),session=command.getString("sessionId");
-  SQLiteDatabase db=getReadableDatabase();
-  try(Cursor rows=db.rawQuery("SELECT t.id,length(t.content) FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=?",
-      new String[]{accountId,session,Long.toString(account.epoch)})){
-   while(rows.moveToNext()){
-    JSONObject messages=readTurnContent(db,accountId,session,rows.getString(0),rows.getInt(1)).optJSONObject("messages");
-    JSONObject item=messages==null?null:messages.optJSONObject(key);
-    if(item==null||!version.equals(item.optString("version")))continue;
-    JSONObject parts=item.optJSONObject("bodyParts");
-    JSONObject part=parts==null?null:parts.optJSONObject(offset);
-    if(part!=null)return part.put("key",key).put("version",version);
-   }
+  String key=wanted.getString("key"),version=wanted.getString("version"),session=command.getString("sessionId");
+  JSONObject message=storedRecord(account,session,key,false);
+  if(message==null||!version.equals(message.optString("version")))return null;
+  try(Cursor row=getReadableDatabase().rawQuery("SELECT content FROM archive_parts WHERE account=? AND session=? AND key=? AND offset=? AND version=?",new String[]{""+account.id,session,key,""+wanted.getLong("offset"),version})){
+   return row.moveToFirst()?new JSONObject(row.getString(0)).put("key",key).put("version",version):null;
   }
-  return null;
  }
  JSONArray seed(Account account,JSONObject command)throws JSONException {
-  JSONArray result=new JSONArray();
-  if(account==null||!"valid".equals(account.status))return result;
-  Set<String> keys=stringSet(command.optJSONArray("keys")),ids=stringSet(command.optJSONArray("turnIds"));
-  String session=command.getString("sessionId");
-  int bytes=0;
-  String accountId=Long.toString(account.id);
-  SQLiteDatabase db=getReadableDatabase();
-  try(Cursor rows=db.rawQuery("SELECT t.id,t.asked,length(t.content) FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=? ORDER BY t.asked DESC,t.rowid DESC",
-      new String[]{accountId,session,Long.toString(account.epoch)})){
-   while(result.length()<100&&rows.moveToNext()){
-    String id=rows.getString(0);
-    JSONObject stored=readTurnContent(db,accountId,session,id,rows.getInt(2)),messages=stored.optJSONObject("messages");
-    if(messages==null)continue;
-    boolean includeTurn=ids.isEmpty()&&keys.isEmpty()||ids.contains(id);
-    JSONArray items=new JSONArray();
-    for(java.util.Iterator<String> it=messages.keys();it.hasNext();){
-     String key=it.next();
-     if(!includeTurn&&!keys.contains(key))continue;
-     JSONObject item=messages.getJSONObject(key);item.remove("_syncedAt");
-     JSONObject parts=item.optJSONObject("bodyParts");item.remove("bodyParts");
-     if(parts!=null){
-      JSONArray chunks=new JSONArray();long offset=0;
-      while(chunks.length()<2){
-       JSONObject part=parts.optJSONObject(Long.toString(offset));
-       if(part==null)break;
-       chunks.put(part);long next=part.optLong("next",-1);if(next<=offset)break;offset=next;
-      }
-      if(chunks.length()>0)item.put("bodyParts",chunks);
-     }
-     items.put(item);
-    }
-    if(items.length()==0)continue;
-    JSONObject turn=new JSONObject().put("id",id).put("questionTime",rows.getLong(1)).put("messages",items);
-    int size=turn.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-    if(bytes+size>512_000)continue;
-    result.put(turn);bytes+=size;
-   }
+  JSONArray result=new JSONArray();if(account==null||!"valid".equals(account.status))return result;
+  String session=command.getString("sessionId");JSONArray keys=command.optJSONArray("keys");
+  if(keys==null||keys.length()==0){
+   keys=new JSONArray();
+   try(Cursor rows=getReadableDatabase().rawQuery("SELECT key FROM archive_records WHERE account=? AND session=? ORDER BY asked DESC,turn DESC,position DESC,key DESC LIMIT 40",new String[]{""+account.id,session})){while(rows.moveToNext())keys.put(rows.getString(0));}
   }
+  JSONObject groups=new JSONObject();int bytes=0;
+  Set<String> ids=stringSet(command.optJSONArray("turnIds"));
+  for(int i=0;i<Math.min(100,keys.length());i++){
+   String key=keys.getString(i);JSONObject message=storedRecord(account,session,key,false);if(message==null)continue;
+   String turn;long asked;
+   try(Cursor row=getReadableDatabase().rawQuery("SELECT turn,asked FROM archive_records WHERE account=? AND session=? AND key=?",new String[]{""+account.id,session,key})){if(!row.moveToFirst())continue;turn=row.getString(0);asked=row.getLong(1);}
+   if(!ids.isEmpty()&&!ids.contains(turn))continue;
+   JSONArray parts=new JSONArray();
+   try(Cursor rows=getReadableDatabase().rawQuery("SELECT content FROM archive_parts WHERE account=? AND session=? AND key=? ORDER BY offset LIMIT 2",new String[]{""+account.id,session,key})){while(rows.moveToNext())parts.put(new JSONObject(rows.getString(0)));}
+   if(parts.length()>0)message.put("bodyParts",parts);
+   int size=message.toString().getBytes(StandardCharsets.UTF_8).length;if(bytes+size>512_000)break;bytes+=size;
+   JSONObject group=groups.optJSONObject(turn);if(group==null){group=new JSONObject().put("id",turn).put("questionTime",asked).put("messages",new JSONArray());groups.put(turn,group);}
+   group.getJSONArray("messages").put(message);
+  }
+  for(java.util.Iterator<String> names=groups.keys();names.hasNext();)result.put(groups.getJSONObject(names.next()));
   return result;
  }
  private static Set<String> stringSet(JSONArray input)throws JSONException {
@@ -476,6 +590,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
   Object[] scope={id,start,end};
   db.execSQL("UPDATE accounts SET clear_revision=clear_revision+1 WHERE id=?",new Object[]{id});
   db.execSQL("INSERT INTO transfer_clears(account,revision,start,end) SELECT id,clear_revision,?,? FROM accounts WHERE id=?",new Object[]{start,end,id});
+  db.execSQL("DELETE FROM archive_records WHERE account=? AND (session,turn) IN (SELECT session,id FROM turns WHERE account=? AND asked>=? AND asked<?)",new Object[]{id,id,start,end});
   db.execSQL("UPDATE turns SET content=NULL,suppressed=1 WHERE account=? AND asked>=? AND asked<? AND suppressed=0",scope);
   db.execSQL("INSERT OR IGNORE INTO sessions(account,id,title,synced,complete,epoch) SELECT t.account,t.session,'',0,0,a.epoch "+
       "FROM transfer_items t JOIN accounts a ON a.id=t.account WHERE t.account=? AND t.asked>=? AND t.asked<?",scope);
@@ -599,24 +714,13 @@ final class OfflineArchive extends SQLiteOpenHelper {
        new String[]{Long.toString(account.id),item.version,item.session,item.turn,key,key})){present=row.moveToFirst();}
   }else{
    String[] scope={Long.toString(account.id),item.session,Long.toString(account.epoch)};
-   try(Cursor row=db.rawQuery("SELECT length(t.content) FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id "+
-       "WHERE t.account=? AND t.session=? AND s.epoch=? AND t.id=? AND t.suppressed=0",new String[]{scope[0],scope[1],scope[2],item.turn})){
-    present=false;
-    if(row.moveToFirst()){
-     JSONObject messages=readTurnContent(db,scope[0],item.session,item.turn,row.getInt(0)).optJSONObject("messages");
-     JSONArray records=event.optJSONArray("records");
-     if(records!=null){
-      if(records.length()<1||records.length()>64)throw new JSONException("Invalid transfer record batch");
-      present=true;
-      for(int i=0;i<records.length();i++){
-       JSONObject record=records.getJSONObject(i),message=messages==null?null:messages.optJSONObject(record.getString("key"));
-       if(message==null||!message.optString("version").equals(record.getString("recordVersion"))||!completeMessage(message,record.getLong("textLength"))){present=false;break;}
-      }
-     }else{
-      JSONObject message=messages==null?null:messages.optJSONObject(event.optString("key"));
-      present=message!=null&&message.optString("version").equals(event.optString("recordVersion"))&&completeMessage(message,event.optLong("textLength",-1));
-     }
-    }
+   JSONArray records=event.optJSONArray("records");
+   if(records==null)records=new JSONArray().put(new JSONObject().put("key",event.getString("key")).put("recordVersion",event.getString("recordVersion")).put("textLength",event.optLong("textLength",-1)));
+   if(records.length()<1||records.length()>64)throw new JSONException("Invalid transfer record batch");
+   present=true;
+   for(int i=0;i<records.length();i++){
+    JSONObject record=records.getJSONObject(i),message=storedRecord(account,item.session,record.getString("key"),true);
+    if(message==null||!record.getString("recordVersion").equals(message.optString("version"))||!completeMessage(message,record.optLong("textLength",-1))){present=false;break;}
    }
   }
   long missing=present?0:Math.max(0,item.bytes-storedTransferBytes(account,item));

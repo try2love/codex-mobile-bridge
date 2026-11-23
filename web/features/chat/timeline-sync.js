@@ -100,7 +100,8 @@ class ChatTimelineSync {
     const index=page.index||[],recent=this.recent||[];
     const overlaps=(left,right)=>left.some(row=>right.some(other=>other.key===row.key));
     let joined=false;
-    if(recent.length&&index.length&&!overlaps(recent,index)&&page.before){
+    if(this.host.cached&&index.length){this.clearWindow();this.recent=[];this.recentRange=null;}
+    else if(recent.length&&index.length&&!overlaps(recent,index)&&page.before){
       const bridge=await this.read('older',{before:page.before,limit:21},source);
       if(!this.active())return;
       if(bridge&&overlaps(recent,bridge.index||[])){
@@ -136,7 +137,7 @@ class ChatTimelineSync {
     // A local archive has its own range cursors. Its rows may still have the
     // same native identities, which are sufficient to preserve on-screen order.
     const input=(page.rows||[]).filter(row=>!deleted.has(row.key));
-    if(this.target.offline){
+    if(this.target.offline||cached&&page.recordPage===1){
       // The local reader supplies process positions separately from its rows.
       const keys=new Set(input.map(row=>row.key));
       for(const turn of page.turns||[])for(const group of turn.processes||[]){

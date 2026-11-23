@@ -4,7 +4,7 @@ const fs=require('node:fs'),vm=require('node:vm');
 async function fixture(){
  const stored=new Map(),context=vm.createContext({window:{addEventListener(){},dispatchEvent(){}},
    sessionStorage:{getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)},
-   URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,BridgeI18n:{t:value=>value}});
+   CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,BridgeI18n:{t:value=>value}});
  for(const file of ['sync-cache.js','sync-transport.js'])vm.runInContext(fs.readFileSync('web/features/chat/'+file,'utf8'),context);
  const cache=context.window.BridgeChatSyncCache;
  await cache.bind({sessionSync:{version:1,gatewayId:'a'.repeat(32),identity:'b'.repeat(64)},listCacheIdentity:'fixture'});
@@ -71,4 +71,60 @@ test('a fresh online page can paint while an earlier cache commit is still pendi
   const result=await Promise.race([pending,new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
   assert.equal(result?.rows?.[0]?.text,f.row.text);
  }finally{release();await pending;await f.cache.pending.get(f.scope);}
+});
+
+
+test('native imports, state queries and writes cannot hold an authenticated online response',async()=>{
+ const f=await fixture(),calls=[];
+ f.window.CodexBridgeNativeOffline={request:command=>{calls.push(command.type);return new Promise(()=>{});}};
+ f.cache.known=()=>{throw Error('foreground must not import the archive');};
+ const target={scope:f.scope,url:'/fixture/sync',request:async()=>f.page,authorized:()=>true};
+ const page=await Promise.race([f.read(target,'recent',{},'manual',()=>true),new Promise(resolve=>setTimeout(()=>resolve(null),100))]);
+ assert.equal(page?.rows?.[0]?.text,f.row.text);
+ assert(calls.every(type=>type==='state'));
+});
+
+test('native foreground keeps resident versions for incremental refresh while persistence is pending',async()=>{
+ const f=await fixture();f.window.CodexBridgeNativeOffline={request:()=>new Promise(()=>{})};
+ let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async url=>{
+  if(requests++===0)return f.page;
+  assert(new URL(url,'https://fixture').searchParams.getAll('known').includes('answer:content'));
+  return {...f.page,rows:[],notModified:true};
+ }};
+ await f.read(target,'recent',{},'manual',()=>true);
+ const page=await f.read(target,'recent',{},'live',()=>true);
+ assert.equal(page.rows[0].text,f.row.text);assert.equal(page.files[0].path,'/audit/report.md');
+});
+
+test('clearing cached turns invalidates an in-flight native foreground response',async()=>{
+ const f=await fixture();f.window.CodexBridgeNativeOffline={request:async()=>({})};
+ let reply;const pending=new Promise(resolve=>{reply=resolve;});
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:()=>pending};
+ const read=f.read(target,'recent',{},'live',()=>true);
+ f.cache.cleared({[f.scope]:['turn']},false);reply(f.page);
+ assert.equal(await read,null);
+});
+
+
+test('a prior native deletion revision does not invalidate a newly authorized manual first screen',async()=>{
+ const f=await fixture(),events=[];
+ f.window.dispatchEvent=event=>events.push(event.type);
+ f.window.CodexBridgeNativeOffline={request:async()=>({clearRevision:'2',tombstones:{[f.cache.scopes.get(f.scope).sessionId]:['turn']}})};
+ f.cache.nativeState={clearRevision:'2'};
+ await f.cache.state(f.scope);
+ assert(!events.includes('bridge-cache-cleared'));
+ f.window.CodexBridgeNativeOffline.request=async()=>({clearRevision:'3',tombstones:{[f.cache.scopes.get(f.scope).sessionId]:['new-clear']}});
+ await f.cache.state(f.scope);
+ assert(events.includes('bridge-cache-cleared'));
+});
+
+
+test('a late native binding cannot persist a response after the account generation changes',async()=>{
+ const f=await fixture();f.window.CodexBridgeNativeOffline={request:async()=>({})};
+ let release;f.cache.nativeReady=new Promise(resolve=>{release=resolve;});
+ const validation=f.cache.onlineKnown(f.scope,'recent');
+ const writing=f.cache.commit(f.scope,'recent',{},f.page,{validation,source:'manual'});
+ f.cache.generation++;release({clearRevision:'0'});
+ assert.equal((await writing).discarded,true);
 });

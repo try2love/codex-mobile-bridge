@@ -56,7 +56,7 @@
   }
   const fields=(value,names)=>Object.fromEntries(names.filter(name=>value?.[name]!==undefined).map(name=>[name,value[name]]));
   const rowFields='key version id role kind turnId turnStatus order status title text timestamp phase truncated totalChars textLength byteLength attachments fileSummary activityFiles toolName model effort turnStartedAt turnCompletedAt turnCompletionKnown turnError originalQuestion interaction hasDetail processCursor detailCursor processCount count firstKey lastKey'.split(' ');
-  const safeRow=row=>fields(row,rowFields);
+  const safeRow=row=>fields({...row,phase:row.phase||(row.role==='assistant'&&row.forkable===true?'final_answer':undefined)},rowFields);
   const safePage=page=>({
     ...fields(page,['version','sourceVersion','key','group','before','after','next','hasMore','hasEarlier','hasLater','previous','range','turns','offset','limit','sequence','epoch','reset']),
     index:(page.index||[]).map(item=>safeRow(item)),
@@ -81,7 +81,7 @@
         };
       }
       try{this.epoch=Number(sessionStorage.getItem('bridge-cache-access-epoch'))||0;}catch{}
-      this.verified=new Set();this.seeded=new Map();this.scopes=new Map();this.generation=0;this.pending=new Map();
+      this.verified=new Set();this.seeded=new Map();this.scopes=new Map();this.generation=0;this.pending=new Map();this.resident=new Map();
     }
     supported(){return !!this.owner;}
     requireValidation(){
@@ -108,7 +108,7 @@
       const sync=auth?.sessionSync,valid=sync?.version===1&&/^[a-f0-9]{32}$/.test(sync.gatewayId)&&/^[a-f0-9]{64}$/.test(sync.identity);
       const tag=auth?.listCacheIdentity||'';
       if(this.owner?.gatewayId===sync?.gatewayId&&this.owner?.identity===sync?.identity&&tag===this.login&&valid)return;
-      this.generation++;this.verified.clear();this.seeded.clear();this.scopes.clear();
+      this.generation++;this.verified.clear();this.seeded.clear();this.scopes.clear();this.resident.clear();
       this.owner=valid?{gatewayId:sync.gatewayId,identity:sync.identity}:null;this.login=tag;this.name=auth?.computer?.name||'';
       window.BridgeSyncPrefetch?.reset();
       if(this.owner){this.lastOwner=this.owner;this.nativeState=null;
@@ -116,28 +116,93 @@
         if(!this.hasLegacy&&globalThis.indexedDB?.databases)
           this.hasLegacy=indexedDB.databases().then(names=>names.some(db=>db.name==='bridge-chat-history')).catch(()=>true);
         try{sessionStorage.setItem('bridge-last-cache-owner',JSON.stringify(this.owner));}catch{}
-        if(native())await this.event('auth',{status:'valid'}).catch(()=>null);
+        if(native()){
+          const owner=this.owner;
+          this.nativeReady=this.event('auth',{status:'valid'}).then(state=>{if(this.owner===owner)this.nativeState=state;return state;}).catch(()=>null);
+        }
       }
     }
     async suspend(status){
       const owner=this.owner||this.lastOwner||(()=>{try{return JSON.parse(sessionStorage.getItem('bridge-last-cache-owner'));}catch{return null;}})();
-      this.generation++;this.requireValidation();this.seeded.clear();this.scopes.clear();this.owner=null;this.nativeState=null;
+      this.generation++;this.requireValidation();this.seeded.clear();this.scopes.clear();this.resident.clear();this.owner=null;this.nativeState=null;
       window.BridgeSyncPrefetch?.reset();
       if(owner&&native())await native().request({type:'auth',...owner,status}).catch(()=>{});
     }
     event(type,extra={}){return native().request({type,...this.owner,...extra});}
     active(scope){return !!this.owner&&this.scopes.has(scope);}
+    memory(scope){
+      let memory=this.resident.get(scope);
+      if(!memory){
+        memory={rows:new Map(),pages:new Map(),bans:new Set(),revision:0};this.resident.set(scope,memory);
+        if(this.resident.size>20)this.resident.delete(this.resident.keys().next().value);
+      }
+      return memory;
+    }
+    onlineKnown(scope,mode,params={},source='manual'){
+      const out=new URLSearchParams(),memory=this.memory(scope);
+      Object.assign(out,{network:true,generation:this.generation,epoch:this.epoch,source,revision:memory.revision,
+        clearRevision:this.nativeState?.clearRevision,nativeBinding:this.nativeReady,resident:new Map(memory.rows),bans:new Set(memory.bans)});
+      if(!this.active(scope)){out.skip=true;return out;}
+      if(source!=='manual')for(const turn of memory.bans)out.append('omitTurn',turn);
+      const page=memory.pages.get(pageKey(mode,params));
+      for(const row of [...memory.rows.values()].slice(-80)){
+        if(source!=='manual'&&memory.bans.has(row.turnId))continue;
+        out.append('known',row.key+':'+row.version);
+      }
+      if(page?.version&&!memory.bans.size&&page.index?.every(row=>memory.rows.get(row.key)?.version===row.version))out.set('ifVersion',page.version);
+      // The next response may send a complete page if the resident hints exceed the URL budget.
+      if(out.toString().length>6500){out.delete('known');out.delete('ifVersion');out.delete('omitTurn');}
+      return out;
+    }
+    onlinePage(scope,mode,params,wire,validation){
+      if(!this.active(scope)||validation.generation!==this.generation||validation.epoch!==this.epoch)return {discarded:true};
+      const memory=this.memory(scope);
+      if(validation.revision!==memory.revision)return {discarded:true};
+      if(mode==='body')return wire.notModified?null:wire;
+      const prior=memory.pages.get(pageKey(mode,params)),index=wire.index||(wire.notModified?prior?.index:null);
+      if(!Array.isArray(index))return wire;
+      const updates=new Map((wire.rows||wire.items||[]).map(row=>[row.key,row])),rows=[],kept=[];
+      for(const item of index){
+        if(validation.source!=='manual'&&memory.bans.has(item.turnId))continue;
+        const content=updates.get(item.key)||validation.resident.get(item.key);
+        if(content?.version!==item.version||content.textRef)return null;
+        const row={...content,...item};rows.push(row);kept.push(item);
+      }
+      for(const key of wire.deleted||[])memory.rows.delete(key);
+      for(const row of rows){memory.rows.delete(row.key);memory.rows.set(row.key,safeRow(row));}
+      while(memory.rows.size>400)memory.rows.delete(memory.rows.keys().next().value);
+      if(validation.source==='manual')for(const row of rows)memory.bans.delete(row.turnId);
+      const page={...wire,index:kept,rows,...(mode==='process'?{items:rows}:{})};
+      memory.pages.set(pageKey(mode,params),safePage(page));
+      while(memory.pages.size>30)memory.pages.delete(memory.pages.keys().next().value);
+      return page;
+    }
+    async localPreview(scope){
+      if(!this.active(scope))return null;
+      if(!native())return this.read(scope,'recent',{});
+      const owner=this.owner,gen=this.generation,epoch=this.epoch;
+      const state=await this.nativeReady;
+      if(state?.recordPages!==1||owner!==this.owner||gen!==this.generation||epoch!==this.epoch)return null;
+      const payload=await this.event('read',{page:true,sessionId:this.scopes.get(scope)?.sessionId});
+      if(owner!==this.owner||gen!==this.generation||epoch!==this.epoch||!this.active(scope))return null;
+      const page=payload?.page;
+      if(page?.recordPage!==1)return null;
+      // The renderer consumes cached rows only; live metadata remains authoritative.
+      return window.OfflineChatReader?.projectPage(page)||null;
+    }
     async state(scope){
       if(!isPhone())return {};
       if(!native()||!this.active(scope))return null;
       try{
         const state=await this.event('state',{sessionId:this.scopes.get(scope).sessionId});
         if(!state||!this.active(scope))return null;
-        await this.applyNativeClear(scope,state);
+        const changed=this.nativeState?.clearRevision!==undefined&&this.nativeState.clearRevision!==state.clearRevision;
+        this.nativeState=state;
+        await this.applyNativeClear(scope,state,changed);
         return state;
       }catch{return null;}
     }
-    async applyNativeClear(scope,state){
+    async applyNativeClear(scope,state,announce=true){
       const session=this.scopes.get(scope)?.sessionId||JSON.stringify(JSON.parse(scope).slice(2));
       const gone=state?.tombstones?.[session]||[];
       if(!gone.length)return;
@@ -147,7 +212,7 @@
       ops.push(record(scope,'local','removed',[...new Set([...(removed||[]),...fresh])]),
         record(scope,'local','revision',rev+1));
       if(await this.disk.change(scope,ops,rev)){
-        this.cleared({[scope]:fresh});
+        if(announce)this.cleared({[scope]:fresh});
         const [catalog]=await this.disk.get(scope,'catalog',['session']);
         const legacy=this.scopes.get(scope)?.legacyScope||catalog?.legacyScope;
         if(legacy)await window.BridgeChatHistoryCache?.forget(legacy);
@@ -155,6 +220,12 @@
     }
     cleared(turnsByScope,broadcast=true){
       if(!Object.keys(turnsByScope).length)return;
+      for(const [scope,turns] of Object.entries(turnsByScope)){
+        const memory=this.resident.get(scope);if(!memory)continue;
+        memory.revision++;for(const turn of turns)memory.bans.add(turn);
+        for(const [key,row] of memory.rows)if(memory.bans.has(row.turnId))memory.rows.delete(key);
+        memory.pages.clear();
+      }
       const detail={turnsByScope};
       if(broadcast)this.channel?.postMessage(detail);
       window.dispatchEvent(new CustomEvent('bridge-cache-cleared',{detail}));
@@ -174,10 +245,12 @@
       const owner=this.owner,state=await this.event('state');
       if(!state||this.owner!==owner)return;
       if(!Object.values(state.tombstones||{}).some(ids=>ids.length))return;
+      const changed=this.nativeState?.clearRevision!==undefined&&this.nativeState.clearRevision!==state.clearRevision;
+      this.nativeState=state;
       const catalogs=await this.disk.list('catalog');
       for(const {scope} of catalogs){
         const [gateway,identity]=JSON.parse(scope);
-        if(gateway===owner.gatewayId&&identity===owner.identity)await this.applyNativeClear(scope,state);
+        if(gateway===owner.gatewayId&&identity===owner.identity)await this.applyNativeClear(scope,state,changed);
       }
     }
     legacy(scope,legacyScope){
@@ -388,7 +461,7 @@
     }
     write(scope,mode,params,wire,options={}){
       const prior=this.pending.get(scope)||Promise.resolve();
-      const early=mode==='recent'&&options.source!=='prefetch'&&options.validation
+      const early=mode==='recent'&&options.source!=='prefetch'&&options.validation&&!options.validation.network
         ?this.preview(scope,wire,options).then(page=>page||job):null;
       const job=prior.catch(()=>{}).then(()=>this.commit(scope,mode,params,wire,options)).finally(()=>{
         if(this.pending.get(scope)===job)this.pending.delete(scope);
@@ -422,9 +495,16 @@
     async commit(scope,mode,params,wire,{validation,source='manual',title}){
       const discard={discarded:true,index:[],rows:[],items:[],files:[],turns:[],meta:{}};
       if(!this.active(scope)||validation&&(validation.generation!==this.generation||validation.epoch!==this.epoch))return discard;
+      if(validation?.network&&isPhone()&&validation.clearRevision===undefined){
+        const binding=await validation.nativeBinding;
+        if(binding?.clearRevision===undefined)return discard;
+        validation={...validation,clearRevision:binding.clearRevision};
+      }
+      if(!this.active(scope)||validation&&(validation.generation!==this.generation||validation.epoch!==this.epoch))return discard;
       const gen=this.generation,key=pageKey(mode,params),state=await this.state(scope);
       const [revision,removed]=await this.disk.get(scope,'local',['revision','removed']),rev=revision||0;
-      if(validation&&(validation.revision!==rev||isPhone()&&validation.clearRevision!==state?.clearRevision))return discard;
+      if(validation&&(validation.network?validation.revision!==this.memory(scope).revision:validation.revision!==rev))return discard;
+      if(validation&&isPhone()&&(validation.clearRevision===undefined||validation.clearRevision!==state?.clearRevision))return discard;
       if(isPhone()&&!state)return wire.notModified||wire.unchanged?.length?null:wire;
       const sessionId=this.scopes.get(scope).sessionId,bans=new Set([...(removed||[]),...(state?.tombstones?.[sessionId]||[])]);
       const options={source,legacyScope:this.scopes.get(scope)?.legacyScope,title:title||wire.session?.title||wire.meta?.title||'',sessionId,clearRevision:state?.clearRevision};

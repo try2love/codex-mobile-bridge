@@ -394,6 +394,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                         }
                         return
                     }
+                    archive.scheduleMigration(entry, session: event["sessionId"] as? String)
                     if (type == "auth" || type == "appearance"), let appearance = event["appearance"] as? [String: Any] {
                         try archive.saveAppearance(entry, appearance)
                     }
@@ -409,6 +410,11 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                         return
                     }
                     if type == "read" {
+                        if event["page"] as? Bool == true, let session = event["sessionId"] as? String {
+                            let page = try archive.recordPage(entry, session: session, event: event)
+                            DispatchQueue.main.async { respond(["page": page as Any? ?? NSNull()]) }
+                            return
+                        }
                         if event["body"] != nil {
                             let part = try archive.body(entry, event: event)
                             DispatchQueue.main.async { respond(["body": part as Any? ?? NSNull()]) }
@@ -422,7 +428,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     let tombstones = try archive.tombstones(entry, session: session)
                     let hasCache = session.isEmpty ? nil : try archive.hasCachedSession(entry, session: session)
                     DispatchQueue.main.async {
-                        var state: [String: Any] = ["foreground": self.offlineForeground, "allowPrefetch": self.offlinePrefetch,
+                        var state: [String: Any] = ["recordPages": 1, "foreground": self.offlineForeground, "allowPrefetch": self.offlinePrefetch,
                                                     "allowTransfer": self.allowHistoryTransfer, "networkEpoch": self.networkEpoch,
                                                     "clearRevision": entry.clearRevision, "tombstones": tombstones]
                         if let hasCache { state["hasCachedSession"] = hasCache }
@@ -2449,6 +2455,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
 
     private func offlinePayload(_ archive: OfflineArchive, account: OfflineArchive.Account,
                                 action: String, input: [String: Any]) throws -> [String: Any]? {
+        archive.scheduleMigration(account, session: input["sessionId"] as? String)
         if action == "list" {
             let language = (defaults.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh").hasPrefix("en") ? "en" : "zh"
             let sessions = try archive.sessions(account).map {
@@ -2457,7 +2464,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             return ["name": account.name, "lang": language, "sessions": sessions]
         }
         guard let id = input["sessionId"] as? String, id.utf8.count <= 4096 else { return nil }
-        return try archive.readerPage(account, session: id, before: input["before"] as? String)
+        return try archive.recordPage(account, session: id, event: input)
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -2506,7 +2513,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     case "attachmentOpen":
                         attachment = try offlineArchive.exportTransferAttachment(account, input, name: Self.offlineAttachmentName(input))
                     case "reconnect":
-                        if let sessionId, try offlineArchive.readerPage(account, session: sessionId, before: nil) == nil {
+                        if let sessionId, try offlineArchive.recordPage(account, session: sessionId, event: [:]) == nil {
                             authorized = false
                         }
                     default: break

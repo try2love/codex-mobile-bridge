@@ -1,10 +1,86 @@
 import Foundation
 import CryptoKit
+import SQLite3
 
 @main
 struct OfflineArchiveTests {
     static func check(_ result: Bool, _ reason: String) {
         guard result else { fatalError(reason) }
+    }
+    static func migrationChecks(_ archive: OfflineArchive, _ url: URL) throws {
+        let account=try archive.bind(address:"https://migration.example",name:"Migration",gateway:"migration",identity:"owner")
+        var connection: OpaquePointer?
+        check(sqlite3_open(url.path,&connection)==SQLITE_OK,"open isolated fixture database")
+        defer {sqlite3_close(connection)}
+        func sql(_ statement:String,_ values:[String]=[]) {
+            var query:OpaquePointer?
+            check(sqlite3_prepare_v2(connection,statement,-1,&query,nil)==SQLITE_OK,"prepare migration fixture")
+            defer {sqlite3_finalize(query)}
+            for (index,value) in values.enumerated(){
+                _ = value.withCString {sqlite3_bind_text(query,Int32(index+1),$0,-1,unsafeBitCast(-1,to:sqlite3_destructor_type.self))}
+            }
+            check(sqlite3_step(query)==SQLITE_DONE,"write migration fixture")
+        }
+        sql("INSERT INTO sessions VALUES(?,'legacy','Legacy',100,1,?)",[String(account.id),String(account.epoch)])
+        let text=String(repeating:"Large body 🚀",count:350_000)
+        let raw=String(data:try JSONSerialization.data(withJSONObject:["messages":[
+            "legacy-body":["key":"legacy-body","version":"v1","role":"assistant","order":1,"text":text,"_syncedAt":10],
+            "deleted":["key":"deleted","version":"v1","role":"user","order":0,"text":"removed","_syncedAt":10]
+        ]]),encoding:.utf8)!
+        sql("INSERT INTO turns VALUES(?,'legacy','old',100,?,0)",[String(account.id),raw])
+        try archive.merge(account,event:["sessionId":"legacy","clearRevision":account.clearRevision,"syncedAt":Int64(20),"turns":[[String:Any]](),"deletedKeys":["deleted"]],manual:true)
+        let before=try archive.recordPage(account,session:"legacy",event:[:])!
+        check((before["rows"] as! [[String:Any]]).isEmpty && before["migrating"] as? Bool == true,"legacy conversion never runs inside a foreground read")
+        check(try archive.migrateBatch(account),"one legacy turn converts")
+        check(try !archive.migrateBatch(account),"successful migration removes the legacy work item")
+        let page=try archive.recordPage(account,session:"legacy",event:[:])!,rows=page["rows"] as! [[String:Any]]
+        check(rows.count==1 && rows[0]["key"] as? String=="legacy-body","late conversion cannot resurrect a deleted message")
+        check((rows[0]["text"] as! String).unicodeScalars.count==6000,"large legacy bodies remain bounded in the first page")
+        var offset:Int64=0,restored=""
+        while true {
+            let piece=try archive.body(account,event:["sessionId":"legacy","body":["key":"legacy-body","version":"v1","offset":offset]])!
+            let value=piece["text"] as! String
+            check(value.unicodeScalars.count<=16000,"body chunks are bounded independently of the turn")
+            restored+=value
+            if piece["next"] is NSNull {break}
+            offset=(piece["next"] as! NSNumber).int64Value
+        }
+        check(restored==text,"all legacy body chunks preserve the exact Unicode text")
+        try archive.merge(account,event:["sessionId":"legacy","clearRevision":account.clearRevision,"syncedAt":Int64(30),"turns":[["id":"old","questionTime":Int64(100),"messages":[["key":"legacy-body","version":"v2","role":"assistant","text":"new","row":["text":"new"]]]]]],manual:true)
+        check(try archive.body(account,event:["sessionId":"legacy","body":["key":"legacy-body","version":"v1","offset":Int64(0)]]) == nil,"new message versions invalidate old body parts")
+        sql("INSERT INTO turns VALUES(?,'legacy','broken',200,'invalid json',0)",[String(account.id)])
+        do {_ = try archive.migrateBatch(account);fatalError("invalid legacy JSON accepted")}catch {}
+        var query:OpaquePointer?;sqlite3_prepare_v2(connection,"SELECT content FROM turns WHERE id='broken'",-1,&query,nil)
+        check(sqlite3_step(query)==SQLITE_ROW && String(cString:sqlite3_column_text(query,0))=="invalid json","failed conversion retains its original bytes")
+        sqlite3_finalize(query)
+        print("Message migration: multi-MB legacy body preserved, bounded pages, deletion fence, version invalidation, atomic failure passed")
+    }
+    static func recordStoreChecks(_ archive: OfflineArchive, _ account: OfflineArchive.Account) throws {
+        var messages: [[String: Any]] = []
+        for index in 0..<2000 {
+            let key = "record-\(index)"
+            let row: [String: Any] = ["key": key, "version": "v", "role": index == 0 ? "user" : index == 1999 ? "assistant" : "activity",
+                "order": index, "turnId": "large", "turnStatus": "completed", "turnCompletionKnown": true,
+                "phase": index == 1999 ? "final_answer" : "", "kind": index == 1 ? "processPage" : "commandExecution", "text": key]
+            messages.append(["key": key, "version": "v", "role": row["role"]!, "order": index, "row": row, "text": key])
+        }
+        // The explicit process marker precedes children but is not itself a tool step.
+        var marker = messages[1]; var markerRow = marker["row"] as! [String: Any]
+        markerRow["role"] = "activity";marker["row"] = markerRow;messages[1] = marker
+        let event: [String: Any] = ["sessionId": "records", "title": "Records", "clearRevision": account.clearRevision,
+            "syncedAt": Int64(100), "complete": true, "turns": [["id": "large", "questionTime": Int64(100), "messages": messages]]]
+        try archive.merge(account, event: event, manual: true)
+        let page = try archive.recordPage(account, session: "records", event: [:])!
+        let rows = page["rows"] as! [[String: Any]]
+        check(rows.count <= 40 && rows.contains { $0["key"] as? String == "record-1999" }, "first page contains the final message without loading process children")
+        check(page["readRecords"] as? Int == 3, "first screen reads three visible records rather than two thousand")
+        let process = try archive.recordPage(account, session: "records", event: ["mode": "process", "key": "record-1"])!
+        check((process["rows"] as! [[String: Any]]).count <= 40 && process["next"] is String, "process is directly pageable")
+        let keys = try archive.seed(account, event: ["sessionId": "records", "keys": ["record-1998"]])
+        check(keys.count == 1 && (keys[0]["messages"] as! [[String: Any]]).count == 1, "key lookup reads exactly the requested record")
+        var update = event;update["syncedAt"] = Int64(101);update["turns"] = []
+        update["deletedKeys"] = ["record-1998"];try archive.merge(account, event: update, manual: false)
+        check(try archive.seed(account, event: ["sessionId": "records", "keys": ["record-1998"]]).isEmpty, "incremental deletion removes the indexed record")
     }
     static func main() throws {
         let testURL = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -29,6 +105,8 @@ struct OfflineArchiveTests {
         func seed(_ account: OfflineArchive.Account, _ session: String = "session") throws -> [[String: Any]] {
             try archive.seed(account, event: ["sessionId": session])
         }
+        try migrationChecks(archive,testURL)
+        try recordStoreChecks(archive, account)
         try merge(part: ["offset": 0, "text": "ab", "next": 2])
         try merge(time: 0, part: ["offset": 2, "text": "cd", "next": NSNull()])
         try merge(id: "b", time: 300)
@@ -163,7 +241,16 @@ struct OfflineArchiveTests {
         let rows = page["turns"] as! [[String: Any]]
         let content = rows[0]["content"] as! [String: Any]
         let message = (content["messages"] as! [String: [String: Any]])["row"]!
-        check((message["bodyParts"] as? [String: [String: Any]])?["1"]?["text"] as? String == text, "full body survives commit with scalar offsets")
+        let savedParts=message["bodyParts"] as! [String:[String:Any]]
+        var restored="",partOffset=Int64(0)
+        while let part=savedParts[String(partOffset)] {
+            let value=part["text"] as! String
+            check(value.unicodeScalars.count<=16000,"received body parts are normalized to bounded reads")
+            restored+=value
+            if part["next"] is NSNull {break}
+            partOffset=(part["next"] as! NSNumber).int64Value
+        }
+        check(restored=="😀"+text,"full body survives commit with scalar offsets")
 
         let image = Data(repeating: 42, count: OfflineArchive.transferChunkBytes + 11)
         let attachment = event(image, kind: "attachment")

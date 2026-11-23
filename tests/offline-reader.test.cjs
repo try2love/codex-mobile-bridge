@@ -47,3 +47,28 @@ test('offline final-answer presentation survives removing write capabilities',as
 test('missing offline process is reported rather than silently returned as complete',async()=>{
   const f=fixture();await f.request('recent');await assert.rejects(f.request('process',{key:'other-epoch.missing'}));
 });
+
+
+test('message pages keep first screen bounded and fetch process/body pages on demand',async()=>{
+ const f=fixture(),reader=f.reader;
+ const first={recordPage:1,id:f.archiveId,title:'Record pages',syncedAt:2000,rows:[
+  {key:'question',version:'v',turnId:'turn',role:'user',order:0,text:'Question'},
+  {key:'answer',version:'v',turnId:'turn',role:'assistant',phase:'final_answer',order:2,text:'Preview',truncated:true}
+ ],turns:[{id:'turn',processes:[{key:'group',version:'v',order:1,processCursor:'group'}]}],before:'older',hasMore:true};
+ const calls=[];reader.enableHot(async(action,input)=>{
+  calls.push({action,...input});
+  if(action==='list')return {sessions:[{id:f.archiveId,title:'Record pages'}]};
+  if(input.mode==='process')return {...first,rows:[{key:'tool',version:'v',turnId:'turn',role:'activity',order:0,text:'Tool'}],next:input.after?null:'next',hasMore:!input.after};
+  if(input.mode==='body')return {key:'answer',version:'v',offset:0,text:'Full answer',next:null};
+  if(input.before)return {...first,rows:[{key:'older',version:'v',turnId:'old',role:'user',order:0,text:'Older'}],turns:[],before:null};
+  return first;
+ });
+ const page=await f.request('recent');assert.equal(page.rows.length,2);assert.equal(calls.length,2);
+ assert.equal(page.rows[1].truncated,true);assert.equal(page.rows[1].forkable,false);assert.equal(page.rows[1].detailCursor,'answer');
+ const process=await f.request('process',{key:'online.group'});assert.equal(process.next,'next');
+ assert.equal(process.rows[0].key,'tool');
+ await f.request('process',{key:'online.group',after:process.next});
+ assert.equal(calls.at(-1).after,'next');
+ const body=await f.request('body',{key:'epoch.answer',version:'v',offset:0});assert.equal(body.text,'Full answer');
+ const older=await f.request('older',{before:'older'});assert(older.rows[0].order<page.rows[0].order);
+});

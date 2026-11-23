@@ -187,7 +187,7 @@ test('complete transferred history remains readable offline with every intermedi
 });
 
 
-test('versioned Android injection opens a real chat through the native port without prompt dialogs',async({page,context},info)=>{
+for(const savedPreview of [false,true])test('versioned Android native port: '+(savedPreview?'local first screen precedes the network':'hung archive never blocks online content'),async({page,context},info)=>{
  const root=path.resolve(__dirname,'../..'),server=spawn('python3',['-B','tests/browser/session-transfer-http-fixture.py','--provider','codex'],{cwd:root});
  const lines=createInterface({input:server.stdout});
  try{
@@ -199,10 +199,15 @@ test('versioned Android injection opens a real chat through the native port with
     window.nativePortCalls=[];
     ${source}
     document.addEventListener('DOMContentLoaded',()=>{
-      const channel=new MessageChannel(),state={foreground:true,allowPrefetch:false,allowTransfer:true,networkAvailable:true,clearRevision:'0',freeBytes:1e9};
+      const channel=new MessageChannel(),state={foreground:true,allowPrefetch:false,allowTransfer:true,networkAvailable:true,clearRevision:'0',freeBytes:1e9,recordPages:1};
       channel.port1.onmessage=event=>{
         if(event.data==='ready'){channel.port1.postMessage(JSON.stringify({state}));return;}
         const call=JSON.parse(event.data);nativePortCalls.push(call.type);
+        if(call.type==='read'&&${savedPreview}){
+          const page={recordPage:1,id:call.sessionId,title:'Saved chat',syncedAt:1,rows:[{key:'cached-answer',version:'v',turnId:'cached-turn',role:'assistant',phase:'final_answer',order:0,text:'Native cached first screen'}],turns:[{id:'cached-turn',status:'completed',completionKnown:true,processes:[]}],before:null,hasMore:false};
+          channel.port1.postMessage(JSON.stringify({id:call.requestId,ok:true,value:{page}}));return;
+        }
+        if(call.type==='read'||call.type==='merge')return; // Deliberately hung archive lane.
         const value=['state','auth','transferStats'].includes(call.type)?state:call.type==='read'?{turns:[]}:call.type==='body'?null:call.type==='transferTaskLoad'?{task:null}:{saved:true};
         channel.port1.postMessage(JSON.stringify({id:call.requestId,ok:true,value}));
       };
@@ -211,10 +216,44 @@ test('versioned Android injection opens a real chat through the native port with
   await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
   await page.goto(origin);
   await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+  let release;const ready=new Promise(resolve=>{release=resolve;});
+  if(savedPreview)await page.route('**/sync?*',async route=>{if(new URL(route.request().url()).searchParams.get('mode')==='recent')await ready;await route.continue();});
   await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).click();
+  if(savedPreview){try{await expect(page.locator('#messages').getByText('Native cached first screen',{exact:true})).toBeVisible();}finally{release();}}
   await expect(page.locator('#messages').getByText('Answer 89',{exact:true})).toBeVisible();
   const native=await page.evaluate(()=>({prompts:nativePrompts,calls:nativePortCalls,foreground:BridgeChatForeground}));
   expect(native.prompts).toEqual([]);expect(native.calls).toContain('auth');expect(native.calls).toContain('read');expect(native.foreground).toBe(true);
   await page.screenshot({path:info.outputPath('android-versioned-native-chat.png')});
  }finally{lines.close();server.kill('SIGTERM');}
+});
+
+
+test('normalized offline pages render process pagination and body pieces without full-turn JSON',async({page},info)=>{
+ await page.goto('/?case=session-menu');await page.waitForFunction(()=>document.getElementById('app')?.hidden===false);
+ await page.evaluate(()=>BridgeFeatures.load('chat'));
+ await page.evaluate(async()=>{
+  const archiveId=JSON.stringify(['codex','local','record-native']),turn='record-turn';
+  const row=(key,role,order,text,fields={})=>({key,version:'v',role,order,text,turnId:turn,turnStatus:'completed',turnCompletionKnown:true,turnStartedAt:1700000000000,turnCompletedAt:1700000002000,...fields});
+  window.recordCalls=[];
+  OfflineChatReader.enableHot(async(action,input)=>{
+   recordCalls.push({action,...input});
+   if(action==='list')return {sessions:[{id:archiveId,title:'Normalized native records'}]};
+   if(input.mode==='body')return {key:'thought',version:'v',offset:0,text:'Full local reasoning sentinel',next:null};
+   if(input.mode==='process')return {recordPage:1,id:archiveId,rows:input.after?[row('tool','activity',0,'Last process page sentinel',{kind:'commandExecution'})]:[row('thought','reasoning',0,'Preview',{kind:'reasoning',truncated:true})],next:input.after?null:'next-process',hasMore:!input.after};
+   return {recordPage:1,id:archiveId,title:'Normalized native records',rows:[row('question','user',0,'Saved question'),row('final','assistant',2,'Message-level final answer',{phase:'final_answer'})],turns:[{id:turn,status:'completed',completionKnown:true,startedAt:1700000000000,completedAt:1700000002000,processes:[{key:'group',version:'v',order:1,processCursor:'group'}]}],before:null,hasMore:false};
+  });
+  await loadList(true);
+ });
+ const network=[];await page.route('**/api/**',route=>{network.push(route.request().url());return route.abort();});
+ await page.locator('#sessions .session').filter({hasText:'Normalized native records'}).click();
+ const messages=page.locator('#messages');await expect(messages.getByText('Message-level final answer',{exact:true})).toBeVisible();
+ expect((await page.evaluate(()=>recordCalls)).filter(call=>call.mode==='process')).toHaveLength(0);
+ await messages.locator('.chat-turn-completion').click();
+ const tool=messages.locator('details.activity').filter({hasText:'Last process page sentinel'});
+ await tool.locator('summary').click();
+ await expect(tool.locator('.activity-body')).toContainText('Last process page sentinel');
+ const reasoning=messages.locator('details.activity').filter({hasText:'Preview'});await reasoning.locator('summary').click();
+ await expect(messages.getByText('Full local reasoning sentinel',{exact:true})).toBeVisible();
+ expect(await messages.getByRole('button',{name:'加载后续过程',exact:true}).count()).toBe(0);
+ expect(network).toEqual([]);await page.screenshot({path:info.outputPath('normalized-offline-records.png')});
 });

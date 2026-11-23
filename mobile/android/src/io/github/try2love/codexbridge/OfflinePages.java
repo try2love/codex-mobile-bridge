@@ -240,6 +240,7 @@ final class OfflinePages {
       });
       return;
      }
+     bridge.scheduleMigration(account,session);
      JSONObject value;
      if(listing){
       JSONArray sessions=new JSONArray();
@@ -253,7 +254,7 @@ final class OfflinePages {
      }else if(attachment){
       JSONObject part=archive.transferAttachment(account,input);
       value=part==null?new JSONObject():part;
-     }else value=archive.readerSession(account,session,before);
+     }else value=archive.recordPage(account,session,input);
      owner.runOnUiThread(()->{
       if(!current(item)||item.visibility!=visibility)return;
       if(!attachment){

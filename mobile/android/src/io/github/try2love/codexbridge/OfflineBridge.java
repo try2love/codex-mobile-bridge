@@ -33,7 +33,10 @@ final class OfflineBridge {
  private final ExecutorService work=Executors.newSingleThreadExecutor();
  private final OfflineArchive archive;
  private final ExecutorService transfer=Executors.newSingleThreadExecutor();
- private boolean transferActive, closing;
+ private boolean transferActive;
+ private volatile boolean closing;
+ private final Set<Long> migrating=new HashSet<>();
+ private final java.util.Map<Long,String> migrationFocus=new java.util.HashMap<>();
  private static final Set<String> TRANSFER_COMMANDS=new HashSet<>(Arrays.asList(
     "transferStats","transferTaskLoad","transferTaskSave","transferCached","transferChunkHas","transferChunkGet",
     "transferChunkPut","transferChunkFetch","transferRecordCommit","transferAttachmentCommit","transferSessionComplete","transferAttachment","transferAttachmentOpen"));
@@ -116,7 +119,7 @@ final class OfflineBridge {
   publish();
  }
  private JSONObject state(OfflineArchive.Account account,String session)throws Exception {
-  JSONObject result=new JSONObject().put("foreground",foreground).put("allowPrefetch",eligible&&foreground).put("networkAvailable",networkAvailable).put("allowTransfer",transferAllowed).put("networkEpoch",networkEpoch);
+  JSONObject result=new JSONObject().put("recordPages",1).put("foreground",foreground).put("allowPrefetch",eligible&&foreground).put("networkAvailable",networkAvailable).put("allowTransfer",transferAllowed).put("networkEpoch",networkEpoch);
   if(account!=null){
    result.put("clearRevision",Long.toString(account.clearRevision)).put("tombstones",archive.tombstones(account,session));
    if(!session.isEmpty())result.put("hasCachedSession",archive.hasCachedSession(account,session));
@@ -165,6 +168,7 @@ final class OfflineBridge {
      });
      return;
     }
+    scheduleMigration(account,command.optString("sessionId"));
     JSONObject appearance=command.optJSONObject("appearance");
     if(("auth".equals(type)||"appearance".equals(type))&&appearance!=null)archive.saveAppearance(account,appearance);
     if("merge".equals(type)){
@@ -182,9 +186,11 @@ final class OfflineBridge {
    }else if("session".equals(type)){
     String session=command.getString("sessionId"),before=command.isNull("before")?"":command.optString("before");
     if(session.isEmpty()||session.length()>4096||before.length()>4096)throw new IllegalArgumentException();
-    result=archive.readerSession(account,session,before);
+    result=archive.recordPage(account,session,command);
    }else if("read".equals(type)){
-     if(command.optJSONObject("body")!=null){
+     if(command.optBoolean("page")){
+      result=new JSONObject().put("page",archive.recordPage(account,command.getString("sessionId"),command));
+     }else if(command.optJSONObject("body")!=null){
       JSONObject part=archive.body(account,command);
       result=new JSONObject().put("body",part==null?JSONObject.NULL:part);
      }else result=new JSONObject().put("turns",archive.seed(account,command));
@@ -380,8 +386,27 @@ final class OfflineBridge {
    });
   });
  }
+ // Each conversion yields the archive executor to foreground reads and authorization changes.
+ void scheduleMigration(OfflineArchive.Account account,String session){
+  if(session!=null&&!session.isEmpty())migrationFocus.put(account.id,session);
+  if(OfflineArchive.locked(account)||!migrating.add(account.id))return;
+  migrateNext(account.id);
+ }
+ private void migrateNext(long id){
+  owner.runOnUiThread(()->owner.getWindow().getDecorView().postDelayed(()->{
+   if(closing)return;
+   work.execute(()->{
+   try{
+    OfflineArchive.Account current=archive.account(id);
+    if(current!=null&&!OfflineArchive.locked(current)&&(migrationFocus.containsKey(id)&&archive.migrateBatch(current,migrationFocus.get(id))||archive.migrateBatch(current,null))){migrateNext(id);return;}
+   }catch(Exception unavailable){android.util.Log.w("OfflineArchive","Legacy conversion paused",unavailable);}
+   migrating.remove(id);migrationFocus.remove(id);
+   });
+  },50));
+ }
  void run(Consumer<OfflineArchive> action){work.execute(()->action.accept(archive));}
  void destroy(){
+  closing=true;
   foreground(false);detach();
   work.execute(()->{
    closing=true;

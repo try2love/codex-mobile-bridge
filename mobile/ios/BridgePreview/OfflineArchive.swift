@@ -74,6 +74,14 @@ final class OfflineArchive {
         CREATE INDEX IF NOT EXISTS transfer_items_dates ON transfer_items(account,asked);
         CREATE TABLE IF NOT EXISTS offline_preferences(account INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, appearance TEXT);
         CREATE TABLE IF NOT EXISTS turns(account INTEGER NOT NULL, session TEXT NOT NULL, id TEXT NOT NULL, asked INTEGER NOT NULL, content TEXT, suppressed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account,session,id), FOREIGN KEY(account,session) REFERENCES sessions(account,id) ON DELETE CASCADE);
+        CREATE INDEX IF NOT EXISTS turns_recent ON turns(account,session,suppressed,asked DESC,id DESC);
+        CREATE TABLE IF NOT EXISTS archive_records(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,turn TEXT NOT NULL,asked INTEGER NOT NULL,position REAL NOT NULL,visible INTEGER NOT NULL,version TEXT NOT NULL,synced INTEGER NOT NULL,content TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(account,session,key),FOREIGN KEY(account,session,turn) REFERENCES turns(account,session,id) ON DELETE CASCADE);
+        CREATE INDEX IF NOT EXISTS archive_recent ON archive_records(account,session,visible,asked DESC,turn DESC,position DESC,key DESC);
+        CREATE INDEX IF NOT EXISTS archive_process ON archive_records(account,session,turn,position,key);
+        CREATE INDEX IF NOT EXISTS turns_legacy ON turns(account,asked DESC,id DESC) WHERE suppressed=0 AND content IS NOT NULL AND content<>'';
+        CREATE INDEX IF NOT EXISTS turns_legacy_session ON turns(account,session) WHERE suppressed=0 AND content IS NOT NULL AND content<>'';
+        CREATE TABLE IF NOT EXISTS archive_deleted(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,synced INTEGER NOT NULL,PRIMARY KEY(account,session,key),FOREIGN KEY(account,session) REFERENCES sessions(account,id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS archive_parts(account INTEGER NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,offset INTEGER NOT NULL,version TEXT NOT NULL,content TEXT NOT NULL,PRIMARY KEY(account,session,key,offset),FOREIGN KEY(account,session,key) REFERENCES archive_records(account,session,key) ON DELETE CASCADE);
         """
         guard sqlite3_exec(connection, schema, nil, nil, nil) == SQLITE_OK else {
             sqlite3_close(connection)
@@ -92,6 +100,7 @@ final class OfflineArchive {
             let index = Int32(offset + 1)
             let status: Int32
             if let number = value as? Int64 { status = sqlite3_bind_int64(statement, index, number) }
+            else if let number = value as? Double { status = sqlite3_bind_double(statement, index, number) }
             else if let string = value as? String { status = sqlite3_bind_text(statement, index, string, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)) }
             else if let data = value as? Data {
                 status = data.withUnsafeBytes {
@@ -220,60 +229,222 @@ final class OfflineArchive {
             if !legacyScope.isEmpty { try run("INSERT OR IGNORE INTO legacy_scopes(account,session,scope) VALUES(?,?,?)", [account.id, session, legacyScope]) }
             for turn in turns {
                 guard let id = turn["id"] as? String, !id.isEmpty, let asked = turn["questionTime"] as? Int64 else { throw Failure.invalidContent }
-                let stored = try rows("SELECT content,suppressed FROM turns WHERE account=? AND session=? AND id=?", [account.id, session, id]) {
-                    (text($0, 0), sqlite3_column_int($0, 1) != 0)
-                }.first
-                if stored?.1 == true && !canRestore { continue }
-                var content = try stored.flatMap { $0.0.isEmpty ? nil : try decode($0.0) } ?? [:]
-                var messages = content["messages"] as? [String: [String: Any]] ?? [:]
-                for var message in turn["messages"] as? [[String: Any]] ?? [] {
-                    guard let key = message["key"] as? String, let version = message["version"] as? String, !version.isEmpty else { throw Failure.invalidContent }
-                    if synced >= (messages[key]?["_syncedAt"] as? Int64 ?? Int64.min) {
-                        let previous = messages[key]
-                        var parts = previous?["version"] as? String == version ? previous?["bodyParts"] as? [String: [String: Any]] ?? [:] : [:]
-                        if let imported = message.removeValue(forKey: "bodyParts") as? [String: [String: Any]] {
-                            parts.merge(imported) { _, incoming in incoming }
-                        }
-                        if let part = message.removeValue(forKey: "bodyPart") as? [String: Any], let offset = part["offset"] as? Int64 {
-                            parts[String(offset)] = part
-                        }
-                        if !parts.isEmpty { message["bodyParts"] = parts }
-                        message["_syncedAt"] = synced
-                        messages[key] = message
-                    } else if var current = messages[key], current["version"] as? String == version,
-                              let verified = message["bodyParts"] as? [String: [String: Any]] {
-                        var parts = current["bodyParts"] as? [String: [String: Any]] ?? [:]
-                        parts.merge(verified) { previous, _ in previous }
-                        current["bodyParts"] = parts
-                        messages[key] = current
-                    }
+                let suppressed=try rows("SELECT suppressed FROM turns WHERE account=? AND session=? AND id=?", [account.id,session,id]) { sqlite3_column_int($0,0) != 0 }.first ?? false
+                if suppressed && !canRestore { continue }
+                try run("INSERT OR IGNORE INTO turns(account,session,id,asked,content,suppressed) VALUES(?,?,?,?,NULL,0)",[account.id,session,id,asked])
+                // Legacy bytes stay intact until a background migration commits.
+                try run("UPDATE turns SET asked=CASE WHEN asked=0 THEN ? ELSE asked END,suppressed=0 WHERE account=? AND session=? AND id=?", [asked,account.id,session,id])
+                let time=try rows("SELECT asked FROM turns WHERE account=? AND session=? AND id=?", [account.id,session,id]) { sqlite3_column_int64($0,0) }.first ?? asked
+                try run("UPDATE archive_records SET asked=? WHERE account=? AND session=? AND turn=? AND asked=0",[time,account.id,session,id])
+                for message in (turn["messages"] as? [[String:Any]] ?? []).sorted(by: { recordOrder($0)<recordOrder($1) }) {
+                    try storeRecord(account,session:session,turn:id,asked:time,message:message,synced:synced)
                 }
-                content["messages"] = messages
-                for field in ["question", "answer"] { if let value = turn[field] as? String { content[field] = value } }
-                let encoded = try encode(content)
-                try run("INSERT OR IGNORE INTO turns(account,session,id,asked,content,suppressed) VALUES(?,?,?,?,?,0)",
-                        [account.id, session, id, asked, encoded])
-                try run("UPDATE turns SET asked=CASE WHEN asked=0 THEN ? ELSE asked END,content=?,suppressed=0 WHERE account=? AND session=? AND id=?",
-                        [asked, encoded, account.id, session, id])
             }
             if let deleted = event["deletedKeys"] as? [String], !deleted.isEmpty {
-                let stored = try rows("SELECT id,content FROM turns WHERE account=? AND session=? AND suppressed=0", [account.id, session]) {
-                    (text($0, 0), try decode(text($0, 1)))
-                }
-                for (id, original) in stored {
-                    var content = original
-                    guard var messages = content["messages"] as? [String: [String: Any]] else { continue }
-                    let count = messages.count
-                    for key in deleted { messages.removeValue(forKey: key) }
-                    if messages.count != count {
-                        content["messages"] = messages
-                        content.removeValue(forKey: "question")
-                        content.removeValue(forKey: "answer")
-                        try run("UPDATE turns SET content=? WHERE account=? AND session=? AND id=?", [try encode(content), account.id, session, id])
-                    }
+                for key in deleted {
+                    try run("DELETE FROM archive_records WHERE account=? AND session=? AND key=?", [account.id,session,key])
+                    try run("INSERT INTO archive_deleted VALUES(?,?,?,?) ON CONFLICT(account,session,key) DO UPDATE SET synced=MAX(synced,excluded.synced)", [account.id,session,key,synced])
                 }
             }
         }
+    }
+    private var migratingAccounts = Set<Int64>()
+    private var migrationFocus=[Int64:String]()
+    func scheduleMigration(_ account: Account, session: String? = nil) {
+        if let session,!session.isEmpty {migrationFocus[account.id]=session}
+        guard !account.locked, !migratingAccounts.contains(account.id) else { return }
+        migratingAccounts.insert(account.id)
+        func step() {
+            Self.queue.asyncAfter(deadline: .now() + 0.05) { [self] in
+                do {
+                    guard let current = try self.account(id: account.id), !current.locked else {
+                        migratingAccounts.remove(account.id); return
+                    }
+                    let focused = try migrationFocus[account.id].map { try migrateBatch(current, session: $0) } ?? false
+                    if try focused || migrateBatch(current) { step() } else { migratingAccounts.remove(account.id);migrationFocus.removeValue(forKey: account.id) }
+                } catch { migratingAccounts.remove(account.id) }
+            }
+        }
+        step()
+    }
+    @discardableResult
+    func migrateBatch(_ account: Account, session: String? = nil) throws -> Bool {
+        guard !account.locked else { return false }
+        let source = try rows("SELECT session,id,asked,content FROM turns WHERE account=? AND suppressed=0 AND content IS NOT NULL AND content<>''" + (session == nil ? "" : " AND session=?") + " ORDER BY asked DESC,id DESC LIMIT 1", session.map { [account.id,$0] as [Any] } ?? [account.id]) {
+            (text($0,0),text($0,1),sqlite3_column_int64($0,2),text($0,3))
+        }.first
+        guard let (session,id,asked,raw) = source else { return false }
+        let legacy = try decode(raw)
+        var messages = Array((legacy["messages"] as? [String:[String:Any]] ?? [:]).values)
+        if messages.isEmpty {
+            for (field,role) in [("question","user"),("answer","assistant")] {
+                if let value = legacy[field] as? String, !value.isEmpty {
+                    let key=id+":"+field
+                    messages.append(["key":key,"version":Self.hex(SHA256.hash(data:Data(value.utf8))),"role":role,"text":value,
+                        "order":field=="question" ? 0 : 1,"row":["key":key,"role":role,"text":value]])
+                }
+            }
+        }
+        try transaction {
+            for message in messages.sorted(by: { recordOrder($0) < recordOrder($1) }) {
+                try storeRecord(account,session:session,turn:id,asked:asked,message:message,synced:message["_syncedAt"] as? Int64 ?? 0)
+            }
+            try run("UPDATE turns SET content=NULL WHERE account=? AND session=? AND id=? AND content=?", [account.id,session,id,raw])
+        }
+        return true
+    }
+    private func recordOrder(_ message: [String:Any]) -> Double {
+        (message["order"] as? NSNumber)?.doubleValue ?? ((message["row"] as? [String:Any])?["order"] as? NSNumber)?.doubleValue ?? 0
+    }
+    private func storeRecord(_ account: Account, session: String, turn: String, asked: Int64,
+                             message original: [String:Any], synced: Int64) throws {
+        guard let key=original["key"] as? String, let version=original["version"] as? String, !version.isEmpty else { throw Failure.invalidContent }
+        if let deleted=try rows("SELECT synced FROM archive_deleted WHERE account=? AND session=? AND key=?", [account.id,session,key],{sqlite3_column_int64($0,0)}).first {
+            if synced<=deleted {return}
+            try run("DELETE FROM archive_deleted WHERE account=? AND session=? AND key=?", [account.id,session,key])
+        }
+        let previous=try rows("SELECT version,synced FROM archive_records WHERE account=? AND session=? AND key=?", [account.id,session,key]) {
+            (text($0,0),sqlite3_column_int64($0,1))
+        }.first
+        var message=original,row=original["row"] as? [String:Any] ?? [:]
+        row["key"]=key;row["version"]=version;row["turnId"]=turn
+        row["role"]=original["role"] ?? row["role"] ?? "assistant"
+        let order=recordOrder(message)
+        var parts=message.removeValue(forKey:"bodyParts") as? [String:[String:Any]] ?? [:]
+        if let part=message.removeValue(forKey:"bodyPart") as? [String:Any], let offset=part["offset"] as? Int64 { parts[String(offset)]=part }
+        let value=message["text"] as? String ?? row["text"] as? String ?? ""
+        if value.unicodeScalars.count>6000 {
+            if parts.isEmpty && row["truncated"] as? Bool != true {
+                let scalars=Array(value.unicodeScalars)
+                for offset in stride(from:0,to:scalars.count,by:16000) {
+                    let end=min(offset+16000,scalars.count)
+                    parts[String(offset)]=["offset":Int64(offset),"text":String(String.UnicodeScalarView(scalars[offset..<end])),
+                                          "next":end==scalars.count ? NSNull() : Int64(end) as Any]
+                }
+            }
+            row["truncated"]=true
+        }
+        let preview=String(value.unicodeScalars.prefix(6000))
+        row["text"]=preview;message["text"]=preview;message["row"]=row
+        message.removeValue(forKey:"_syncedAt")
+        if previous == nil || synced >= previous!.1 {
+            if previous?.0 != version { try run("DELETE FROM archive_parts WHERE account=? AND session=? AND key=?", [account.id,session,key]) }
+            let process = row["kind"] as? String=="processPage" || row["phase"] as? String=="commentary" ||
+                row["interaction"] as? String=="response" || !["assistant","user","error","fileChanges"].contains(row["role"] as? String ?? "")
+            let visible: Int64 = row["kind"] as? String=="processPage" || !process ? 1 : 0
+            if visible==0 {
+                let prior=try rows("SELECT key,visible,content FROM archive_records WHERE account=? AND session=? AND turn=? AND position<? ORDER BY position DESC,key DESC LIMIT 1", [account.id,session,turn,order]) {
+                    (text($0,0),sqlite3_column_int($0,1),try decode(text($0,2)))
+                }.first
+                if prior == nil || prior!.1==1 && (prior!.2["row"] as? [String:Any])?["kind"] as? String != "processPage" {
+                    let headerKey="offline-process:"+turn+":"+(prior?.0 ?? "start")
+                    var header=row;header["key"]=headerKey;header["kind"]="processPage";header["role"]="activity";header["text"]="";header["order"]=order-0.25
+                    try storeRecord(account,session:session,turn:turn,asked:asked,message:["key":headerKey,"version":version,"role":"activity","order":order-0.25,"text":"","row":header],synced:synced)
+                }
+            }
+            let content=try encode(message)
+            try run("INSERT INTO archive_records(account,session,key,turn,asked,position,visible,version,synced,content,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account,session,key) DO UPDATE SET turn=excluded.turn,asked=excluded.asked,position=excluded.position,visible=excluded.visible,version=excluded.version,synced=excluded.synced,content=excluded.content,bytes=excluded.bytes",
+                    [account.id,session,key,turn,asked,order,visible,version,synced,content,Int64(content.utf8.count)])
+        } else if previous?.0 != version { return }
+        for (offset,part) in parts {
+            guard let position=Int64(offset), position>=0 else { throw Failure.invalidContent }
+            let operation = previous != nil && synced < previous!.1 ? "INSERT OR IGNORE" : "INSERT OR REPLACE"
+            guard let text=part["text"] as? String else {throw Failure.invalidContent}
+            let scalars=Array(text.unicodeScalars)
+            for start in stride(from:0,to:max(1,scalars.count),by:16000) {
+                let end=min(scalars.count,start+16000)
+                var piece=part;piece["offset"]=position+Int64(start)
+                piece["text"]=String(String.UnicodeScalarView(scalars[start..<end]))
+                piece["next"]=end==scalars.count ? (part["next"] ?? NSNull()) : position+Int64(end)
+                try run(operation+" INTO archive_parts(account,session,key,offset,version,content) VALUES(?,?,?,?,?,?)",
+                        [account.id,session,key,position+Int64(start),version,try encode(piece)])
+            }
+        }
+    }
+    private func storedRecord(_ account: Account, session: String, key: String, parts: Bool = false) throws -> [String:Any]? {
+        guard var message=try rows("""
+            SELECT r.content FROM archive_records r JOIN sessions s ON s.account=r.account AND s.id=r.session
+            JOIN turns t ON t.account=r.account AND t.session=r.session AND t.id=r.turn
+            WHERE r.account=? AND r.session=? AND r.key=? AND s.epoch=? AND t.suppressed=0
+            """,[account.id,session,key,account.epoch],{ try decode(text($0,0)) }).first else { return nil }
+        if parts {
+            let values=try rows("SELECT offset,content FROM archive_parts WHERE account=? AND session=? AND key=? ORDER BY offset",
+                               [account.id,session,key]) { (String(sqlite3_column_int64($0,0)),try decode(text($0,1))) }
+            if !values.isEmpty { message["bodyParts"]=Dictionary(uniqueKeysWithValues:values) }
+        }
+        return message
+    }
+    func recordPage(_ account: Account, session: String, event: [String:Any]) throws -> [String:Any]? {
+        guard !account.locked,let saved=try rows("SELECT title,synced,complete FROM sessions WHERE account=? AND id=? AND epoch=?",
+            [account.id,session,account.epoch],{ (text($0,0),sqlite3_column_int64($0,1),sqlite3_column_int($0,2) != 0) }).first else { return nil }
+        let mode=event["mode"] as? String ?? "recent"
+        var values:[Any]=[account.id,session,account.epoch],filter="",sort="r.asked DESC,r.turn DESC,r.position DESC,r.key DESC"
+        if mode=="body" {
+            guard let key=event["key"] as? String,let version=event["version"] as? String,let offset=event["offset"] as? Int64 else { return nil }
+            return try body(account,event:["sessionId":session,"body":["key":key,"version":version,"offset":offset]])
+        }
+        if mode=="process" {
+            guard let key=event["key"] as? String,let header=try rows("SELECT turn,position FROM archive_records WHERE account=? AND session=? AND key=? AND visible=1",
+                [account.id,session,key],{ (text($0,0),sqlite3_column_double($0,1)) }).first else { return nil }
+            let end=try rows("SELECT position FROM archive_records WHERE account=? AND session=? AND turn=? AND visible=1 AND position>? ORDER BY position,key LIMIT 1",
+                [account.id,session,header.0,header.1],{sqlite3_column_double($0,0)}).first ?? Double.greatestFiniteMagnitude
+            filter=" AND r.turn=? AND r.visible=0 AND r.position>? AND r.position<?"
+            values += [header.0,header.1,end];sort="r.position,r.key"
+        } else { filter=" AND r.visible=1" }
+        if let cursor=event[mode=="process" ? "after" : "before"] as? String {
+            guard let data=Data(base64Encoded:cursor),let parts=try JSONSerialization.jsonObject(with:data) as? [String],
+                  parts.count==7,parts[0]==session,parts[1]==account.clearRevision,parts[2]==String(account.epoch),
+                  let asked=Int64(parts[3]),let position=Double(parts[5]) else { return nil }
+            if mode=="process" { filter+=" AND (r.position,r.key)>(?,?)";values += [position,parts[6]] }
+            else { filter+=" AND (r.asked,r.turn,r.position,r.key)<(?,?,?,?)";values += [asked,parts[4],position,parts[6]] }
+        }
+        let candidates=try rows("""
+            SELECT r.key,r.turn,r.asked,r.position,r.bytes FROM archive_records r
+            JOIN sessions s ON s.account=r.account AND s.id=r.session
+            JOIN turns t ON t.account=r.account AND t.session=r.session AND t.id=r.turn
+            WHERE r.account=? AND r.session=? AND s.epoch=? AND t.suppressed=0
+            """+filter+" ORDER BY "+sort+" LIMIT 41",values) {
+                (text($0,0),text($0,1),sqlite3_column_int64($0,2),sqlite3_column_double($0,3),sqlite3_column_int64($0,4))
+            }
+        var bytes:Int64=0,selected=[(String,String,Int64,Double,Int64)]()
+        for row in candidates.prefix(40) {
+            if !selected.isEmpty && bytes+row.4>192*1024 { break }
+            selected.append(row);bytes+=row.4
+        }
+        var messages=[[String:Any]]()
+        for item in selected {
+            if let message=try storedRecord(account,session:session,key:item.0) { messages.append(message) }
+        }
+        if mode != "process" { messages.reverse() }
+        var output=[[String:Any]](),turns=[String:[String:Any]]()
+        for (index,message) in messages.enumerated() {
+            var row=message["row"] as? [String:Any] ?? [:]
+            row["key"]=message["key"];row["version"]=message["version"];row["text"]=message["text"];row["order"]=index
+            let turn=row["turnId"] as? String ?? ""
+            var meta=turns[turn] ?? ["id":turn,"processes":[[String:Any]]()]
+            for (a,b) in [("turnStatus","status"),("turnCompletionKnown","completionKnown"),("turnStartedAt","startedAt"),("turnCompletedAt","completedAt"),("turnError","error")] {
+                if let value=row[a] { meta[b]=value }
+            }
+            if row["kind"] as? String=="processPage" && mode != "process" {
+                var groups=meta["processes"] as! [[String:Any]]
+                groups.append(["key":row["key"]!,"version":row["version"]!,"order":index,"processCursor":row["key"]!]);meta["processes"]=groups
+            } else { output.append(row) }
+            turns[turn]=meta
+        }
+        var next:Any=NSNull()
+        if candidates.count>selected.count,let tail=selected.last {
+            next=try JSONSerialization.data(withJSONObject:[session,account.clearRevision,String(account.epoch),String(tail.2),tail.1,String(tail.3),tail.0]).base64EncodedString()
+        }
+        let legacy=try !rows("SELECT 1 FROM turns WHERE account=? AND session=? AND suppressed=0 AND content IS NOT NULL AND content<>'' LIMIT 1",
+            [account.id,session],{_ in true}).isEmpty
+        let gaps=try hasGaps(account,session:session)
+        return ["recordPage":1,"id":session,"title":saved.0,"syncedAt":saved.1,"gaps":!saved.2 || gaps,
+                "rows":output,"index":output,"turns":Array(turns.values),"before":mode=="process" ? NSNull():next,
+                "next":mode=="process" ? next:NSNull(),"hasMore":!(next is NSNull),"migrating":legacy,"readRecords":selected.count]
+    }
+    private func turnContent(_ account: Account, session: String, turn: String) throws -> [String:Any] {
+        let messages=try rows("SELECT key,content FROM archive_records WHERE account=? AND session=? AND turn=? ORDER BY position,key", [account.id,session,turn]) { (text($0,0),try storedRecord(account,session:session,key:text($0,0),parts:true)!) }
+        return ["messages":Dictionary(uniqueKeysWithValues:messages)]
     }
     private func decode(_ string: String) throws -> [String: Any] {
         guard let object = try JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any] else { throw Failure.invalidContent }
@@ -316,8 +487,7 @@ final class OfflineArchive {
         for (key, time, size) in entries.prefix(pageSize) {
             totalBytes += size
             if !visible.isEmpty && totalBytes > 2 * 1024 * 1024 { break }
-            guard let content = try rows("SELECT content FROM turns WHERE account=? AND session=? AND id=? AND suppressed=0",
-                                         [account.id, id, key], { try decode(text($0, 0)) }).first else { throw Failure.invalidContent }
+            let content=try turnContent(account,session:id,turn:key)
             visible.append(["id": key, "questionTime": time, "content": content])
         }
         var next: Any = NSNull()
@@ -332,63 +502,42 @@ final class OfflineArchive {
     }
     func turns(_ account: Account, session: String) throws -> [Turn] {
         guard !account.locked else { return [] }
-        return try rows("SELECT t.asked,t.content FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=? ORDER BY t.asked,t.rowid",
+        return try rows("SELECT t.asked,t.content,t.id FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=? ORDER BY t.asked,t.rowid",
                         [account.id, session, account.epoch]) {
-            Turn(questionTime: sqlite3_column_int64($0, 0), content: try decode(text($0, 1)))
+            Turn(questionTime: sqlite3_column_int64($0, 0), content: try turnContent(account,session:session,turn:text($0,2)))
         }
     }
     func body(_ account: Account, event: [String: Any]) throws -> [String: Any]? {
         guard account.status == "valid", let session = event["sessionId"] as? String, let body = event["body"] as? [String: Any],
               let key = body["key"] as? String, let version = body["version"] as? String, let offset = body["offset"] as? Int64 else { return nil }
-        var found: [String: Any]?
-        _ = try rows("SELECT t.content FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=?",
-                     [account.id, session, account.epoch]) { row in
-            guard found == nil else { return }
-            let content = try decode(text(row, 0))
-            guard let message = (content["messages"] as? [String: [String: Any]])?[key], message["version"] as? String == version,
-                  var part = (message["bodyParts"] as? [String: [String: Any]])?[String(offset)] else { return }
-            part["key"] = key
-            part["version"] = version
-            found = part
-        }
-        return found
+        guard let message=try storedRecord(account,session:session,key:key),message["version"] as? String==version else { return nil }
+        return try rows("SELECT content FROM archive_parts WHERE account=? AND session=? AND key=? AND offset=? AND version=?",
+            [account.id,session,key,offset,version]) { row in
+                var part=try decode(text(row,0));part["key"]=key;part["version"]=version;return part
+            }.first
     }
+
     func seed(_ account: Account, event: [String: Any]) throws -> [[String: Any]] {
         guard account.status == "valid", let session = event["sessionId"] as? String else { return [] }
-        let keys = Set((event["keys"] as? [String] ?? []).prefix(100))
-        let ids = Set((event["turnIds"] as? [String] ?? []).prefix(100))
-        let filtered = !keys.isEmpty || !ids.isEmpty
-        var bytes = 0
-        var values: [[String: Any]] = []
-        let suffix = filtered ? "" : " LIMIT 100"
-        _ = try rows("SELECT t.id,t.asked,t.content FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id WHERE t.account=? AND t.session=? AND t.suppressed=0 AND s.epoch=? ORDER BY t.asked DESC,t.rowid DESC" + suffix,
-                     [account.id, session, account.epoch]) { row in
-            guard values.count < 100, bytes < 512_000 else { return }
-            let id = text(row, 0), content = try decode(text(row, 2))
-            let stored = content["messages"] as? [String: [String: Any]] ?? [:]
-            let messages = stored.compactMap { key, message -> [String: Any]? in
-                guard !filtered || ids.contains(id) || keys.contains(key) else { return nil }
-                var message = message
-                message.removeValue(forKey: "_syncedAt")
-                if let parts = message.removeValue(forKey: "bodyParts") as? [String: [String: Any]] {
-                    var chunks: [[String: Any]] = [], offset: Int64 = 0
-                    while chunks.count < 2, let part = parts[String(offset)] {
-                        chunks.append(part)
-                        guard let next = part["next"] as? Int64, next > offset else { break }
-                        offset = next
-                    }
-                    if !chunks.isEmpty { message["bodyParts"] = chunks }
-                }
-                return message
-            }
-            guard !messages.isEmpty else { return }
-            let item: [String: Any] = ["id": id, "questionTime": sqlite3_column_int64(row, 1), "messages": messages]
-            let size = try JSONSerialization.data(withJSONObject: item).count
-            guard bytes + size <= 512_000 else { return }
-            bytes += size
-            values.append(item)
+        let requested=Array((event["keys"] as? [String] ?? []).prefix(100))
+        let keys: [String]
+        if !requested.isEmpty { keys=requested }
+        else {
+            keys=try rows("SELECT key FROM archive_records WHERE account=? AND session=? ORDER BY asked DESC,turn DESC,position DESC,key DESC LIMIT 40", [account.id,session]) {text($0,0)}
         }
-        return values
+        var groups=[String:[String:Any]](),bytes=0
+        for key in keys {
+            guard var message=try storedRecord(account,session:session,key:key) else { continue }
+            let info=try rows("SELECT turn,asked FROM archive_records WHERE account=? AND session=? AND key=?", [account.id,session,key]) { (text($0,0),sqlite3_column_int64($0,1)) }.first!
+            if let ids=event["turnIds"] as? [String],!ids.isEmpty,!ids.contains(info.0) {continue}
+            let parts=try rows("SELECT content FROM archive_parts WHERE account=? AND session=? AND key=? ORDER BY offset LIMIT 2", [account.id,session,key]) {try decode(text($0,0))}
+            if !parts.isEmpty {message["bodyParts"]=parts}
+            let size=try JSONSerialization.data(withJSONObject:message).count
+            if bytes+size>512_000 {break};bytes+=size
+            var group=groups[info.0] ?? ["id":info.0,"questionTime":info.1,"messages":[[String:Any]]()]
+            var messages=group["messages"] as! [[String:Any]];messages.append(message);group["messages"]=messages;groups[info.0]=group
+        }
+        return Array(groups.values)
     }
     func hasCachedSession(_ account: Account, session: String) throws -> Bool {
         try !rows("SELECT 1 FROM turns WHERE account=? AND session=? AND suppressed=0 LIMIT 1", [account.id, session]) { _ in true }.isEmpty
@@ -422,6 +571,7 @@ final class OfflineArchive {
     private func clearAccountTurns(_ id: Int64, from start: Int64, before end: Int64) throws {
         try run("UPDATE accounts SET clear_revision=clear_revision+1 WHERE id=?", [id])
         try run("INSERT INTO transfer_clears(account,revision,start,end) SELECT id,clear_revision,?,? FROM accounts WHERE id=?", [start, end, id])
+        try run("DELETE FROM archive_records WHERE account=? AND (session,turn) IN (SELECT session,id FROM turns WHERE account=? AND asked>=? AND asked<?)", [id,id,start,end])
         try run("UPDATE turns SET content=NULL,suppressed=1 WHERE account=? AND asked>=? AND asked<? AND suppressed=0", [id, start, end])
         try run("""
             INSERT OR IGNORE INTO sessions(account,id,title,synced,complete,epoch)
@@ -559,24 +709,13 @@ final class OfflineArchive {
                     WHERE k.account=i.account AND k.version=i.version AND k.session=i.session AND k.turn=i.turn AND k.key=?))
                 """, [account.id, item.version, item.session, item.turn, key, key]) { _ in true }.isEmpty
         } else if let key = event["key"] as? String, let version = event["recordVersion"] as? String {
-            present = try rows("""
-                SELECT t.content FROM turns t JOIN sessions s ON t.account=s.account AND t.session=s.id
-                WHERE t.account=? AND t.session=? AND t.id=? AND t.suppressed=0 AND s.epoch=?
-                """, [account.id, item.session, item.turn, account.epoch]) { row in
-                    let content = try decode(text(row, 0))
-                    let messages = content["messages"] as? [String: [String: Any]] ?? [:]
-                    if let records = event["records"] as? [[String: Any]] {
-                        guard !records.isEmpty, records.count <= 64 else { throw Failure.invalidContent }
-                        return try records.allSatisfy { record in
-                            guard let key = record["key"] as? String, let version = record["recordVersion"] as? String,
-                                  let length = record["textLength"] as? Int64 else { throw Failure.invalidContent }
-                            let message = messages[key]
-                            return message?["version"] as? String == version && Self.completeMessage(message, length: length)
-                        }
-                    }
-                    let message = messages[key]
-                    return message?["version"] as? String == version && Self.completeMessage(message, length: event["textLength"] as? Int64)
-                }.first ?? false
+            let records=event["records"] as? [[String:Any]] ?? [["key":key,"recordVersion":version,"textLength":event["textLength"] as Any]]
+            guard !records.isEmpty,records.count<=64 else {throw Failure.invalidContent}
+            present=try records.allSatisfy { record in
+                guard let key=record["key"] as? String,let version=record["recordVersion"] as? String else {return false}
+                let message=try storedRecord(account,session:item.session,key:key,parts:true)
+                return message?["version"] as? String==version && Self.completeMessage(message,length:record["textLength"] as? Int64)
+            }
         } else { present = false }
         let missing = present ? 0 : max(0, item.bytes - (try storedTransferBytes(account, item)))
         return ["present": present, "cleared": false, "missingBytes": missing]
