@@ -81,7 +81,12 @@ class ChatTimelineSync {
       if(!this.active())return;
       const receipt=initial?await initial.promise:null,result=initial?.valid()?receipt:null;
       initial?.close();this.initial=null;
-      if(initial?.removedTurns&&!this.abort.signal.aborted){wire=true;this.invalidate(initial.removedTurns);return;}
+      if(initial?.removedTurns&&!this.abort.signal.aborted){
+        wire=true;this.invalidate(initial.removedTurns);
+        // Opening the chat explicitly requests its first screen. Reconcile the
+        // cleanup before reading it again with the current deletion revision.
+        this.needsRefill=false;
+      }
       if(result?.error)throw result.error;
       const page=result?.page||await this.read('recent',{},source);
       if(!page||!this.active())return;

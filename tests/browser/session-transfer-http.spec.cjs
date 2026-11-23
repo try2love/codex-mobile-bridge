@@ -18,6 +18,42 @@ const syncResponse=(page,mode)=>page.waitForResponse(response=>{
   return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')===mode;
 });
 
+test('opening a native chat with an earlier cache cleanup loads without returning to latest',async({page,context},info)=>{
+  const root=path.resolve(__dirname,'../..');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  try{
+    const origin=await new Promise((resolve,reject)=>{
+      lines.once('line',resolve);server.once('error',reject);
+      server.once('exit',code=>reject(Error('Fixture exited '+code)));
+    });
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    await page.goto(origin);
+    await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');
+    await page.locator('#login-button').click();
+    const entry=page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'});
+    await expect(entry).toBeVisible();
+    await page.evaluate(()=>{
+      window.nativeCleanupEvents=[];
+      window.addEventListener('bridge-cache-cleared',event=>nativeCleanupEvents.push(event.detail));
+      window.CodexBridgeNativeOffline={request:async event=>event.type==='state'?{
+        allowPrefetch:false,allowTransfer:true,clearRevision:1,
+        tombstones:event.sessionId?{[event.sessionId]:['turn-0']}:{},
+      }:null};
+    });
+    await entry.click();
+    await expect.poll(()=>page.evaluate(()=>nativeCleanupEvents.length)).toBeGreaterThan(0);
+    await info.attach('native-opening-state',{contentType:'application/json',body:JSON.stringify(await page.evaluate(()=>({
+      status:document.getElementById('status').textContent,rows:chatTimeline.rows.size,
+      needsRefill:chatTimeline.sync.needsRefill,removedTurns:chatTimeline.sync.initial?.removedTurns,
+    })))});
+    await expect(page.locator('#messages')).toContainText('Answer 89');
+    await expect(page.locator('#status')).toHaveText(/已连接|历史记录/);
+    await page.locator('#chat-details-button').click();
+    await expect(page.locator('dialog.session-menu')).toBeVisible();
+  }finally{lines.close();server.kill();}
+});
+
 for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-codex','legacy-claude']){
   const legacy=name.startsWith('legacy-'),provider=name.replace(/^legacy-/,'');
   const title=legacy?'normal '+provider+' history opens when the gateway does not advertise sync':
