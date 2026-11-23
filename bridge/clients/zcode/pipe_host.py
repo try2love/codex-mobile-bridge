@@ -97,11 +97,14 @@ def owner(native, pid):
 def active_gateway(profile, signature, connection):
     # Protect against a signed gateway for a different running data profile.
     control = read_json(profile / "gateway-control.json")
-    identity = signature.require(connection, control["pid"])
-    expected = identity["image"] + " serve --data-dir " + str(profile)
-    cmd = commands([identity["pid"]]).get(identity["pid"])
-    if cmd not in (expected, expected + " --connection-secrets-stdin"):
-        raise PermissionError("Gateway does not serve this data directory")
+    def verify_role(identity):
+        expected = identity["image"] + " serve --data-dir " + str(profile)
+        cmd = commands([identity["pid"]]).get(identity["pid"])
+        if cmd not in (expected, expected + " --connection-secrets-stdin"):
+            raise PermissionError("Gateway does not serve this data directory")
+
+    identity = signature.require(connection, control["pid"], relocated_holder=verify_role)
+    verify_role(identity)
     return identity
 
 
@@ -379,7 +382,7 @@ class PipeHostClient:
             signature = self._signing()
             identity = signature.require(channel, record["pid"], relocated_holder=self._verify_holder_lock)
             expected = (
-                signature.image
+                identity["image"]
                 + " zcode-pipe-host --data-dir "
                 + str(self.profile)
                 + " --application "
