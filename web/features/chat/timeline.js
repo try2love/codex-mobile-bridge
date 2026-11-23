@@ -233,7 +233,11 @@ class ChatTimeline {
     this.cached=cached;
     const anchor=this.capture(),bottom=this.following;
     if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
-    for(const file of page.files||[])this.files.set(file.id,file);
+    let filesChanged=false;
+    for(const file of page.files||[]){
+      filesChanged||=JSON.stringify(this.files.get(file.id))!==JSON.stringify(file);
+      this.files.set(file.id,file);
+    }
     if((!history&&page.sequence>=this.sequence)||reset){this.sequence=page.sequence;this.meta=page.meta;if(!cached)this.renderMeta({...page.meta,files:[...this.files.values()]});}
     if(!history)this.pendingRequests=!cached&&!!page.meta.requests?.length;
     let changed=false;
@@ -243,7 +247,7 @@ class ChatTimeline {
       this.rows.set(row.key,{row,sequence:page.sequence});
       const {order,turnStatus,turnError,turnStartedAt,turnCompletedAt,turnCompletionKnown,...presentation}=row;
       const stamp=JSON.stringify(this.sync?[presentation,!!cached&&!!row.attachments?.length]:row),old=this.nodes.get(row.key);
-      if(old?.stamp===stamp){old.node.__chatMessage=row;continue;}
+      if(old?.stamp===stamp){old.node.__chatMessage=row;if(filesChanged)old.node.__refreshFileLinks?.();continue;}
       if(old&&previous&&previous.row.timestamp!==row.timestamp){
         const {timestamp:priorTime,...before}=previous.row,{timestamp,...after}=row;
         const actions=old.node.querySelector('.message-actions');
@@ -319,6 +323,7 @@ class ChatTimeline {
       more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
       restoreChatActivityState(node,reading);
     };
+    if(!activity)node.__refreshFileLinks=paint;
     const load=async()=>{
       if(more.disabled||this.abort.signal.aborted)return;
       const prior=this.details.get(row.key);if(prior?.next===null)return;

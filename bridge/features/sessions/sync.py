@@ -226,6 +226,12 @@ def page(timeline, mode, *, known=None, ifVersion=None, omitTurn=(), indexOnly=F
             'reset': not complete and not index, 'meta': meta}
 
 
+def reference_rows(timeline, result):
+    """File metadata follows the authorized page, including reused text rows."""
+    return [timeline.rows[timeline.positions[item['key']]] for item in result['index']
+            if item['key'] in timeline.positions]
+
+
 def process(timeline, *, key, before=None, after=None, limit=20, known=None, ifVersion=None, indexOnly=False,
             from_start=False):
     group = timeline.process_groups.get(key)

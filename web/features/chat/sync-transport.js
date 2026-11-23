@@ -18,8 +18,8 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   }
   const cache=window.BridgeChatSyncCache;
   const cached=mode==='body'&&target.scope?await cache?.read(target.scope,mode,params):null;
-  if(!active())return null;
-  if(mode==='body'&&cached?.version===params.version&&cached.offset===params.offset)return cached;
+  if(!active()||target.authorized&&!target.authorized())return null;
+  if(mode==='body'&&cached?.version===params.version&&cached.offset===params.offset&&Array.isArray(cached.files))return cached;
   const fetchPage=async known=>{
     let scan='',restarted=false;
     while(active()&&(!target.authorized||target.authorized())){

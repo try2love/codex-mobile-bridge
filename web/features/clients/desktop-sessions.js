@@ -717,6 +717,9 @@ class DesktopSessionsView {
         if(!detail||detail.key!==message.key||detail.version!==message.version||detail.offset!==offset||detail.next!==null&&detail.next<=offset)
           throw Error('Invalid body page');
         text+=detail.text;offset=detail.next;
+        for(const file of detail.files||[])timeline.sync.files.set(file.id,file);
+        this.sessionFiles=Array.from(new Map([...(this.sessionFiles||[]),...(detail.files||[])].map(file=>[file.id,file])).values());
+        output.replaceChildren();
         if(node.tagName==='DETAILS')output.textContent=text;
         else renderMarkdown(output,text,this.sessionFiles||[],file=>this.workbench.url(this.workbench.current,'download',file.path));
         more.hidden=offset===null;more.textContent=BridgeI18n.t('继续加载正文');

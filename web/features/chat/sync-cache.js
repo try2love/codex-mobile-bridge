@@ -413,7 +413,7 @@
         if(wire.notModified)return part?.version===wire.version?part:null;
         const [owner]=await this.disk.get(scope,'row',[wire.key]);
         if(!owner||bans.has(owner.turnId))return wire;
-        const data={...fields(wire,['key','version','offset','text','next','attachments']),turnId:owner.turnId};
+        const data={...fields(wire,['key','version','offset','text','next','attachments','files']),turnId:owner.turnId};
         if(!await this.disk.change(scope,[record(scope,'chunk',pageKey(mode,{...params,offset:wire.offset}),data,owner.turnId,wire.key)],rev))return discard;
         if(native()&&gen===this.generation&&this.active(scope))await this.event('merge',{...options,syncedAt:Date.now(),complete:false,
           turns:[{id:owner.turnId,questionTime:0,messages:[{key:wire.key,version:wire.version,role:owner.role,text:owner.text||'',

@@ -1845,14 +1845,16 @@ class DesktopSessions:
             result['transferAttachments'] = {row['key']: timeline.source_attachments[row['key']]
                                              for row in result.get('rows', ()) if row['key'] in timeline.source_attachments}
             result['transferSourceComplete'] = timeline.meta.get('syncSourceComplete', False)
-        if mode in ('watch', 'process') or result.get('notModified') and mode == 'body':
+        if mode == 'watch' or result.get('notModified') and mode == 'body':
             return result
         from bridge.features.workspace.files import workspace_references
         session = newest.get('session') or {}
         if mode == 'body':
-            result['files'] = workspace_references([{'text': result['text']}], session.get('cwd'), host_files=True)
+            result['files'] = workspace_references([{'role': 'assistant', 'text': result['text']}], session.get('cwd'), host_files=True)
             return result
-        result['files'] = workspace_references(result['rows'], session.get('cwd'), host_files=True)
+        result['files'] = workspace_references(history_sync.reference_rows(timeline, result), session.get('cwd'), host_files=True)
+        if mode == 'process':
+            return result
         result['meta'].update({key: session[key] for key in history_sync.CONTEXT_FIELDS if key in session})
         control = {key: value for key, value in newest.items() if key not in ('messages', 'turns', 'files', 'history')}
         return {**control, **result, 'history': {'before': result['before'], 'hasMore': result['hasMore']}}
@@ -1928,7 +1930,7 @@ class DesktopSessions:
                 if body.get('historyDetail'):
                     result = timeline.detail(cursor, offset=body.get('historyOffset', 0), version=body.get('historyVersion'))
                     from bridge.features.workspace.files import workspace_references
-                    result['files'] = workspace_references([{'text': result['text']}], session.get('cwd'), host_files=True)
+                    result['files'] = workspace_references([{'role': 'assistant', 'text': result['text']}], session.get('cwd'), host_files=True)
                     return result
                 page = timeline.page(limit=100, before=cursor if local_before else None, projection='conversation')
                 rows = [dict(row, id=row['key'], detailCursor=wrap(timeline.cursor(row['key'])),

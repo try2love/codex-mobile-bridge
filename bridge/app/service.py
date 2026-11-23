@@ -4976,7 +4976,7 @@ class Bridge:
                 return {**projection.process(**options), 'files': []}
             if sync_mode:
                 result = history_sync.read(projection, sync_mode, **options)
-                if sync_mode in ('watch', 'process') or sync_mode == 'body' and result.get('notModified'):
+                if sync_mode == 'watch' or sync_mode == 'body' and result.get('notModified'):
                     return result
             detail = mode == 'detail' or sync_mode == 'body'
             if detail:
@@ -4989,25 +4989,27 @@ class Bridge:
             else:
                 if not sync_mode:
                     result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
-                result['meta'] = dict(result['meta'], host=self.host,
-                                      hostLabel=self.host_label,
-                                      goalRuntimeAvailable=goal_available)
-                if linux_permissions.enabled(self.native_host):
-                    result['meta']['linuxPermissionChecks'] = True
-                    if session.connected:
-                        result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
+                if sync_mode != 'process':
+                    result['meta'] = dict(result['meta'], host=self.host,
+                                          hostLabel=self.host_label,
+                                          goalRuntimeAvailable=goal_available)
+                    if linux_permissions.enabled(self.native_host):
+                        result['meta']['linuxPermissionChecks'] = True
+                        if session.connected:
+                            result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
+                file_rows = history_sync.reference_rows(projection, result) if sync_mode else result['rows']
                 file_items = [{'type': 'userMessage' if row['role'] == 'user' else 'agentMessage',
                                'text': row.get('text', ''), 'content': row.get('attachments', [])}
-                              for row in result['rows'] if row['role'] in ('user', 'assistant')]
+                              for row in file_rows if row['role'] in ('user', 'assistant')]
             cwd = authoritative_view.get('cwd')
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
             media_items = [{'type': 'ImageView', 'path': path}
-                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if detail else result['rows'])
+                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if detail else file_rows)
                            for path in projection.image_views.get(row['key'], [])]
         # Resolve links in the delivered page, plus runtime ImageView evidence
         # retained separately from the paged message text.
-        if not detail:
+        if not detail and sync_mode != 'process':
             result['meta']['draftAccountIdentity'] = self._draft_account_identity(authoritative_view)
         file_state = {'cwd': cwd, 'turns': [
             {'items': file_items},
@@ -5016,7 +5018,7 @@ class Bridge:
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
         result['files'] = visualization_files(file_state, host_file_links(file_state, result['files']))
-        if not detail:
+        if not detail and sync_mode != 'process':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)
         return result

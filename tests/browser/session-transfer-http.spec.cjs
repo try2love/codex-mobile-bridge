@@ -146,8 +146,31 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
         await tool.getByRole('button',{name:'继续加载正文'}).click();
         await expect(tool.locator('.activity-body')).toContainText('SECOND CHUNK');
       }
+      async function fileActions(){
+        const anchor=chat.locator('.message-body a').filter({hasText:'report.md'});
+        await expect(anchor).toBeVisible();
+        await anchor.click();
+        const dialog=page.locator('dialog[open]');
+        await expect(dialog.getByRole('button',{name:'定位并打开所在文件夹',exact:true})).toBeEnabled();
+        await dialog.getByRole('button',{name:'预览文件',exact:true}).click();
+        await expect(page.getByText('Fixture file preview',{exact:true})).toBeVisible();
+        await page.evaluate(codex=>(codex?workbench:desktopSessions.workbench).select('chat'),codex);
+        await anchor.click();
+        await page.locator('dialog[open]').getByRole('button',{name:'定位并打开所在文件夹',exact:true}).click();
+        await expect(page.locator('.wb-locate-highlight').filter({hasText:'report.md'})).toBeVisible();
+        await page.evaluate(codex=>(codex?workbench:desktopSessions.workbench).select('chat'),codex);
+      }
+      async function longBody(){
+        const row=chat.locator('.message.assistant').filter({hasText:'Answer 87'});
+        await row.getByRole('button',{name:'展开完整内容',exact:true}).click();
+        await expect(row.getByRole('button',{name:'继续加载正文',exact:true})).toBeVisible();
+        await row.getByRole('button',{name:'继续加载正文',exact:true}).click();
+        await expect(row.locator('.message-body a').filter({hasText:'late.md'})).toBeVisible();
+        await expect(row.locator('.message-body > .markdown-body')).toHaveCount(1);
+      }
       const cold=await recent();
       expect(cold.page.rows.filter(row=>['user','assistant'].includes(row.role))).toHaveLength(20);
+      await fileActions();
       const coldOlder=await older();
       expect(coldOlder.rows.filter(row=>['user','assistant'].includes(row.role))).toHaveLength(100);
       const coldProcesses=await processPages();
@@ -155,6 +178,7 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
       await body();
       expect(pages.filter(value=>value.mode==='body')).toHaveLength(2);
 
+      await longBody();
       const coldBytes=await mappedBytes(pages);
       await page.goto(origin+'/?round=warm');
       await selectProvider();
@@ -167,11 +191,13 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
         const row=chat.locator('.message.assistant').filter({has:page.locator('.message-body').getByText('Answer '+index,{exact:true})});
         await expect(row.locator('.who')).toHaveText(new RegExp('历史模型 '+index+effort+'$'));
       }
+      await fileActions();
       const warmOlder=await older();
       expect(warmOlder.rows).toHaveLength(0);
       const warmProcesses=await processPages();
       expect(warmProcesses.map(result=>result.rows.length)).toEqual([0,0]);
       await body();
+      await longBody();
       expect(pages.filter(value=>value.mode==='body')).toHaveLength(0);
       const watch=await payload(await watchReply);
       expect(watch.waitSupported).toBe(true);
@@ -186,7 +212,7 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
         recent:{cold:cold.page.rows.length,warm:warm.page.rows.length},
         older:{cold:coldOlder.rows.length,warm:warmOlder.rows.length},
         process:{cold:coldProcesses.map(result=>result.rows.length),warm:warmProcesses.map(result=>result.rows.length)},
-        bodyRequests:{cold:2,warm:0},
+        bodyRequests:{cold:4,warm:0},
       })});
       if(codex){
         await page.evaluate(async()=>{

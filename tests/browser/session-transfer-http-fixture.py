@@ -25,6 +25,14 @@ def reply_label(index):
     return {'model': f'历史模型 {index}', **({'effort': {88: 'off', 89: 'high'}[index]} if index != 87 else {})}
 
 
+def answer_text(index, home):
+    if index == 88:
+        return f'Answer {index}\n\n[report.md]({home.as_posix()}/report.md)'
+    if index == 87:
+        return f'Answer {index}\n\n' + 'x' * 17000 + f'\n\n[late.md]({home.as_posix()}/late.md)'
+    return f'Answer {index}'
+
+
 def make_history(home, steps=24):
     records = []
 
@@ -51,7 +59,7 @@ def make_history(home, steps=24):
                     {'type': 'response_item', 'payload': {'type': 'function_call_output',
                         'call_id': f'command-{item}', 'output': output}},
                 ])
-        message('assistant', f'Answer {index}')
+        message('assistant', answer_text(index, home))
         event('task_complete', turn_id=turn)
 
     rollout = home / 'sessions' / 'rollout.jsonl'
@@ -124,7 +132,7 @@ def source_for(provider, home, steps=24):
                 output = 'Earlier tool output' if item != steps - 1 else 'Long detail marker\n' + 'a' * 16000 + 'SECOND CHUNK\n' + 'b' * 2000
                 records.append(dict(shared, id=f'command-{item}', role='activity', kind='commandExecution',
                                     title=f'fixture-command-{item}', output=output))
-        records.append(dict(shared, id=f'out-{index}', role='assistant', text=f'Answer {index}',
+        records.append(dict(shared, id=f'out-{index}', role='assistant', text=answer_text(index, home),
                             phase='final_answer', **reply_label(index)))
 
     def read(_provider, action, sid=None, options=None):
@@ -148,6 +156,8 @@ def serve(provider, legacy, steps, live_watch):
         home, data = root / 'codex', root / 'gateway'
         data.mkdir()
         make_history(home, steps)
+        (home / 'report.md').write_text('Fixture file preview', encoding='utf-8')
+        (home / 'late.md').write_text('Long body file preview', encoding='utf-8')
         watch_sources = add_watch_source(home) if live_watch else None
         bridge = Bridge(home, data, codex_bin=home / 'missing-test-runtime',
                         ipc_path=str(home / 'missing-test-socket'), observation_enabled=lambda: False)
