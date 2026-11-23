@@ -6,12 +6,12 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
   const offline=()=>globalThis.window?.OfflineChatReader?.enabled;
   const originalLinks=new Map();
-  const bodyAttachments=new Set();
+  const bodyAttachments=new Map();
   for(const line of node.querySelectorAll?.('.message-body p')||[]){
     if(!/^(?:附件|Attachments?)\s*[:：]/i.test(line.textContent.trim()))continue;
     for(const link of line.querySelectorAll('a[href]')){
       const name=link.textContent.trim();
-      if(name)bodyAttachments.add(name);
+      if(name)bodyAttachments.set(name,(bodyAttachments.get(name)||0)+1);
     }
   }
   const openOffline=(target,item)=>target.addEventListener('click',event=>{
@@ -46,7 +46,7 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
   let count=0;
   items.forEach(item=>{
     const kind=item.type||item.kind,name=item.name||item.path?.split(/[\\/]/).pop()||kind||t('文件');
-    if(['localImage','image','toolImage'].includes(kind)&&bodyAttachments.has(name)&&!offline())return;
+    if(bodyAttachments.get(name)&&!offline()){bodyAttachments.set(name,bodyAttachments.get(name)-1);return;}
     if(count++)label.append(document.createTextNode('、'));
     if(originalLinks.has(item)){label.append(originalLinks.get(item));return;}
     if(offline()&&offlineTurnId){

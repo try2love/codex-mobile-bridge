@@ -133,10 +133,14 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
         return payload(await response);
       }
       async function processPages(){
-        const first=syncResponse(page,'process');await chat.getByRole('button',{name:'已完成',exact:true}).last().click();
-        await expect(loadedSteps).toHaveCount(20);
-        const next=syncResponse(page,'process');await chat.getByRole('button',{name:'加载后续过程'}).click();
+        const first=syncResponse(page,'process');
+        const next=page.waitForResponse(response=>{
+          const url=new URL(response.url());
+          return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')==='process'&&url.searchParams.has('after');
+        });
+        await chat.getByRole('button',{name:'已完成',exact:true}).last().click();
         await expect(loadedSteps).toHaveCount(24);
+        await expect(chat.getByRole('button',{name:'加载后续过程'})).toHaveCount(0);
         return [await payload(await first),await payload(await next)];
       }
       async function body(){
@@ -441,7 +445,7 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     await append([usage(768)]);
     await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
     await expect(messages.locator('.sync-process')).toHaveCount(0);
-    for(const first of [61,41,21,1])await older(first,100);
+    await older(1,100);
     // Read the actual IndexedDB records, not merely the rendered rows.
     const diskCount=await page.evaluate(async()=>{
       const {scope}=chatTimeline.syncTarget,cache=BridgeChatSyncCache;
@@ -477,8 +481,7 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     await append(appendSteps(121,165));
     await open('Transfer HTTP fixture');
     await expect(contents).toHaveText(steps(146,165));
-    await older(126,165);await older(106,165);
-    for(const first of [86,66,46,26,6,1])await older(first,165);
+    await older(1,165);
     const acrossGap=(await Promise.all(payloads.slice(offset))).flatMap(({mode,body})=>mode==='body'?[body.text]:body.rows.map(row=>row.text));
     expect([...acrossGap].sort()).toEqual(steps(121,165));
 
@@ -541,9 +544,12 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     await expect(final).toBeInViewport();
     await expect(finished).toHaveAttribute('aria-expanded','false');
     await expect(contents).toHaveCount(0);
+    // Durability is asynchronous; zero retransmission applies to committed cache.
+    await page.evaluate(async()=>{await BridgeChatSyncCache.pending.get(chatTimeline.syncTarget.scope);});
     offset=payloads.length;
     await finished.click();
-    await expect(contents).toHaveText(steps(1,20));
+    await expect(contents).toHaveText(steps(1,165));
+    await expect(messages.getByRole('button',{name:'加载后续过程'})).toHaveCount(0);
     const completed=await Promise.all(payloads.slice(offset));
     expect(completed.flatMap(({body})=>body.rows)).toHaveLength(0);
 

@@ -228,19 +228,38 @@ class ChatTimelineSync {
       this.paint({process:true});
     }catch(error){
       if(this.active()&&group.loading===loading){group.error=direction;this.paint({process:true});}
-    }finally{if(group.loading===loading)group.loading=null;}
+    }finally{
+      if(group.loading===loading)group.loading=null;
+      if(group.open&&!group.filling&&!group.error)void this.fillProcess(key);
+    }
   }
-  processAction(key,direction){const group=this.processes.get(key);if(group)this.readProcess(key,group.error||direction);}
+  async fillProcess(key){
+    const group=this.processes.get(key);
+    if(!group||group.filling||group.loading||group.error)return;
+    const filling=group.filling={};
+    try{
+      while(group.open&&group.filling===filling&&this.processes.get(key)===group&&this.active()&&!this.host.cached){
+        const direction=group.loadedVersion!==group.version?'recent':group.previous?'earlier':group.next?'later':null;
+        if(!direction||group.error||group.loading)break;
+        const before=JSON.stringify([group.loadedVersion,group.previous,group.next]);
+        await this.readProcess(key,direction);
+        if(before===JSON.stringify([group.loadedVersion,group.previous,group.next]))break;
+      }
+    }finally{if(group.filling===filling)group.filling=null;}
+  }
+  processAction(key,direction){const group=this.processes.get(key);if(group){group.open=true;this.readProcess(key,group.error||direction);}}
   disclosure(turnId,open){
     const status=this.turns.get(turnId)?.status;
     let reset=false;
     for(const [key,group] of this.processes){
       if(group.turnId!==turnId)continue;
+      group.open=open;
+      if(!open)group.filling=null;
       if(!open&&status==='completed'&&(group.runningWindow||group.loading)){
         group.rows=[];group.previous=null;group.next=null;group.runningWindow=false;group.loadedVersion=null;group.loading=null;
         reset=true;
       }
-      if(open&&!group.loadedVersion)this.readProcess(key,'recent');
+      if(open)void this.fillProcess(key);
     }
     if(reset)queueMicrotask(()=>{if(!this.abort.signal.aborted)this.paint({process:true});});
   }

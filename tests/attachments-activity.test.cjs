@@ -37,6 +37,17 @@ function fixture(){
  return {panel,calls,saved,root,button,input,events,thumbCalls,setUpload:f=>upload=f};
 }
 const tick=()=>new Promise(setImmediate),file=(name,size=12)=>({name,size});
+test('uploaded files use their body hyperlink once and keep a text fallback without a link',()=>{
+ const make=tag=>({tag,dataset:{},children:[],append(...nodes){this.children.push(...nodes);}});
+ const context=vm.createContext({window:{},BridgeI18n:{t:s=>s},document:{createElement:make,createTextNode:text=>({textContent:text})}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),context);
+ const render=vm.runInContext('renderChatAttachments',context);
+ const body=make('article');body.querySelectorAll=()=>[{textContent:'附件：notes.txt',querySelectorAll:()=>[{textContent:'notes.txt'}]}];
+ render(body,[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}],{});
+ assert.equal(body.children.length,0,'linked file has no duplicate plain caption');
+ body.querySelectorAll=()=>[];render(body,[{type:'file',name:'notes.txt'}],{});
+ assert.equal(body.children[0].children[0].children.at(-1).textContent,'notes.txt');
+});
 test('multi-select uploads independently and switching chats preserves host-scoped drafts',async()=>{
  const ui=fixture();ui.panel.add([file('a.txt'),file('photo.png')]);await tick();
  assert.equal(ui.calls.length,2);assert.equal(ui.panel.ready(),true);assert.equal(ui.panel.ids().length,2);

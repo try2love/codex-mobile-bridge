@@ -20,10 +20,26 @@ test('history expansion during catch-up restarts bounded resync without clearing
 });
 
 function syncProjection(){
- const context=vm.createContext({});
+ const context=vm.createContext({queueMicrotask,chatTurnStopped:status=>['interrupted','failed'].includes(status)});
  vm.runInContext(fs.readFileSync('web/features/chat/timeline-sync.js','utf8'),context);
  return vm.runInContext('({mergeChatSyncRows,carryChatSyncContext,ChatTimelineSync})',context);
 }
+
+test('opening process disclosure drains every page and closing cancels further reads',async()=>{
+ const {ChatTimelineSync}=syncProjection(),calls=[];
+ const group={cursor:'process',version:'v1',rows:[],turnId:'turn'};
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{abort:new AbortController(),target:{},host:{},files:new Map(),turns:new Map([['turn',{status:'completed'}]]),processes:new Map([['process',group]]),active:()=>true,paint(){},
+  read:async(_mode,query)=>{calls.push(query);return {rows:[{key:String(calls.length),order:calls.length}],next:calls.length<3?String(calls.length):null};}});
+ sync.disclosure('turn',true);
+ await new Promise(setImmediate);
+ assert.equal(calls.length,3);
+ assert.equal(group.rows.length,3);
+ assert.equal(group.next,null);
+ group.loadedVersion=null;group.rows=[];calls.length=0;
+ sync.read=async()=>{calls.push({});sync.disclosure('turn',false);return {rows:[],next:'next'};};
+ sync.disclosure('turn',true);await new Promise(setImmediate);
+ assert.equal(calls.length,1);
+});
 
 test('native range order updates older rows without crossing the current turn',()=>{
  const {mergeChatSyncRows:merge}=syncProjection();
