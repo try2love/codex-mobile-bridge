@@ -3,6 +3,9 @@
 const BridgeI18n=(()=>{
 const en={
 "本地数据传输":"Local data transfer",
+"手机 App":"Mobile app",
+"此过程未保存到本机，请联网上看。":"This process was not saved on this device. Connect to view it.",
+"此段正文未保存到本机，请联网上看。":"This content was not saved on this device. Connect to view it.",
 "最小化":"Minimize",
 "查看任务":"View task",
 "个会话":"chats",

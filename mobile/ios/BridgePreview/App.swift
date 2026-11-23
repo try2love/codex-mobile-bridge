@@ -7,6 +7,24 @@ import AVFoundation
 import UserNotifications
 import UniformTypeIdentifiers
 import Security
+import Darwin
+
+private enum MobileClientIdentity {
+    static let userAgent: String = {
+        var hardware = utsname()
+        let identified = uname(&hardware) == 0
+        let size = MemoryLayout.size(ofValue: hardware.machine)
+        let model = identified ? withUnsafePointer(to: &hardware.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: size) { String(cString: $0) }
+        } : "iPhone"
+        let version = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ??
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let encoded = model.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return "BridgeMobile/\(version)-iOS BridgeModel/\(encoded) BridgeOS/\(os.majorVersion).\(os.minorVersion).\(os.patchVersion) BridgeBuild/\(build)"
+    }()
+}
 
 private enum DeviceBinding {
     struct Credential: Codable { let name: String; let token: String; var cookie: String { name + "=" + token } }
@@ -1600,7 +1618,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         catch { info(error.localizedDescription); return }
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
         clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address); subtitle.text = MobileStrings.text("正在连接 · ") + computerName(address)
-        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
+        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = MobileClientIdentity.userAgent
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -2397,7 +2415,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         subtitle.isHidden = true
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
+        configuration.applicationNameForUserAgent = MobileClientIdentity.userAgent
         configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         configuration.setURLSchemeHandler(resources, forURLScheme: OfflineReaderResources.scheme)
         configuration.userContentController.add(self, name: "offlineChat")

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from bridge.features.accounts.draft_identity import draft_identity
+from .device_info import describe as describe_device, refresh as refresh_device
 from .session_transfer import TransferUsage, namespace
 
 
@@ -280,7 +281,7 @@ class Auth:
             session = {"csrf": secrets.token_urlsafe(32), "expires": now + hours * 3600 if hours else 0,
                        "persistent": trusted or remember is not False,
                        'trustedDevice': trusted, 'remembered': remember is True and not trusted,
-                       'created': now, 'lastSeen': now, 'userAgent': user_agent[:512],
+                       'created': now, 'lastSeen': now, 'userAgent': user_agent[:512], 'clientInfo': describe_device(user_agent),
                        **(client or {'ip': address, 'peer': address, 'source': 'direct'})}
             self.sessions[self.key(token)] = session
             # Password login and one-use pairing are both successful authentication.
@@ -300,12 +301,13 @@ class Auth:
                     # Migrate previously issued seven-day cookies while they are valid.
                     remembered = session.get('remembered', session.get('persistent', True) and
                                              session['expires'] - session['created'] == self.REMEMBER_HOURS * 3600)
-                    changed = upgrade or session['ip'] != client['ip'] or now - session['lastSeen'] >= 60
+                    client_info = refresh_device(session.get('clientInfo'), user_agent)
+                    changed = upgrade or session['ip'] != client['ip'] or now - session['lastSeen'] >= 60 or client_info != session.get('clientInfo')
                     if upgrade:
                         session.update(expires=0, persistent=True, trustedDevice=True, remembered=False)
                     elif remembered and changed:
                         session.update(expires=now + self.REMEMBER_HOURS * 3600, remembered=True)
-                    session.update(client, userAgent=user_agent[:512], lastSeen=now if changed else session['lastSeen'])
+                    session.update(client, userAgent=user_agent[:512], clientInfo=client_info, lastSeen=now if changed else session['lastSeen'])
                     if changed:
                         self.persist()
                 return session
@@ -393,6 +395,6 @@ class Auth:
                 raise ValueError('未知设备管理操作')
             return {'policy': {k: list(v) if isinstance(v, list) else v for k, v in self.policy.items()},
                     'autoBlocks': sorted(self.auto_blocks.values(), key=lambda row: row['blockedAt'], reverse=True),
-                    'sessions': sorted([{'id': k, **{field: val for field, val in v.items() if field not in ('csrf', 'routeBindings', 'routeRenewal', 'routeLegacyRenewal')}}
+                    'sessions': sorted([{'id': k, 'clientInfo': v.get('clientInfo') or describe_device(v.get('userAgent', '')), **{field: val for field, val in v.items() if field not in ('csrf', 'routeBindings', 'routeRenewal', 'routeLegacyRenewal')}}
                                         for k, v in self.sessions.items() if self.valid(v)],
                                        key=lambda row: row['lastSeen'], reverse=True)}

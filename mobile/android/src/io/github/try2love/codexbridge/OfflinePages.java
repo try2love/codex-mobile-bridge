@@ -134,7 +134,7 @@ final class OfflinePages {
     settings.setJavaScriptEnabled(true);
     // The regular chat shell uses local/session storage for navigation and tabs.
     settings.setDomStorageEnabled(true);
-    settings.setUserAgentString(settings.getUserAgentString()+" BridgeMobile/0.1-Android");
+    settings.setUserAgentString(settings.getUserAgentString()+" "+owner.mobileUserAgent());
     settings.setAllowFileAccess(false);
     settings.setAllowContentAccess(false);
     settings.setBlockNetworkLoads(true);

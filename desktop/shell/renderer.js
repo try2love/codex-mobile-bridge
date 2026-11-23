@@ -732,7 +732,10 @@ function renderDevices(value){
   for(const session of value.sessions){
     const row=document.createElement('div');row.className='device-row';
     const address=document.createElement('strong');address.textContent=session.ip;
-    const browser=document.createElement('p');browser.textContent=(session.trustedDevice?t('已绑定手机')+' · ':'')+(session.userAgent||t('未知浏览器'));
+    const browser=document.createElement('p'),info=session.clientInfo||{};
+    browser.textContent=[session.trustedDevice?t('已绑定手机'):'',info.kind==='app'?t('手机 App'):info.browser?[info.browser,info.browserVersion].filter(Boolean).join(' '):t('浏览器'),
+      info.model,[info.platform,info.osVersion].filter(Boolean).join(' '),
+      info.appVersion?'v'+info.appVersion+(info.build?' ('+info.build+')':''):''].filter(Boolean).join(' · ');
     const detail=document.createElement('p');detail.className='hint';
     detail.textContent=t(session.source==='proxy'?'代理 IP（未提供客户端地址）':session.source==='forwarded'?'经可信代理转发':'直连地址')+' · '+t('登录时间：')+date(session.created)+' · '+t('最近访问：')+date(session.lastSeen)+' · '+t('有效期至：')+(session.expires?date(session.expires):t('不自动过期'));
     const actions=document.createElement('div');actions.className='actions';
