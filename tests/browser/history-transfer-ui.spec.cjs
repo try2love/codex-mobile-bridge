@@ -25,7 +25,8 @@ test('phone selection retains choices through a space warning and resumes verifi
           freeBytes: state.freeBytes, clearRevision: '0', tombstones: {}, recordBatch:1};
         if (event.type === 'state' || event.type === 'auth' || event.type === 'transferStats') return network;
         if (event.type === 'read') return {turns: []};
-        if (event.type === 'transferTaskLoad') return {task: null};
+        if (event.type === 'transferTaskLoad') return {task: state.task||null};
+        if (event.type === 'transferTaskSave') {state.task=structuredClone(event.task);return {saved:true};}
         if (event.type === 'transferCached') return {present: state.committed.includes(event.version)};
         if (event.type === 'transferChunkHas') return {present: state.chunks.includes(event.version + ':' + event.index)};
         if (event.type === 'transferChunkFetch') { state.chunks.push(event.version + ':' + event.index); return {saved: true}; }
@@ -123,6 +124,18 @@ test('phone selection retains choices through a space warning and resumes verifi
     expect(downloads).toHaveLength(1); expect(downloads[0].version).toBe('file');
     expect(downloads[0].offset).toBe(524288); expect(downloads[0].length).toBe(375712);
     await page.screenshot({path: info.outputPath('transfer-completed.png')});
+    await panel.getByRole('button',{name:'关闭',exact:true}).click();
+    await expect(panel).toBeHidden();
+    expect(await page.evaluate(()=>transferFixture.task.dismissed)).toBe(true);
+    await page.evaluate(async()=>{
+      const owner=BridgeChatSyncCache.owner;
+      BridgeChatSyncCache.owner={gatewayId:'a'.repeat(32),identity:'b'.repeat(64)};
+      await BridgeHistoryTransfer.connect(async()=>({}));
+      BridgeChatSyncCache.owner=owner;
+      await BridgeHistoryTransfer.connect(async()=>({}));
+    });
+    await expect(panel).toBeHidden();
+
     await page.evaluate(async () => {
       BridgeChatSyncCache.owner = {gatewayId: 'f'.repeat(32), identity: 'e'.repeat(64)};
       await BridgeHistoryTransfer.connect(async () => ({}));

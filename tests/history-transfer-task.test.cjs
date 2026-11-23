@@ -163,3 +163,31 @@ test('batch records require both gateway and native capability',async()=>{
  await f.manager.prepare(['selected']);
  assert.equal(f.calls.find(call=>call.body).body.batchRecords,true);
 });
+
+
+test('closing a completed card persists its dismissal across controller restoration and leaves archived content intact',async()=>{
+ const f=fixture([item('saved')]);
+ await f.manager.start(await f.manager.prepare(['selected']));await settled(f.manager);
+ assert.equal(f.manager.task.state,'completed');
+ await f.manager.dismiss();
+ const restored=new HistoryTransferTask({request:f.request,native:f.native,delay:async()=>{}});
+ await restored.restore();
+ assert.equal(restored.task.dismissed,true);
+ assert(f.committed.has('saved'),'closing a card does not erase saved history');
+ const prepared=await restored.prepare(['selected']);
+ assert.notEqual(restored.task.dismissed,true,'a new task must have a visible card');
+ await restored.start(prepared);await settled(restored);
+ assert.notEqual(restored.task.dismissed,true);
+});
+
+test('legacy completed tasks without a close field stay hidden while new unclosed completions remain visible',async()=>{
+ const f=fixture([item('saved')]);
+ await f.manager.start(await f.manager.prepare(['selected']));await settled(f.manager);
+ const current=new HistoryTransferTask({request:f.request,native:f.native,delay:async()=>{}});
+ await current.restore();assert.equal(current.task.dismissed,false);
+ const legacy=structuredClone(f.manager.task);delete legacy.dismissed;
+ await f.native('transferTaskSave',{task:legacy});
+ const restored=new HistoryTransferTask({request:f.request,native:f.native,delay:async()=>{}});
+ await restored.restore();assert.equal(restored.task.dismissed,true);
+ assert(f.committed.has('saved'));assert.equal(f.environment.saved.dismissed,true);
+});

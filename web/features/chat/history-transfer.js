@@ -51,7 +51,7 @@
     await controller.resume({allowMetered: !state.allowTransfer});
   });
   const cancel = button('取消传输', () => controller.cancel());
-  const dismiss = button('关闭', () => { panel.hidden = true; });
+  const dismiss = button('关闭', () => controller.dismiss());
   const reopen=button('查看任务',()=>choose());
   actions.append(reopen,pause, resume, cancel, dismiss);
   const metrics=node('div','','download-metrics'),amount=node('span'),rate=node('span');metrics.append(amount,rate);
@@ -59,7 +59,7 @@
   document.body.append(panel);
   let sample;
   function paint(task) {
-    panel.hidden = !task || task.state === 'cancelled' || ownerKey !== JSON.stringify(window.BridgeChatSyncCache?.owner);
+    panel.hidden = !task || task.dismissed === true || task.state === 'cancelled' || ownerKey !== JSON.stringify(window.BridgeChatSyncCache?.owner);
     if (!task) return;
     const reasons = {manual:'已暂停',network:'等待 Wi-Fi',offline:'等待连接网关',space:'空间不足，已暂停',error:'传输中断，点击继续'};
     const finished=task.state==='completed',preparing=task.state==='preparing',ready=task.state==='ready',failed=task.state==='prepare-error';

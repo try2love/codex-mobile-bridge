@@ -54,7 +54,7 @@ class HistoryTransferTask {
   async beginPreparation(ids, prioritySession, progress) {
     const state = await this.state(), requestedAt = Date.now();
     const selection = Array.isArray(ids) ? {ids} : ids;
-    this.task = {state:'preparing', requestedAt, selection, preparingSessions:0};
+    this.task = {state:'preparing', dismissed:false, requestedAt, selection, preparingSessions:0};
     await this.save();
     const created = await this.request('/api/history-transfer/manifest', {
       ...selection, prioritySession,
@@ -87,11 +87,19 @@ class HistoryTransferTask {
     await this.native('transferTaskSave', {task: this.task});
     this.changed(this.task);
   }
+  async dismiss() {
+    if (!this.task || !['completed','prepare-error'].includes(this.task.state)) return;
+    this.task.dismissed = true;
+    await this.save();
+  }
   async restore() {
     const saved = await this.native('transferTaskLoad');
     if (!saved.task) return;
     this.task = saved.task;
-    this.changed(this.task);
+    if (this.task.state === 'completed' && this.task.dismissed === undefined) {
+      this.task.dismissed = true;
+      await this.save();
+    } else this.changed(this.task);
     if (this.task.state === 'preparing') {
       if (!this.task.manifestId) { this.task.state='prepare-error';this.task.error='准备请求已中断，请重新选择会话';await this.save();return; }
       this.preparing=this.finishPreparation().catch(async error=>{
@@ -117,7 +125,7 @@ class HistoryTransferTask {
     this.task = {
       manifestId: prepared.id, capturedAt: prepared.capturedAt, requestedAt: prepared.requestedAt,
       taskClearRevision: state.clearRevision, phase: 'record', cursor: null, index: 0,
-      state: 'running', allowMetered, meteredNetworkEpoch: allowMetered ? state.networkEpoch : null, downloadedBytes: 0,
+      state: 'running', dismissed:false, allowMetered, meteredNetworkEpoch: allowMetered ? state.networkEpoch : null, downloadedBytes: 0,
       expectedBytes: prepared.downloadBytes, fullBytes: prepared.fullBytes, processedBytes:0, currentBytes:0,
       reusedBytes: prepared.reusedBytes, completedItems: 0, clearedItems: 0,
       failedSessions: prepared.failedSessions,
