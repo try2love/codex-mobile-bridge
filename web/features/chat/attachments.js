@@ -6,6 +6,14 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
   const offline=()=>globalThis.window?.OfflineChatReader?.enabled;
   const originalLinks=new Map();
+  const bodyAttachments=new Set();
+  for(const line of node.querySelectorAll?.('.message-body p')||[]){
+    if(!/^(?:附件|Attachments?)\s*[:：]/i.test(line.textContent.trim()))continue;
+    for(const link of line.querySelectorAll('a[href]')){
+      const name=link.textContent.trim();
+      if(name)bodyAttachments.add(name);
+    }
+  }
   const openOffline=(target,item)=>target.addEventListener('click',event=>{
     if(!offline())return;
     event.preventDefault();
@@ -33,11 +41,14 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
     image.loading='lazy';image.decoding='async';image.src=source.preview;
     image.onerror=()=>link.remove();link.append(image);attachments.append(link);
   }
-  const label=document.createElement('small');label.className='muted';label.append(document.createTextNode(t('附件：')));
-  items.forEach((item,index)=>{
-    if(index)label.append(document.createTextNode('、'));
-    if(originalLinks.has(item)){label.append(originalLinks.get(item));return;}
+  const label=document.createElement('small');label.className='muted';
+  const prefix=document.createElement('span');prefix.className='attachment-caption-prefix';prefix.textContent=t('附件：');label.append(prefix);
+  let count=0;
+  items.forEach(item=>{
     const kind=item.type||item.kind,name=item.name||item.path?.split(/[\\/]/).pop()||kind||t('文件');
+    if(['localImage','image','toolImage'].includes(kind)&&bodyAttachments.has(name)&&!offline())return;
+    if(count++)label.append(document.createTextNode('、'));
+    if(originalLinks.has(item)){label.append(originalLinks.get(item));return;}
     if(offline()&&offlineTurnId){
       const button=document.createElement('button');
       button.type='button';button.className='plain';button.textContent=name;
@@ -52,7 +63,8 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
     const player=href && window.BridgeChatMedia?.create(name,href);
     if(player)attachments.append(player);
   });
-  attachments.append(label);node.append(attachments);
+  if(count)attachments.append(label);
+  if(attachments.children.length)node.append(attachments);
 }
 class ChatAttachments {
   constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canReference=()=>true,menuChoices=()=>[],canUpload=()=>true,anchor=()=>button}){

@@ -394,8 +394,8 @@ class ChatTimeline {
       else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=chatMessageHeading(row,'CODEX');}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
-      const attachment=node.querySelector('.timeline-attachments small.muted');
-      if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
+      const attachment=node.querySelector('.attachment-caption-prefix');
+      if(attachment)attachment.textContent=timelineText('附件：');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
     const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
