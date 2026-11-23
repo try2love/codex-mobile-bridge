@@ -726,12 +726,13 @@ function renderDevices(value){
     const button=document.createElement('button');button.type='button';button.textContent=t('解除封禁并重置次数');button.disabled=devicesBusy;
     button.onclick=()=>{if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}return changeDevices({action:'unblock',ip:block.ip});};row.append(text,button);$('auto-blocks').append(row);
   }
+  if(!devicesBusy&&$('device-list').querySelector('.device-rename'))return;
   $('device-list').replaceChildren();
   if(!value.sessions.length)$('device-list').textContent=t('暂无有效登录记录。');
   const date=value=>new Date(value*1000).toLocaleString(BridgeI18n.locale());
   for(const session of value.sessions){
     const row=document.createElement('div');row.className='device-row';
-    const address=document.createElement('strong');address.textContent=session.ip;
+    const address=document.createElement('strong');address.textContent=session.name?session.name+'（'+session.ip+'）':session.ip;
     const browser=document.createElement('p'),info=session.clientInfo||{};
     browser.textContent=[session.trustedDevice?t('已绑定手机'):'',info.kind==='app'?t('手机 App'):info.browser?[info.browser,info.browserVersion].filter(Boolean).join(' '):t('浏览器'),
       info.model,[info.platform,info.osVersion].filter(Boolean).join(' '),
@@ -739,7 +740,7 @@ function renderDevices(value){
     const detail=document.createElement('p');detail.className='hint';
     detail.textContent=t(session.source==='proxy'?'代理 IP（未提供客户端地址）':session.source==='forwarded'?'经可信代理转发':'直连地址')+' · '+t('登录时间：')+date(session.created)+' · '+t('最近访问：')+date(session.lastSeen)+' · '+t('有效期至：')+(session.expires?date(session.expires):t('不自动过期'));
     const actions=document.createElement('div');actions.className='actions';
-    for(const [label,action] of [['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
+    for(const [label,action] of [['重命名','rename'],['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
       const button=document.createElement('button');button.type='button';button.textContent=t(action==='revoke'&&session.trustedDevice?'解除绑定':label);button.disabled=devicesBusy;
       button.onclick=()=>{
         if(action==='allow'){
@@ -747,6 +748,22 @@ function renderDevices(value){
           devicesDirty=true;$('device-feedback').textContent=t('白名单有未保存的修改。');return;
         }
         if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}
+        if(action==='rename'){
+          const existing=$('device-list').querySelector('.device-rename input');
+          if(existing){existing.focus();return;}
+          const form=document.createElement('form'),name=document.createElement('input'),save=document.createElement('button'),cancel=document.createElement('button');
+          form.className='device-rename';name.type='text';name.value=session.name||'';name.maxLength=80;
+          name.setAttribute('aria-label',t('设备名称'));name.placeholder=t('留空则显示 IP');
+          save.type='submit';save.textContent=t('保存名称');cancel.type='button';cancel.textContent=t('取消');
+          button.disabled=true;
+          cancel.onclick=()=>{form.remove();button.disabled=false;button.focus();};
+          form.onsubmit=event=>{
+            event.preventDefault();
+            if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}
+            const value=name.value;form.remove();return changeDevices({action:'rename',id:session.id,name:value});
+          };
+          form.append(name,save,cancel);actions.after(form);name.focus();name.select();return;
+        }
         return changeDevices({action,id:session.id});
       };
       actions.append(button);
@@ -781,7 +798,7 @@ async function changeDevices(payload){
   try{
     const value=await api.devices(payload);
     devicesDirty=false;renderDevices(value);
-    $('device-feedback').textContent=t(payload.action==='save'?'IP 规则已保存并生效。':payload.action==='block'?'IP 已封禁，关联登录已撤销。':payload.action==='unblock'?'IP 已解封，剩余尝试次数已重置。':'登录已撤销。');
+    $('device-feedback').textContent=t(payload.action==='save'?'IP 规则已保存并生效。':payload.action==='block'?'IP 已封禁，关联登录已撤销。':payload.action==='unblock'?'IP 已解封，剩余尝试次数已重置。':payload.action==='rename'?'设备名称已保存。':'登录已撤销。');
   }catch(error){feedback(error.message,true);}
   finally{devicesBusy=false;busyActions.delete('devices');$('device-policy').inert=false;$('refresh-devices').disabled=false;if(devicesState)renderDevices(devicesState);}
 }

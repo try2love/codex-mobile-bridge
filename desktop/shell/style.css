@@ -64,3 +64,6 @@ aside{overflow-y:auto}aside>nav,aside>footer{flex-shrink:0}@media(max-height:740
 #update-versions .section-head{flex-wrap:wrap}
 #update-versions .section-head h2{margin:0}
 @media(max-width:950px){.update-version-fields{grid-template-columns:minmax(0,1fr)}#update-cache-summary{order:3;flex-basis:100%}}
+
+.device-rename{display:flex;align-items:center;gap:8px;margin-top:10px}.device-rename input{flex:1;min-width:0}.device-rename button{flex:none}
+.device-row>strong{overflow-wrap:anywhere;word-break:break-word}

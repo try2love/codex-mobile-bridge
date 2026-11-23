@@ -46,3 +46,38 @@ class DeviceInfoTests(unittest.TestCase):
         info = describe('BridgeMobile/2.2.2-Android BridgeModel/Phone%0A%09%00Model BridgeBuild/81')
         self.assertEqual(info['model'], 'PhoneModel')
         self.assertNotIn('model', describe('BridgeMobile/2.2.2-Android BridgeModel/'+'x'*200+' BridgeBuild/81'))
+
+    def test_device_rename_is_per_login_persistent_and_does_not_change_authorization(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as temp:
+            auth = Auth({'mode': 'none'}, Path(temp))
+            first, current = auth.new_session('192.0.2.5', 'BridgeMobile/0.1-Android')
+            other, _ = auth.new_session('192.0.2.5', 'Mozilla/5.0 Chrome/158.0')
+            original = {field: current[field] for field in ('csrf', 'expires', 'trustedDevice')}
+            result = auth.manage({'action': 'rename', 'id': auth.key(first), 'name': ' 工作手机 '})
+            rows = {row['id']: row for row in result['sessions']}
+            self.assertEqual(rows[auth.key(first)]['name'], '工作手机')
+            self.assertNotIn('name', rows[auth.key(other)])
+            self.assertEqual({field: current[field] for field in original}, original)
+            auth.close()
+            reopened = Auth({'mode': 'none'}, Path(temp))
+            self.addCleanup(reopened.close)
+            session = reopened.get(first, {'ip': '192.0.2.6', 'source': 'direct'}, 'BridgeMobile/0.1-Android')
+            self.assertEqual(session['name'], '工作手机')
+            self.assertEqual(session['ip'], '192.0.2.6')
+            self.assertEqual(len(reopened.sessions), 2)
+            reopened.manage({'action': 'rename', 'id': reopened.key(first), 'name': ''})
+            self.assertEqual(reopened.get(first).get('name', ''), '')
+
+    def test_invalid_device_names_and_expired_logins_cannot_be_renamed(self):
+        auth = Auth({'mode': 'none'})
+        self.addCleanup(auth.close)
+        token, _ = auth.new_session('192.0.2.3')
+        key = auth.key(token)
+        for name in (None, 1, 'x'*81, 'Phone\nInjected'):
+            with self.assertRaises(ValueError):
+                auth.manage({'action': 'rename', 'id': key, 'name': name})
+        with self.assertRaises(ValueError):
+            auth.manage({'action': 'rename', 'id': key, 'name': 'Phone', 'ip': '192.0.2.9'})
+        auth.manage({'action': 'revoke', 'id': key})
+        with self.assertRaises(ValueError):
+            auth.manage({'action': 'rename', 'id': key, 'name': 'Phone'})

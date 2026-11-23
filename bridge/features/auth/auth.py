@@ -386,6 +386,16 @@ class Auth:
                     if session:
                         self._discard_usage(value['id'])
                 self.persist()
+            elif action == 'rename':
+                session = self.sessions.get(value.get('id'))
+                name = value.get('name')
+                if not session or not self.valid(session):
+                    raise ValueError('登录设备已失效')
+                if (set(value) != {'action', 'id', 'name'} or not isinstance(name, str)
+                        or len(name.strip()) > 80 or any(not char.isprintable() for char in name)):
+                    raise ValueError('设备名称无效，请输入不超过 80 个可见字符')
+                session['name'] = name.strip()
+                self.persist()
             elif action == 'usage':
                 key = value.get('id')
                 if key not in self.sessions or not self.valid(self.sessions[key]):

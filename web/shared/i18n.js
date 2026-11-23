@@ -4,6 +4,10 @@ const BridgeI18n=(()=>{
 const en={
 "本地数据传输":"Local data transfer",
 "手机 App":"Mobile app",
+"设备名称":"Device name",
+"留空则显示 IP":"Leave blank to show IP",
+"设备名称已保存。":"Device name saved.",
+"设备名称无效，请输入不超过 80 个可见字符":"Enter a device name with up to 80 printable characters.",
 "此过程未保存到本机，请联网上看。":"This process was not saved on this device. Connect to view it.",
 "此段正文未保存到本机，请联网上看。":"This content was not saved on this device. Connect to view it.",
 "最小化":"Minimize",
