@@ -33,9 +33,12 @@ test('phone selection retains choices through a space warning and resumes verifi
     });
     await page.route('**/api/history-transfer/**', async route => {
       const url = new URL(route.request().url());
-      if (url.pathname.endsWith('/catalog')) return route.fulfill({json: {sessions: [
+      if (url.pathname.endsWith('/catalog')) return route.fulfill({json: url.searchParams.has('cursor') ? {sessions: [
+        {id:'claude-selected',sessionId:'claude-native',title:'Claude portable history',client:'claude',host:'local'},
+      ], unavailable:[{client:'zcode',entry:'zcode'}]} : {sessions: [
         {id: 'selected', sessionId: 'native', title: 'Portable history', client: 'codex', host: 'local'},
-      ]}});
+      ],nextCursor:'100',sessionCount:2}});
+
       if (route.request().method() === 'POST') return route.fulfill({json: {id: 'manifest', capturedAt: 100}});
       return route.fulfill({json: {id: 'manifest', status: 'ready', capturedAt: 100,
         summary: {sessions: 1, records: 1, attachments: 1, textBytes: 8, attachmentBytes: 600000},
@@ -53,6 +56,22 @@ test('phone selection retains choices through a space warning and resumes verifi
     const dialog = page.locator('.local-transfer-dialog');
     await expect(dialog.getByText('Portable history', {exact: true})).toBeVisible();
     await dialog.locator('input[type=checkbox]').check();
+    await expect(dialog.getByRole('tab',{name:'Claude (1)',exact:true})).toBeVisible();
+    await expect(dialog.locator('.local-transfer-count')).toHaveText('已选择 1 个');
+    const alignment=await dialog.locator('.local-transfer-choice').evaluate(row=>{
+      const input=row.querySelector('input').getBoundingClientRect(),title=row.querySelector('strong').getBoundingClientRect();
+      return {inputTop:input.top,titleTop:title.top,titleBottom:title.bottom};
+    });
+    expect(alignment.inputTop).toBeLessThan(alignment.titleBottom+10);
+    await dialog.getByRole('tab',{name:'Claude (1)',exact:true}).click();
+    await dialog.locator('input[type=checkbox]').check();
+    await expect(dialog.locator('.local-transfer-count')).toHaveText('已选择 2 个');
+    await dialog.getByRole('tab',{name:'ZCode (0)',exact:true}).click();
+    await expect(dialog.getByRole('status')).toContainText('部分接入读取失败');
+    await dialog.getByRole('tab',{name:'Codex (1)',exact:true}).click();
+    await expect(dialog.locator('input[type=checkbox]')).toBeChecked();
+    await page.screenshot({path:info.outputPath('transfer-selection.png')});
+
     await dialog.getByRole('button', {name: '查看下载量', exact: true}).click();
     await expect(dialog.getByText('会话全量', {exact: true})).toBeVisible();
     await expect(dialog.getByText('空间还差', {exact: false})).toBeVisible();

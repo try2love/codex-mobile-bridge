@@ -158,6 +158,28 @@ class HistoryTransferTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.transfer.content('different-phone', first, binary['id'], 0, CHUNK_BYTES)
 
+    def test_catalog_keeps_saved_session_without_a_readable_rollout(self):
+        self.rollout.unlink()
+        page = self.transfer.catalog(0)
+        self.assertEqual(page['sessionCount'], 1)
+        self.assertIsNone(page['sessions'][0]['sourceBytes'])
+
+    def test_inventory_includes_other_agents_and_reports_failed_sources(self):
+        desktop = Mock()
+        desktop.enabled.side_effect = lambda entry: entry in ('codex', 'claude', 'deepseek', 'zcode')
+        desktop.navigation_clients.return_value = ['codex', 'claude', 'deepseek', 'zcode']
+        desktop.adapters = {name: SimpleNamespace(directory=self.data / name) for name in ('claude', 'deepseek')}
+        def listing(provider, action):
+            self.assertEqual(action, 'list')
+            if provider == 'zcode':
+                raise RuntimeError('Unavailable synthetic source')
+            return {'sessions': [{'id': provider + '-saved', 'title': provider + ' saved'}]}
+        desktop.call.side_effect = listing
+        self.source.desktop = desktop
+        page = self.transfer.catalog(0)
+        self.assertEqual({row['client'] for row in page['sessions']}, {'codex', 'claude', 'deepseek'})
+        self.assertEqual(page['unavailable'], [{'client': 'zcode', 'entry': 'zcode'}])
+
     def test_current_read_only_owner_delta_joins_saved_prefix_once(self):
         self.add_turn('old')
         self.add_turn('active', answer='Saved preview', complete=False)
@@ -180,6 +202,24 @@ class HistoryTransferTests(unittest.TestCase):
                          ['Owner response before rollout flush'])
         self.host.session.assert_not_called()
         self.host._attach.assert_not_called()
+
+    def test_unmatched_partial_owner_keeps_saved_history_with_visible_warning(self):
+        self.add_turn('active', answer='Saved preview', complete=False)
+        current = {'turnId': 'turn-active', 'status': 'inProgress',
+                   'itemsPagination': {'hasLoadedOldest': False}, 'items': [
+                       {'id': 'not-on-disk', 'type': 'agentMessage', 'text': 'Unflushed owner tail'}]}
+        self.host.lock = threading.RLock()
+        self.host.live = {THREAD: SimpleNamespace(connected=True, state={'id': THREAD, 'turns': [current]},
+                                                 condition=threading.Condition())}
+        manifest = self.begin()
+        page = self.ready(manifest)
+        self.assertEqual(page['failedSessions'], 0)
+        self.assertEqual(len(page['warnings']), 1)
+        self.assertIn('未同步内容', page['warnings'][0]['message'])
+        bodies = [json.loads(self.fetch(manifest, item)) for item in page['items'] if item['kind'] == 'record']
+        text = json.dumps(bodies)
+        self.assertIn('Saved preview', text)
+        self.assertNotIn('Unflushed owner tail', text)
 
     def test_manifest_keyset_pages_continuously(self):
         for i in range(17):
@@ -213,6 +253,44 @@ class HistoryTransferHTTP(unittest.TestCase):
     tearDown = test_bridge.HttpTests.tearDown
     request = test_bridge.HttpTests.request
     login = test_bridge.HttpTests.login
+
+    def test_slow_transfer_preparation_does_not_queue_live_send_or_stop(self):
+        temporary = tempfile.TemporaryDirectory(dir=TEMP)
+        self.addCleanup(temporary.cleanup)
+        entered, release = threading.Event(), threading.Event()
+        source = Mock()
+        session = {'id': 'a' * 64, 'sessionId': THREAD, 'cacheSessionId': THREAD,
+                   'title': 'Synthetic transfer', 'client': 'codex', 'entry': 'local', 'host': 'local'}
+        source.inventory.return_value = ([session], [])
+        source.pin_local.return_value = 'pinned'
+        def records(*_args):
+            entered.set()
+            release.wait(5)
+            return iter(())
+        source.records.side_effect = records
+        service = self.server.history_transfer = HistoryTransfer(temporary.name, source)
+        self.server.bridge.send = Mock(return_value={'status': 'accepted'})
+        self.server.bridge.interrupt = Mock(return_value={'status': 'stopped'})
+        headers = self.login()
+        result = self.request('POST', '/api/history-transfer/manifest', {'ids': [session['id']]}, headers)
+        self.assertEqual(result[0], 202)
+        self.assertTrue(entered.wait(1))
+        try:
+            started = time.monotonic()
+            self.assertEqual(self.request('POST', '/api/sessions/' + THREAD + '/send',
+                                          {'id': THREAD, 'text': 'Synthetic live input'}, headers)[0], 200)
+            self.assertEqual(self.request('POST', '/api/sessions/' + THREAD + '/stop', {}, headers)[0], 200)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with service.connect() as db:
+                    status = db.execute('SELECT status FROM manifests WHERE id=?', (result[2]['id'],)).fetchone()[0]
+                if status != 'preparing':
+                    break
+                time.sleep(.01)
 
     def test_auth_csrf_and_chunk_headers(self):
         service = Mock()

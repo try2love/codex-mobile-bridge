@@ -11,13 +11,13 @@ class HistoryTransferTask {
   async state() {
     return this.native('transferStats');
   }
-  async manifest(id, cursor) {
+  async manifest(id, cursor, progress) {
     const query = new URLSearchParams({id});
     if (cursor) query.set('cursor', cursor);
     let page;
     do {
       page = await this.request('/api/history-transfer/manifest?' + query);
-      if (page.status === 'preparing') await this.delay(400);
+      if (page.status === 'preparing') { progress?.(page); await this.delay(400); }
     } while (page.status === 'preparing');
     if (page.status !== 'ready') throw Error(page.error || '无法准备会话传输，请重试');
     return page;
@@ -51,14 +51,14 @@ class HistoryTransferTask {
     }
     return {...cached, missingBytes};
   }
-  async prepare(ids, prioritySession) {
+  async prepare(ids, prioritySession, progress) {
     const requestedAt = Date.now();
     const selection = Array.isArray(ids) ? {ids} : ids;
     const created = await this.request('/api/history-transfer/manifest', {...selection, prioritySession});
     let cursor, first, downloadBytes = 0, reusedBytes = 0;
     const state = await this.state();
     do {
-      const page = await this.manifest(created.id, cursor);
+      const page = await this.manifest(created.id, cursor, progress);
       first ||= page;
       for (const item of page.items || []) {
         const result = await this.missing(item, state, null);
@@ -69,7 +69,7 @@ class HistoryTransferTask {
     } while (cursor);
     return {
       id: created.id, capturedAt: created.capturedAt ?? first.capturedAt, requestedAt,
-      summary: first.summary, errors: first.errors || [], failedSessions: first.failedSessions || 0,
+      summary: first.summary, errors: first.errors || [], warnings: first.warnings || [], failedSessions: first.failedSessions || 0,
       downloadBytes, reusedBytes,
       fullBytes: Number(first.summary?.textBytes || 0) + Number(first.summary?.attachmentBytes || 0),
     };
@@ -105,6 +105,7 @@ class HistoryTransferTask {
       expectedBytes: prepared.downloadBytes, fullBytes: prepared.fullBytes,
       reusedBytes: prepared.reusedBytes, completedItems: 0, clearedItems: 0,
       failedSessions: prepared.failedSessions,
+      incompleteSessions: (prepared.warnings || []).map(item => item.cacheSessionId).filter(Boolean),
     };
     await this.save();
     void this.run();
@@ -206,7 +207,8 @@ class HistoryTransferTask {
         while (this.task.index < items.length && this.task.state === 'running' && generation === this.generation) {
           const item = items[this.task.index];
           if (this.task.phase === 'finish') {
-            if (item.kind === 'record' && item.cacheSessionId !== this.task.lastCompleteSession) {
+            if (item.kind === 'record' && item.cacheSessionId !== this.task.lastCompleteSession &&
+                !this.task.incompleteSessions?.includes(item.cacheSessionId)) {
               const state = await this.state();
               await this.native('transferSessionComplete', {sessionId: item.cacheSessionId,
                 clearRevision: state.clearRevision, taskClearRevision: this.task.taskClearRevision});

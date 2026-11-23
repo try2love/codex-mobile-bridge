@@ -128,3 +128,13 @@ test('persisted unfinished task reopens without making a new manifest or fetchin
   assert.equal(f.calls.filter(call => call.body).length, 1);
   assert.deepEqual(f.calls.filter(call => call.type === 'transferChunkFetch').map(call => call.index), [0, 1]);
 });
+
+test('an unfinished live tail remains visibly partial after copying the saved boundary',async()=>{
+ const row=item('saved'),f=fixture([row]);
+ const prepared=await f.manager.prepare(['selected']);
+ prepared.warnings=[{cacheSessionId:row.cacheSessionId,message:'Unflushed native tail'}];
+ await f.manager.start(prepared);await settled(f.manager);
+ assert.deepEqual(f.manager.task.incompleteSessions,[row.cacheSessionId]);
+ assert.equal(f.calls.some(call=>call.type==='transferSessionComplete'),false);
+ assert.equal(f.manager.task.state,'completed');
+});

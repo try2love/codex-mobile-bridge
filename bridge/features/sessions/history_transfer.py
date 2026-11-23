@@ -101,10 +101,6 @@ class HistorySources:
                         rows = target.store.list(limit=CATALOG_ITEMS, offset=offset, archived=archived,
                                                  transfer=True)
                         for row in rows:
-                            live = getattr(target, 'live', None)
-                            owner = live.get(row['id']) if isinstance(live, dict) else None
-                            if row.get('sourceBytes') is None and not (owner and owner.connected):
-                                continue
                             native_host = 'local' if host == 'local' or host.startswith('codex:') else host
                             key = ['codex', native_host, row.get('sourceHome') or host, row['id']]
                             item = _session('codex', host, host, {**row, 'archived': archived}, key)
@@ -217,7 +213,7 @@ def _merge_owner_turn(live, saved):
         return saved
     prepend_saved_process([live], [saved])
     if live.get('itemsComplete') is False:
-        raise ValueError('无法核验当前回合未落盘的内容')
+        return None
     if not live.get('startedAt'):
         live['startedAt'] = saved.get('startedAt')
     if saved.get('_recordedReplyLabel', {}).get('model'):
@@ -284,14 +280,21 @@ def _codex_rows(target, sid, snapshot):
                 for idx, turn in enumerate(view['turns']):
                     if turn['id'] == live_turn['id']:
                         merge_saved_message_times(live_view, view)
-                        view['turns'][idx] = _merge_owner_turn(live_turn, turn)
+                        merged = _merge_owner_turn(live_turn, turn)
+                        if merged is None:
+                            snapshot.setdefault('warnings', []).append('当前回合有未同步内容，稍后可补传')
+                        else:
+                            view['turns'][idx] = merged
                         live_turn = None
                         break
             order += (yield from _project_codex_rows(view, sid, uploads, filesystem_local, order))
     if live_turn:
         if live_turn.get('itemsComplete') is False:
-            raise ValueError('原会话仅提供当前回合的部分内容')
-        yield from _project_codex_rows(live_view, sid, uploads, filesystem_local, order)
+            if not snapshot['segments']:
+                raise ValueError('原会话仅提供当前回合的部分内容')
+            snapshot.setdefault('warnings', []).append('当前回合有未同步内容，稍后可补传')
+        else:
+            yield from _project_codex_rows(live_view, sid, uploads, filesystem_local, order)
 
 
 def _project_codex_rows(view, sid, uploads, filesystem_local, order):
@@ -662,6 +665,7 @@ class HistoryTransfer:
                 'status': 'preparing', 'estimate': estimate}
 
     def _prepare(self, transfer, selected, estimate, pinned, errors):
+        warnings, processed = [], len(errors)
         try:
             for session in selected:
                 if session['id'] not in pinned:
@@ -672,22 +676,35 @@ class HistoryTransfer:
                 except (OSError, RuntimeError, ValueError, KeyError):
                     pinned.pop(session['id'])
                     errors.append({'id': session['id'], 'message': '原会话暂不可读取'})
+                    processed += 1
             for session in selected:
                 if session['id'] not in pinned:
                     continue
+                snapshot = pinned.pop(session['id'])
+                with self.connect() as db:
+                    db.execute('UPDATE manifests SET summary=? WHERE id=?',
+                               (self._json({'processed': processed, 'currentTitle': session['title'], 'warnings': warnings}), transfer))
                 try:
-                    self._stage(transfer, session, pinned.pop(session['id']), estimate)
+                    self._stage(transfer, session, snapshot, estimate)
+                    if isinstance(snapshot, dict):
+                        warnings.extend({'id': session['id'], 'cacheSessionId': session['cacheSessionId'], 'message': text}
+                                        for text in snapshot.get('warnings', []))
                 except (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error):
                     LOG.warning('Unable to prepare a history transfer source', exc_info=True)
                     with self.connect() as db:
                         db.execute('DELETE FROM items WHERE manifest=? AND scope=?', (transfer, session['id']))
                     errors.append({'id': session['id'], 'message': '无法准备该会话的完整记录'})
+                processed += 1
+                with self.connect() as db:
+                    db.execute('UPDATE manifests SET errors=?, summary=? WHERE id=?',
+                               (self._json(errors), self._json({'processed': processed, 'warnings': warnings}), transfer))
             with self.connect() as db:
                 totals = {row['kind']: (row['count'], row['bytes']) for row in db.execute(
                     'SELECT kind,COUNT(*) AS count,SUM(bytes) AS bytes FROM items WHERE manifest=? GROUP BY kind', (transfer,))}
                 records, text_bytes = totals.get('record', (0, 0))
                 attachments, attachment_bytes = totals.get('attachment', (0, 0))
-                summary = {'sessions': len(selected) - len(errors), 'records': records, 'attachments': attachments,
+                summary = {'processed': processed, 'warnings': warnings,
+                           'sessions': len(selected) - len(errors), 'records': records, 'attachments': attachments,
                            'textBytes': text_bytes, 'attachmentBytes': attachment_bytes}
                 db.execute('UPDATE manifests SET status=?, errors=?, summary=? WHERE id=?',
                            ('ready' if len(errors) < len(selected) else 'failed', self._json(errors), self._json(summary), transfer))
@@ -802,11 +819,12 @@ class HistoryTransfer:
             result = {'id': transfer, 'status': manifest['status'], 'sessionCount': manifest['sessions'],
                       'capturedAt': manifest['captured'], 'estimate': bool(manifest['estimate']),
                       'failedSessions': len(errors), 'errors': errors, 'items': [], 'nextCursor': None}
+            result['summary'] = json.loads(manifest['summary'])
+            result['warnings'] = result['summary'].get('warnings', [])
             if manifest['status'] != 'ready':
                 if errors:
                     result['error'] = errors[0]['message']
                 return result
-            result['summary'] = json.loads(manifest['summary'])
             lane, after = (cursor[0], int(cursor[1:])) if cursor else ('r', 0)
             rows = self._page(db, transfer, 'record' if lane == 'r' else 'attachment', after, PAGE_ITEMS + 1)
             if lane == 'r' and len(rows) < PAGE_ITEMS + 1:

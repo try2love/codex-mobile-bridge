@@ -60,6 +60,7 @@
     remaining.textContent = finished ? label('已保存到手机') : label('预计剩余') + ' ' + size(left);
     if (task.clearedItems) remaining.textContent += ' · ' + label('部分内容已手动清理');
     if (task.failedSessions) remaining.textContent += ' · ' + label('部分会话读取失败');
+    if (task.incompleteSessions?.length) remaining.textContent += ' · ' + label('当前回合有未同步内容，稍后可补传');
     if (finished) progress.value = 1;
     else if (task.expectedBytes) progress.value = Math.min(.99, task.downloadedBytes / task.expectedBytes);
     else progress.removeAttribute('value');
@@ -81,58 +82,74 @@
     const footer = node('div', '', 'local-transfer-actions');
     dialog.append(heading, content, feedback, footer); document.body.append(dialog);
     dialog.addEventListener('close', () => dialog.remove(), {once: true}); dialog.showModal();
-    const selected = new Set(previousSelection), sessions = new Map(); let cursor, busy = false;
+    const selected = new Set(previousSelection), sessions = new Map(); let cursor, busy = false, loading = true, agent = 'codex';
+    const providers = {codex:'Codex',claude:'Claude',deepseek:'DeepSeek',zcode:'ZCode',antigravity:'Antigravity'};
+    const tabs = node('div', '', 'local-transfer-tabs'), count = node('p', '', 'local-transfer-count');
+    tabs.setAttribute('role', 'tablist');tabs.setAttribute('aria-label', label('Agent'));
+    let unavailable = [];
     const list = node('div', '', 'local-transfer-sessions');
-    const selectAll = button('全选', async () => {
+    const selectAll = button('全选当前 Agent', () => {
       if (busy) return;
-      busy = true; selectAll.disabled = true; next.disabled = true;
-      try {
-        while (cursor) await load();
-        for (const id of sessions.keys()) selected.add(id);
-        allSelected = true;
-        draw();
-      } catch (error) { feedback.textContent = error.message; }
-      finally { busy = false; selectAll.disabled = false; next.disabled = !selected.size; }
+      for (const session of sessions.values()) if (session.client === agent) selected.add(session.id);
+      allSelected = false; draw();
     });
-    const more = button('加载更多会话', () => load().catch(error => { feedback.textContent = error.message; }));
     const next = button('查看下载量', async () => {
       if (busy || !selected.size) return;
-      busy = true; next.disabled = true; more.disabled = true; selectAll.disabled = true;
+      busy = true; next.disabled = true; selectAll.disabled = true;
       feedback.textContent = label('正在计算下载量并核对已有缓存…');
       try {
         const selectedChat = typeof browserNavigation === 'undefined' ? null : browserNavigation.read();
-        const prepared = await controller.prepare(allSelected ? {all: true} : [...selected], selectedChat?.id);
+        const prepared = await controller.prepare([...selected], selectedChat?.id, page => {
+          if (dialog.open) feedback.textContent = label('正在准备会话') + ' ' + (page.summary?.processed || 0) + '/' + page.sessionCount +
+            (page.summary?.currentTitle ? ' · ' + page.summary.currentTitle : '');
+        });
         if (dialog.open) await confirm(prepared);
       } catch (error) { feedback.textContent = error.message; }
-      finally { busy = false; next.disabled = !selected.size; more.disabled = false; selectAll.disabled = false; }
+      finally { busy = false; next.disabled = !selected.size; selectAll.disabled = loading; }
     });
     next.className = 'primary'; next.disabled = true;
-    content.append(selectAll, list, more); footer.append(next);
+    const retry = button('重试读取', () => load().catch(error => { feedback.textContent = error.message; retry.hidden = false; }));
+    retry.hidden = true;
+    content.append(tabs, count, selectAll, list, retry); footer.append(next);
     function draw() {
+      tabs.replaceChildren();
+      for (const [id, name] of Object.entries(providers)) {
+        const total = [...sessions.values()].filter(session => session.client === id).length;
+        const tab = button(name + ' (' + total + ')', () => { if (!busy) {agent = id; draw();} });
+        tab.setAttribute('role', 'tab');tab.setAttribute('aria-selected', String(agent === id));tabs.append(tab);
+      }
+      count.textContent = label('已选择') + ' ' + selected.size + ' ' + label('个');
       list.replaceChildren();
       for (const session of sessions.values()) {
+        if (session.client !== agent) continue;
         const line = node('label', '', 'local-transfer-choice'), input = node('input');
         input.type = 'checkbox'; input.checked = selected.has(session.id);
         input.onchange = () => {
           if (busy) { input.checked = selected.has(session.id); return; }
           allSelected = false;
           if (input.checked) selected.add(session.id); else selected.delete(session.id);
-          next.disabled = !selected.size;
+          count.textContent = label('已选择') + ' ' + selected.size + ' ' + label('个');
+          next.disabled = loading || !selected.size;
         };
         const text = node('span'), name = node('strong'); name.textContent = session.title;
         const detail = node('small'); detail.textContent = source(session);
         text.append(name, detail); line.append(input, text); list.append(line);
       }
-      more.hidden = !cursor;
-      next.disabled = !selected.size;
+      selectAll.disabled = loading || busy;
+      const failed = unavailable.filter(item => item.client === agent);
+      feedback.textContent = loading ? label('正在读取全部会话…') : failed.length ? label('部分接入读取失败，请稍后重试') :
+        [...sessions.values()].some(session => session.client === agent) ? '' : label('暂无可传输的会话');
+      next.disabled = loading || !selected.size;
     }
     async function load() {
-      more.disabled = true;
-      const page = await request('/api/history-transfer/catalog' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
-      if (!dialog.open) return;
-      for (const session of page.sessions || []) sessions.set(session.id, session);
-      cursor = page.nextCursor; draw(); more.disabled = false;
-      feedback.textContent = sessions.size ? '' : label('暂无可传输的会话');
+      retry.hidden = true;
+      do {
+        const page = await request('/api/history-transfer/catalog' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
+        if (!dialog.open) return;
+        for (const session of page.sessions || []) sessions.set(session.id, session);
+        unavailable = page.unavailable || [];cursor = page.nextCursor;
+        loading = !!cursor; draw();
+      } while (cursor);
     }
     async function confirm(prepared) {
       const state = await controller.state();
@@ -142,6 +159,7 @@
         values.append(node('dt', name), node('dd', size(bytes)));
       content.append(values);
       if (prepared.failedSessions) feedback.textContent = label('部分会话读取失败') + ' · ' + prepared.failedSessions;
+      if (prepared.warnings?.length) feedback.textContent += (feedback.textContent ? ' · ' : '') + label('当前回合有未同步内容，稍后可补传') + ' (' + prepared.warnings.length + ')';
       const start = button(state.allowTransfer ? '开始传输' : '使用当前网络开始传输', async () => {
         start.disabled = true;
         try {
@@ -156,7 +174,7 @@
         start.textContent = label(state.allowTransfer ? '先传一部分' : '使用当前网络先传一部分');
       }
     }
-    try { await load(); } catch (error) { feedback.textContent = error.message; }
+    try { await load(); } catch (error) { feedback.textContent = error.message; retry.hidden = false; }
   }
   async function connect(api, {open = false} = {}) {
     requested ||= open;

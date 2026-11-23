@@ -3,6 +3,16 @@
 const BridgeI18n=(()=>{
 const en={
 "本地数据传输":"Local data transfer",
+"全选当前 Agent":"Select all in this Agent",
+"已选择":"Selected",
+"个":"chats",
+"正在准备会话":"Preparing chats",
+"正在读取全部会话…":"Loading all chats…",
+"部分接入读取失败，请稍后重试":"Some connections could not be read. Please retry.",
+"重试读取":"Retry loading",
+"当前回合有未同步内容，稍后可补传":"This turn has unsynced content. Transfer it again later.",
+"会话已接收，等待显示":"Received by the chat; waiting to appear",
+
 "扫码选择会话":"Scan to select chats",
 "使用新版手机 App 扫码，选择要保存到手机的会话，核对下载量后开始传输。":"Scan with the latest phone app, select chats to save, and review the download size before starting.",
 "选择会话，将完整历史保存到手机。":"Choose chats and save their complete history to your phone.",
