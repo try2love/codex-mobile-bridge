@@ -211,7 +211,7 @@ class ChatTimelineSync {
   }
   async readProcess(key,direction,source='manual'){
     const group=this.processes.get(key);
-    if(!group?.cursor||group.loading||this.host.cached||!this.active())return;
+    if(!group?.cursor||group.loading||this.host.cached&&!this.target.offline||!this.active())return;
     const loading=group.loading={},version=group.version;
     const status=this.turns.get(group.turnId)?.status;
     const query={key:group.cursor,...(direction==='earlier'?{before:group.previous}:direction==='later'?{after:group.next}:
@@ -220,7 +220,15 @@ class ChatTimelineSync {
       const page=await this.read('process',query,source);
       if(!page||!this.active()||group.loading!==loading||group.version!==version||this.processes.get(key)!==group)return;
       const deleted=new Set(page.deleted||[]);
-      group.rows=mergeChatSyncRows(group.rows.filter(row=>!deleted.has(row.key)),page.rows||[],{older:direction==='earlier'});
+      let incoming=page.rows||[];
+      if(this.target.offline){
+        const retained=new Map(group.rows.map(row=>[row.key,row]));
+        incoming=incoming.map(row=>{
+          const current=retained.get(row.key);
+          return current&&current.version!==row.version?current:row;
+        });
+      }
+      group.rows=mergeChatSyncRows(group.rows.filter(row=>!deleted.has(row.key)),incoming,{older:direction==='earlier'});
       if(direction==='recent'||direction==='earlier')group.previous=page.previous;
       if(direction==='recent'||direction==='later')group.next=page.next;
       for(const file of page.files||[])this.files.set(file.id,file);
@@ -238,7 +246,7 @@ class ChatTimelineSync {
     if(!group||group.filling||group.loading||group.error)return;
     const filling=group.filling={};
     try{
-      while(group.open&&group.filling===filling&&this.processes.get(key)===group&&this.active()&&!this.host.cached){
+      while(group.open&&group.filling===filling&&this.processes.get(key)===group&&this.active()&&(!this.host.cached||this.target.offline)){
         const direction=group.loadedVersion!==group.version?'recent':group.previous?'earlier':group.next?'later':null;
         if(!direction||group.error||group.loading)break;
         const before=JSON.stringify([group.loadedVersion,group.previous,group.next]);

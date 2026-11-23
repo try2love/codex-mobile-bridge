@@ -157,6 +157,7 @@ struct OfflineArchiveTests {
         try save(packetData, event: packetEvent)
         check(try archive.commitTransfer(account, packetEvent, attachment: false)["saved"] as? Bool == true, "one packet merges every message")
         check(try archive.transferCached(account, packetEvent)["present"] as? Bool == true, "a committed packet verifies every member")
+        check(try archive.available(retained: false).contains { $0.id == account.id }, "downloaded history is visible while its account is still signed in")
         let page = try archive.readerPage(account, session: session, before: nil)!
         check(page["gaps"] as? Bool == true, "a partial job may not mark a history complete")
         let rows = page["turns"] as! [[String: Any]]

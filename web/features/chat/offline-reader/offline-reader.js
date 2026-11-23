@@ -80,16 +80,20 @@
       const entries=sorted.map(([key,entry])=>{
         const row=entry.row||{},value=body(entry,row);
         const messageKey=row.key||entry.key||key;
-        return {...row,key:messageKey,id:messageKey,turnId:turn.id,role:entry.role||row.role,
+        const valueRow={...row,key:messageKey,id:messageKey,turnId:turn.id,role:entry.role||row.role,
           text:value.text,version:entry.version||row.version||messageKey,
           offlinePartial:value.partial,
+          phase:row.phase||(row.role==='assistant'&&row.forkable===true?'final_answer':undefined),
           truncated:false,editable:false,forkable:false,
           attachments:(entry.attachments||row.attachments||[]).map(item=>({...item,offlineImage:raster(item.dataUrl)||raster(item.previewData)}))};
+        state.messages.set(messageKey,{row:valueRow,parts:entry.bodyParts});
+        if(value.partial)state.meta.offlineGaps=true;
+        return valueRow;
       });
       const rows=[],processes=[];
       let process;
       for(const row of entries){
-        if(row.kind==='processPage'||row.phase==='commentary'||!['assistant','user','error','fileChanges'].includes(row.role)){
+        if(row.kind==='processPage'||row.phase==='commentary'||row.role==='user'&&row.interaction==='response'||!['assistant','user','error','fileChanges'].includes(row.role)){
           if(!process){
             const key=row.kind==='processPage'?row.key:'offline-process:'+row.key;
             process={key,version:row.version,processCursor:row.kind==='processPage'?(row.processCursor||key):key,rows:[]};
@@ -111,7 +115,7 @@
     if(prepend)state.first=order;else state.first=0;
     for(const item of items){
       for(const row of item.rows){
-        if(row.process){row.process.order=order++;state.groups.set(row.process.processCursor,row.process);continue;}
+        if(row.process){row.process.order=order++;state.groups.set(row.process.processCursor,row.process);state.groups.set(row.process.key,row.process);continue;}
         rows.push({...row,order:order++});
       }
       turns.push(item.turn);
@@ -125,7 +129,7 @@
       if(payload.id!==item.archiveId)throw Error('Offline session mismatch');
       const meta={id:item.id,title:payload.title||item.title,host:item.host,provider:item.provider,cwd:item.cwd||'',status:'idle',connected:false,readOnly:true,
         access:{source:'history'},capabilities:{},requests:[],offlineSync:payload.syncedAt,offlineGaps:payload.gaps===true};
-      const reading={id:item.id,meta,groups:new Map(),turns:new Map(),before:payload.before};
+      const reading={id:item.id,meta,groups:new Map(),messages:new Map(),turns:new Map(),before:payload.before};
       reads.set(item.archiveId,reading);
       selected=item.archiveId;
       return present(reading,appendTurns(reading,payload.turns),false);
@@ -139,11 +143,24 @@
       return present(state,appendTurns(state,payload.turns),true);
     }
     if(mode==='process'){
-      const group=state.groups.get(params.get('key'));
+      const group=archived(state.groups,params.get('key'));
+      if(!group)throw Error('此过程未保存到本机，请联网上看。');
       const rows=(group?.rows||[]).map((row,order)=>({...row,order}));
       return {rows,index:rows,hasMore:false,hasEarlier:false,files:[]};
     }
+    if(mode==='body'){
+      const saved=archived(state.messages,params.get('key')),offset=Number(params.get('offset')||0);
+      if(!saved||saved.row.version!==params.get('version')||!Number.isSafeInteger(offset)||offset<0)
+        throw Error('此段正文未保存到本机，请联网上看。');
+      const part=saved.parts?.[offset]||(offset===0&&!saved.row.offlinePartial?{offset:0,text:saved.row.text,next:null}:null);
+      if(!part)throw Error('此段正文未保存到本机，请联网上看。');
+      return {...part,key:saved.row.key,version:saved.row.version,files:[],attachments:saved.row.attachments};
+    }
     throw Error('Offline read unavailable');
+  }
+  function archived(records,cursor){
+    if(typeof cursor!=='string')return;
+    return records.get(cursor)||records.get(cursor.slice(cursor.indexOf('.')+1));
   }
   async function request(path,write){
     const url=new URL(path,'https://offline.invalid');

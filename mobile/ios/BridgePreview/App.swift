@@ -2318,7 +2318,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     }
     private func offlineRetained() {
-        loadOffline({ try $0.available(retained: true) }) { accounts in
+        loadOffline({ archive in try archive.available(retained: false).filter { try archive.hasContent($0) } }) { accounts in
             let (page, content) = self.sheet(MobileStrings.text("保留的离线记录"))
             if accounts.isEmpty { content.addArrangedSubview(self.label(MobileStrings.text("暂无保留的离线记录"), secondary: true)) }
             for account in accounts {

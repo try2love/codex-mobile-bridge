@@ -62,7 +62,7 @@ function chatFinalAnswer(row){
 }
 // Use native turn and answer identities. Missing evidence keeps the flat rows visible.
 function chatTurnProcessRow(row){
-  return !row.fileSummary&&(row.role==='activity'||chatActivityKind(row)==='reasoning'||
+  return !row.fileSummary&&(row.role==='user'&&row.interaction==='response'||row.role==='activity'||chatActivityKind(row)==='reasoning'||
     row.role==='assistant'&&row.phase==='commentary');
 }
 function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=true,onDisclosure}={}){

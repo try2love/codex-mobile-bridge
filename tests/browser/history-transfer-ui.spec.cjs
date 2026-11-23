@@ -115,3 +115,45 @@ test('phone selection retains choices through a space warning and resumes verifi
     await expect(panel).toBeHidden();
   } finally { lines.close(); server.kill('SIGTERM'); }
 });
+
+test('complete transferred history remains readable offline with every intermediate step',async({page},info)=>{
+  await page.goto('/?case=session-menu');
+  await page.waitForFunction(()=>document.getElementById('app')?.hidden===false);
+  await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(async()=>{
+    const archiveId=JSON.stringify(['codex','local','offline-native']),turn='offline-turn';
+    const message=(key,role,order,fields={})=>({key,version:key+'-v',role,order,text:key,row:{key,version:key+'-v',role,order,turnId:turn,turnStatus:'completed',turnCompletionKnown:true,turnStartedAt:1700000000000,turnCompletedAt:1700000002000,...fields}});
+    const entries=[message('offline-question','user',0,{text:'Read my saved history'}),
+      message('offline-process','activity',.5,{kind:'processPage',processCursor:'capture-epoch.offline-process'}),
+      {...message('offline-reasoning','reasoning',1,{kind:'reasoning',truncated:true}),bodyParts:{0:{offset:0,text:'Saved reasoning '.repeat(2000)+'Reasoning end sentinel',next:null}}},
+      message('offline-commentary','assistant',2,{phase:'commentary',text:'Saved commentary sentinel'}),
+      message('offline-choice','user',3,{interaction:'response',text:'Saved choice sentinel'}),
+      message('offline-tool','activity',4,{kind:'commandExecution',title:'Saved command',text:'Saved tool output sentinel'}),
+      message('offline-final','assistant',5,{forkable:true,text:'Offline final answer sentinel'})];
+    for(const entry of entries)entry.text=entry.row.text;
+    window.offlineNativeCalls=[];
+    OfflineChatReader.enableHot(async(action,fields)=>{
+      offlineNativeCalls.push(action);
+      if(action==='list')return {sessions:[{id:archiveId,title:'Complete transferred offline chat',syncedAt:1700000002000}]};
+      if(action==='session')return {id:archiveId,title:'Complete transferred offline chat',turns:[{id:turn,content:{messages:Object.fromEntries(entries.map(row=>[row.key,row]))}}],before:null,gaps:false};
+      throw Error('Unexpected offline action');
+    });
+    await loadList(true);
+  });
+  const network=[];
+  await page.route('**/api/**',route=>{network.push(new URL(route.request().url()).pathname);return route.abort();});
+  await page.locator('#sessions .session').filter({hasText:'Complete transferred offline chat'}).click();
+  const messages=page.locator('#messages');
+  await expect(messages.getByText('Offline final answer sentinel',{exact:true})).toBeVisible();
+  const fold=messages.locator('.chat-turn-completion');await expect(fold).toHaveAttribute('aria-expanded','false');
+  await fold.click();
+  await expect(messages.getByText('Saved commentary sentinel',{exact:true})).toBeVisible();
+  await expect(messages.getByText('Saved choice sentinel',{exact:true})).toBeVisible();
+  const tool=messages.locator('details.activity').filter({hasText:'Saved tool output sentinel'});
+  await tool.locator('summary').click();await expect(tool.locator('.activity-body')).toContainText('Saved tool output sentinel');
+  const reasoning=messages.locator('details.activity').filter({hasText:'Reasoning end sentinel'});
+  await reasoning.locator('summary').click();await expect(reasoning.locator('.activity-body')).toContainText('Reasoning end sentinel');
+  expect(await messages.getByRole('button',{name:'加载后续过程',exact:true}).count()).toBe(0);
+  await page.screenshot({path:info.outputPath('offline-complete-process.png')});
+  expect(network).toEqual([]);
+});

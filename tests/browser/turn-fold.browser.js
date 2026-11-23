@@ -12,6 +12,7 @@ async function runTurnFoldBrowserChecks(){
     {key:'input',role:'user',text:'Initial question'},
     {key:'thought',role:'activity',kind:'reasoning',text:'**Native reasoning**',model:'historical-model',effort:'off'},
     {key:'progress',role:'assistant',phase:'commentary',text:'**Progress update**',model:'old-progress-model',effort:'high'},
+    {key:'response',role:'user',interaction:'response',text:'Selected option: continue'},
     {key:'tool',role:'activity',kind:'commandExecution',text:'echo fixture'},
     {key:'supplement',role:'user',text:'Keep this supplement visible'},
     {key:'answer',role:'assistant',phase:'final_answer',text:'Final answer remains visible',timestamp:start+123000},
@@ -38,7 +39,7 @@ async function runTurnFoldBrowserChecks(){
     const complete=rows.map(row=>({...row,turnStatus:'completed',turnCompletedAt:start+125000}));
     apply(complete);
     let control=container.querySelector('.chat-turn-completion');
-    check(!visible('thought')&&!visible('progress')&&!visible('tool'),'native success collapses only intermediate rows');
+    check(!visible('thought')&&!visible('progress')&&!visible('tool')&&!visible('response'),'native success collapses intermediate rows and answered choices');
     check(visible('input')&&visible('supplement')&&visible('answer'),'inputs, supplement and final answer remain visible');
     check([...container.children].filter(n=>n.dataset.key&&!n.classList.contains('chat-turn-completion')).map(n=>n.dataset.key).join(',')===rows.map(r=>r.key).join(','),'native row order is retained without wrappers');
     check(control.textContent.includes('2')&&control.textContent.includes('5'),'completion uses the native 125 second duration');

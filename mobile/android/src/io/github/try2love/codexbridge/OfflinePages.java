@@ -79,7 +79,8 @@ final class OfflinePages {
  }
  void retained() {
   bridge.run(archive->{
-   List<OfflineArchive.Account> accounts=archive.available(true);
+   List<OfflineArchive.Account> accounts=archive.available(false);
+   accounts.removeIf(account->!archive.hasContent(account));
    owner.runOnUiThread(()->{
     if(!active())return;
     AlertDialog.Builder page=new AlertDialog.Builder(owner).setTitle(l("保留的离线记录"))

@@ -76,3 +76,12 @@ test('offline archive process descriptors keep their source position in the flat
  assert.deepEqual(Array.from(sync.project(),row=>row.key),['question','process-earlier:group','process-later:group','answer']);
  assert.equal(sync.processes.get('group').cursor,'offline-group');
 });
+
+test('offline process can expand from a cached screen without replacing newer live rows',async()=>{
+ const {ChatTimelineSync}=syncProjection(),calls=[],group={cursor:'online.process',version:'live',rows:[{key:'current',version:'newer',text:'Live update',order:2}],turnId:'turn'};
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{target:{offline:true},host:{cached:true},files:new Map(),turns:new Map([['turn',{status:'completed'}]]),processes:new Map([['process',group]]),active:()=>true,paint(){},
+  read:async()=>{calls.push('archive');return {rows:[{key:'earlier',version:'saved',text:'Earlier saved process',order:1},{key:'current',version:'older',text:'Old snapshot',order:2}]};}});
+ group.open=true;await sync.fillProcess('process');
+ assert.equal(calls.length,1);
+ assert.deepEqual(Array.from(group.rows,row=>row.text),['Earlier saved process','Live update']);
+});
