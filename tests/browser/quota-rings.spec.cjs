@@ -6,7 +6,7 @@ async function checkComposerQuotaSize(composer,label){
   await expect(context.locator('.toolbar-copy')).toBeVisible();
   const measure=(node,selectors)=>{
     const {width,height}=getComputedStyle(node.querySelector(selectors.ring));
-    return {width,height,font:getComputedStyle(node.querySelector(selectors.label)).fontSize};
+    return {width,height,mask:getComputedStyle(node.querySelector(selectors.ring)).maskImage,font:getComputedStyle(node.querySelector(selectors.label)).fontSize};
   };
   const actual=await quota.evaluate(measure,{ring:'.quota-pie-ring',label:'.quota-window-percent'});
   const expected=await context.evaluate(measure,{ring:'.context-usage-ring',label:'.toolbar-copy'});
@@ -33,6 +33,8 @@ test('remaining quota is independent from model settings and shares the same acc
   await expect(rings).toBeVisible();await expect(rings.locator('.quota-pie-ring')).toHaveCount(2);
   const composer=page.locator('#composer');
   await checkComposerQuotaSize(composer,'default-text-size');
+  await page.evaluate(()=>{contextUsageControl.update({id:'synthetic-quota',connected:true,contextUsage:{usedTokens:52,contextWindow:100}});composerToolbar.sync();});
+  await expect(composer.locator('.context-usage .toolbar-copy')).toHaveText('上下文52%');
   await page.evaluate(()=>{
     const font=document.getElementById('appearance-font');font.value='24';font.dispatchEvent(new Event('input'));
   });

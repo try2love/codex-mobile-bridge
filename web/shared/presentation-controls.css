@@ -110,5 +110,5 @@ body:has(#app:not([hidden]))>.phone-header{display:none}
   .composer .remaining-quota{padding-inline:0}
   .composer .remaining-quota .quota-badges{gap:2px}
 }
-.context-usage-ring{display:block;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 46%,#000 50%);-webkit-mask:radial-gradient(circle,transparent 46%,#000 50%)}
+.context-usage-ring{display:block;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(farthest-side,transparent 60%,#000 62%);-webkit-mask:radial-gradient(farthest-side,transparent 60%,#000 62%)}
 .context-usage-ring.unknown{background:repeating-conic-gradient(from 10deg,var(--muted) 0deg 40deg,transparent 40deg 60deg);opacity:.65}

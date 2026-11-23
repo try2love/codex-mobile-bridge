@@ -41,7 +41,7 @@ class ContextUsageControl {
       this.ringPercent=ringPercent;
     }
     if(this.ring.classList.contains('unknown')===known)this.ring.classList.toggle('unknown',!known);
-    const label=BridgeI18n.t('上下文使用量')+' · '+(known?percent+'%':BridgeI18n.t('暂未提供'));
+    const label=BridgeI18n.t('上下文')+(known?percent+'%':' · '+BridgeI18n.t('暂未提供'));
     if(this.button.title!==label){
       this.button.title=label;
       this.button.setAttribute('aria-label',label);
