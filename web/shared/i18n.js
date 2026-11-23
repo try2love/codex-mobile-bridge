@@ -171,7 +171,6 @@ const en={
   "加载后续过程": "Load later activity",
   "本机仅保存了部分内容": "Only part of this content is saved on this device",
   "查看最终答复": "View final answer",
-  "回到本轮输入": "Go to this turn’s prompt",
   "回到最新": "Back to latest",
   "已完成，用时 {hours} 小时 {minutes} 分钟 {seconds} 秒": "Completed in {hours} hr {minutes} min {seconds} sec",
   "用时 {hours} 小时 {minutes} 分钟 {seconds} 秒": "Took {hours} hr {minutes} min {seconds} sec",

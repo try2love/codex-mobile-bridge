@@ -128,15 +128,6 @@ class ChatTimeline {
     this.newer.hidden=!this.sync?.deferred&&!this.sync?.needsRefill;
   }
   syncNotice(){this.newer.textContent=timelineText(this.turnRetained()?'查看最终答复':'回到最新');this.newer.hidden=false;}
-  jumpToInput(){
-    const candidates=[...this.rows.values()].map(({row})=>row).filter(row=>row.role==='user'&&
-      !['response','steer','supplement'].includes(row.interaction)&&row.kind!=='steeringUserMessage').sort((a,b)=>a.order-b.order);
-    const turnId=this.meta?.turnId||candidates.at(-1)?.turnId;
-    const row=candidates.find(candidate=>candidate.turnId===turnId&&candidate.originalQuestion!==false)||candidates.at(-1);
-    const node=row&&this.findNode(row.key);
-    if(!node)return;
-    this.following=false;node.scrollIntoView({block:'start'});this.anchor=this.capture();this.syncNotice();
-  }
   get syncEnabled(){return !!this.sync?.enabled;}
   get syncLoop(){return !!this.sync?.loop;}
   wakeSync(){this.sync?.wake?.();}
@@ -295,11 +286,11 @@ class ChatTimeline {
   }
   renderRow(row,open){
     if(row.kind==='syncProcessPage')return renderChatProcessPager(row,(...args)=>this.sync.processAction(...args));
-    const reasoning=chatActivityKind(row)==='reasoning',activity=!reasoning&&(row.role==='activity'||row.role==='fileChanges');
+    const activity=chatActivityKind(row)==='reasoning'||row.role==='activity'||row.role==='fileChanges';
     const toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
     node.__chatMessage=row;
-    node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+(reasoning?'assistant':row.role);
+    node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
@@ -398,7 +389,7 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       if(row.kind==='syncProcessPage'){entry.node.textContent=chatProcessPagerLabel(row);continue;}
-      const node=entry.node,activity=chatActivityKind(row)!=='reasoning'&&(row.role==='activity'||row.role==='fileChanges'),heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
+      const node=entry.node,activity=chatActivityKind(row)==='reasoning'||row.role==='activity'||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
       if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
       else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=chatMessageHeading(row,'CODEX');}
       const more=node.querySelector('.detail-more');

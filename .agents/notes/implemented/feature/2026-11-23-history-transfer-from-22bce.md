@@ -8,7 +8,7 @@ Status: implemented
 
 ## 决策
 
-ChatTimeline 与 DesktopSessions 沿用 22bce233 的消息直接兄弟节点和操作入口。独立的 timeline-sync 数据适配器负责分页、版本与稳定 key 归并，将过程行交给原渲染器。用时按钮置于第一步上方，普通模型正文共用 Markdown 与主题字号。回看锚点、失败展开、原提问定位及首段答复同帧入口由共享回归验证。
+ChatTimeline 与 DesktopSessions 沿用 22bce233 的消息直接兄弟节点和操作入口。独立的 timeline-sync 数据适配器负责分页、版本与稳定 key 归并，将过程行交给原渲染器。用时按钮置于第一步上方，普通模型正文共用 Markdown 与主题字号。回看锚点、失败展开及首段答复同帧入口由共享回归验证。思考摘要保留独立折叠，原提问定位按钮按后续反馈取消，理由见[摘要与进度入口](../bug-fix/2026-11-23-reasoning-summary-disclosure.md)。
 
 会话历史通过现有授权入口读取。网关固定原生已保存记录的边界和已连接 owner 的可读取尾回合，将正文与附件按内容版本写入持久清单。正文游标保留源协议的 Unicode scalar 单位，传输分段以字节为单位，完整文本核验使用 UTF-16 长度，避免含 emoji 的原文反复下载。
 

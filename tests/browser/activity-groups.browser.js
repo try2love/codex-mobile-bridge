@@ -35,6 +35,19 @@ async function runActivityGroupBrowserChecks(){
       check(messages.every(message=>node(message.id)?.parentElement===container),provider+' records remain direct chronological siblings');
       check([...container.children].filter(node=>node.dataset.key&&!node.classList.contains('chat-turn-completion')).map(node=>node.dataset.key).join('|')===messages.map(row=>row.id).join('|'),provider+' ordering retains progress and user supplement');
       check(node('progress').getBoundingClientRect().height>0&&node('final').getBoundingClientRect().height>0,provider+' progress and final reply stay visible');
+      const reasoning=node('reason');
+      check(reasoning.matches('details.activity:not([open])')&&/思考摘要|Thinking summary/i.test(reasoning.querySelector('summary').textContent),
+        provider+' reasoning is an independent collapsed summary');
+      reasoning.querySelector('summary').click();
+      await frame();
+      check(reasoning.open&&reasoning.querySelector('.activity-body').textContent==='Reasoning summary',
+        provider+' clicking the summary reveals the body');
+      check(node('progress').matches('.message.assistant')&&node('final').matches('.message.assistant')&&
+        getComputedStyle(node('progress').querySelector('.message-body')).color===getComputedStyle(node('final').querySelector('.message-body')).color,
+        provider+' commentary and final answer share normal message color');
+      const progress=view?.progress||document.createElement('div');
+      renderChatProgress(progress,{agentName:provider,active:true,onInput(){throw Error('Retired shortcut');}});
+      check(!progress.querySelector('button')&&progress.dataset.state==='working',provider+' progress contains no shortcut');
       const command=node('command');command.open=true;await frame();await frame();
       const count=reads;messages=messages.map(message=>({...message,turnStatus:'completed'}));apply();await frame();await frame();
       check(node('command').open,provider+' completion does not collapse an individual command');

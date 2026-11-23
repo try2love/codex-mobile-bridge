@@ -81,4 +81,3 @@
 .chat-turn-locator+.timeline-row,.chat-turn-locator+.chat-process-page[hidden]+.timeline-row{scroll-margin-block-start:36px}
 .chat-process-page{display:block;margin:4px 0}
 .chat-process-page[hidden]{display:none}
-.working .working-input{margin-inline-start:8px}

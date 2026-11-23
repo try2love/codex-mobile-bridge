@@ -1227,7 +1227,7 @@ function renderState(view){
   $('reconnect-manager').hidden=view.connected||!view.desktopRestartRecommended;
   const nativeClient=clientNavigation?.managementClients().find(client=>client.id==='codex');
   $('initialize-codex').hidden=view.connected||currentHost!=='local'||access.source!=='desktop'||nativeClient?.canInitializeDesktop!==true;
-  renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected,onInput:chatTimeline?.syncEnabled?()=>chatTimeline.jumpToInput():undefined});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
+  renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
   $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!access.canSend;
   $('message').disabled=limited&&!access.canSend;
   $('attach-button').disabled=limited&&!access.canSend;

@@ -40,7 +40,7 @@ function chatMessageHeading(row,agent){
   if(row.role==='error')return t('执行错误');
   const model=typeof row.model==='string'?row.model.trim():'',effort=typeof row.effort==='string'?row.effort.trim():'';
   const label=model?[model,effort&&!/^(none|off|disabled|false|0|关闭|无)$/i.test(effort)?effort:''].filter(Boolean).join(' '):'';
-  return [agent,chatActivityKind(row)==='reasoning'?chatActivityLabel(row):'',label].filter(Boolean).join(' · ');
+  return [agent,label].filter(Boolean).join(' · ');
 }
 function chatProcessPagerLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
@@ -237,11 +237,12 @@ function chatActivityKind(row){
 function chatActivityLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(row.interaction==='response')return t('已回答问题');
+  if(chatActivityKind(row)==='reasoning')return t('思考摘要');
   const text=(row.text||'').split('\n')[0];
   if(row.activityFiles?.length)return t('已编辑')+' '+row.activityFiles.map(file=>file.path).join('、');
   if(row.kind==='commandExecution'&&text)return t('已运行')+' '+text;
   if(['fileChange','FileChange'].includes(row.kind)&&text)return t('已编辑')+' '+text;
-  return t(row.title||(row.kind==='reasoning'||row.role==='reasoning'?'思考摘要':'执行过程'));
+  return t(row.title||'执行过程');
 }
 function renderChatActivityLabel(heading,row){
   heading.replaceChildren();
@@ -298,14 +299,13 @@ function syncChatMessageNodes(container,nodes){
   for(const [node,state] of reading)restoreChatActivityState(node,state);
 }
 // All chat surfaces render native task evidence through this shared indicator.
-function renderChatProgress(node,{agentName='',active=false,waiting=false,blocked=false,connected=true,fresh=true,onInput}={}){
+function renderChatProgress(node,{agentName='',active=false,waiting=false,blocked=false,connected=true,fresh=true}={}){
   const state=!connected||!fresh?'unknown':waiting?'waiting':active?'working':blocked?'blocked':'idle';
   const text={unknown:'运行状态暂不可用',waiting:'等待你的确认',blocked:'任务受阻，请查看提示',working:'正在工作…',idle:''}[state];
   node.hidden=state==='idle';node.dataset.state=state;node.setAttribute('role','status');node.setAttribute('aria-live','polite');
-  const key=JSON.stringify([state,agentName,BridgeI18n.language(),!!onInput]);if(node.dataset.progress===key)return state;node.dataset.progress=key;
+  const key=JSON.stringify([state,agentName,BridgeI18n.language()]);if(node.dataset.progress===key)return state;node.dataset.progress=key;
   node.replaceChildren();if(state==='working'){const dot=document.createElement('i');dot.setAttribute('aria-hidden','true');node.append(dot);}
   const label=document.createElement('span');label.textContent=[agentName,BridgeI18n.t(text)].filter(Boolean).join(' ');node.append(label);
-  if(state==='working'&&onInput){const button=document.createElement('button');button.type='button';button.className='plain working-input';button.textContent=BridgeI18n.t('回到本轮输入');button.onclick=onInput;node.append(button);}
   return state;
 }
 class SessionActivity {

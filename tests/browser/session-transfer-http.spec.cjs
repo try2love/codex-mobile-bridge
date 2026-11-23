@@ -535,10 +535,7 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
       ...followSteps.slice(9).map(text=>message('assistant',text,'commentary'))]);
     const followContents=messages.locator('.message-body').filter({hasText:/^Following step \d+$/});
     await expect(followContents).toHaveText(followSteps);
-    const returnToInput=page.getByRole('button',{name:'回到本轮输入'});
-    await expect(returnToInput).toBeVisible();await returnToInput.click();
-    await expect(messages.getByText('Follow this process',{exact:true})).toBeInViewport();
-    await latest();
+    await expect(page.getByRole('button',{name:'回到本轮输入'})).toHaveCount(0);
     await append([message('assistant','Final while following','final_answer',3807000)]);
     const followLabel=page.getByRole('button',{name:'用时 7 秒',exact:true});
     await expect(followLabel).toBeInViewport();

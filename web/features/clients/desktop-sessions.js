@@ -424,14 +424,6 @@ class DesktopSessionsView {
     }
     if(active()&&!target.offline)void sync.updates();
   }
-  jumpToInput(){
-    const candidates=(this.historyMessages||[]).filter(row=>row.role==='user'&&row.kind!=='steeringUserMessage'&&
-      !['response','steer','supplement'].includes(row.interaction));
-    const turnId=this.state?.turnId||candidates.at(-1)?.turnId;
-    const row=candidates.find(candidate=>candidate.turnId===turnId&&candidate.originalQuestion!==false)||candidates.at(-1);
-    if(!row)return;
-    this.messageNodes.get(String(row.id))?.node.scrollIntoView({block:'start'});this.rememberReading();
-  }
   writeScope(sid=this.sid){return JSON.stringify([this.provider,sid,this.draftGateway,this.draftScope?.account||'',this.generation]);}
   hasPendingWrite(action=null){const scope=this.writeScope();return [...this.pendingWrites].some(write=>write.scope===scope&&(!action||write.action===action));}
   canStop(){const caps=this.state?.capabilities||{};return !this.stopping&&this.canMutate(true)&&caps.stop!==false&&(this.state?.status==='active'||caps.stop===true&&this.hasPendingWrite('send'));}
@@ -605,7 +597,7 @@ class DesktopSessionsView {
     const resumable=this.canResume();this.notice.textContent=BridgeI18n.t(this.detailNotice||(resumable?'可先阅读聊天历史；继续时将恢复原会话。':''));this.notice.hidden=!this.detailNotice&&!resumable;if(resumable)this.notice.append(this.resumeButton);}
   sendingHere(preview=this.sendingPreview){return !!preview&&preview.provider===this.provider&&preview.sid===this.sid&&preview.gateway===this.draftGateway&&preview.account===(this.draftScope?.account||'');}
   updateComposer(){
-    if(this.state){renderChatProgress(this.progress,{agentName:this.clientStates?.find(row=>row.id===this.provider)?.name||this.provider,active:this.state.status==='active',waiting:!!this.state.requests?.length,blocked:['blocked','failed','error'].includes(this.state.turnStatus||this.state.status),connected:this.canMutate(),fresh:this.freshDetail,onInput:this.historyMessages?.length?()=>this.jumpToInput():undefined});}else this.progress.hidden=true;
+    if(this.state){renderChatProgress(this.progress,{agentName:this.clientStates?.find(row=>row.id===this.provider)?.name||this.provider,active:this.state.status==='active',waiting:!!this.state.requests?.length,blocked:['blocked','failed','error'].includes(this.state.turnStatus||this.state.status),connected:this.canMutate(),fresh:this.freshDetail});}else this.progress.hidden=true;
     this.renderSendFeedback();
 
     const state=this.state,caps=state?.capabilities||{},active=state?.status==='active',ready=this.canMutate();this.modelName.textContent=(state?.modelDisplayName??state?.model)||BridgeI18n.t('模型');delete this.modelName.dataset.i18n;this.modelEffort.textContent=state?.effort?'· '+state.effort:'';this.modelEffort.hidden=!state?.effort;this.modelButton.title=[(state?.modelDisplayName??state?.model)||BridgeI18n.t('模型'),state?.effort].filter(Boolean).join(' · ');this.modelButton.disabled=!ready||!!this.busy||caps.models!==true;
@@ -739,7 +731,7 @@ class DesktopSessionsView {
     for(const [index,message] of messages.entries()){
       const key=String(message.id??index),stamp=JSON.stringify([message,BridgeI18n.language(),this.sessionFiles,this.state?.capabilities?.fork,this.state?.capabilities?.editMessage,this.state?.capabilities?.revert,this.freshDetail,this.syncTimeline?.cached]);const prior=this.messageNodes.get(key);let node=prior?.stamp===stamp?prior.node:null;
       if(!node&&message.kind==='syncProcessPage')node=renderChatProcessPager(message,(...args)=>this.syncTimeline?.sync.processAction(...args));
-      if(!node){const reasoning=chatActivityKind(message)==='reasoning',activity=!reasoning&&(message.role==='activity'||!!message.fileSummary);node=this.node(activity?'details':'article',activity?'activity timeline-row':'message timeline-row '+(reasoning?'assistant':message.role));if(message.fileSummary){node.append(this.node('summary'));renderChatFileSummary(node,message);}else if(activity){const heading=this.node('summary');renderChatActivityLabel(heading,message);node.append(heading);const body=this.node('pre','activity-body');node.append(body);deferChatActivityBody(node,body,message.text||'');}
+      if(!node){const activity=chatActivityKind(message)==='reasoning'||message.role==='activity'||!!message.fileSummary;node=this.node(activity?'details':'article',activity?'activity timeline-row':'message timeline-row '+message.role);if(message.fileSummary){node.append(this.node('summary'));renderChatFileSummary(node,message);}else if(activity){const heading=this.node('summary');renderChatActivityLabel(heading,message);node.append(heading);const body=this.node('pre','activity-body');node.append(body);deferChatActivityBody(node,body,message.text||'');}
         else{const who=chatMessageHeading(message,this.clientStates?.find(client=>client.id===this.provider)?.name||this.provider);node.append(this.node('span','who',who));const body=this.node('div','message-body');body.__mermaidScope=this.mermaidScope;body.__mermaidIdentity=key;renderMarkdown(body,message.text||'',this.sessionFiles||[],file=>this.workbench.url(this.workbench.current,'download',file.path));node.append(body);
           const actions=this.node('div','message-actions');const copy=this.button('复制',()=>window.BridgeClipboard.copy(()=>this.syncMessageText(message),copy));copy.classList.add('message-copy');actions.append(copy);if(['user','assistant'].includes(message.role))actions.append(this.button('引用',()=>{this.quotes?.quoteMessage(()=>this.syncMessageText(message),message.id||key,node);this.resizeInput();}));if(message.role==='assistant'&&message.forkMessageId&&this.state?.capabilities?.fork===true){const branch=this.button('从这里分支',()=>this.fork(message.forkMessageId));branch.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(branch);}if(message.role==='user'&&message.editMessageId&&this.state?.capabilities?.editMessage===true){const edit=this.button('编辑并重新发送',()=>this.editMessage(message,()=>this.syncMessageText(message)));edit.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(edit);}if(message.role==='user'&&Number.isInteger(message.revertStepIndex)&&this.state?.capabilities?.revert===true){const revert=this.button('撤回',()=>this.revert(message));revert.disabled=!this.freshDetail||!this.canMutate()||!!this.busy;actions.append(revert);}renderChatMessageTime(actions,message.timestamp);node.append(actions);}
       }
