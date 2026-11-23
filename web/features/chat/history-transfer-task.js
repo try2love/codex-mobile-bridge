@@ -34,45 +34,54 @@ class HistoryTransferTask {
       path: item.path,
       version: item.version,
       kind: item.kind,
+      records: item.records,
       bytes: item.bytes,
       clearRevision: state.clearRevision,
       taskClearRevision: task?.taskClearRevision ?? state.clearRevision,
     };
   }
-  async missing(item, state, task) {
-    const fields = this.fields(item, state, task);
-    const cached = await this.native('transferCached', fields);
-    if (cached.cleared || cached.present) return {...cached, missingBytes: 0};
-    const chunkBytes = item.chunkBytes || 524288;
-    let missingBytes = 0;
-    for (let index = 0, offset = 0; offset < item.bytes; index++, offset += chunkBytes) {
-      const chunk = await this.native('transferChunkHas', {...fields, index});
-      if (!chunk.present) missingBytes += Math.min(chunkBytes, item.bytes - offset);
-    }
-    return {...cached, missingBytes};
-  }
-  async prepare(ids, prioritySession, progress) {
-    const requestedAt = Date.now();
-    const selection = Array.isArray(ids) ? {ids} : ids;
-    const created = await this.request('/api/history-transfer/manifest', {...selection, prioritySession});
-    let cursor, first, downloadBytes = 0, reusedBytes = 0;
-    const state = await this.state();
-    do {
-      const page = await this.manifest(created.id, cursor, progress);
-      first ||= page;
-      for (const item of page.items || []) {
-        const result = await this.missing(item, state, null);
-        downloadBytes += result.missingBytes;
-        reusedBytes += item.bytes - result.missingBytes;
+  prepare(ids, prioritySession, progress) {
+    if (this.preparing) return this.preparing;
+    this.preparing = this.beginPreparation(ids, prioritySession, progress).catch(async error => {
+      if (this.task?.state === 'preparing') {
+        this.task.state = 'prepare-error'; this.task.error = error.message;
+        await this.save().catch(() => {});
       }
-      cursor = page.nextCursor;
-    } while (cursor);
-    return {
-      id: created.id, capturedAt: created.capturedAt ?? first.capturedAt, requestedAt,
-      summary: first.summary, errors: first.errors || [], warnings: first.warnings || [], failedSessions: first.failedSessions || 0,
-      downloadBytes, reusedBytes,
-      fullBytes: Number(first.summary?.textBytes || 0) + Number(first.summary?.attachmentBytes || 0),
+      throw error;
+    }).finally(() => { this.preparing = null; });
+    return this.preparing;
+  }
+  async beginPreparation(ids, prioritySession, progress) {
+    const state = await this.state(), requestedAt = Date.now();
+    const selection = Array.isArray(ids) ? {ids} : ids;
+    this.task = {state:'preparing', requestedAt, selection, preparingSessions:0};
+    await this.save();
+    const created = await this.request('/api/history-transfer/manifest', {
+      ...selection, prioritySession,
+      ...(state.recordBatch === 1 && this.recordBatch === 1 ? {batchRecords:true} : {}),
+    });
+    Object.assign(this.task, {manifestId:created.id,capturedAt:created.capturedAt,sessionCount:created.sessionCount});
+    await this.save();
+    return this.finishPreparation(progress);
+  }
+  async finishPreparation(progress) {
+    const task = this.task;
+    const page = await this.manifest(task.manifestId, null, value => {
+      if (this.task !== task) return;
+      task.preparingSessions = value.summary?.processed || 0;
+      task.sessionCount = value.sessionCount; task.title = value.summary?.currentTitle || '';
+      this.changed(task); progress?.(value);
+    });
+    if (this.task !== task) throw Error('传输任务已变化');
+    const fullBytes = Number(page.summary?.textBytes || 0) + Number(page.summary?.attachmentBytes || 0);
+    const prepared = {
+      id:task.manifestId, capturedAt:task.capturedAt ?? page.capturedAt, requestedAt:task.requestedAt,
+      summary:page.summary, errors:page.errors || [], warnings:page.warnings || [], failedSessions:page.failedSessions || 0,
+      downloadBytes:fullBytes, reusedBytes:0, fullBytes, estimated:true,
     };
+    task.state='ready'; task.prepared=prepared; delete task.title;
+    await this.save();
+    return prepared;
   }
   async save() {
     await this.native('transferTaskSave', {task: this.task});
@@ -83,6 +92,13 @@ class HistoryTransferTask {
     if (!saved.task) return;
     this.task = saved.task;
     this.changed(this.task);
+    if (this.task.state === 'preparing') {
+      if (!this.task.manifestId) { this.task.state='prepare-error';this.task.error='准备请求已中断，请重新选择会话';await this.save();return; }
+      this.preparing=this.finishPreparation().catch(async error=>{
+        this.task.state='prepare-error';this.task.error=error.message;await this.save().catch(()=>{});
+      }).finally(()=>{this.preparing=null;});
+      return;
+    }
     if (this.task.state === 'running' || ['network', 'offline', 'suspended'].includes(this.task.reason)) {
       const state = await this.state();
       if (this.task.allowMetered && this.task.meteredNetworkEpoch && state.networkEpoch !== this.task.meteredNetworkEpoch)
@@ -102,7 +118,7 @@ class HistoryTransferTask {
       manifestId: prepared.id, capturedAt: prepared.capturedAt, requestedAt: prepared.requestedAt,
       taskClearRevision: state.clearRevision, phase: 'record', cursor: null, index: 0,
       state: 'running', allowMetered, meteredNetworkEpoch: allowMetered ? state.networkEpoch : null, downloadedBytes: 0,
-      expectedBytes: prepared.downloadBytes, fullBytes: prepared.fullBytes,
+      expectedBytes: prepared.downloadBytes, fullBytes: prepared.fullBytes, processedBytes:0, currentBytes:0,
       reusedBytes: prepared.reusedBytes, completedItems: 0, clearedItems: 0,
       failedSessions: prepared.failedSessions,
       incompleteSessions: (prepared.warnings || []).map(item => item.cacheSessionId).filter(Boolean),
@@ -146,7 +162,7 @@ class HistoryTransferTask {
     let state = await this.state();
     const cached = await this.native('transferCached', this.fields(item, state));
     if (cached.cleared) return 'cleared';
-    if (cached.present) return 'saved';
+    if (cached.present) { this.task.currentBytes=item.bytes; return 'saved'; }
     const chunkBytes = item.chunkBytes || 524288;
     for (let index = 0, offset = 0; offset < item.bytes; index++, offset += chunkBytes) {
       if (this.task.state !== 'running') return 'paused';
@@ -157,7 +173,7 @@ class HistoryTransferTask {
       if (!state.allowTransfer && !this.task.allowMetered) { await this.pause('network'); return 'paused'; }
       const fields = this.fields(item, state);
       const known = await this.native('transferChunkHas', {...fields, index});
-      if (known.present) continue;
+      if (known.present) { this.task.currentBytes=Math.min(item.bytes,offset+chunkBytes); continue; }
       const length = Math.min(chunkBytes, item.bytes - offset);
       if (Number.isFinite(state.freeBytes) && state.freeBytes < length) {
         await this.pause('space'); return 'paused';
@@ -178,6 +194,7 @@ class HistoryTransferTask {
         return 'paused';
       }
       this.task.downloadedBytes += length;
+      this.task.currentBytes=offset+length;
       await this.save();
       // Foreground chat and input remain free to issue their own requests.
       await this.delay(0);
@@ -219,12 +236,14 @@ class HistoryTransferTask {
           }
           if (item.kind !== this.task.phase) { this.task.index++; continue; }
           this.task.title = item.session?.title || '';
+          this.task.currentBytes=0;
           this.changed(this.task);
           const result = await this.download(item);
           if (result === 'paused') return;
           if (result === 'retry') continue;
           if (result === 'cleared') this.task.clearedItems++;
           else this.task.completedItems++;
+          this.task.processedBytes=(this.task.processedBytes||0)+item.bytes;this.task.currentBytes=0;
           this.task.index++;
           await this.save();
         }

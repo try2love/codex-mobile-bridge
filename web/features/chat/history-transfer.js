@@ -23,21 +23,26 @@
     };
     return element;
   };
-  const panel = node('section', '', 'local-transfer-progress');
+  const panel = node('section', '', 'local-transfer-progress download-panel');
   panel.hidden = true; panel.setAttribute('aria-label', label('本地数据传输'));
-  const head = node('div', '', 'local-transfer-head'), title = node('strong', '本地数据传输');
-  const details = node('div', '', 'local-transfer-body');
+  const head = node('div', '', 'download-head'), title = node('button', '本地数据传输', 'download-summary');
+  const details = node('div', '', 'download-details');
+  let collapsed = false;
+  const place = () => {
+    if (typeof BridgeDownload !== 'undefined') BridgeDownload.placePanel(panel,{details,summary:title,toggle,collapsed,label});
+  };
   const toggle = button('收起', () => {
-    details.hidden = !details.hidden;
+    collapsed = !collapsed;details.hidden = collapsed;
     toggle.textContent = label(details.hidden ? '展开' : '收起');
-    toggle.setAttribute('aria-expanded', String(!details.hidden));
+    toggle.setAttribute('aria-expanded', String(!details.hidden));place();
   });
+  toggle.className='download-toggle';title.type='button';title.onclick=()=>toggle.click();
   toggle.setAttribute('aria-expanded', 'true');
   head.append(title, toggle);
-  const current = node('p', '', 'local-transfer-current'), status = node('p');
+  const current = node('p', '', 'download-name'), status = node('span', '', 'download-state');
   status.setAttribute('role', 'status');
-  const progress = node('progress'); progress.max = 1;
-  const remaining = node('p', '', 'local-transfer-remaining'), actions = node('div', '', 'local-transfer-actions');
+  const progress = node('progress', '', 'download-progress'); progress.max = 1;
+  const remaining = node('p', '', 'download-note'), actions = node('div', '', 'download-actions');
   const pause = button('暂停', () => controller.pause());
   const resume = button('继续', async () => {
     const state = await controller.state();
@@ -45,39 +50,53 @@
   });
   const cancel = button('取消传输', () => controller.cancel());
   const dismiss = button('关闭', () => { panel.hidden = true; });
-  actions.append(pause, resume, cancel, dismiss);
-  details.append(current, status, progress, remaining, actions); panel.append(head, details);
+  const reopen=button('查看任务',()=>choose());
+  actions.append(reopen,pause, resume, cancel, dismiss);
+  const metrics=node('div','','download-metrics'),amount=node('span'),rate=node('span');metrics.append(amount,rate);
+  details.append(current, status, progress, metrics, remaining, actions); panel.append(head, details);
   document.body.append(panel);
+  let sample;
   function paint(task) {
-    panel.hidden = !task || task.state === 'cancelled';
+    panel.hidden = !task || task.state === 'cancelled' || ownerKey !== JSON.stringify(window.BridgeChatSyncCache?.owner);
     if (!task) return;
-    const reasons = {manual: '已暂停', network: '等待 Wi-Fi', offline: '等待连接网关', space: '空间不足，已暂停', error: '传输中断，点击继续'};
-    const finished = task.state === 'completed';
-    status.textContent = label(finished ? '传输完成' : task.state === 'running' ? '正在传输' : reasons[task.reason] || '已暂停');
-    current.textContent = task.title || '';
-    current.title = task.title || '';
-    const left = Math.max(0, task.expectedBytes - task.downloadedBytes);
-    remaining.textContent = finished ? label('已保存到手机') : label('预计剩余') + ' ' + size(left);
-    if (task.clearedItems) remaining.textContent += ' · ' + label('部分内容已手动清理');
-    if (task.failedSessions) remaining.textContent += ' · ' + label('部分会话读取失败');
-    if (task.incompleteSessions?.length) remaining.textContent += ' · ' + label('当前回合有未同步内容，稍后可补传');
-    if (finished) progress.value = 1;
-    else if (task.expectedBytes) progress.value = Math.min(.99, task.downloadedBytes / task.expectedBytes);
-    else progress.removeAttribute('value');
-    pause.hidden = task.state !== 'running'; resume.hidden = task.state !== 'paused';
-    resume.textContent = label(task.reason === 'network' ? '使用当前网络继续' : '继续');
-    cancel.hidden = finished; dismiss.hidden = !finished;
+    const reasons = {manual:'已暂停',network:'等待 Wi-Fi',offline:'等待连接网关',space:'空间不足，已暂停',error:'传输中断，点击继续'};
+    const finished=task.state==='completed',preparing=task.state==='preparing',ready=task.state==='ready',failed=task.state==='prepare-error';
+    status.textContent=label(finished?'传输完成':preparing?'正在准备会话':ready?'准备完成，等待开始':failed?'准备失败':task.state==='running'?'正在传输':reasons[task.reason]||'已暂停');
+    current.textContent=task.title||label('本地数据传输');current.title=current.textContent;
+    const done=(task.processedBytes??task.downloadedBytes??0)+(task.currentBytes||0),total=task.fullBytes||task.expectedBytes||0;
+    amount.textContent=preparing?(task.preparingSessions||0)+' / '+(task.sessionCount||'—')+' '+label('个会话'):size(Math.min(done,total))+' / '+size(total);
+    const now=Date.now();
+    if(sample?.task!==task||task.state!=='running')sample={task,time:now,bytes:task.downloadedBytes||0,speed:0};
+    else if(now-sample.time>=500){sample.speed=Math.max(0,(task.downloadedBytes-sample.bytes)*1000/(now-sample.time));sample.time=now;sample.bytes=task.downloadedBytes;}
+    rate.textContent=task.state==='running'?size(sample.speed)+'/s':'';
+    remaining.textContent=failed?task.error||'':preparing?label('准备期间可以返回聊天，完成后在这里继续'):ready?label('已准备就绪，查看下载量后开始传输'):finished?label('已保存到手机'):label('待处理')+' '+size(Math.max(0,total-done));
+    if(task.clearedItems)remaining.textContent+=' · '+label('部分内容已手动清理');
+    if(task.failedSessions)remaining.textContent+=' · '+label('部分会话读取失败');
+    if(task.incompleteSessions?.length)remaining.textContent+=' · '+label('当前回合有未同步内容，稍后可补传');
+    if(preparing)progress.removeAttribute('value');else progress.value=finished?1:total?Math.min(.99,done/total):0;
+    reopen.hidden=!(preparing||ready||failed);pause.hidden=task.state!=='running';resume.hidden=task.state!=='paused';
+    resume.textContent=label(task.reason==='network'?'使用当前网络继续':'继续');
+    cancel.hidden=finished||preparing||ready||failed;dismiss.hidden=!finished&&!failed;
+    title.textContent='↓ '+status.textContent+(total&&!preparing?' · '+Math.min(100,Math.floor(done/total*100))+'%':preparing?' · '+(task.preparingSessions||0)+'/'+(task.sessionCount||'—'):'');place();
   }
+  window.addEventListener('resize',place);window.visualViewport?.addEventListener('resize',place);window.visualViewport?.addEventListener('scroll',place);
+  if(typeof ResizeObserver!=='undefined'){const observer=new ResizeObserver(place);observer.observe(panel);for(const node of document.querySelectorAll('.composer'))observer.observe(node);}
+  setInterval(()=>{if(!document.hidden&&controller?.task?.state==='running')paint(controller.task);},1000);
+
   function source(session) {
     const providers = {codex: 'Codex', claude: 'Claude', deepseek: 'DeepSeek', zcode: 'ZCode', antigravity: 'Antigravity'};
     return [providers[session.client] || session.client, session.host === 'local' ? label('此电脑') : session.host].filter(Boolean).join(' · ');
   }
   async function choose(previousSelection = [], allSelected = false) {
     if (!controller) { requested = true; return; }
+    if(!previousSelection.length&&['preparing','ready','prepare-error','selecting'].includes(controller.task?.state))previousSelection=controller.task.selection?.ids||[];
+    if(['running','paused'].includes(controller.task?.state)){panel.hidden=false;collapsed=false;place();return;}
     const dialog = node('dialog', '', 'picker local-transfer-dialog');
     const heading = node('div', '', 'picker-head');
     const close = button('×', () => dialog.close()); close.setAttribute('aria-label', label('关闭'));
-    heading.append(node('h2', '本地数据传输'), close);
+    const minimize=button('最小化',()=>{dialog.close();panel.hidden=false;place();});
+    minimize.disabled=!['preparing','ready'].includes(controller.task?.state);
+    heading.append(node('h2', '本地数据传输'), minimize, close);
     const content = node('div'), feedback = node('p'); feedback.setAttribute('role', 'status');
     const footer = node('div', '', 'local-transfer-actions');
     dialog.append(heading, content, feedback, footer); document.body.append(dialog);
@@ -95,8 +114,8 @@
     });
     const next = button('查看下载量', async () => {
       if (busy || !selected.size) return;
-      busy = true; next.disabled = true; selectAll.disabled = true;
-      feedback.textContent = label('正在计算下载量并核对已有缓存…');
+      busy = true; minimize.disabled=false; next.disabled = true; selectAll.disabled = true;
+      feedback.textContent = label('正在准备会话…');
       try {
         const selectedChat = typeof browserNavigation === 'undefined' ? null : browserNavigation.read();
         const prepared = await controller.prepare([...selected], selectedChat?.id, page => {
@@ -147,6 +166,7 @@
         const page = await request('/api/history-transfer/catalog' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
         if (!dialog.open) return;
         for (const session of page.sessions || []) sessions.set(session.id, session);
+        if(!cursor)controller.recordBatch=page.recordBatch;
         unavailable = page.unavailable || [];cursor = page.nextCursor;
         loading = !!cursor; draw();
       } while (cursor);
@@ -155,9 +175,9 @@
       const state = await controller.state();
       content.replaceChildren(); footer.replaceChildren(); feedback.textContent = '';
       const values = node('dl', '', 'local-transfer-sizes');
-      for (const [name, bytes] of [['会话全量', prepared.fullBytes], ['本次预计下载量', prepared.downloadBytes], ['复用已有缓存', prepared.reusedBytes]])
+      for (const [name, bytes] of [['预计最多下载', prepared.downloadBytes]])
         values.append(node('dt', name), node('dd', size(bytes)));
-      content.append(values);
+      content.append(values,node('p','已完整保存的内容会自动跳过，实际下载量可能更少。'));
       if (prepared.failedSessions) feedback.textContent = label('部分会话读取失败') + ' · ' + prepared.failedSessions;
       if (prepared.warnings?.length) feedback.textContent += (feedback.textContent ? ' · ' : '') + label('当前回合有未同步内容，稍后可补传') + ' (' + prepared.warnings.length + ')';
       const start = button(state.allowTransfer ? '开始传输' : '使用当前网络开始传输', async () => {
@@ -167,14 +187,22 @@
         } catch (error) { feedback.textContent = error.message; start.disabled = false; }
       });
       start.className = 'primary';
-      const back = button('调整选择', () => { dialog.close(); void choose([...selected], allSelected); });
+      const back = button('调整选择', () => { dialog.close(); if(controller.task?.state==='ready')controller.task.state='selecting'; void choose([...selected], allSelected); });
       footer.append(back, start);
       if (Number.isFinite(state.freeBytes) && state.freeBytes < prepared.downloadBytes) {
         content.append(node('p', label('空间还差') + ' ' + size(prepared.downloadBytes - state.freeBytes)));
         start.textContent = label(state.allowTransfer ? '先传一部分' : '使用当前网络先传一部分');
       }
     }
-    try { await load(); } catch (error) { feedback.textContent = error.message; retry.hidden = false; }
+    try {
+      if(controller.task?.state==='preparing'){
+        content.replaceChildren(node('p','正在准备会话，可以最小化后继续聊天'));footer.replaceChildren();
+        const prepared=await controller.preparing;
+        if(dialog.open&&prepared)await confirm(prepared);
+      }else if(controller.task?.state==='ready'&&controller.task.prepared){
+        await confirm(controller.task.prepared);
+      }else await load();
+    }catch(error){feedback.textContent=error.message;retry.hidden=false;}
   }
   async function connect(api, {open = false} = {}) {
     requested ||= open;

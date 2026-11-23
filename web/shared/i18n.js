@@ -3,6 +3,20 @@
 const BridgeI18n=(()=>{
 const en={
 "本地数据传输":"Local data transfer",
+"最小化":"Minimize",
+"查看任务":"View task",
+"个会话":"chats",
+"正在准备会话…":"Preparing chats…",
+"准备完成，等待开始":"Ready to transfer",
+"准备失败":"Preparation failed",
+"准备期间可以返回聊天，完成后在这里继续":"You can return to your chat while preparation continues.",
+"已准备就绪，查看下载量后开始传输":"Ready. Review the download size to start.",
+"正在准备会话，可以最小化后继续聊天":"Preparing chats. Minimize this window to continue chatting.",
+"预计最多下载":"Maximum download size",
+"已完整保存的内容会自动跳过，实际下载量可能更少。":"Fully saved content is skipped automatically, so the actual download may be smaller.",
+"待处理":"Remaining",
+"准备请求已中断，请重新选择会话":"The preparation request was interrupted. Select the chats again.",
+
 "全选当前 Agent":"Select all in this Agent",
 "已选择":"Selected",
 "个":"chats",

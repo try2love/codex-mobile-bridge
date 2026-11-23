@@ -164,7 +164,31 @@ const BridgeDownload = (() => {
       return this.storage?this.storage.blob():new Blob(this.parts, {type:'application/octet-stream'});
     }
   }
-  return {Task, eligible, native, filename};
+  function placePanel(panel, {details, summary, toggle, collapsed = false, dragged = null, label = value => value}) {
+    if (!panel || panel.hidden) return;
+    const viewport = window.visualViewport, narrow = matchMedia('(max-width:720px)').matches;
+    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
+    panel.style.width = Math.min(width - 24, collapsed ? 230 : 340) + 'px';
+    const panelLeft = left + width - panel.offsetWidth - 12;
+    let bottom = top + height - 12;
+    for (const node of document.querySelectorAll(narrow ? '.composer, .client-navigation' : '.composer')) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width && rect.height && rect.right > panelLeft && rect.bottom > top && rect.top > top) bottom = Math.min(bottom, rect.top - 10);
+    }
+    // In very short keyboard viewports the compact bar keeps controls out of the composer.
+    const cramped = narrow && bottom - top < 215;
+    details.hidden = collapsed || cramped; panel.classList.toggle('download-compact', details.hidden);
+    summary.setAttribute('aria-expanded', String(!details.hidden));
+    toggle.textContent = details.hidden ? '+' : '−'; toggle.setAttribute('aria-label', label(details.hidden ? '展开下载浮窗' : '收起下载浮窗'));
+    const h = panel.offsetHeight, w = panel.offsetWidth;
+    const x = !narrow && dragged ? dragged.x : left + width - w - 12;
+    const y = !narrow && dragged ? dragged.y : bottom - h;
+    panel.style.left = Math.max(left + 12, Math.min(x, left + width - w - 12)) + 'px';
+    panel.style.top = Math.max(top + 8, Math.min(y, top + height - h - 8)) + 'px';
+  }
+
+  return {Task, eligible, native, filename, placePanel};
 })();
 if (typeof module !== 'undefined') module.exports = BridgeDownload;
 
@@ -242,27 +266,7 @@ if (typeof document !== 'undefined') (() => {
     if (!frame) frame = requestAnimationFrame(() => { frame = null; place(); });
   }
   function place() {
-    if (!panel || panel.hidden) return;
-    const viewport = window.visualViewport, narrow = matchMedia('(max-width:720px)').matches;
-    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
-    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
-    panel.style.width = Math.min(width - 24, collapsed ? 230 : 340) + 'px';
-    const panelLeft = left + width - panel.offsetWidth - 12;
-    let bottom = top + height - 12;
-    for (const node of document.querySelectorAll(narrow ? '.composer, .client-navigation' : '.composer')) {
-      const rect = node.getBoundingClientRect();
-      if (rect.width && rect.height && rect.right > panelLeft && rect.bottom > top && rect.top > top) bottom = Math.min(bottom, rect.top - 10);
-    }
-    // In very short keyboard viewports the compact bar keeps controls out of the composer.
-    const cramped = narrow && bottom - top < 215;
-    details.hidden = collapsed || cramped; panel.classList.toggle('download-compact', details.hidden);
-    summary.setAttribute('aria-expanded', String(!details.hidden));
-    toggle.textContent = details.hidden ? '+' : '−'; toggle.setAttribute('aria-label', t(details.hidden ? '展开下载浮窗' : '收起下载浮窗'));
-    const h = panel.offsetHeight, w = panel.offsetWidth;
-    const x = !narrow && dragged ? dragged.x : left + width - w - 12;
-    const y = !narrow && dragged ? dragged.y : bottom - h;
-    panel.style.left = Math.max(left + 12, Math.min(x, left + width - w - 12)) + 'px';
-    panel.style.top = Math.max(top + 8, Math.min(y, top + height - h - 8)) + 'px';
+    BridgeDownload.placePanel(panel, {details, summary, toggle, collapsed, dragged, label:t});
   }
   function render() {
     if (!panel && task.status === 'idle') return;

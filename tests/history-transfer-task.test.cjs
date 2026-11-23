@@ -50,7 +50,8 @@ test('existing complete records transfer zero bytes and only missing attachment 
     e.committed.add('text'); e.chunks.add('file:0');
   });
   const prepared = await f.manager.prepare(['selected']);
-  assert.equal(prepared.downloadBytes, 2);
+  assert.equal(prepared.downloadBytes, 14);
+  assert.equal(f.calls.some(call=>call.type==='transferCached'||call.type==='transferChunkHas'),false,'preparation does not preflight every cached record');
   await f.manager.start(prepared); await settled(f.manager);
   const downloads = f.calls.filter(call => call.type === 'transferChunkFetch');
   assert.equal(downloads.length, 1);
@@ -101,7 +102,7 @@ test('cancelling retains verified chunks and a later explicit transfer downloads
   await f.manager.start(await f.manager.prepare(['selected'])); await settled(f.manager);
   assert.equal(f.manager.task.state, 'cancelled'); assert.equal(f.chunks.size, 1);
   delete f.environment.fetch;
-  const again = await f.manager.prepare(['selected']); assert.equal(again.downloadBytes, 4);
+  const again = await f.manager.prepare(['selected']); assert.equal(again.downloadBytes, 14);
   await f.manager.start(again); await settled(f.manager);
   assert.equal(f.manager.task.state, 'completed');
 });
@@ -137,4 +138,28 @@ test('an unfinished live tail remains visibly partial after copying the saved bo
  assert.deepEqual(f.manager.task.incompleteSessions,[row.cacheSessionId]);
  assert.equal(f.calls.some(call=>call.type==='transferSessionComplete'),false);
  assert.equal(f.manager.task.state,'completed');
+});
+
+test('preparation persists its manifest and resumes without posting a second request',async()=>{
+ let saved=null,posts=0,release;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const native=async(type,value)=>type==='transferStats'?{clearRevision:0}:type==='transferTaskSave'?(saved=structuredClone(value.task),{}):type==='transferTaskLoad'?{task:saved}:{};
+ const request=async(url,body)=>{
+  if(body){posts++;return {id:'active',sessionCount:3,capturedAt:100};}
+  await gate;return {status:'ready',summary:{textBytes:54},items:[]};
+ };
+ const first=new HistoryTransferTask({request,native});
+ const prepare=first.prepare(['one']);
+ for(let i=0;i<5;i++)await new Promise(setImmediate);
+ assert.equal(saved.state,'preparing');assert.equal(saved.manifestId,'active');
+ const restored=new HistoryTransferTask({request,native});await restored.restore();
+ release();await prepare;await restored.preparing;
+ assert.equal(posts,1);assert.equal(restored.task.state,'ready');assert.equal(restored.task.prepared.downloadBytes,54);
+});
+
+test('batch records require both gateway and native capability',async()=>{
+ const f=fixture([]);f.manager.recordBatch=1;
+ const original=f.manager.native;f.manager.native=async(type,...args)=>type==='transferStats'?{...f.state,recordBatch:1}:original(type,...args);
+ await f.manager.prepare(['selected']);
+ assert.equal(f.calls.find(call=>call.body).body.batchRecords,true);
 });

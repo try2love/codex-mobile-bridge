@@ -10,6 +10,7 @@ test('phone selection retains choices through a space warning and resumes verifi
   let stderr = '';
   server.stderr.on('data', chunk => { stderr += chunk; });
   const lines = createInterface({input: server.stdout});
+  let prepared=false,manifestPosts=0;
   try {
     const origin = await new Promise((resolve, reject) => {
       lines.once('line', resolve); server.once('error', reject);
@@ -20,7 +21,7 @@ test('phone selection retains choices through a space warning and resumes verifi
       window.CodexBridgeNativeOffline = {async request(event) {
         state.calls.push(event);
         const network = {foreground: true, allowPrefetch: false, allowTransfer: true, networkAvailable: true,
-          freeBytes: state.freeBytes, clearRevision: '0', tombstones: {}};
+          freeBytes: state.freeBytes, clearRevision: '0', tombstones: {}, recordBatch:1};
         if (event.type === 'state' || event.type === 'auth' || event.type === 'transferStats') return network;
         if (event.type === 'read') return {turns: []};
         if (event.type === 'transferTaskLoad') return {task: null};
@@ -37,9 +38,13 @@ test('phone selection retains choices through a space warning and resumes verifi
         {id:'claude-selected',sessionId:'claude-native',title:'Claude portable history',client:'claude',host:'local'},
       ], unavailable:[{client:'zcode',entry:'zcode'}]} : {sessions: [
         {id: 'selected', sessionId: 'native', title: 'Portable history', client: 'codex', host: 'local'},
-      ],nextCursor:'100',sessionCount:2}});
+      ],nextCursor:'100',sessionCount:2,recordBatch:1}});
 
-      if (route.request().method() === 'POST') return route.fulfill({json: {id: 'manifest', capturedAt: 100}});
+      if (route.request().method() === 'POST') {
+        manifestPosts++;expect(route.request().postDataJSON().batchRecords).toBe(true);
+        return route.fulfill({json:{id:'manifest',capturedAt:100,sessionCount:2}});
+      }
+      if(!prepared)return route.fulfill({json:{id:'manifest',status:'preparing',sessionCount:2,summary:{processed:1,currentTitle:'Portable history'}}});
       return route.fulfill({json: {id: 'manifest', status: 'ready', capturedAt: 100,
         summary: {sessions: 1, records: 1, attachments: 1, textBytes: 8, attachmentBytes: 600000},
         items: [
@@ -73,9 +78,24 @@ test('phone selection retains choices through a space warning and resumes verifi
     await page.screenshot({path:info.outputPath('transfer-selection.png')});
 
     await dialog.getByRole('button', {name: '查看下载量', exact: true}).click();
-    await expect(dialog.getByText('会话全量', {exact: true})).toBeVisible();
-    await expect(dialog.getByText('空间还差', {exact: false})).toBeVisible();
-    await dialog.getByRole('button', {name: '调整选择', exact: true}).click();
+    const preparing=page.locator('.local-transfer-progress');
+    await expect(preparing).toContainText('正在准备会话');
+    await dialog.getByRole('button',{name:'最小化',exact:true}).click();
+    await expect(page.locator('.local-transfer-dialog')).toHaveCount(0);
+    await expect(preparing).toBeVisible();
+    expect(await preparing.evaluate(node=>node.classList.contains('download-panel'))).toBe(true);
+    await page.screenshot({path:info.outputPath('transfer-preparing.png')});
+    await preparing.getByRole('button',{name:'查看任务',exact:true}).click();
+    await expect(page.locator('.local-transfer-dialog')).toContainText('正在准备会话');
+    prepared=true;
+    const restoredDialog=page.locator('.local-transfer-dialog');
+    await expect(restoredDialog.getByText('预计最多下载', {exact: true})).toBeVisible();
+    expect(manifestPosts).toBe(1);
+    await restoredDialog.getByRole('button',{name:'最小化',exact:true}).click();
+    await expect(preparing).toContainText('准备完成，等待开始');
+    await preparing.getByRole('button',{name:'查看任务',exact:true}).click();
+    await expect(page.locator('.local-transfer-dialog').getByText('空间还差', {exact: false})).toBeVisible();
+    await page.locator('.local-transfer-dialog').getByRole('button', {name: '调整选择', exact: true}).click();
     await expect(page.locator('.local-transfer-dialog input[type=checkbox]')).toBeChecked();
     await page.locator('.local-transfer-dialog').getByRole('button', {name: '查看下载量', exact: true}).click();
     await page.locator('.local-transfer-dialog').getByRole('button', {name: '先传一部分', exact: true}).click();
