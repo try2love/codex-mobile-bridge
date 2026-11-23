@@ -188,6 +188,28 @@ class FrameReader:
                 raise ValueError('Invalid JSON escape')
         raise ValueError('Unterminated JSON string')
 
+    def retain_decoded(self, value, path=()):
+        """Apply history-leaf storage to an already bounded decoded record."""
+        if isinstance(value, dict):
+            return {key: self.retain_decoded(part, (*path, key)) for key, part in value.items()}
+        if isinstance(value, list):
+            return [self.retain_decoded(part, (*path, index)) for index, part in enumerate(value)]
+        if not isinstance(value, str) or len(value) <= 4096:
+            return value
+        retain = self.history_leaf(path)
+        if not retain or retain == 'data-url' and not value.startswith('data:'):
+            return value
+        if self.storage is None:
+            self.storage = _Storage()
+        raw = value.encode('utf-8', errors='surrogatepass')
+        with self.storage.lock:
+            offset = self.storage.end
+            self.storage.file.seek(offset)
+            self.storage.file.write(raw)
+            self.storage.end += len(raw)
+        return StoredString(value[:1024], self.storage, offset, len(raw), len(value),
+                            hashlib.sha256(raw).hexdigest(), [(0, 0)])
+
     def history_leaf(self, path):
         if path[:1] == ('pending-patch-value',):
             return True

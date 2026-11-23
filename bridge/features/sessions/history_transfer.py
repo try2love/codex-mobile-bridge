@@ -233,6 +233,23 @@ def _rollout_record_reader():
 
     def read(stream, end):
         nonlocal storage
+        # Most rollout records are small. Decode them with the bounded native
+        # JSON parser; retain the streaming/spooled reader for large tool output.
+        start = stream.tell()
+        raw = stream.readline(min(65537, end - start))
+        if raw.endswith(b'\n') or stream.tell() == end:
+            try:
+                value = json.loads(raw)
+            except (ValueError, UnicodeError):
+                return {}
+            reader = _RolloutReader(None, None, 64 * 1024)
+            reader.storage = storage
+            try:
+                value = reader.retain_decoded(value)
+                return value if isinstance(value, dict) else {}
+            finally:
+                storage = reader.storage
+        stream.seek(start)
         line_ended = False
 
         class Line:
@@ -608,7 +625,7 @@ class HistoryTransfer:
         page = sessions[cursor:cursor + CATALOG_ITEMS]
         after = cursor + len(page)
         return {'sessions': page, 'nextCursor': str(after) if after < len(sessions) else None,
-                'unavailable': unavailable, 'sessionCount': len(sessions)}
+                'unavailable': unavailable, 'sessionCount': len(sessions), 'recordBatch': 1}
 
     def start(self, owner, body):
         ids = body.get('ids')
@@ -616,7 +633,9 @@ class HistoryTransfer:
         estimate = body.get('estimate', False)
         clients = body.get('clients', [])
         priority = body.get('prioritySession')
-        if (set(body) - {'ids', 'all', 'estimate', 'clients', 'prioritySession'} or type(estimate) is not bool
+        batch_records = body.get('batchRecords', False)
+        if (set(body) - {'ids', 'all', 'estimate', 'clients', 'prioritySession', 'batchRecords'} or type(estimate) is not bool
+                or type(batch_records) is not bool
                 or priority is not None and (not isinstance(priority, str) or len(priority) > 4096)
                 or not isinstance(clients, list) or any(client not in ('codex', *PROVIDERS) for client in clients)
                 or 'all' in body and not everything or everything and ids is not None
@@ -656,7 +675,7 @@ class HistoryTransfer:
                            (transfer, owner, capture, len(selected), estimate, 'preparing'))
             # Pin all inputs before projecting any selected session. Local
             # rollout snapshots are cheap stat/cursor reads.
-            threading.Thread(target=self._prepare, args=(transfer, selected, estimate, pinned, errors),
+            threading.Thread(target=self._prepare, args=(transfer, selected, estimate, pinned, errors, batch_records),
                              daemon=True, name='history-transfer').start()
         except BaseException:
             self.work_slots.release()
@@ -664,7 +683,7 @@ class HistoryTransfer:
         return {'id': transfer, 'sessionCount': len(selected), 'capturedAt': capture,
                 'status': 'preparing', 'estimate': estimate}
 
-    def _prepare(self, transfer, selected, estimate, pinned, errors):
+    def _prepare(self, transfer, selected, estimate, pinned, errors, batch_records=False):
         warnings, processed = [], len(errors)
         try:
             for session in selected:
@@ -685,7 +704,7 @@ class HistoryTransfer:
                     db.execute('UPDATE manifests SET summary=? WHERE id=?',
                                (self._json({'processed': processed, 'currentTitle': session['title'], 'warnings': warnings}), transfer))
                 try:
-                    self._stage(transfer, session, snapshot, estimate)
+                    self._stage(transfer, session, snapshot, estimate, batch_records)
                     if isinstance(snapshot, dict):
                         warnings.extend({'id': session['id'], 'cacheSessionId': session['cacheSessionId'], 'message': text}
                                         for text in snapshot.get('warnings', []))
@@ -716,7 +735,22 @@ class HistoryTransfer:
         finally:
             self.work_slots.release()
 
-    def _stage(self, transfer, session, snapshot, estimate):
+    def _stage(self, transfer, session, snapshot, estimate, batch_records=False):
+        batch, batch_meta, batch_bytes = [], [], 0
+        batch_common = None
+
+        def flush():
+            nonlocal batch, batch_meta, batch_bytes, batch_common
+            if not batch:
+                return
+            prefix = encoded({'id': batch_common['turnId'], 'questionTime': batch_common['questionTime']})
+            payload = chain([prefix[:-1] + b',"messages":['], (part for index, message in enumerate(batch)
+                for part in ((b',' if index else b''), message)), [b']}'])
+            self._put(transfer, session['id'],
+                      {**batch_common, 'kind': 'record', 'mime': 'application/json', 'name': 'record.json',
+                       'records': batch_meta}, _stream_chunks(payload), estimate)
+            batch, batch_meta, batch_bytes, batch_common = [], [], 0, None
+
         for row, question_time, parts, attachments in self.sources.records(session, snapshot):
             common = {'session': session, 'cacheSessionId': session['cacheSessionId'], 'turnId': row['turnId'],
                       'questionTime': question_time, 'key': row['key'], 'recordVersion': row['version'],
@@ -772,12 +806,30 @@ class HistoryTransfer:
                     text_chars += len(part['text'].encode('utf-16-le')) // 2
                     yield part
 
-            self._put(transfer, session['id'],
-                      {**common, 'kind': 'record', 'mime': 'application/json',
-                       'name': 'record.json', 'truncated': bool(row.get('truncated')),
-                       'textLength': len(row.get('text', '').encode('utf-16-le')) // 2},
-                      _stream_chunks(_record_json(row, question_time, counted())), estimate,
-                      size_meta=lambda: {'textLength': text_chars or len(row.get('text', '').encode('utf-16-le')) // 2})
+            stream = _stream_chunks(_record_json(row, question_time, counted()))
+            first = next(stream)
+            if batch_records and len(first) < CHUNK_BYTES:
+                prefix = encoded({'id': row['turnId'], 'questionTime': question_time})[:-1] + b',"messages":['
+                message = first[len(prefix):-2]
+                if batch and (batch_common['turnId'] != row['turnId'] or
+                              batch_common['questionTime'] != question_time or len(batch) >= 64 or
+                              batch_bytes + len(message) > 1024 * 1024):
+                    flush()
+                if not batch:
+                    batch_common = common
+                batch.append(message)
+                batch_bytes += len(message)
+                batch_meta.append({'key': row['key'], 'recordVersion': row['version'],
+                                   'textLength': text_chars or len(row.get('text', '').encode('utf-16-le')) // 2})
+            else:
+                flush()
+                self._put(transfer, session['id'],
+                          {**common, 'kind': 'record', 'mime': 'application/json',
+                           'name': 'record.json', 'truncated': bool(row.get('truncated')),
+                           'textLength': len(row.get('text', '').encode('utf-16-le')) // 2},
+                          chain([first], stream), estimate,
+                          size_meta=lambda: {'textLength': text_chars or len(row.get('text', '').encode('utf-16-le')) // 2})
+        flush()
 
     def _put(self, transfer, scope, descriptor, data, estimate, size_meta=None):
         whole = hashlib.sha256()

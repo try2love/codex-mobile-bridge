@@ -564,7 +564,17 @@ final class OfflineArchive {
                 WHERE t.account=? AND t.session=? AND t.id=? AND t.suppressed=0 AND s.epoch=?
                 """, [account.id, item.session, item.turn, account.epoch]) { row in
                     let content = try decode(text(row, 0))
-                    let message = (content["messages"] as? [String: [String: Any]])?[key]
+                    let messages = content["messages"] as? [String: [String: Any]] ?? [:]
+                    if let records = event["records"] as? [[String: Any]] {
+                        guard !records.isEmpty, records.count <= 64 else { throw Failure.invalidContent }
+                        return try records.allSatisfy { record in
+                            guard let key = record["key"] as? String, let version = record["recordVersion"] as? String,
+                                  let length = record["textLength"] as? Int64 else { throw Failure.invalidContent }
+                            let message = messages[key]
+                            return message?["version"] as? String == version && Self.completeMessage(message, length: length)
+                        }
+                    }
+                    let message = messages[key]
                     return message?["version"] as? String == version && Self.completeMessage(message, length: event["textLength"] as? Int64)
                 }.first ?? false
         } else { present = false }

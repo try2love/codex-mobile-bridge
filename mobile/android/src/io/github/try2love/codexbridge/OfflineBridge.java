@@ -198,7 +198,7 @@ final class OfflineBridge {
  private JSONObject transferResult(OfflineArchive.Account account,String type,JSONObject command)throws Exception {
   switch(type){
    case "transferStats":
-    return new JSONObject().put("freeBytes",archive.freeBytes()).put("clearRevision",Long.toString(account.clearRevision))
+    return new JSONObject().put("recordBatch",1).put("freeBytes",archive.freeBytes()).put("clearRevision",Long.toString(account.clearRevision))
       .put("allowTransfer",transferAllowed).put("networkAvailable",networkAvailable).put("networkEpoch",networkEpoch);
    case "transferTaskLoad":return archive.transferTask(account);
    case "transferTaskSave":return archive.saveTransferTask(account,command);

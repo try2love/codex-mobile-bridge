@@ -604,8 +604,18 @@ final class OfflineArchive extends SQLiteOpenHelper {
     present=false;
     if(row.moveToFirst()){
      JSONObject messages=readTurnContent(db,scope[0],item.session,item.turn,row.getInt(0)).optJSONObject("messages");
-     JSONObject message=messages==null?null:messages.optJSONObject(event.optString("key"));
-     present=message!=null&&message.optString("version").equals(event.optString("recordVersion"))&&completeMessage(message,event.optLong("textLength",-1));
+     JSONArray records=event.optJSONArray("records");
+     if(records!=null){
+      if(records.length()<1||records.length()>64)throw new JSONException("Invalid transfer record batch");
+      present=true;
+      for(int i=0;i<records.length();i++){
+       JSONObject record=records.getJSONObject(i),message=messages==null?null:messages.optJSONObject(record.getString("key"));
+       if(message==null||!message.optString("version").equals(record.getString("recordVersion"))||!completeMessage(message,record.getLong("textLength"))){present=false;break;}
+      }
+     }else{
+      JSONObject message=messages==null?null:messages.optJSONObject(event.optString("key"));
+      present=message!=null&&message.optString("version").equals(event.optString("recordVersion"))&&completeMessage(message,event.optLong("textLength",-1));
+     }
     }
    }
   }

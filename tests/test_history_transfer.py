@@ -1,5 +1,6 @@
 """History transfer uses synthetic saved records and passive native readers."""
 import base64
+import io
 import hashlib
 import http.client
 import json
@@ -14,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import test_bridge
-from bridge.features.sessions.history_transfer import CHUNK_BYTES, HistorySources, HistoryTransfer
+from bridge.features.sessions.history_transfer import CHUNK_BYTES, HistorySources, HistoryTransfer, _rollout_record_reader
 from bridge.features.sessions.store import SessionStore
 from bridge.features.workspace.uploads import Uploads
 from relay.protocol import download_headers, validate
@@ -24,6 +25,31 @@ TEMP = ROOT / '.tmp/history-transfer-8788-20261123/gateway'
 TEMP.mkdir(parents=True, exist_ok=True)
 THREAD = test_bridge.THREAD
 STAMP = '2026-11-22T18:00:00.000Z'
+
+
+class RolloutRecordReaderTests(unittest.TestCase):
+    def test_fast_reader_preserves_private_history_leaf_and_public_metadata_identity(self):
+        record = {'type': 'response_item', 'payload': {'type': 'message', 'id': 'i' * 5000,
+                  'content': [{'text': 'x' * 10000}]}}
+        data = json.dumps(record).encode() + b'\n'
+        value = _rollout_record_reader()(io.BytesIO(data), len(data))
+        text = value['payload']['content'][0]['text']
+        self.assertTrue(hasattr(text, 'chars'))
+        self.assertEqual(len(str(text)), 1024)
+        self.assertEqual(text.slice(0, text.chars), 'x' * 10000)
+        self.assertEqual(value['payload']['id'], record['payload']['id'])
+
+    def test_bounded_fast_records_and_streaming_large_records_keep_exact_values(self):
+        first = {'type': 'response_item', 'payload': {'type': 'message', 'content': [{'text': 'small 😀'}]}}
+        large = {'type': 'response_item', 'payload': {'type': 'message', 'content': [{'text': 'x' * 200000}]}}
+        data = b'\n'.join(json.dumps(value).encode() for value in (first, large)) + b'\n'
+        source = io.BytesIO(data)
+        read = _rollout_record_reader()
+        self.assertEqual(read(source, len(data)), first)
+        second = read(source, len(data))
+        text = second['payload']['content'][0]['text']
+        self.assertEqual(text.slice(0, text.chars) if hasattr(text, 'chars') else text, large['payload']['content'][0]['text'])
+        self.assertEqual(source.tell(), len(data))
 
 
 class HistoryTransferTests(unittest.TestCase):
@@ -220,6 +246,43 @@ class HistoryTransferTests(unittest.TestCase):
         text = json.dumps(bodies)
         self.assertIn('Saved preview', text)
         self.assertNotIn('Unflushed owner tail', text)
+
+    def test_opted_in_record_batches_are_bounded_and_preserve_each_message(self):
+        self.add_turn('batch')
+        def rows(*_args):
+            for i in range(130):
+                yield {'turnId': 'same-turn', 'key': f'key-{i}', 'version': 'v1', 'role': 'assistant',
+                       'text': str(i), 'order': i}, 1000, iter(()), iter(())
+        self.source.records = rows
+        session = self.transfer.catalog(0)['sessions'][0]
+        identifier = self.transfer.start('phone', {'ids': [session['id']], 'batchRecords': True})['id']
+        page = self.ready(identifier)
+        self.assertEqual([len(item['records']) for item in page['items']], [64, 64, 2])
+        messages = []
+        for item in page['items']:
+            self.assertLess(item['bytes'], 1024 * 1024)
+            payload = json.loads(self.fetch(identifier, item))
+            self.assertEqual(payload['id'], 'same-turn')
+            messages.extend(payload['messages'])
+        self.assertEqual([message['text'] for message in messages], [str(i) for i in range(130)])
+        self.assertEqual(len({message['key'] for message in messages}), 130)
+
+    def test_batching_keeps_large_record_streaming_between_small_batches(self):
+        self.add_turn('large-batch')
+        text = 'x' * (CHUNK_BYTES * 2 + 7)
+        def rows(*_args):
+            for i, body in enumerate(('before', text, 'after')):
+                yield {'turnId': 'same-turn', 'key': f'key-{i}', 'version': 'v1', 'role': 'assistant',
+                       'text': body, 'order': i}, 1000, iter(()), iter(())
+        self.source.records = rows
+        session = self.transfer.catalog(0)['sessions'][0]
+        identifier = self.transfer.start('phone', {'ids': [session['id']], 'batchRecords': True})['id']
+        page = self.ready(identifier)
+        self.assertEqual(len(page['items']), 3)
+        self.assertNotIn('records', page['items'][1])
+        self.assertGreater(page['items'][1]['bytes'], CHUNK_BYTES)
+        messages = [json.loads(self.fetch(identifier, item))['messages'][0] for item in page['items']]
+        self.assertEqual([message['text'] for message in messages], ['before', text, 'after'])
 
     def test_manifest_keyset_pages_continuously(self):
         for i in range(17):

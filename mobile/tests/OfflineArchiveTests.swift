@@ -128,6 +128,35 @@ struct OfflineArchiveTests {
         check(try (archive.transferTask(account)["task"] as? [String: Any])?["index"] as? Int == 1, "task cursor survives independent reads")
         check(try archive.commitTransfer(account, recordEvent, attachment: false)["saved"] as? Bool == true, "record commits into the normal archive")
         check(try archive.transferCached(account, recordEvent)["present"] as? Bool == true, "verified row and complete parts are reusable")
+        var batchEvent = recordEvent
+        batchEvent["records"] = [
+            ["key": "row", "recordVersion": "body-v1", "textLength": Int64(text.utf16.count + 2)],
+            ["key": "second", "recordVersion": "body-v2", "textLength": Int64(6)]
+        ]
+        check(try archive.transferCached(account, batchEvent)["present"] as? Bool == false, "batch reuse requires every message")
+        let second: [String: Any] = ["id": turn, "questionTime": Int64(1000), "messages": [
+            ["key": "second", "version": "body-v2", "role": "assistant", "text": "second", "row": ["truncated": false]]
+        ]]
+        let secondData = try JSONSerialization.data(withJSONObject: second)
+        let secondEvent = event(secondData, kind: "record")
+        try save(secondData, event: secondEvent)
+        check(try archive.commitTransfer(account, secondEvent, attachment: false)["saved"] as? Bool == true, "native commit accepts another batch member")
+        check(try archive.transferCached(account, batchEvent)["present"] as? Bool == true, "all complete batch members are reused after one turn read")
+        let packet: [String: Any] = ["id": turn, "questionTime": Int64(1000), "messages": [
+            ["key": "batch-a", "version": "a-v1", "role": "assistant", "text": "A", "row": ["truncated": false]],
+            ["key": "batch-b", "version": "b-v1", "role": "assistant", "text": "B", "row": ["truncated": false]]
+        ]]
+        let packetData = try JSONSerialization.data(withJSONObject: packet)
+        var packetEvent = event(packetData, kind: "record")
+        packetEvent["key"] = "batch-a"; packetEvent["recordVersion"] = "a-v1"
+        packetEvent["records"] = [
+            ["key": "batch-a", "recordVersion": "a-v1", "textLength": Int64(1)],
+            ["key": "batch-b", "recordVersion": "b-v1", "textLength": Int64(1)]
+        ]
+        check(try archive.transferCached(account, packetEvent)["present"] as? Bool == false, "an uncopied packet is not reusable")
+        try save(packetData, event: packetEvent)
+        check(try archive.commitTransfer(account, packetEvent, attachment: false)["saved"] as? Bool == true, "one packet merges every message")
+        check(try archive.transferCached(account, packetEvent)["present"] as? Bool == true, "a committed packet verifies every member")
         let page = try archive.readerPage(account, session: session, before: nil)!
         check(page["gaps"] as? Bool == true, "a partial job may not mark a history complete")
         let rows = page["turns"] as! [[String: Any]]

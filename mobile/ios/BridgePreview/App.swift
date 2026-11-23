@@ -475,7 +475,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                                                allowedNetwork: Bool, networkAvailable: Bool?, networkEpoch: String) throws -> [String: Any] {
         switch type {
         case "transferStats":
-            return ["freeBytes": try archive.freeBytes(), "clearRevision": account.clearRevision,
+            return ["recordBatch": 1, "freeBytes": try archive.freeBytes(), "clearRevision": account.clearRevision,
                     "allowTransfer": allowedNetwork, "networkAvailable": networkAvailable ?? false, "networkEpoch": networkEpoch]
         case "transferTaskLoad": return try archive.transferTask(account)
         case "transferTaskSave": return try archive.saveTransferTask(account, event)
