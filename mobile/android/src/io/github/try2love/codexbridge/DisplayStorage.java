@@ -31,6 +31,11 @@ final class DisplayStorage {
  }
  static Object execute(File root,String binding,JSONObject command)throws Exception {
   File dir=new File(root,digest(binding));String op=command.getString("op"),key=command.optString("key");
+  File legacyDir=dir;
+  // Only non-sensitive display preferences survive credential rotation.
+  int separator=binding.indexOf('\0');
+  if((key.equals("appearance")||key.equals("composer-preferences"))&&separator>=0)
+   dir=new File(root,digest(binding.substring(0,separator)+"\\0preferences-v1"));
   if(key.length()>8192)throw new IOException("Invalid display key");
   if(op.equals("list")){
    JSONArray keys=new JSONArray();File[] files=dir.listFiles();if(files!=null)for(File file:files){
@@ -39,7 +44,13 @@ final class DisplayStorage {
    }return keys;
   }
   File file=new File(dir,digest(key)+".json");
-  if(op.equals("read")){if(!file.isFile())return JSONObject.NULL;return new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8)).get("value");}
+  if(op.equals("read")){
+   if(!file.isFile()){
+    File legacy=new File(legacyDir,file.getName());
+    if(dir.equals(legacyDir)||!legacy.isFile())return JSONObject.NULL;
+    Files.createDirectories(dir.toPath());Files.copy(legacy.toPath(),file.toPath());
+   }
+   return new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8)).get("value");}
   if(op.equals("remove")){Files.deleteIfExists(file.toPath());return true;}
   if(!op.equals("write"))throw new IOException("Invalid display operation");
   Files.createDirectories(dir.toPath());File pending=new File(dir,file.getName()+".pending");

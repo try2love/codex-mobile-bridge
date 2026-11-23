@@ -293,7 +293,7 @@
 // Only a proven route for this gateway receives this checkpoint. Never execute a saved write.
 (() => {
   const key = 'bridge-channel-reading';
-  const localKey = name => name.startsWith('composer-v1:') || name === 'bridge-client' || name === 'bridge-appearance' || name.startsWith('navigation:');
+  const localKey = name => name.startsWith('composer-v1:') || name === 'bridge-client' || name === 'bridge-appearance' || name === 'bridge-composer-preferences' || name.startsWith('navigation:');
   const temporaryKey = name => /^(pending:|draft:|skills:|work-mode:|message-edit:|new-chat-attempt$)/.test(name);
   const pairs = (store, keep) => Object.fromEntries(Object.entries(store).filter(([name]) => keep(name)));
   function viewport() {
@@ -477,12 +477,21 @@
     pending.get(id)?.(undefined);pending.delete(id);
   });}
   window.BridgeMobileStorage={request,receive(secret,response){if(secret!==token)return;const done=pending.get(response?.id);pending.delete(response?.id);done?.(response.ok?response.value:undefined);}};
-  let edited=false;
-  document.addEventListener('bridge-appearance-change',event=>{edited=true;request('write','appearance',event.detail);});
-  async function restore(){const value=await request('read','appearance');if(!edited&&value&&typeof value==='object'){
-    try{localStorage.setItem('bridge-appearance',JSON.stringify(value));}catch{}
-    document.dispatchEvent(new CustomEvent('bridge-appearance-restored',{detail:value}));
-  }else if(value===null&&!edited){try{const local=JSON.parse(localStorage.getItem('bridge-appearance'));if(local)await request('write','appearance',local);}catch{}}}
-  document.addEventListener('bridge-authenticated',restore);restore();
+  function preference(key, localKey, changed, restored, events) {
+    let edited=false;
+    events.addEventListener(changed,event=>{edited=true;request('write',key,event.detail);});
+    async function restore(){
+      const value=await request('read',key);
+      if(!edited&&value&&typeof value==='object'){
+        try{localStorage.setItem(localKey,JSON.stringify(value));}catch{}
+        events.dispatchEvent(new CustomEvent(restored,{detail:value}));
+      }else if(value===null&&!edited){
+        try{const local=JSON.parse(localStorage.getItem(localKey));if(local)await request('write',key,local);}catch{}
+      }
+    }
+    document.addEventListener('bridge-authenticated',restore);restore();
+  }
+  preference('appearance','bridge-appearance','bridge-appearance-change','bridge-appearance-restored',document);
+  preference('composer-preferences','bridge-composer-preferences','bridge-composer-preferences-change','bridge-composer-preferences-restored',window);
   document.dispatchEvent(new Event('bridge-mobile-storage'));
 })();

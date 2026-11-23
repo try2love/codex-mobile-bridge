@@ -178,6 +178,8 @@ class ComposerPreferences {
     };
     this.events = events;
     events?.addEventListener('storage', this.onStorage);
+    this.onRestore = () => this.publish(this.read());
+    events?.addEventListener('bridge-composer-preferences-restored', this.onRestore);
   }
   read() {
     try {
@@ -227,6 +229,7 @@ class ComposerPreferences {
     }
     // Publish committed settings together across all open composers.
     this.publish(next);
+    if (globalThis.CustomEvent) this.events?.dispatchEvent?.(new CustomEvent('bridge-composer-preferences-change', {detail: next}));
   }
   setDisplay(id, mode) {
     this.update({ display: { ...this.value.display, [id]: mode } });
@@ -242,6 +245,7 @@ class ComposerPreferences {
   }
   dispose() {
     this.events?.removeEventListener('storage', this.onStorage);
+    this.events?.removeEventListener('bridge-composer-preferences-restored', this.onRestore);
     this.listeners.clear();
   }
 }

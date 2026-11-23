@@ -30,6 +30,12 @@ enum DisplayStorage {
         var root = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("display-cache/" + digest(binding), isDirectory: true)
         let key = command["key"] as? String ?? "", op = command["op"] as? String ?? ""
         guard key.utf8.count <= 32768 else { throw CocoaError(.fileReadCorruptFile) }
+        // Appearance and toolbar layout follow the verified computer, even after re-pairing.
+        // Chat history keeps the full credential-bound namespace.
+        let legacyRoot = root
+        if ["appearance", "composer-preferences"].contains(key), let separator = binding.firstIndex(of: "\0") {
+            root = root.deletingLastPathComponent().appendingPathComponent(digest(String(binding[..<separator]) + "\\0preferences-v1"), isDirectory: true)
+        }
         if op == "list" {
             return (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "json" }.compactMap { url -> String? in
                 guard let data = try? Data(contentsOf: url), let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let stored = row["key"] as? String, stored.hasPrefix(key) else { return nil }; return stored
@@ -37,7 +43,13 @@ enum DisplayStorage {
         }
         let file = root.appendingPathComponent(digest(key) + ".json")
         if op == "read" {
-            guard manager.fileExists(atPath: file.path) else { return NSNull() }
+            if !manager.fileExists(atPath: file.path) {
+                let legacy = legacyRoot.appendingPathComponent(digest(key) + ".json")
+                guard root != legacyRoot, manager.fileExists(atPath: legacy.path) else { return NSNull() }
+                try manager.createDirectory(at: root, withIntermediateDirectories: true)
+                var attributes = URLResourceValues(); attributes.isExcludedFromBackup = true; try root.setResourceValues(attributes)
+                try Data(contentsOf: legacy).write(to: file, options: .atomic)
+            }
             let row = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
             return row?["value"] ?? NSNull()
         }
