@@ -27,16 +27,18 @@
   panel.hidden = true; panel.setAttribute('aria-label', label('本地数据传输'));
   const head = node('div', '', 'download-head'), title = node('button', '本地数据传输', 'download-summary');
   const details = node('div', '', 'download-details');
-  let collapsed = false;
+  let collapsed = false, dragged;
   const place = () => {
-    if (typeof BridgeDownload !== 'undefined') BridgeDownload.placePanel(panel,{details,summary:title,toggle,collapsed,label});
+    if (typeof BridgeDownload !== 'undefined') BridgeDownload.placePanel(panel,{details,summary:title,toggle,collapsed,dragged,label});
   };
   const toggle = button('收起', () => {
     collapsed = !collapsed;details.hidden = collapsed;
     toggle.textContent = label(details.hidden ? '展开' : '收起');
     toggle.setAttribute('aria-expanded', String(!details.hidden));place();
   });
-  toggle.className='download-toggle';title.type='button';title.onclick=()=>toggle.click();
+  toggle.className='download-toggle';title.type='button';
+  BridgeDownload.bindPanelDrag(panel,title,{place,moved:value=>{dragged=value;},toggle:()=>toggle.click()});
+  title.title=label('拖动以移动下载浮窗');
   toggle.setAttribute('aria-expanded', 'true');
   head.append(title, toggle);
   const current = node('p', '', 'download-name'), status = node('span', '', 'download-state');
@@ -77,6 +79,7 @@
     reopen.hidden=!(preparing||ready||failed);pause.hidden=task.state!=='running';resume.hidden=task.state!=='paused';
     resume.textContent=label(task.reason==='network'?'使用当前网络继续':'继续');
     cancel.hidden=finished||preparing||ready||failed;dismiss.hidden=!finished&&!failed;
+    title.style.setProperty('--transfer-progress',(finished?100:total?Math.min(100,done/total*100):0)+'%');
     title.textContent='↓ '+status.textContent+(total&&!preparing?' · '+Math.min(100,Math.floor(done/total*100))+'%':preparing?' · '+(task.preparingSessions||0)+'/'+(task.sessionCount||'—'):'');place();
   }
   window.addEventListener('resize',place);window.visualViewport?.addEventListener('resize',place);window.visualViewport?.addEventListener('scroll',place);
@@ -93,9 +96,9 @@
     if(['running','paused'].includes(controller.task?.state)){panel.hidden=false;collapsed=false;place();return;}
     const dialog = node('dialog', '', 'picker local-transfer-dialog');
     const heading = node('div', '', 'picker-head');
-    const close = button('×', () => dialog.close()); close.setAttribute('aria-label', label('关闭'));
+    const close = button('×', () => dialog.close()); close.setAttribute('aria-label', label('关闭')); close.className='icon-button';
     const minimize=button('最小化',()=>{dialog.close();panel.hidden=false;place();});
-    minimize.disabled=!['preparing','ready'].includes(controller.task?.state);
+    minimize.className='plain';minimize.disabled=!['preparing','ready'].includes(controller.task?.state);
     heading.append(node('h2', '本地数据传输'), minimize, close);
     const content = node('div'), feedback = node('p'); feedback.setAttribute('role', 'status');
     const footer = node('div', '', 'local-transfer-actions');
@@ -103,7 +106,7 @@
     dialog.addEventListener('close', () => dialog.remove(), {once: true}); dialog.showModal();
     const selected = new Set(previousSelection), sessions = new Map(); let cursor, busy = false, loading = true, agent = 'codex';
     const providers = {codex:'Codex',claude:'Claude',deepseek:'DeepSeek',zcode:'ZCode',antigravity:'Antigravity'};
-    const tabs = node('div', '', 'local-transfer-tabs'), count = node('p', '', 'local-transfer-count');
+    const tabs = node('div', '', 'local-transfer-tabs workbench-tabs'), count = node('p', '', 'local-transfer-count');
     tabs.setAttribute('role', 'tablist');tabs.setAttribute('aria-label', label('Agent'));
     let unavailable = [];
     const list = node('div', '', 'local-transfer-sessions');
@@ -112,6 +115,7 @@
       for (const session of sessions.values()) if (session.client === agent) selected.add(session.id);
       allSelected = false; draw();
     });
+    selectAll.className='plain';
     const next = button('查看下载量', async () => {
       if (busy || !selected.size) return;
       busy = true; minimize.disabled=false; next.disabled = true; selectAll.disabled = true;

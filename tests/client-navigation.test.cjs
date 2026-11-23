@@ -68,7 +68,7 @@ test('Codex initialization uses authenticated client management through relay an
 test('notification settings stay hidden on shared relay while remaining actions use all columns',()=>{
   const ui=fixture(),classes=new Set();
   ui.nav.switchToggle={hidden:false};ui.nav.settingsNotifications={hidden:false};
-  ui.nav.settingsActions={classList:{toggle(name,enabled){if(enabled)classes.add(name);else classes.delete(name);}}};
+  ui.nav.settingsActions={children:[ui.nav.switchToggle,ui.nav.settingsNotifications,{},{}],classList:{toggle(name,enabled){if(enabled)classes.add(name);else classes.delete(name);}}};
   ui.window.BridgeSharedRelay=false;ui.nav.paintSettingsActions();
   assert.equal(ui.nav.settingsNotifications.hidden,false);assert.equal(classes.size,0);
   ui.window.BridgeSharedRelay=true;ui.nav.paintSettingsActions();
