@@ -25,12 +25,16 @@ async function runTurnFoldBrowserChecks(){
     check(visible('thought')&&visible('progress')&&visible('tool'),'running process stays visible');
     const running=container.querySelector('.chat-turn-completion');
     check(!running.disabled&&!running.hasAttribute('aria-expanded')&&running.nextElementSibling===node('thought'),
-      'running answer adds a locator before the first step without enabling collapse');
+      'running answer keeps the elapsed control before the first step');
     const style=key=>{const {color,fontSize,lineHeight}=getComputedStyle(node(key).querySelector('.message-body'));return [color,fontSize,lineHeight].join(' ');};
-    check(style('thought')===style('progress')&&style('progress')===style('answer'),'visible thinking and commentary use final answer typography and theme color');
-    check(node('thought').querySelector('.message-body strong')?.textContent==='Native reasoning'&&
-      node('thought').querySelector('.who').textContent.endsWith('historical-model')&&
-      node('progress').querySelector('.who').textContent.endsWith('old-progress-model high'),'visible summaries use Markdown and recorded per-reply labels');
+    check(style('progress')===style('answer'),'commentary uses final answer typography and theme color');
+    check(node('thought').tagName==='DETAILS'&&!node('thought').open&&
+      node('thought').querySelector('summary').textContent===BridgeI18n.t('思考摘要'),
+      'reasoning retains its independent closed disclosure');
+    node('thought').open=true;
+    check(node('thought').querySelector('.activity-body').textContent==='**Native reasoning**'&&
+      node('progress').querySelector('.who').textContent.endsWith('old-progress-model high'),
+      'reasoning and recorded commentary labels retain their original content');
     const complete=rows.map(row=>({...row,turnStatus:'completed',turnCompletedAt:start+125000}));
     apply(complete);
     let control=container.querySelector('.chat-turn-completion');
