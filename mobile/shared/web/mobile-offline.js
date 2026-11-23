@@ -3,7 +3,7 @@
   const prompt = window.prompt.bind(window);
   const token = '__BRIDGE_CLIPBOARD_TOKEN__';
   const pending = new Map();
-  const android = navigator.userAgent.includes(' BridgeMobile/0.1-Android');
+  const android = /(?:^|\s)BridgeMobile\/[\w.-]+-Android(?:\s|$)/.test(navigator.userAgent);
   let port;
   let sequence = 0;
   let appearanceScope;

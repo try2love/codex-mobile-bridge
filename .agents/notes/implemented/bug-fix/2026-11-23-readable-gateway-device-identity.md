@@ -23,3 +23,5 @@ Status: implemented
 客户端提供的信息用于辨认设备，不是身份或授权证明；认证、令牌、过期及解除绑定机制保持原样。未升级手机不会凭空出现型号和真实App版本，连接新版壳后补齐。
 
 回归覆盖Edge识别、原生版本与旧协议区分、后台旧UA和重启后的信息保留、旧会话兼容及控制字符。平台依据为[Android Build](https://developer.android.com/reference/android/os/Build)、[PackageInfo](https://developer.android.com/reference/android/content/pm/PackageInfo)和[Apple uname](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/uname.3.html)。
+
+原生通道识别按版本无关语法兼容新旧UA；此前离线注入脚本遗漏该契约的回归与修正见[Android离线桥](2026-11-23-versioned-android-offline-bridge.md)。

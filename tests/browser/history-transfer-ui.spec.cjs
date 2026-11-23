@@ -3,6 +3,7 @@ const {test, expect} = require('@playwright/test');
 const {spawn} = require('node:child_process');
 const {createInterface} = require('node:readline');
 const path = require('node:path');
+const {readFileSync}=require('node:fs');
 
 test('phone selection retains choices through a space warning and resumes verified missing content', async ({page, context}, info) => {
   const root = path.resolve(__dirname, '../..');
@@ -170,4 +171,37 @@ test('complete transferred history remains readable offline with every intermedi
   expect(await messages.getByRole('button',{name:'加载后续过程',exact:true}).count()).toBe(0);
   await page.screenshot({path:info.outputPath('offline-complete-process.png')});
   expect(network).toEqual([]);
+});
+
+
+test('versioned Android injection opens a real chat through the native port without prompt dialogs',async({page,context},info)=>{
+ const root=path.resolve(__dirname,'../..'),server=spawn('python3',['-B','tests/browser/session-transfer-http-fixture.py','--provider','codex'],{cwd:root});
+ const lines=createInterface({input:server.stdout});
+ try{
+  const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);server.once('exit',code=>reject(Error('fixture exited '+code)));});
+  const source=readFileSync(path.join(root,'mobile/shared/web/mobile-offline.js'),'utf8');
+  await context.addInitScript({content:`
+    Object.defineProperty(navigator,'userAgent',{get:()=> 'Mozilla/5.0 BridgeMobile/2.2.2-preview.2026112307-Android BridgeModel/Google%20Pixel%207 BridgeOS/16 BridgeBuild/81'});
+    window.nativePrompts=[];window.prompt=(...args)=>{nativePrompts.push(args);return '';};
+    window.nativePortCalls=[];
+    ${source}
+    document.addEventListener('DOMContentLoaded',()=>{
+      const channel=new MessageChannel(),state={foreground:true,allowPrefetch:false,allowTransfer:true,networkAvailable:true,clearRevision:'0',freeBytes:1e9};
+      channel.port1.onmessage=event=>{
+        if(event.data==='ready'){channel.port1.postMessage(JSON.stringify({state}));return;}
+        const call=JSON.parse(event.data);nativePortCalls.push(call.type);
+        const value=['state','auth','transferStats'].includes(call.type)?state:call.type==='read'?{turns:[]}:call.type==='body'?null:call.type==='transferTaskLoad'?{task:null}:{saved:true};
+        channel.port1.postMessage(JSON.stringify({id:call.requestId,ok:true,value}));
+      };
+      window.postMessage('__BRIDGE_CLIPBOARD_TOKEN__',location.origin,[channel.port2]);
+    },{once:true});`});
+  await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+  await page.goto(origin);
+  await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+  await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).click();
+  await expect(page.locator('#messages').getByText('Answer 89',{exact:true})).toBeVisible();
+  const native=await page.evaluate(()=>({prompts:nativePrompts,calls:nativePortCalls,foreground:BridgeChatForeground}));
+  expect(native.prompts).toEqual([]);expect(native.calls).toContain('auth');expect(native.calls).toContain('read');expect(native.foreground).toBe(true);
+  await page.screenshot({path:info.outputPath('android-versioned-native-chat.png')});
+ }finally{lines.close();server.kill('SIGTERM');}
 });
