@@ -1449,7 +1449,7 @@ $('composer').onsubmit=async event=>{
         window.BridgePresentation?.resizeMessage();
       }
     }
-    toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));
+    toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('会话已接收，等待显示'));
   }catch(error){
     // Only an explicit pre-submission rejection permits changing this request.
     // Unknown delivery and network failures retain their original pending ID.

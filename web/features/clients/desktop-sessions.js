@@ -408,7 +408,10 @@ class DesktopSessionsView {
         if(!active())return;
         if(cached!==undefined)timeline.cached=cached;
         this.historyMessages=rows;if(!process)this.historyPage={before,hasMore};this.sessionFiles=files;
-        if(value&&!history&&!process){this.applyDetail(value);window.OfflineChatReader?.showStatus?.(value.session?.offlineSync,value.session?.offlineGaps);}
+        if(value&&!history&&!process){
+          this.applyDetail(value,!!cached);
+          if(window.OfflineChatReader?.enabled)window.OfflineChatReader.showStatus?.(value.session?.offlineSync,value.session?.offlineGaps);
+        }
         this.renderMessages(rows);
       },
     };

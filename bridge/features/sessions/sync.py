@@ -201,12 +201,15 @@ def page(timeline, mode, *, known=None, ifVersion=None, omitTurn=(), indexOnly=F
                 'complete': complete and mode == 'range'}
     # An ordinary recent or older page cannot prove absence. For an exact
     # matched range the caller's known keys are the previously observed members.
-    deleted = sorted(set(known or ()) - timeline.conversation_positions.keys()) if coverage['complete'] else []
+    # A collapsed conversation projection omits process children that remain
+    # present in the flat source. Absence must be checked against both views.
+    present = timeline.conversation_positions.keys() | timeline.positions.keys()
+    deleted = sorted(set(known or ()) - present) if coverage['complete'] else []
     # Orders are relative to the loaded source, so prepending older records
     # may shift them even though the contents of this interval stay identical.
     if mode == 'range' and not selected and timeline.meta.get('syncSourceComplete'):
         deleted = sorted(key for key in {*list(known or ()), options['start'], options['end']}
-                         if key not in timeline.conversation_positions)
+                         if key not in present)
     version = digest([[{k: v for k, v in item.items() if k != 'order'} for item in index],
                       list(turns), before, has_more, coverage])
     result = _conditional(index, [] if indexOnly else rows, version, known, ifVersion)

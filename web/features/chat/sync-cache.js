@@ -239,7 +239,6 @@
     async known(scope,mode,params={},source='manual'){
       const out=new URLSearchParams();out.generation=this.generation;out.epoch=this.epoch;out.source=source;
       if(!this.active(scope))return out;
-      if(this.pending.has(scope))await this.pending.get(scope).catch(()=>{});
       if(native())await this.legacy(scope,this.scopes.get(scope).legacyScope);
       const state=await this.state(scope),key=pageKey(mode,params);
       const [rev,removed,initialHot,page]=await this.disk.readRefs(scope,[['local','revision'],['local','removed'],['local','hot'],['page',key]]);
@@ -363,7 +362,6 @@
     }
     async read(scope,mode,params={}){
       if(!this.active(scope))return null;
-      if(this.pending.has(scope))await this.pending.get(scope).catch(()=>{});
       const gen=this.generation,epoch=this.epoch;
       if(!this.permitted(scope))return null;
       const state=await this.state(scope);
@@ -390,16 +388,38 @@
     }
     write(scope,mode,params,wire,options={}){
       const prior=this.pending.get(scope)||Promise.resolve();
-      let publish;
-      const early=mode==='recent'&&options.source!=='prefetch'&&options.validation&&!isPhone()
-        ?new Promise(resolve=>{publish=resolve;}):null;
-      const job=prior.catch(()=>{}).then(()=>this.commit(scope,mode,params,wire,options,publish)).finally(()=>{
+      const early=mode==='recent'&&options.source!=='prefetch'&&options.validation
+        ?this.preview(scope,wire,options).then(page=>page||job):null;
+      const job=prior.catch(()=>{}).then(()=>this.commit(scope,mode,params,wire,options)).finally(()=>{
         if(this.pending.get(scope)===job)this.pending.delete(scope);
       });
       this.pending.set(scope,job);
       return early?Promise.race([early,job]):job;
     }
-    async commit(scope,mode,params,wire,{validation,source='manual',title},publish){
+    async preview(scope,wire,{validation,source='manual'}){
+      const gen=this.generation;
+      if(!this.active(scope)||validation.generation!==gen||validation.epoch!==this.epoch||wire.deleted?.length)return null;
+      const state=await this.state(scope),[revision,removed]=await this.disk.get(scope,'local',['revision','removed']);
+      if(validation.revision!==(revision||0)||isPhone()&&(!state||validation.clearRevision!==state.clearRevision))return null;
+      const sessionId=this.scopes.get(scope)?.sessionId;
+      const bans=new Set([...(removed||[]),...(state?.tombstones?.[sessionId]||[])]);
+      const updated=new Map((wire.rows||wire.items||[]).map(row=>[row.key,row])),rows=[],index=[];
+      for(const item of wire.index||[]){
+        if(source!=='manual'&&bans.has(item.turnId))continue;
+        const content=updated.get(item.key)||validation.resident?.get(item.key);
+        if(content?.version!==item.version)return null;
+        const row={...content,...item};
+        if(row.textRef){
+          if(!validation.held?.has(row.textRef))return null;
+          row.text=validation.held.get(row.textRef);delete row.textRef;
+        }
+        rows.push(row);index.push(item);
+      }
+      if(!Array.isArray(wire.index)||!this.active(scope)||this.generation!==gen||validation.epoch!==this.epoch)return null;
+      this.verified.add(scope);
+      return {...wire,index,rows};
+    }
+    async commit(scope,mode,params,wire,{validation,source='manual',title}){
       const discard={discarded:true,index:[],rows:[],items:[],files:[],turns:[],meta:{}};
       if(!this.active(scope)||validation&&(validation.generation!==this.generation||validation.epoch!==this.epoch))return discard;
       const gen=this.generation,key=pageKey(mode,params),state=await this.state(scope);
@@ -422,24 +442,6 @@
       }
       if(!Array.isArray(wire.index))return wire;
       const updated=new Map((wire.rows||wire.items||[]).map(row=>[row.key,row]));
-      if(publish&&!wire.deleted?.length&&this.active(scope)&&this.generation===gen){
-        // The response has fresh session authorization and the deletion revision still matches.
-        // Painting does not depend on the subsequent durable write. A following read awaits it.
-        const rows=[],index=[];
-        for(const item of wire.index){
-          if(source!=='manual'&&bans.has(item.turnId))continue;
-          const content=updated.get(item.key)||validation.resident?.get(item.key);
-          if(content?.version!==item.version)break;
-          const row={...content,...item};
-          if(row.textRef){
-            if(!validation.held?.has(row.textRef))break;
-            row.text=validation.held.get(row.textRef);delete row.textRef;
-          }
-          rows.push(row);index.push(item);
-        }
-        const wanted=wire.index.filter(item=>source==='manual'||!bans.has(item.turnId));
-        if(index.length===wanted.length){this.verified.add(scope);publish({...wire,index,rows});}
-      }
       const keys=wire.index.map(item=>item.key);
       const ops=[],rows=[],turns=new Map(),turnIds=[...new Set(wire.index.map(row=>row.turnId).filter(Boolean))];
       const [old,[previous],oldTurns]=await Promise.all([this.disk.get(scope,'row',keys),this.disk.get(scope,'local',['hot']),this.disk.get(scope,'turn',turnIds)]);

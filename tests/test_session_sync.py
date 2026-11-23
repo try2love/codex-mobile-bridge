@@ -32,6 +32,18 @@ def projection(turns, sequence=1, **meta):
 
 
 class TimelineSyncTests(unittest.TestCase):
+    def test_exact_range_does_not_delete_cached_children_hidden_by_process_groups(self):
+        timeline = projection(example_turns()[:2], syncSourceComplete=True)
+        recent = sync.read(timeline, 'recent')
+        group = next(iter(timeline.process_groups))
+        process = sync.process(timeline, key=group)
+        child = process['index'][0]
+        ranged = sync.read(timeline, 'range', start=recent['range']['start'], end=recent['range']['end'],
+                           known={child['key']: child['version']})
+        self.assertTrue(ranged['range']['complete'])
+        self.assertNotIn(child['key'], {row['key'] for row in ranged['index']})
+        self.assertEqual(ranged['deleted'], [])
+
     def test_failed_turn_exposes_its_recorded_reason_on_cached_reopen(self):
         turn = {'id': 'failed', 'status': 'failed', 'error': {'message': 'Tool permission denied'},
                 'messages': [{'id': 'tool', 'role': 'activity', 'kind': 'commandExecution', 'text': 'private output'}]}

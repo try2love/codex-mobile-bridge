@@ -13,8 +13,32 @@ async function fixture(){
  const files=[{id:'file',reference:'/audit/report.md',references:[],scope:'host',path:'/audit/report.md'}];
  const page={version:'page',rows:[row],index:[row],files,meta:{},turns:[]};
  await cache.write(scope,'recent',{},page);
- return {cache,scope,row,files,page,read:context.window.BridgeChatSync.read};
+ return {window:context.window,cache,scope,row,files,page,read:context.window.BridgeChatSync.read};
 }
+
+test('a pending cache persistence job does not block the next online validation',async()=>{
+ const f=await fixture();let release;
+ f.cache.pending.set(f.scope,new Promise(resolve=>{release=resolve;}));
+ try{
+  const result=await Promise.race([f.cache.known(f.scope,'recent',{}),new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
+  assert.ok(result,'online read must use committed cache state without waiting for persistence');
+ }finally{release();}
+});
+
+test('phone paints verified fresh rows before a slow native cache write completes',async()=>{
+ const f=await fixture();
+ f.window.CodexBridgeNativeOffline={request:async()=>({turns:[]})};
+ f.cache.state=async()=>({clearRevision:0,allowPrefetch:true});
+ const known=await f.cache.known(f.scope,'recent',{});
+ const change=f.cache.disk.change.bind(f.cache.disk);let release;
+ const gate=new Promise(resolve=>{release=resolve;});
+ f.cache.disk.change=async(...args)=>{await gate;return change(...args);};
+ const pending=f.cache.write(f.scope,'recent',{},f.page,{source:'live',validation:known});
+ try{
+  const result=await Promise.race([pending,new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
+  assert.equal(result?.rows?.[0]?.text,f.row.text);
+ }finally{release();await pending;await f.cache.pending.get(f.scope);}
+});
 
 test('authorized metadata refresh restores file actions without downloading the cached message again',async()=>{
  const f=await fixture(),known=await f.cache.known(f.scope,'recent',{});
@@ -37,4 +61,14 @@ test('body reuse retains file metadata and upgrades older cached chunks once',as
  authorized=false;
  assert.equal(await f.read(target,'body',params,'manual',()=>true),null);
  assert.equal(requests,1);
+});
+
+test('a fresh online page can paint while an earlier cache commit is still pending',async()=>{
+ const f=await fixture(),known=await f.cache.known(f.scope,'recent',{});let release;
+ const gate=new Promise(resolve=>{release=resolve;});f.cache.pending.set(f.scope,gate);
+ const pending=f.cache.write(f.scope,'recent',{},f.page,{source:'live',validation:known});
+ try{
+  const result=await Promise.race([pending,new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
+  assert.equal(result?.rows?.[0]?.text,f.row.text);
+ }finally{release();await pending;await f.cache.pending.get(f.scope);}
 });

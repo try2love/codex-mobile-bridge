@@ -61,6 +61,17 @@ function hostPages(ui,handler){
    entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
  });
 }
+test('online desktop sync keeps writable state without showing offline reader status',async()=>{
+ const ui=await opened();
+ ui.run(`window.offlineNotices=[];window.OfflineChatReader={enabled:false,showStatus:(...args)=>window.offlineNotices.push(args)};
+ globalThis.ChatTimelineSync=class {constructor({host}){this.host=host;}updates(){}async start(){this.host.renderSync({rows:[],files:[],cached:false,value:{session:{id:'a',title:'Online',status:'idle',capabilities:{send:true}},connected:true,messages:[]}});}};`);
+ await ui.view.startHistorySync({},null,()=>true,ui.view.generation,ui.view.detailRevision);
+ assert.equal(ui.run('window.offlineNotices.length'),0);
+ assert.equal(ui.view.canMutate(),true);
+ ui.run('window.OfflineChatReader.enabled=true');
+ await ui.view.startHistorySync({},null,()=>true,ui.view.generation,ui.view.detailRevision);
+ assert.equal(ui.run('window.offlineNotices.length'),1);
+});
 test('persistent history is display only and cannot override fresh disconnected history',async()=>{
  const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
  ui.run('window.historyReads=[];window.historyWrites=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push({scope,resolve})),write:(...args)=>window.historyWrites.push(args)}');
