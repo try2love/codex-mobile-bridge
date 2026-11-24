@@ -99,12 +99,14 @@ class RetainedIndexHistoryTests(unittest.TestCase):
             db.execute("UPDATE thread_turns SET status='inProgress',completed_at=NULL")
             db.commit()
         snapshot = index_archive.pin(self.home, THREAD)
+        revision = self.store.history_revision(THREAD)
         with closing(sqlite3.connect(self.index)) as db:
             db.execute("UPDATE thread_turns SET status='completed',completed_at=102")
             db.commit()
         saved = list(index_archive.turns(self.home, snapshot))
         self.assertEqual(saved[0]['status'], 'inProgress')
         self.assertIsNone(saved[0]['turnCompletedAtMs'])
+        self.assertNotEqual(revision, self.store.history_revision(THREAD))
 
     def test_remote_injection_reads_the_same_saved_index_without_installed_bridge(self):
         from bridge.clients.codex.remote import RemoteStore

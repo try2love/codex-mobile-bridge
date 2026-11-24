@@ -873,7 +873,8 @@ class SessionStore:
             stat = rollout.stat()
         except FileNotFoundError:
             saved = _retained_index_module().pin(self.home, thread_id)
-            return ['native-index-retained', *saved['file'], saved['end'], *saved['signature']]
+            return ['native-index-retained', *saved['file'], saved['end'], *saved['signature'],
+                    *(saved['lastTurn'].get(key) for key in ('status', 'started_at', 'completed_at', 'error_json'))]
         return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
     def transfer_snapshot(self, thread_id):
