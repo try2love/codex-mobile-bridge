@@ -181,15 +181,26 @@
       if(!this.active(scope))return null;
       if(!native())return this.read(scope,'recent',{});
       const owner=this.owner,gen=this.generation,epoch=this.epoch;
+      const memory=this.resident.get(scope),saved=memory?.pages.get(pageKey('recent',{}));
+      if(saved?.index?.length&&saved.index.every(item=>memory.rows.get(item.key)?.version===item.version)){
+        return {...saved,rows:saved.index.map(item=>({...memory.rows.get(item.key),...item})),files:[],
+          meta:{...saved.meta,requests:[]}};
+      }
       const state=await this.nativeReady;
-      if(state?.recordPages!==1||owner!==this.owner||gen!==this.generation||epoch!==this.epoch)return null;
-      const payload=await this.event('read',{page:true,sessionId:this.scopes.get(scope)?.sessionId});
-      if(owner!==this.owner||gen!==this.generation||epoch!==this.epoch||!this.active(scope))return null;
-      const page=payload?.page;
-      if(page?.recordPage!==1)return null;
-      // The renderer consumes cached rows only; live metadata remains authoritative.
-      return window.OfflineChatReader?.projectPage(page)||null;
+      const current=()=>owner===this.owner&&gen===this.generation&&epoch===this.epoch&&this.active(scope);
+      if(state?.recordPages!==1||!current())return null;
+      for(let attempt=0;attempt<30&&current();attempt++){
+        const payload=await this.event('read',{page:true,sessionId:this.scopes.get(scope)?.sessionId});
+        if(!current())return null;
+        const page=payload?.page;
+        if(page?.recordPage!==1)return null;
+        if(!page.migrating||page.rows?.length||page.turns?.some(turn=>turn.processes?.length))
+          return window.OfflineChatReader?.projectPage(page)||null;
+        await new Promise(resolve=>setTimeout(resolve,150));
+      }
+      return null;
     }
+
     async state(scope){
       if(!isPhone())return {};
       if(!native()||!this.active(scope))return null;

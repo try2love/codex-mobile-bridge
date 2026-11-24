@@ -20,7 +20,7 @@ test('history expansion during catch-up restarts bounded resync without clearing
 });
 
 function syncProjection(){
- const context=vm.createContext({queueMicrotask,chatTurnStopped:status=>['interrupted','failed'].includes(status)});
+ const context=vm.createContext({queueMicrotask,window:{},chatTurnStopped:status=>['interrupted','failed'].includes(status)});
  vm.runInContext(fs.readFileSync('web/features/chat/timeline-sync.js','utf8'),context);
  return vm.runInContext('({mergeChatSyncRows,carryChatSyncContext,ChatTimelineSync})',context);
 }
@@ -84,4 +84,16 @@ test('offline process can expand from a cached screen without replacing newer li
  group.open=true;await sync.fillProcess('process');
  assert.equal(calls.length,1);
  assert.deepEqual(Array.from(group.rows,row=>row.text),['Earlier saved process','Live update']);
+});
+
+
+test('a connecting empty response does not suppress a later local first screen',async()=>{
+ const {ChatTimelineSync}=syncProjection();let release;
+ const preview=new Promise(resolve=>{release=resolve;});
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{abort:new AbortController(),target:{scope:'s'},rows:[],clearRevision:0,
+  initial:{preview,promise:Promise.resolve({page:{index:[],rows:[],meta:{loadingHistory:true},turns:[]}}),valid:()=>true,mayPreview:()=>true,close(){}},
+  active:()=>true,accept(page,options){this.rows=page.rows;this.host.cached=!!options?.cached;},host:{},
+  mergeRecent:async()=>{},});
+ await sync.start();release({index:[{key:'saved'}],rows:[{key:'saved',text:'Saved first screen'}]});
+ await new Promise(setImmediate);assert.equal(sync.rows[0]?.text,'Saved first screen');
 });

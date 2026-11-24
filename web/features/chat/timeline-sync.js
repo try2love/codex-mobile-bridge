@@ -70,7 +70,7 @@ class ChatTimelineSync {
     const {scope}=this.target,initial=this.initial,revision=this.clearRevision;
     let wire=false;
     if(scope&&!this.value&&!this.rows.length){
-      const preview=initial?.preview||window.BridgeChatSyncCache?.read(scope,'recent',{});
+      const preview=initial?.preview||window.BridgeChatSyncCache?.localPreview(scope);
       preview?.then(page=>{
         if(page&&!wire&&this.active()&&revision===this.clearRevision&&(!initial?.preview||initial.mayPreview())){
           this.accept(page,{cached:true});this.recent=page.index||[];this.recentRange=page.range;
@@ -91,7 +91,7 @@ class ChatTimelineSync {
       const page=result?.page||await this.read('recent',{},source);
       if(!page||!this.active())return;
       if(!Array.isArray(page.index))throw Object.assign(Error('Session sync is unavailable'),{status:404});
-      wire=true;this.enabled=true;
+      wire=page.index.length>0||!(page.meta||page.session)?.loadingHistory;this.enabled=true;
       await this.mergeRecent(page,source);
     })().finally(()=>{this.starting=null;window.BridgeSyncPrefetch?.settled(scope,this.target.focusToken);});
     return this.starting;

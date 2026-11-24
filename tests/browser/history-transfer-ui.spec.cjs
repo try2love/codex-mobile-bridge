@@ -187,7 +187,7 @@ test('complete transferred history remains readable offline with every intermedi
 });
 
 
-for(const savedPreview of [false,true])test('versioned Android native port: '+(savedPreview?'local first screen precedes the network':'hung archive never blocks online content'),async({page,context},info)=>{
+for(const savedPreview of [false,true,'migrating'])test('versioned Android native port: '+(savedPreview==='migrating'?'legacy conversion becomes readable before connection':savedPreview?'local first screen precedes the network':'hung archive never blocks online content'),async({page,context},info)=>{
  const root=path.resolve(__dirname,'../..'),server=spawn('python3',['-B','tests/browser/session-transfer-http-fixture.py','--provider','codex'],{cwd:root});
  const lines=createInterface({input:server.stdout});
  try{
@@ -203,7 +203,9 @@ for(const savedPreview of [false,true])test('versioned Android native port: '+(s
       channel.port1.onmessage=event=>{
         if(event.data==='ready'){channel.port1.postMessage(JSON.stringify({state}));return;}
         const call=JSON.parse(event.data);nativePortCalls.push(call.type);
-        if(call.type==='read'&&${savedPreview}){
+        if(call.type==='read'&&${!!savedPreview}){
+          window.recordReadCount=(window.recordReadCount||0)+1;
+          if(${savedPreview==='migrating'}&&recordReadCount===1){channel.port1.postMessage(JSON.stringify({id:call.requestId,ok:true,value:{page:{recordPage:1,id:call.sessionId,rows:[],turns:[],migrating:true}}}));return;}
           const page={recordPage:1,id:call.sessionId,title:'Saved chat',syncedAt:1,rows:[{key:'cached-answer',version:'v',turnId:'cached-turn',role:'assistant',phase:'final_answer',order:0,text:'Native cached first screen'}],turns:[{id:'cached-turn',status:'completed',completionKnown:true,processes:[]}],before:null,hasMore:false};
           channel.port1.postMessage(JSON.stringify({id:call.requestId,ok:true,value:{page}}));return;
         }
@@ -257,3 +259,4 @@ test('normalized offline pages render process pagination and body pieces without
  expect(await messages.getByRole('button',{name:'加载后续过程',exact:true}).count()).toBe(0);
  expect(network).toEqual([]);await page.screenshot({path:info.outputPath('normalized-offline-records.png')});
 });
+
