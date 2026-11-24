@@ -10,7 +10,7 @@ for(const status of ['accepted','unknown'])test(`Codex fallback ${status} preser
  const drafts=new ComposerDrafts(failedStorage),quotes={quotes:[{text:'first',source:'reply',provider:'codex'}],serialize(text){return ComposerQuotes.serialize(text,this.quotes);},reset(){this.quotes=[];}};
  const temporary=new Map(),provisionals=new Map();let resolve,submitted,entered;const requestStarted=new Promise(done=>entered=done);
  const context={composerToolbar:{actionMode:()=>'send'},
-  $:id=>nodes.get(id),t:text=>text,sending:false,currentId:'chat',currentHost:'local',state:{},currentAccess:()=>({canSend:true}),
+  $:id=>nodes.get(id),t:text=>text,sending:false,currentId:'chat',currentHost:'local',state:{},canSendInChat:()=>true,
   codexQuotes:quotes,codexDraftScope:scope,composerDrafts:drafts,draftGateway:'gateway',codexProvisionalDrafts:provisionals,messageManagement:null,
   attachments:{ready:()=>true,ids:()=>[],references:()=>[],rows:[],setLocked(){},clear(){}},renderCodexWorkModes(){},workModes:{value:()=> 'default',render(){},submitted(){}},
   invalidSkills:new Set(),selectedSkills:new Set(),BridgeI18n:{locale:()=> 'zh'},chatKey:()=> 'local|chat',uuid:()=> 'send-id',

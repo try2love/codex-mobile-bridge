@@ -71,11 +71,12 @@ class AccountsHttpTests(unittest.TestCase):
     def test_runtime_initialization_requires_authenticated_default_desktop_scope(self):
         manager = self.manager(); manager.control = Mock(return_value={'switch': {'phase': 'preparing'}})
         path = '/api/accounts/desktop-runtime'
-        value = {'requestId': 'fixture', 'confirmed': True, 'tasksConfirmed': True}
+        value = {'requestId': 'fixture', 'confirmed': True, 'tasksConfirmed': True, 'ifNeeded': True}
         self.assertEqual(self.request('POST', path, value)[0], 401)
         headers = self.login()
         self.assertEqual(self.request('POST', path, value, {'Cookie': headers['Cookie']})[0], 403)
         self.assertEqual(self.request('POST', path, {**value, 'home': '/different'}, headers)[0], 400)
+        self.assertEqual(self.request('POST', path, {**value, 'ifNeeded': 1}, headers)[0], 400)
         self.assertEqual(self.request('POST', path, value, headers)[0], 202)
         manager.control.assert_called_once_with({'action': 'initializeDesktopRuntime', **value})
         manager.control.reset_mock()
@@ -84,6 +85,19 @@ class AccountsHttpTests(unittest.TestCase):
         self.server.auth.config['mode'] = 'none'
         self.assertEqual(self.request('POST', path, value, headers)[0], 403)
         manager.control.assert_not_called()
+
+    def test_chat_recovery_status_requires_login_and_reports_restart_permission(self):
+        manager = self.manager()
+        state = {'state': 'restart', 'restartRequired': True}
+        manager.desktop_recovery_status = Mock(side_effect=lambda: dict(state))
+        path = '/api/accounts/desktop-runtime'
+        self.assertEqual(self.request('GET', path)[0], 401)
+        headers = self.login()
+        status, _, body = self.request('GET', path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {**state, 'canManageDesktop': True})
+        self.server.auth.config['mode'] = 'none'
+        self.assertFalse(self.request('GET', path, headers=headers)[2]['canManageDesktop'])
 
     def test_runtime_initialization_forwards_explicit_unavailable_acknowledgement(self):
         manager = self.manager(); manager.control = Mock(return_value={'switch': {'phase': 'preparing'}})

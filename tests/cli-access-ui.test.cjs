@@ -5,7 +5,7 @@ const html=fs.readFileSync(path.join(__dirname,'../web/index.html'),'utf8');
 const extract=(start,end)=>app.slice(app.indexOf(start),app.indexOf(end,app.indexOf(start)));
 const accessCode=extract('function sessionAccess(access){','function renderList(){');
 const sourceFilterCode=extract('function renderSourceFilter(){','function sessionAccess(access){');
-const capabilitiesCode=extract('function applyEntryCapabilities(view){','function renderState(view){');
+const capabilitiesCode=extract('function applyEntryCapabilities(view){','const desktopRecoveryPath=');
 const listCode=extract('function renderList(){','async function loadList(');
 const stateCode=extract('function renderCodexWorkModes(', 'function jsonPretty(');
 const reconnectCode=extract("$('reconnect').onclick=", "document.querySelectorAll('[data-close]')");
@@ -28,11 +28,11 @@ test('CLI creation picker offers existing and custom folders with an accurate ac
   assert.equal($('new-chat-submit').textContent,'Create and open');
   assert.equal($('new-chat-project').children.some(option=>option.value==='__directory__'),true);
 });
-function node(){return {dataset:{},setAttribute(){},addEventListener(){},hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
+function node(){return {dataset:{},setAttribute(){},addEventListener(){},hidden:false,disabled:false,value:'',textContent:'',title:'',children:[],scrollTop:0,classList:{toggle(){},contains(){return true;}},append(...parts){this.children.push(...parts);},replaceChildren(...parts){this.children=parts;},querySelector(){return node();}};}
 function fixture(){
   const nodes=new Map();const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   const ctx={composerToolbar:undefined,CliConnectionsPanel:class{},api:async()=>{},contextCompacting:new Set(),uuid:()=>"fixture-id",toast(){},window:{},SessionMenu:class{bind(){}},pinRow:row=>row,$ ,state:null,reconnectFailure:null,clientNavigation:{provider:'codex'},listRows:[],availableSources:[],listRenderStamp:'',listComplete:false,listReadFinished:false,listHasMore:false,currentId:'a',currentHost:'local',sending:false,catalogData:{models:null,skills:null},catalogStarted:false,catalogLoads:0,startCatalog(){ctx.catalogLoads++;},selectedSkills:new Set(),invalidSkills:new Set(),renderSkillPills(){},BridgeI18n:{locale:()=> 'en-US'},t:key=>({'此电脑':'This computer','其他来源':'Other source','历史记录':'History','重新连接':'Reconnect','继续会话':'Continue chat'}[key]||key),localStorage:{getItem:()=>null,setItem(){}},dateText:()=> 'today',el:(tag,cls='',value='')=>Object.assign(node(),{tag,cls,textContent:value,dataset:{}}),renderActivity(){},contextUsageControl:{update(){}},fastModeControl:{sync(){}},visibleChat:()=>false,sessionActivity:{read(){}},attachments:{ready:()=>true},workModes:{render(view){ctx.modesView=view;}},workbench:{current:{},setAttachedParent(){}},chatTimeline:{refreshActions(){}},renderApprovals(rows){ctx.approvals=rows;},renderQueue(){},approvalStamp:'',chatKey:()=> 'local|a'};
-  ctx.chatOpenGeneration=0;ctx.modelCatalogGeneration=0;ctx.setTimeout=fn=>fn();ctx.chatTimeline.abort={signal:{aborted:false}};
+  ctx.chatOpenGeneration=0;ctx.modelCatalogGeneration=0;ctx.setTimeout=fn=>fn();ctx.clearTimeout=()=>{};ctx.desktopRecovery=null;ctx.chatTimeline.abort={signal:{aborted:false}};ctx.AbortController=AbortController;
   ctx.document={createElement:()=>node(),querySelectorAll:()=>[]};ctx.BridgeI18n.language=()=> 'en-US';ctx.BridgeI18n.t=ctx.t;
   vm.createContext(ctx);require('./fixtures/codex-entry-predicates.cjs')(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/activity.js'),'utf8'),ctx);
   vm.runInContext(accessCode+capabilitiesCode+listCode+stateCode+extract('function scheduleCatalog(){','function startCatalog(){'),ctx);
@@ -184,6 +184,84 @@ test('desktop router failure offers explicit rebuild and keeps failure plus draf
   vm.runInContext(reconnectCode,ctx);await $('reconnect').onclick();ctx.renderState(view);
   assert.equal(JSON.stringify(calls),JSON.stringify([{url:'local/a/reconnect',body:{activate:true,rebuild:true}}]));
   assert.equal($('reconnect').disabled,false);assert.match($('notice-text').textContent,/尚未恢复/);assert.equal($('message').value,'unsent draft');
+});
+
+function desktopRecoveryFixture(result){
+  const {ctx,$}=fixture();
+  ctx.desktopRecovery={id:'a',host:'local',signal:new AbortController().signal,activate:true,result};
+  ctx.sessionUrl=(_id,action)=>'/fixture/'+action;
+  ctx.renderState({host:'local',connected:false,status:'idle',requests:[],submissions:[],
+    historyComplete:true,access:{source:'desktop',canReconnect:true}});
+  return {ctx,$};
+}
+
+test('an ordinary startup during reconnect immediately offers restart',async()=>{
+  const {ctx,$}=desktopRecoveryFixture();
+  let result={state:'unavailable'},poll,finishReconnect,statusReads=0;
+  ctx.setTimeout=fn=>{poll=fn;};
+  ctx.api=async(url,body)=>{
+    if(url==='/fixture/reconnect'){
+      assert.deepEqual({...body},{activate:true});
+      return new Promise(resolve=>{finishReconnect=resolve;});
+    }
+    statusReads++;
+    return result;
+  };
+  await ctx.checkDesktopRecovery(ctx.desktopRecovery);
+  assert.equal(typeof finishReconnect,'function');
+  assert.equal($('reconnect-manager').hidden,true);
+  result={state:'restart',restartRequired:true,canManageDesktop:true};
+  await poll();
+  assert.equal($('reconnect-manager').textContent,'重启 Codex 以启用远控');
+  assert.equal($('reconnect-manager').hidden,false);
+  assert.equal(ctx.canSendInChat(),false);
+  $('app').classList.contains=()=>false;
+  await poll();
+  assert.equal(statusReads,2);
+  finishReconnect({});
+  ctx.renderState({...ctx.state,connected:true});
+  ctx.renderState({...ctx.state,connected:false});
+  assert.equal($('reconnect-manager').hidden,true);
+});
+
+test('a timed-out desktop status check falls back to ordinary reconnect',async()=>{
+  const {ctx}=desktopRecoveryFixture(),calls=[];
+  let expire;
+  ctx.setTimeout=fn=>{expire=fn;};
+  ctx.api=async(url,body,signal)=>{
+    calls.push(url);
+    if(body)return {};
+    return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted'))));
+  };
+  const check=ctx.checkDesktopRecovery(ctx.desktopRecovery);
+  expire();
+  await check;
+  assert.deepEqual(calls,['/api/accounts/desktop-runtime','/fixture/reconnect']);
+});
+
+test('restart confirmation ignores stale status and recovers from a failed status check',async()=>{
+  const result={state:'restart',restartRequired:true,canManageDesktop:true};
+  const {ctx,$}=desktopRecoveryFixture(result);
+  let finishOldRead,poll,statusReads=0,restarts=0,reconnects=0;
+  ctx.setTimeout=fn=>{poll=fn;};
+  ctx.ClientLifecycle={confirmCodexDesktopPreparation:()=>true,request:operation=>operation()};
+  ctx.api=async(url,body)=>{
+    if(url==='/fixture/reconnect'){reconnects++;return {};}
+    if(body?.ifNeeded){restarts++;return {};}
+    if(++statusReads===1)return new Promise(resolve=>{finishOldRead=resolve;});
+    if(statusReads===2)throw Error('temporary interruption');
+    return {state:'ready'};
+  };
+  vm.runInContext(reconnectCode,ctx);
+  const oldRead=ctx.checkDesktopRecovery(ctx.desktopRecovery);
+  await $('reconnect-manager').onclick();
+  finishOldRead(result);
+  await oldRead;
+  assert.equal($('reconnect-manager').hidden,true);
+  assert.equal(reconnects,0);
+  await poll();
+  assert.equal(restarts,1);
+  assert.equal(reconnects,1);
 });
 
 test('a failed rebuild keeps retry and app management independently available',async()=>{

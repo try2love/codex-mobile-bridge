@@ -913,14 +913,19 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raise ValueError('桌面更新请求无效')
                 return self.output(202, account_bridge.accounts.public())
-            if write and path == '/api/accounts/desktop-runtime':
+            if path == '/api/accounts/desktop-runtime':
                 if account_bridge is not self.server.bridge:
                     raise ValueError('独立配置不管理默认 Codex Desktop')
+                if not write:
+                    result = account_bridge.accounts.desktop_recovery_status()
+                    result['canManageDesktop'] = self.server.auth.config.get('mode') != 'none'
+                    return self.output(200, result)
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
                 body = self.read_json()
                 if (not isinstance(body, dict)
-                        or set(body) - {'acknowledgeUnavailable'} != {'requestId', 'confirmed', 'tasksConfirmed'}
+                        or set(body) - {'acknowledgeUnavailable', 'ifNeeded'} != {'requestId', 'confirmed', 'tasksConfirmed'}
+                        or 'ifNeeded' in body and body['ifNeeded'] is not True
                         or 'acknowledgeUnavailable' in body and body['acknowledgeUnavailable'] is not True):
                     raise ValueError('初始化请求包含不支持的字段')
                 return self.output(202, account_bridge.accounts.control({'action': 'initializeDesktopRuntime', **body}))

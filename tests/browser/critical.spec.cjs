@@ -18,6 +18,55 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Codex chat offers confirmed restart before any reconnect and then rejoins the original chat', async ({page}) => {
+  const sessionId = '12345678-1234-4234-9234-123456789010';
+  let recovered = false, connected = false, historyRead = false, releaseStatus;
+  const statusGate = new Promise(resolve => { releaseStatus = resolve; });
+  const actions = [];
+  const timeline = () => ({epoch: sessionId, sequence: connected ? 2 : 1, rows: [], files: [],
+    meta: {id: sessionId, connected, requests: [], submissions: [], historyComplete: true,
+      status: 'idle', access: {source: 'desktop', canReconnect: true}}});
+  await page.route(`**/api/sessions/${sessionId}/timeline?*`, route => {
+    historyRead = true;
+    return route.fulfill({json: timeline()});
+  });
+  await page.route(`**/api/sessions/${sessionId}/changes?*`, route => route.fulfill({json: timeline()}));
+  await page.route('**/api/accounts/desktop-runtime', async route => {
+    if (route.request().method() === 'POST') {
+      actions.push({restart: route.request().postDataJSON().ifNeeded});
+      recovered = true;
+      return route.fulfill({status: 202, json: {switch: {phase: 'complete'}}});
+    }
+    await statusGate;
+    return route.fulfill({json: recovered ? {state: 'ready'} :
+      {state: 'restart', restartRequired: true, canManageDesktop: true}});
+  });
+  await page.route(`**/api/sessions/${sessionId}/reconnect?*`, route => {
+    actions.push({reconnect: route.request().postDataJSON()});
+    connected = true;
+    return route.fulfill({json: {connected: true}});
+  });
+  await ready(page, 'session-menu');
+  await page.getByRole('button', {name: /Codex · 页面交互验证/}).press('Enter');
+  await expect.poll(() => historyRead).toBe(true);
+  releaseStatus();
+  await page.locator('#message').fill('未发送草稿');
+  const restart = page.getByRole('button', {name: '重启 Codex 以启用远控'});
+  await expect(restart).toBeVisible();
+  await expect(page.locator('#send')).toBeDisabled();
+  expect(actions).toEqual([]);
+  page.once('dialog', dialog => dialog.dismiss());
+  await restart.press('Enter');
+  expect(actions).toEqual([]);
+  page.once('dialog', dialog => dialog.accept());
+  await restart.press('Enter');
+  await expect.poll(() => actions).toEqual([
+    {restart: true}, {reconnect: {activate: true}}
+  ]);
+  await expect(page.locator('#notice')).toBeHidden();
+  await expect(page.locator('#message')).toHaveValue('未发送草稿');
+});
+
 test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
   await ready(page);
   await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));

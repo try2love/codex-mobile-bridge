@@ -14,6 +14,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -193,6 +194,8 @@ class Accounts:
         self.login_cancel = threading.Event()
         self.thread = None
         self.desktop_preparation = {'state': 'idle'}
+        self.desktop_probe_lock = threading.Lock()
+        self.desktop_probe = None
 
     @property
     def independent(self):
@@ -340,6 +343,52 @@ class Accounts:
             except (OSError, ValueError, TypeError, KeyError):
                 result['error'] = '共享接入配置无法读取，请重新初始化连接'
         return result
+
+    def desktop_recovery_status(self):
+        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+            return {'state': 'unavailable'}
+        from bridge.clients.codex.desktop_runtime import hosted_endpoint
+        operation = dict(self.state)
+        preparation = dict(self.desktop_preparation)
+        if operation.get('phase') in ('preparing', 'stopping', 'applying', 'starting', 'verifying'):
+            return {'state': 'preparing' if operation.get('operation') == 'desktopRuntime' else 'unavailable'}
+        try:
+            if hosted_endpoint(self.home) is not None:
+                return {'state': 'ready'}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        restart = self._desktop_restart_for_display()
+        if operation.get('operation') == 'desktopRuntime' and operation.get('phase') == 'failed':
+            preparation = {'state': 'failed', 'reason': operation.get('error'),
+                           'taskStateUnavailable': operation.get('taskStateUnavailable')}
+        state = preparation['state']
+        if restart and (state not in ('waiting', 'failed') or
+                        state == 'waiting' and preparation.get('taskStateUnavailable')):
+            state = 'restart'
+        elif state not in ('checking', 'waiting', 'failed'):
+            state = 'unavailable'
+        return {'state': state, 'restartRequired': restart, 'reason': preparation.get('reason'),
+                'taskStateUnavailable': preparation.get('taskStateUnavailable') is True}
+
+    def _desktop_restart_for_display(self):
+        from bridge.clients.codex.desktop_runtime import ordinary_hosted_desktop
+        with self.desktop_probe_lock:
+            executable = self.index.get('desktopExecutable')
+            cached = self.desktop_probe
+            if cached and cached[0] == executable and time.monotonic() < cached[1]:
+                return cached[2]
+            # Share burst reads from different chats. An actual quit audits the process again.
+            try:
+                restart = bool(ordinary_hosted_desktop(self._desktop_runtime_app()))
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                restart = False
+            self.desktop_probe = (executable, time.monotonic() + 1, restart)
+            return restart
+
+    def _desktop_runtime_app(self):
+        runtime = self.runtime
+        executable = self.index.get('desktopExecutable') or DesktopApp.discover(runtime)
+        return DesktopApp(executable or DesktopApp.scan(runtime, self.home), self.home)
 
     @staticmethod
     def name(value):
@@ -1035,8 +1084,9 @@ class Accounts:
         if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
             raise ValueError('此入口不支持 Codex 原生连接初始化')
         required = {'action', 'confirmed', 'tasksConfirmed', 'requestId'}
-        if (set(value) - {'acknowledgeUnavailable'} != required or value.get('confirmed') is not True
+        if (set(value) - {'acknowledgeUnavailable', 'ifNeeded'} != required or value.get('confirmed') is not True
                 or value.get('tasksConfirmed') is not True
+                or 'ifNeeded' in value and value['ifNeeded'] is not True
                 or 'acknowledgeUnavailable' in value and value['acknowledgeUnavailable'] is not True):
             raise ValueError('请确认所有桌面任务已结束，并同意重启 Codex 桌面应用')
         request_id = value.get('requestId')
@@ -1059,17 +1109,15 @@ class Accounts:
                                      and self.desktop_preparation.get('taskStateUnavailable') is True):
                 raise ValueError('请先核验原生连接初始化的任务状态，再确认是否继续')
             self.idle(pending_only=True)
-            executable = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
-            if not executable:
-                executable = DesktopApp.scan(self.runtime, self.home)
-            app = DesktopApp(executable, self.home)
+            app = self._desktop_runtime_app()
             app.validate(self.runtime)
             from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings
             validate_runtime(self.runtime)
             launcher_settings(app.executable)
             self.state = {'phase': 'preparing', 'operation': 'desktopRuntime', 'requestId': request_id, 'error': None}
             self.phase('preparing')
-            self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app, acknowledged), daemon=True)
+            self.thread = threading.Thread(target=self._initialize_desktop_runtime, args=(app, acknowledged),
+                                           kwargs={'if_needed': value.get('ifNeeded', False)}, daemon=True)
             self.thread.start()
             return self.public()
 
@@ -1097,16 +1145,15 @@ class Accounts:
             self.gate.release()
 
     def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False,
-                                    allow_cold_start=True):
+                                    allow_cold_start=True, if_needed=False):
         from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity, DesktopRuntimeBusy
-        from bridge.clients.codex.desktop_runtime import preparation, record_preparation, settings
+        from bridge.clients.codex.desktop_runtime import default_desktop_profile, desktop_environment
+        from bridge.clients.codex.desktop_runtime import ordinary_hosted_desktop, preparation, record_preparation, settings
         from bridge.clients.codex.app_server import AppServerUnavailable
         from bridge.clients.lifecycle import inspect_client, stop_client
         if sys.platform == 'win32':
-            from bridge.platforms.windows.codex_daemon_env import read_process_environment
             from bridge.platforms.windows.desktop import commands
         else:
-            from bridge.platforms.macos.codex_daemon_env import read_process_environment
             from bridge.platforms.macos.desktop import commands
         descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
 
@@ -1120,17 +1167,8 @@ class Accounts:
                 raise ValueError('Codex 桌面进程身份已变化，请重新初始化连接')
             launch_commands = commands(main) if main else {}
             for pid, identity in identities.items():
-                record = ({'processStartTime': str(identity['created'])} if sys.platform == 'win32' else
-                          {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
-                                               'startMicroseconds': identity['started'][1]}})
-                environment, _ = read_process_environment(pid, record, app.executable,
-                    ('CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ELECTRON_USER_DATA_PATH', 'HOME', 'USERPROFILE'))
-                user_home = environment.get('USERPROFILE' if sys.platform == 'win32' else 'HOME') or Path.home()
-                home = Path(environment.get('CODEX_HOME') or Path(user_home)/'.codex').resolve()
-                sqlite_home = Path(environment.get('CODEX_SQLITE_HOME') or home).resolve()
-                command = launch_commands.get(pid)
-                if (home != self.home.resolve() or sqlite_home != home or environment.get('CODEX_ELECTRON_USER_DATA_PATH')
-                        or not command or re.search(r'''(?:^|[\s"'])--user-data-dir(?:[=\s"']|$)''', command)):
+                environment = desktop_environment(identity, sys.platform)
+                if not default_desktop_profile(self.home, environment, launch_commands.get(pid), sys.platform):
                     raise ValueError('运行中的 Codex 使用其他配置目录，不能初始化此接入')
                 if process_identity(pid) != identity:
                     raise ValueError('Codex 桌面进程身份已变化，请重新初始化连接')
@@ -1139,8 +1177,9 @@ class Accounts:
         try:
             with self.gate, self.bridge.account.lock, initialization_lock(self.home):
                 preparation_error = None
-                if automatic:
-                    self.desktop_preparation = {'state': 'checking'}
+                if automatic or if_needed:
+                    if automatic:
+                        self.desktop_preparation = {'state': 'checking'}
                     # Recheck under the shared initialization lock: another
                     # gateway may have prepared this same App in the meantime.
                     try:
@@ -1153,7 +1192,10 @@ class Accounts:
                         if prior and prior['state'] == 'pending':
                             record_preparation(self.home, prior['requestId'], complete=True)
                         self.desktop_preparation = {'state': 'ready'}
+                        if if_needed:
+                            self.phase('complete', error=None)
                         return False
+                if automatic:
                     prior = preparation(self.home)
                     if prior and prior['state'] == 'pending':
                         self.desktop_preparation = {'state': 'failed', 'reason': '上次原生连接准备结果待核对，请在账号管理中重新准备；不会自动重复重启'}
@@ -1170,7 +1212,12 @@ class Accounts:
                         if settings(self.home) is not None:
                             raise
                         preparation_error = exc
+                restart_processes = ordinary_hosted_desktop(app) if if_needed else None
                 state, identities = observed()
+                if if_needed:
+                    owner = restart_processes['app'] if restart_processes else None
+                    if not owner or identities.get(owner['pid']) != owner:
+                        raise ValueError('未能确认当前 Codex 需要重启，请重试连接')
                 if automatic and not state['running'] and not allow_cold_start:
                     self.desktop_preparation = {'state': 'waiting', 'reason': '等待 Codex 启动后自动恢复原生连接'}
                     return True
@@ -1198,6 +1245,8 @@ class Accounts:
                 current, current_identities = observed()
                 if identities != current_identities or set(state['pids']) != set(current['pids']):
                     raise ValueError('Codex 桌面进程已变化，请重新初始化连接')
+                if if_needed and ordinary_hosted_desktop(app) != restart_processes:
+                    raise ValueError('Codex 连接状态已变化，请重试连接')
                 if automatic:
                     if self.bridge.closed.is_set() or cancelled():
                         return False

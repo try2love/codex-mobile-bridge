@@ -81,6 +81,11 @@ const ClientLifecycle=(()=>{
     }
   }
   function sessionNotice(session){return session?.state==='locked'?'电脑已锁定，后台服务继续运行；需要桌面交互的操作请解锁后重试。':session&&session.interactive!==true?'电脑交互桌面暂不可用，后台服务继续运行；恢复桌面后可重试。':'';}
+  function confirmCodexDesktopPreparation(acknowledged){
+    return window.confirm(BridgeI18n.t(acknowledged
+      ?'部分任务状态无法核验。继续会正常重启 Codex App，可能中断这些任务或待确认操作；聊天记录保留，可稍后继续。是否继续？'
+      :'确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。'));
+  }
   async function chooseInitialize(client){
     const mode=client.id==='zcode'&&client.pipeSupported===true?'private-pipe':'';
     if(client.id==='zcode'&&!mode)return false;
@@ -192,6 +197,6 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  return {chooseDisable,chooseForce,chooseInitialize,confirmCodexDesktopPreparation,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports={...ClientLifecycle,ClientIdentity};

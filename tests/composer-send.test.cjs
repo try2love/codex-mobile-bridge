@@ -13,7 +13,7 @@ function fixture({durable=true,request,local=storage(),temporary=storage(),coord
   const nodes={composer:{},message:{value:'same text'},'send-mode':{value:'send'},send:{},'send-error':{}};
   const calls=[];let sequence=0;const tab=++tabSequence;
   const context={composerToolbar:{actionMode:()=>nodes['send-mode'].value},$:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},
-    codexQuotes:null,sending:false,currentId:'fixture',currentHost:'local',state:{},currentAccess:()=>({canSend:true}),
+    codexQuotes:null,sending:false,currentId:'fixture',currentHost:'local',state:{},canSendInChat:()=>true,
     attachments:{ready:()=>true,ids:()=>['attachment'],references:()=>[],rows:[{id:'attachment'}],setLocked(){},clear(){}},
     renderCodexWorkModes(){},workModes:{value:()=> 'default',render(){},submitted(){}},invalidSkills:new Set(),selectedSkills:new Set(['skill']),
     codexProvisionalDrafts:new Map(),composerDrafts:drafts,codexDraftScope:durable?scope:null,messageManagement:null,renderQueue(){},

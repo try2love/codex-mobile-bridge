@@ -5,6 +5,7 @@ opens a separate connection to that same runtime for explicit metadata writes.
 """
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -292,6 +293,78 @@ def process_identity(pid):
     return {key: (list(item) if isinstance(item, tuple) else item) for key, item in value.items()}
 
 
+def desktop_environment(identity, platform):
+    if platform == 'win32':
+        from bridge.platforms.windows.codex_daemon_env import read_process_environment
+        record = {'processStartTime': str(identity['created'])}
+    else:
+        from bridge.platforms.macos.codex_daemon_env import read_process_environment
+        record = {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
+                                      'startMicroseconds': identity['started'][1]}}
+    environment, _ = read_process_environment(identity['pid'], record, identity['image'],
+        ('CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ELECTRON_USER_DATA_PATH', 'HOME', 'USERPROFILE',
+         'CODEX_CLI_PATH', 'CODEX_APP_SERVER_WS_URL'))
+    return environment
+
+
+def default_desktop_profile(home, environment, command, platform):
+    user_home = environment.get('USERPROFILE' if platform == 'win32' else 'HOME') or Path.home()
+    codex_home = Path(environment.get('CODEX_HOME') or Path(user_home) / '.codex').resolve()
+    sqlite_home = Path(environment.get('CODEX_SQLITE_HOME') or codex_home).resolve()
+    return (codex_home == sqlite_home == Path(home).resolve() and
+            not environment.get('CODEX_ELECTRON_USER_DATA_PATH') and bool(command) and
+            not re.search(r'''(?:^|[\s"'])--user-data-dir(?:[=\s"']|$)''', command))
+
+
+def ordinary_hosted_desktop(app):
+    """Positive evidence of a running hosted Desktop with its own stdio server."""
+    from bridge.clients.desktop_app import process_inventory
+    from bridge.platforms import desktop as native_desktop, discovery
+    application = os.path.normcase(str(app.executable))
+    runtimes = tuple(dict.fromkeys(path.resolve() for path in discovery(sys.platform).runtime_candidates(app.executable)
+                                  if path.is_file()))
+    inventory = process_inventory((app.executable, *runtimes))
+    desktop = inventory[app.executable]
+    commands = desktop['commands']
+    if any(not commands.get(pid) for pid in desktop['pids']):
+        return None
+    mains = [pid for pid in desktop['pids'] if not re.search(r'(?:^|\s)--type(?:=|\s)', commands[pid])]
+    if len(mains) != 1:
+        return None
+    main = process_identity(mains[0])
+    if main['image'] != application:
+        return None
+    environment = desktop_environment(main, sys.platform)
+    if (environment.get('CODEX_CLI_PATH') or environment.get('CODEX_APP_SERVER_WS_URL') or
+            not default_desktop_profile(app.home, environment, commands[main['pid']], sys.platform)):
+        return None
+    matched = None
+    for path in runtimes:
+        for pid, command in inventory[path]['commands'].items():
+            try:
+                # macOS keeps the invoked path, including spaces and "..", in argv[0].
+                start = re.search(r'\s(?=(?:-c\s|--config(?:=|\s)|app-server(?:\s|$)))', command or '')
+                if (not start or Path(command[:start.start()].strip('"')).resolve() != path or
+                        server_arguments(shlex.split(command[start.end():])) is None):
+                    continue
+                runtime = process_identity(pid)
+                if runtime['image'] != os.path.normcase(str(path)):
+                    continue
+                owner, host = desktop_owner(process_identity(runtime['parent']), application)
+                if host is None or owner != main:
+                    continue
+                host_command = native_desktop(sys.platform).commands([host['pid']]).get(host['pid'], '')
+                if ('--type=utility' in host_command.split() and
+                        '--utility-sub-type=node.mojom.NodeService' in host_command.split() and
+                        all(process_identity(row['pid']) == row for row in (main, host, runtime))):
+                    if matched is not None:
+                        return None
+                    matched = {'app': main, 'host': host, 'runtime': runtime}
+            except (OSError, ValueError):
+                continue
+    return matched
+
+
 def desktop_owner(parent, application):
     """Bind either the original App or its bundled utility host to that App."""
     if parent['image'] == application:
@@ -441,8 +514,8 @@ def hosted_endpoint(home):
             'record': record, 'identity': identity}
 
 
-def server_arguments(arguments, socket_path):
-    """Select only the Desktop stdio server, preserving every native override."""
+def server_arguments(arguments, socket_path=None):
+    """Recognize the Desktop stdio server, optionally switching its transport."""
     args = list(arguments)
     i = 0
     while i < len(args):
@@ -473,4 +546,4 @@ def server_arguments(arguments, socket_path):
             i += 1
         else:
             return None  # One-shot, proxy, auxiliary or newer unknown invocation.
-    return [*result, '--listen', 'unix://' + str(socket_path)]
+    return result if socket_path is None else [*result, '--listen', 'unix://' + str(socket_path)]

@@ -23,6 +23,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipIf(os.name == 'nt', 'POSIX private runtime directory and sockets')
 class DesktopRuntimeTests(unittest.TestCase):
+    def test_restart_detection_requires_the_bundled_stdio_server_under_the_desktop_host(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
+            root = Path(folder).resolve()
+            application = root/'App with Spaces.app'/'Contents'/'MacOS'/'Codex'
+            stub = application.parent.parent/'Resources'/'codex-cli'/'bin'
+            stub.mkdir(parents=True)
+            cli = stub.parent/'CodexCLI.app'/'Contents'/'MacOS'/'codex'
+            cli.parent.mkdir(parents=True)
+            cli.touch()
+            host_image = application.parent.parent/'Frameworks'/'Codex Helper'
+            main = {'pid': 10, 'image': str(application), 'parent': 1}
+            host = {'pid': 11, 'image': str(host_image), 'parent': 10}
+            native = {'pid': 12, 'image': str(cli), 'parent': 11}
+            invocation = stub/'..'/cli.relative_to(stub.parent)
+            snapshot = {application: {'pids': [10], 'commands': {10: str(application)}},
+                        cli: {'pids': [12], 'commands': {
+                            12: f'{invocation} -c features.code_mode_host=true app-server --listen stdio://'}}}
+            utility = str(host_image) + ' --type=utility --utility-sub-type=node.mojom.NodeService'
+            manager = SimpleNamespace(executable=application, home=root)
+            identities = {10: main, 11: host, 12: native}
+            with patch.object(runtime, 'sys', SimpleNamespace(platform='darwin')), \
+                 patch('bridge.clients.desktop_app.process_inventory', return_value=snapshot), \
+                 patch('bridge.platforms.macos.desktop.commands', return_value={11: utility}), \
+                 patch.object(runtime, 'process_identity', side_effect=identities.__getitem__), \
+                 patch.object(runtime, 'desktop_environment', return_value={'CODEX_HOME': str(root)}) as environment:
+                self.assertEqual(runtime.ordinary_hosted_desktop(manager), {'app': main, 'host': host, 'runtime': native})
+                identities[13] = {**native, 'pid': 13}
+                snapshot[cli]['pids'].append(13)
+                snapshot[cli]['commands'][13] = snapshot[cli]['commands'][12]
+                self.assertFalse(runtime.ordinary_hosted_desktop(manager))
+                snapshot[cli]['pids'].remove(13)
+                del snapshot[cli]['commands'][13]
+                environment.return_value['CODEX_CLI_PATH'] = '/bridge/adapter'
+                self.assertFalse(runtime.ordinary_hosted_desktop(manager))
+                environment.return_value.pop('CODEX_CLI_PATH')
+                native['parent'] = main['pid']
+                self.assertFalse(runtime.ordinary_hosted_desktop(manager))
+
     def test_windows_launcher_requires_frozen_entry_and_verified_msix_family(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:
             root = Path(folder); application = root/'app'/'Codex.exe'

@@ -3897,8 +3897,8 @@ class Bridge:
                     raise IPCError(session.error) from exc
                 session.rebuild_recommended = True
                 session.desktop_restart_recommended = True
-                session.error = ('已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
-                                 if rebuilt else '尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。')
+                session.error = ('已重建网关连接，但原桌面会话仍未恢复。可在应用管理中检查 Codex；操作未发送。'
+                                 if rebuilt else '尚未连接原桌面会话。可再次重建连接，或在应用管理中检查 Codex。')
                 session.changed()
                 raise IPCError(session.error) from exc
 
@@ -4065,7 +4065,7 @@ class Bridge:
                         session.desktop_restart_recommended = False
                     elif session.rebuild_recommended and _transport_rebuilt:
                         session.desktop_restart_recommended = True
-                        session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'
+                        session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中检查 Codex；操作未发送。'
                     else:
                         session.error = ('桌面执行连接尚未恢复，建议点击“重建连接”。操作未发送。'
                                          if session.rebuild_recommended else str(exc))

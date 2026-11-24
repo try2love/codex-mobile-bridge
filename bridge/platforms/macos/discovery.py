@@ -69,7 +69,7 @@ def codex_bundles(home):
 
 def runtime_candidates(executable):
     resources = executable.parent.parent/'Resources'
-    for name in ('codex-cli/bin/codex', 'codex'):
+    for name in ('codex-cli/bin/codex', 'codex', 'codex-cli/CodexCLI.app/Contents/MacOS/codex'):
         yield resources/name
 
 

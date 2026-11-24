@@ -46,8 +46,8 @@ class AccountsPanel {
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
     this.desktopRuntime=this.node('section');this.desktopRuntime.hidden=true;
     this.runtimeStatus=this.node('p',undefined,'account-muted');
-    this.initializeRuntime=this.button('初始化连接',()=>{if(window.confirm(this.text('确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
-    this.forceInitializeRuntime=this.button('强制继续初始化',()=>{if(window.confirm(this.text('部分任务状态无法核验。继续会正常重启 Codex App，可能中断这些任务或待确认操作；聊天记录保留，可稍后继续。是否继续？')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true,acknowledgeUnavailable:true});});this.forceInitializeRuntime.hidden=true;
+    this.initializeRuntime=this.button('初始化连接',()=>{if(ClientLifecycle.confirmCodexDesktopPreparation(false))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
+    this.forceInitializeRuntime=this.button('强制继续初始化',()=>{if(ClientLifecycle.confirmCodexDesktopPreparation(true))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true,acknowledgeUnavailable:true});});this.forceInitializeRuntime.hidden=true;
     this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime,this.forceInitializeRuntime);this.tools.append(this.desktopRuntime);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));

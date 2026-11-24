@@ -3,6 +3,7 @@ import os
 import threading
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.running = {'running': True, 'pids': [41], 'mainPids': [41], 'runtimePids': [], 'unknown': False}
         self.stopped = {**self.running, 'running': False, 'pids': [], 'mainPids': []}
         self.identity = {'pid': 41, 'image': os.path.normcase(str(self.app.executable)), 'birth': [100, 1], 'started': [1000, 0]}
+        self.ordinary_processes = {'app': self.identity, 'host': {'pid': 42}, 'runtime': {'pid': 43}}
         self.real_initialization_lock = desktop_runtime.initialization_lock
         patches = {
             'platform': patch.object(accounts_module, 'sys', SimpleNamespace(platform='darwin')),
@@ -59,6 +61,63 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
     def run_initialization(self):
         self.manager.control(self.value)
         test_accounts.wait_for_account_worker(self)
+
+    def test_chat_recovery_shares_a_recent_scan_and_prefers_a_ready_endpoint(self):
+        self.manager.index['desktopExecutable'] = str(self.app.executable)
+        self.manager.desktop_preparation = {'state': 'waiting', 'taskStateUnavailable': True}
+        clock = Mock(return_value=100)
+        with patch.object(desktop_runtime, 'ordinary_hosted_desktop',
+                          side_effect=[None, self.ordinary_processes]) as probe, \
+             patch.object(accounts_module, 'time', SimpleNamespace(monotonic=clock)):
+            self.assertFalse(self.manager.desktop_recovery_status()['restartRequired'])
+            clock.return_value = 102
+            with ThreadPoolExecutor(max_workers=4) as workers:
+                results = list(workers.map(lambda _: self.manager.desktop_recovery_status(), range(4)))
+            self.assertTrue(all(row['state'] == 'restart' for row in results))
+            with patch.object(desktop_runtime, 'hosted_endpoint', return_value={'generation': 'live'}):
+                self.assertEqual(self.manager.desktop_recovery_status(), {'state': 'ready'})
+            self.assertEqual(probe.call_count, 2)
+        self.mocks['stop'].assert_not_called()
+
+    def test_chat_recovery_reuses_a_connection_prepared_before_confirmation(self):
+        self.value['ifNeeded'] = True
+        self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.mocks['stop'].assert_not_called()
+        self.mocks['configure'].assert_not_called()
+        self.bridge.assert_desktop_idle.assert_not_called()
+
+    def test_chat_recovery_rejects_a_replaced_host_or_runtime_even_when_the_main_window_is_unchanged(self):
+        for process in ('host', 'runtime'):
+            with self.subTest(process=process):
+                self.value.update(ifNeeded=True, requestId=str(uuid.uuid4()))
+                self.mocks['connect'].return_value = None
+                self.mocks['inspect'].side_effect = [self.running, self.running]
+                replacement = {**self.ordinary_processes, process: {'pid': 44}}
+                with patch.object(desktop_runtime, 'ordinary_hosted_desktop',
+                                  side_effect=[self.ordinary_processes, replacement]):
+                    self.run_initialization()
+                self.assertEqual(self.manager.state['phase'], 'failed')
+                self.mocks['stop'].assert_not_called()
+                self.app.start.assert_not_called()
+
+    def test_chat_recovery_preserves_the_busy_guard_and_uses_the_same_restart_flow(self):
+        self.value['ifNeeded'] = True
+        self.mocks['connect'].return_value = None
+        self.bridge.assert_desktop_idle.side_effect = ValueError('存在运行中的任务')
+        with patch.object(desktop_runtime, 'ordinary_hosted_desktop', return_value=self.ordinary_processes):
+            self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.mocks['stop'].assert_not_called()
+        self.value['requestId'] = str(uuid.uuid4())
+        self.bridge.assert_desktop_idle.side_effect = None
+        self.mocks['inspect'].side_effect = [self.running, self.running, self.stopped]
+        self.mocks['connect'].side_effect = [None, Mock()]
+        with patch.object(desktop_runtime, 'ordinary_hosted_desktop', return_value=self.ordinary_processes):
+            self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.mocks['stop'].assert_called_once()
+        self.app.start.assert_called_once()
 
     def test_external_management_allows_transport_preparation_without_config_writes(self):
         self.manager.index['accessManagement'] = 'external'

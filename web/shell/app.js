@@ -18,7 +18,7 @@ let codexQuotes=null;
 let draftGateway='',codexDraftScope=null,codexDraftTouched=false,restoringComposer=false,codexActiveAccountId;const codexProvisionalDrafts=new Map();
 let listHostIds=[];
 let sourceFilterStamp='';
-let chatTimeline=null,reconnectFailure=null;
+let chatTimeline=null,reconnectFailure=null,desktopRecovery=null;
 const dismissedHostFaults=new Map();
 const submittedRequestIds=new Set();
 const sessionActivity=new SessionActivity();
@@ -146,7 +146,7 @@ desktopSessions.onListEnter=()=>{clientNavigation.listReadDone=false;clientNavig
 desktopSessions.onListReady=(provider,value)=>{clientNavigation.acknowledgeList(provider,value);window.BridgeFeatures?.prefetchChat();};
 async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await fetch(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)authLost();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
 async function uploadAttachmentWithRetry(key,id,file){if(window.BridgeSharedRelay)return uploadAttachment(key,id,file);let last;for(let attempt=0;attempt<3;attempt++){try{return await uploadAttachment(key,id,file);}catch(error){last=error;if(error.name==='AbortError'||error.retryable===false||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));}}if(last instanceof TypeError)last.message=t('附件上传中断，请重试');throw last;}
-const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),anchor:()=>composerToolbar.anchor('attachments'),menuChoices:()=>composerToolbar.addChoices(),input:$('attachment-input'),chooseReference:()=>window.BridgeFileActions.pickReference(workbench),paste:$('message'),drop:$('composer'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host));},onChange:()=>{if(currentId)$('send').disabled=sending||!attachments.ready()||!state||state.loadingHistory||state.activating||!currentAccess().canSend;composerToolbar?.requestSync();},thumbnail:async(key,id,file)=>{
+const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),anchor:()=>composerToolbar.anchor('attachments'),menuChoices:()=>composerToolbar.addChoices(),input:$('attachment-input'),chooseReference:()=>window.BridgeFileActions.pickReference(workbench),paste:$('message'),drop:$('composer'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host));},onChange:()=>{if(currentId)$('send').disabled=sending||!attachments.ready()||!state||state.loadingHistory||state.activating||!canSendInChat();composerToolbar?.requestSync();},thumbnail:async(key,id,file)=>{
   const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);
   const image=await attachments.thumbnailBlob(file);
   const response=await fetch(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/thumb',host)+'&width='+image.width+'&height='+image.height,{method:'POST',credentials:'same-origin',headers:{'Content-Type':image.mime,'X-CSRF-Token':csrf},body:image.data});
@@ -162,7 +162,10 @@ function reportVisibleChat(){
 }
 desktopSessions.onDetailReady=reportVisibleChat;
 window.addEventListener('focus',reportVisibleChat);
-document.addEventListener('visibilitychange',reportVisibleChat);
+document.addEventListener('visibilitychange',()=>{
+  reportVisibleChat();
+  checkDesktopRecovery();
+});
 function renderActivity(){for(const button of $('sessions').querySelectorAll('.session')){
   button.querySelector('.session-indicator')?.remove();const indicator=sessionActivity.indicator(chatKey(button.dataset.id,button.dataset.host));
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-label',t(indicator.label));button.querySelector('strong').prepend(dot);}
@@ -814,7 +817,7 @@ function imageComposerTarget(){
   if(!id||!quotes?.available()||!panel||panel.locked)return null;
   const key=codex?chatKey(id,host):JSON.stringify([provider,id]);
   if(panel.key!==key||!workspace?.current||(workspace.current.chatId||workspace.current.id)!==id||workspace.current.host!==host||(workspace.current.provider||'codex')!==provider)return null;
-  if(codex){if(view.provider!=='codex'||$('chat').hidden||sending||!state||state.loadingHistory||state.activating||!currentAccess().canSend)return null;}
+  if(codex){if(view.provider!=='codex'||$('chat').hidden||sending||!state||state.loadingHistory||state.activating||!canSendInChat())return null;}
   else if(clientNavigation.provider!==provider||view.container.hidden||view.conversation.hidden||view.busy||!view.canMutate()||view.state?.capabilities?.attachments!==true)return null;
   return {provider,id,host,key,panel,workspace,scope:quotes.identity()};
 }
@@ -926,22 +929,31 @@ async function openChat(id,host="local"){
   if(messageActions.pending&&messageActions.dialog.open)return;
   const openGeneration=++chatOpenGeneration,routeProvider=clientNavigation.provider;
   if(currentId===id&&currentHost===host&&chatTimeline&&!chatTimeline.abort.signal.aborted){
-    workbench.select(workbench.current?.chatId===workbench.current?.id?'chat':'child:'+id);$('app').classList.add('chat-open');renderChatTitle();window.BridgePresentation?.openChat();browserNavigation.sync();reportVisibleChat();return;
+    workbench.select(workbench.current?.chatId===workbench.current?.id?'chat':'child:'+id);$('app').classList.add('chat-open');renderChatTitle();window.BridgePresentation?.openChat();browserNavigation.sync();reportVisibleChat();
+    checkDesktopRecovery();
+    return;
   }
   let route, routeAccess;
   const known=listRows.find(row=>row.id===id&&row.host===host);
   try {route=known&&!known.attachedParentId?{rootId:id,cwd:known.cwd}:await workbench.resolveChat(id,host,async target=>{const meta=(await api(sessionUrl(target,'timeline',host)+'&limit=1')).meta;if(target===id)routeAccess=meta.access;return meta;});}
   catch(error) {if(openGeneration===chatOpenGeneration)toast(t(error.message));return;}
   if(openGeneration!==chatOpenGeneration||clientNavigation.provider!==routeProvider)return;
+  reconnectFailure=null;desktopRecovery=null;$('notice').hidden=true;
   messageActions.dialog.close();workbench.open(id,host,route);saveDraft();chatTimeline?.dispose();codexQuotes?.reset();currentId=id;currentHost=host;refreshEntryAccounts();codexDraftScope=null;codexDraftTouched=false;state=null;catalogStarted=false;workbench.current.access=sessionAccess(listRows.find(row=>row.id===id&&row.host===host)?.access);contextUsageControl.update(null);workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));modelCatalogGeneration++;catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();try{selectedSkills=new Set(JSON.parse(!draftGateway?sessionStorage.getItem('skills:'+chatKey(id,host))||'[]':'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=!draftGateway?sessionStorage.getItem('draft:'+chatKey(id,host))||'':'';$('send-error').textContent='';renderChatTitle();$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;if(!browserNavigation.sync({provider:'codex',id,host}))history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const opening=workbench.current;
 try{if(window.BridgeFeatures)await window.BridgeFeatures.load('chat');}catch(error){if(openGeneration===chatOpenGeneration&&workbench.current===opening&&$('app').classList.contains('chat-open')){$('status').textContent=t('连接失败');$('send-error').textContent=t(error.message);}return;}
 if(openGeneration!==chatOpenGeneration||workbench.current!==opening||currentId!==id||currentHost!==host||!$('app').classList.contains('chat-open'))return;
 const timeline=chatTimeline=new ChatTimeline({cacheKey:listIdentity?JSON.stringify([listIdentity,host,id]):'',url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,onReady:reportVisibleChat,onFile:async path=>{const session=workbench.current;if(currentId!==id||currentHost!==host||!session||(session.chatId||session.id)!==id||session.host!==host)return;try{const childRelative=timelineFilePath(path,state?.cwd),relative=timelineFilePath(state.cwd.replace(/[\\/]$/,'')+'/'+childRelative,session.cwd||state.cwd);await workbench.request(workbench.url(session,'info',relative));if(workbench.current!==session||currentId!==id||currentHost!==host)return;await workbench.locate(session,relative);}catch(error){if(workbench.current===session)toast(t(error.message));}},canEdit:()=>currentAccess().canEditMessages,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>timeline.fileUrl(file),{fullText}),onAction:(action,row,timeline)=>{if(!currentAccess().canEditMessages)return;const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
-  reconnectFailure=null;
   window.BridgePresentation?.openChat();
   const reading=timeline.start();
   const openingAccess=sessionAccess(known?.access||routeAccess);
-  if(openingAccess.source==='desktop'&&openingAccess.canReconnect)api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
+  if(openingAccess.source==='desktop'&&openingAccess.canReconnect){
+    const signal=timeline.abort.signal;
+    if(host==='local'&&!window.BridgeSharedRelay){
+      const recovery=desktopRecovery={id,host,signal,activate:true};
+      signal.addEventListener('abort',()=>clearTimeout(recovery.timer),{once:true});
+      checkDesktopRecovery(recovery);
+    }else api(sessionUrl(id,'reconnect',host),{activate:true},signal).catch(error=>{if(!signal.aborted)toast(error.message);});
+  }
   await reading;
   if(!timeline.abort.signal.aborted&&workbench.current?.chatScroll?.has(id))$('timeline').scrollTop=workbench.current.chatScroll.get(id);
   if(!timeline.abort.signal.aborted){scheduleCatalog();loadNotificationState(id,host);}
@@ -1044,8 +1056,87 @@ function renderCodexWorkModes(view=state,mode=composerToolbar?.actionMode()||'se
   workModes.render(modesView,mode,sending);
   if(view?.access&&!access.canUseModes){$('work-mode').disabled=true;$('work-mode').value='default';}
 }
+const desktopRecoveryPath='/api/accounts/desktop-runtime';
+function currentDesktopRecovery(){
+  const recovery=desktopRecovery;
+  return recovery&&recovery.id===currentId&&recovery.host===currentHost&&!recovery.signal.aborted?recovery:null;
+}
+function canSendInChat(access=currentAccess()){
+  if(!access.canSend||state?.connected)return access.canSend;
+  const recovery=currentDesktopRecovery();
+  return !(recovery?.submitting||recovery?.result?.restartRequired||recovery?.result?.state==='preparing');
+}
+function canCheckDesktopRecovery(recovery){
+  return recovery&&recovery===currentDesktopRecovery()&&!state?.connected&&!document.hidden&&$('app').classList.contains('chat-open');
+}
+async function checkDesktopRecovery(recovery=currentDesktopRecovery()){
+  if(!canCheckDesktopRecovery(recovery)||recovery.checking||recovery.submitting)return;
+  clearTimeout(recovery.timer);
+  const check=recovery.checking=new AbortController();
+  const cancel=()=>check.abort();
+  recovery.signal.addEventListener('abort',cancel,{once:true});
+  const deadline=setTimeout(cancel,10000);
+  let result;
+  try{result=await api(desktopRecoveryPath,undefined,check.signal);}
+  catch{result={state:recovery.result?.state==='preparing'?'preparing':'unavailable'};}
+  finally{
+    clearTimeout(deadline);
+    recovery.signal.removeEventListener('abort',cancel);
+  }
+  if(recovery.checking!==check)return;
+  recovery.checking=null;
+  if(!canCheckDesktopRecovery(recovery))return;
+  recovery.result=result;
+  if(state)renderChatConnection(state);
+  const preparing=['checking','preparing'].includes(result.state);
+  if(!result.restartRequired&&!preparing&&recovery.activate&&!recovery.reconnecting){
+    recovery.activate=false;
+    recovery.reconnecting=true;
+    api(sessionUrl(recovery.id,'reconnect',recovery.host),{activate:true},recovery.signal)
+      .catch(error=>{if(canCheckDesktopRecovery(recovery)&&!recovery.result?.restartRequired)toast(error.message);})
+      .finally(()=>{recovery.reconnecting=false;});
+  }
+  if(preparing||result.state==='waiting'||result.restartRequired||recovery.reconnecting){
+    recovery.timer=setTimeout(()=>checkDesktopRecovery(recovery),preparing||recovery.reconnecting?2000:5000);
+  }
+}
+function renderChatConnection(view,access=sessionAccess(view.access)){
+  const recovery=currentDesktopRecovery(),result=recovery?.result;
+  $('notice').hidden=view.connected;
+  const shown=!view.connected&&access.source==='desktop'&&access.canReconnect&&!view.readOnlyReason;
+  const preparing=shown&&(recovery?.submitting||result?.state==='preparing');
+  const needsRestart=shown&&result?.restartRequired===true;
+  const waiting=shown&&result?.state==='waiting';
+  const canRestart=needsRestart&&!preparing&&!waiting&&result.canManageDesktop===true;
+  const action=canRestart?'重启 Codex 以启用远控':'应用管理';
+  const managerButton=$('reconnect-manager'),reconnectButton=$('reconnect'),noticeText=$('notice-text');
+  const actionLabel=t(action);
+  if(managerButton.dataset.i18n!==action)managerButton.dataset.i18n=action;
+  if(managerButton.textContent!==actionLabel)managerButton.textContent=actionLabel;
+  managerButton.hidden=!canRestart&&(!shown||needsRestart||preparing||!view.desktopRestartRecommended);
+  reconnectButton.hidden=(!!view.access&&!access.canReconnect)||needsRestart||preparing;
+  const reconnectLabel=t(access.source==='cli'?'继续会话':view.rebuildRecommended||view.desktopRestartRecommended?'重建连接':'重新连接');
+  if(reconnectButton.textContent!==reconnectLabel)reconnectButton.textContent=reconnectLabel;
+  let message;
+  if(view.readOnlyReason)message=view.readOnlyReason;
+  else if(access.source==='cli')message=reconnectFailure||view.connectionError||(access.canReconnect?'可先阅读聊天历史；继续时将连接或恢复原 CLI 会话。':access.reason||'CLI 聊天历史可阅读；当前无法继续此会话。');
+  else if(view.access&&!access.canReconnect)message=access.reason||'已保存的历史可阅读；当前来源未提供远程控制。';
+  else if(preparing)message='正在准备 Codex 远控连接…';
+  else if(waiting)message=result.reason||'正在等待 Codex 远控连接就绪';
+  else if(needsRestart)message=result.canManageDesktop!==true?'请在电脑上的网关中重新准备 Codex 连接。':result.state==='failed'&&result.reason?result.reason:'当前 Codex 启动时未启用远控。';
+  else if(shown&&result?.state==='checking')message='正在检查 Codex 远控连接…';
+  else if(shown&&result?.state==='failed')message=result.reason||'Codex 远控连接准备未完成';
+  else if(view.desktopRestartRecommended)message='尚未连接原桌面会话。可再次重建连接，或在应用管理中检查 Codex。';
+  else if(view.activating)message='正在自动连接；必要时会在电脑 Codex 中打开此聊天。';
+  else if(view.connecting)message='正在连接桌面，可先阅读已保存的历史。';
+  else message=reconnectFailure||(view.rebuildRecommended?'桌面连接已失效，建议重建连接。聊天历史和草稿会保留。':view.connectionError||'暂未连接，可先阅读历史或点击重新连接。');
+  const noticeLabel=t(message);
+  if(noticeText.textContent!==noticeLabel)noticeText.textContent=noticeLabel;
+  $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!canSendInChat(access);
+}
 function renderState(view){
   applyEntryCapabilities(view);
+  const wasConnected=state?.connected;
   contextUsageControl.update({...view,busy:contextCompacting.has(chatKey(currentId,currentHost))});state=view;if(typeof bindCodexDraft==='function')bindCodexDraft(view);
   if(typeof messageManagement!=='undefined')messageManagement?.reconcile();
   if(typeof document!=='undefined')for(const dialog of document.querySelectorAll('dialog[data-permission-runtime]')){
@@ -1063,13 +1154,18 @@ function renderState(view){
   renderComposerModel(view);
   $('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?t('正在恢复会话…'):access.source==='cli'?t('历史记录'):view.connecting?t('连接桌面中'):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');
   $('status').classList.toggle('offline',!view.connected);
-  $('notice').hidden=view.connected;
-  $('notice-text').textContent=view.readOnlyReason?t(view.readOnlyReason):access.source==='cli'?(t(reconnectFailure||view.connectionError)||t(access.canReconnect?'可先阅读聊天历史；继续时将连接或恢复原 CLI 会话。':access.reason||'CLI 聊天历史可阅读；当前无法继续此会话。')):limited&&!access.canReconnect?(t(access.reason)||t('已保存的历史可阅读；当前来源未提供远程控制。')):view.desktopRestartRecommended?t('尚未连接原桌面会话。可再次重建连接；若仍失败，可在应用管理中核对任务后重启 Codex。'):view.activating?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):view.connecting?t('正在连接桌面，可先阅读已保存的历史。'):reconnectFailure?t(reconnectFailure):view.rebuildRecommended?t('桌面连接已失效，建议重建连接。聊天历史和草稿会保留。'):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');
-  $('reconnect').hidden=limited&&!access.canReconnect;
-  $('reconnect').textContent=t(access.source==='cli'?'继续会话':view.rebuildRecommended||view.desktopRestartRecommended?'重建连接':'重新连接');
-  $('reconnect-manager').hidden=view.connected||!view.desktopRestartRecommended;
+  const recovery=currentDesktopRecovery();
+  if(recovery){
+    if(view.connected&&!wasConnected){
+      clearTimeout(recovery.timer);
+      recovery.checking?.abort();
+      recovery.checking=null;
+      recovery.result=null;
+      recovery.activate=false;
+    }else if(!view.connected&&wasConnected)checkDesktopRecovery(recovery);
+  }
+  renderChatConnection(view,access);
   renderChatProgress($('working'),{agentName:'Codex',active:view.status==='active',waiting:!!view.requests.length,connected:!!view.connected});if(!view.connected&&view.status!=='active')$('working').hidden=true;$('stop').hidden=view.status!=='active'||!view.connected||!access.canInterrupt;
-  $('send').disabled=view.loadingHistory||view.activating||sending||!attachments.ready()||!access.canSend;
   $('message').disabled=limited&&!access.canSend;
   $('attach-button').disabled=limited&&!access.canSend;
   $('model-button').disabled=limited&&!access.canChangeModel;
@@ -1248,7 +1344,7 @@ function renderQueue(rows){
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 $('composer').onsubmit=async event=>{
   event.preventDefault();
-  if(sending||!currentId||!currentAccess().canSend)return;
+  if(sending||!currentId||!canSendInChat())return;
   const rawText=$('message').value,submittedQuotes=JSON.stringify(codexQuotes?.quotes||[]),text=codexQuotes?codexQuotes.serialize(rawText):rawText;
   if(text.length>100000){$('send-error').textContent=t('消息含引用超过 100000 字符，请缩短后发送');return;}
   if(!attachments.ready()){toast('请等待附件上传完成');return;}
@@ -1301,7 +1397,7 @@ $('composer').onsubmit=async event=>{
     if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}
     if(error.code!=='send_not_submitted'&&currentId===target&&currentHost===targetHost)await messageManagement?.reconcile();
   }
-  finally{sending=false;attachments.setLocked(false);renderCodexWorkModes();$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready()||!currentAccess().canSend;}
+  finally{sending=false;attachments.setLocked(false);renderCodexWorkModes();$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready()||!canSendInChat();}
 };
 $('message').onkeydown=event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();$('composer').requestSubmit();}};
 function chatCommandActions(chat,provider,button){
@@ -1329,7 +1425,30 @@ $('reconnect').onclick=async()=>{
   catch(e){if(id===currentId&&host===currentHost){reconnectFailure=e.message;$('notice').hidden=false;$('notice-text').textContent=t(e.message);}toast(e.message);}
   finally{$('reconnect').disabled=false;}
 };
-$('reconnect-manager').onclick=()=>clientNavigation.openManager();
+$('reconnect-manager').onclick=async()=>{
+  const recovery=currentDesktopRecovery(),result=recovery?.result;
+  if(!result?.restartRequired)return clientNavigation.openManager();
+  if(!result.canManageDesktop||result.state==='waiting'||recovery.submitting||state?.connected)return;
+  const risk=result.taskStateUnavailable===true;
+  if(!ClientLifecycle.confirmCodexDesktopPreparation(risk))return;
+  clearTimeout(recovery.timer);
+  recovery.checking?.abort();
+  recovery.checking=null;
+  recovery.submitting=true;
+  recovery.result={state:'preparing'};
+  recovery.activate=true;
+  renderChatConnection(state);
+  try{
+    await ClientLifecycle.request(signal=>api(desktopRecoveryPath,{
+      requestId:uuid(),confirmed:true,tasksConfirmed:true,ifNeeded:true,
+      ...(risk?{acknowledgeUnavailable:true}:{})
+    },signal));
+  }catch(error){
+    if(error.status>=400&&error.status<500&&recovery.result?.state==='preparing')recovery.result=result;
+    if(recovery===currentDesktopRecovery())toast(error.message);
+  }
+  finally{recovery.submitting=false;checkDesktopRecovery(recovery);}
+};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));
