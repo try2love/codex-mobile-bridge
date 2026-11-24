@@ -230,6 +230,15 @@ class StoreUnavailable(RuntimeError):
     pass
 
 
+def _retained_index_module():
+    # SSH source injection supplies the same module without installing Bridge remotely.
+    module = globals().get('_bridge_index_archive')
+    if module is None:
+        from bridge.features.sessions import index_archive
+        module = index_archive
+    return module
+
+
 class SessionStore:
     DESKTOP_ORIGINATORS = ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge')
     CLI_ORIGINATORS = ('codex-tui', 'codex_cli_rs', 'codex_exec', 'codex-mobile-bridge-cli',
@@ -763,7 +772,7 @@ class SessionStore:
                 break
             parent = base.get('thread_id') if isinstance(base, dict) else None
             if (not isinstance(thread_id, str) or not re.fullmatch(r'[0-9a-f-]{36}', thread_id)
-                    or header.get('id') != thread_id or not isinstance(parent, str)
+                    or (header.get('id') != thread_id if not seen else not isinstance(header.get('id'), str)) or not isinstance(parent, str)
                     or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parent)
                     or parent in seen or type(base.get('end_byte_offset')) is not int):
                 raise ValueError('无法核验聊天历史来源')
@@ -783,15 +792,23 @@ class SessionStore:
         return b''.join(reversed(parts)), complete
 
     def _parent_rollout(self, thread_id, parent):
-        suffix = thread_id if parent == thread_id else thread_id + '_' + parent
+        # history_base identifies a physical segment. A fork may retain its
+        # source chat's logical id; validate the filename/header instead of
+        # assuming that every ancestor was renamed to the child chat.
         matches = []
         for directory in (self.home/'sessions', self.home/'archived_sessions'):
-            for path in directory.rglob('rollout-*-' + suffix + '.jsonl'):
+            for path in directory.rglob('rollout-*' + parent + '.jsonl'):
                 resolved = path.resolve()
                 if resolved != path or not self._rollout_in_home(resolved):
                     continue
                 meta = self._segment_header(resolved)
-                if meta.get('id') == thread_id and meta.get('session_id', thread_id) == thread_id:
+                logical = meta.get('id')
+                if not isinstance(logical, str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', logical):
+                    continue
+                if meta.get('session_id', logical) != logical:
+                    continue
+                if (path.name.endswith('-' + logical + '_' + parent + '.jsonl') or
+                        logical == parent and path.name.endswith('-' + parent + '.jsonl')):
                     matches.append(path)
         return matches[0] if len(matches) == 1 else None
 
@@ -852,15 +869,22 @@ class SessionStore:
         rollout = Path(self.get(thread_id)['rollout_path']).resolve()
         if not self._rollout_in_home(rollout):
             raise ValueError('会话记录路径不在 Codex 数据目录中')
-        stat = rollout.stat()
+        try:
+            stat = rollout.stat()
+        except FileNotFoundError:
+            saved = _retained_index_module().pin(self.home, thread_id)
+            return ['native-index-retained', *saved['file'], saved['end'], *saved['signature']]
         return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
     def transfer_snapshot(self, thread_id):
         """Pin the existing rollout prefix. A later append cannot enter this read."""
         meta = self.get(thread_id)
-        path = Path(meta['rollout_path']).resolve(strict=True)
+        path = Path(meta['rollout_path']).resolve()
         if not self._rollout_in_home(path):
             raise ValueError('会话记录路径不在 Codex 数据目录中')
+        if not path.exists():
+            return {'meta': meta, 'segments': [], 'nativeIndex': _retained_index_module().pin(self.home, thread_id),
+                    'warnings': ['原始历史文件已缺失，已读取原生保存记录，较早内容可能不完整']}
         segments, seen, end = [], set(), None
         while True:
             with path.open('rb') as stream:
@@ -885,7 +909,7 @@ class SessionStore:
                 break
             parent = base.get('thread_id') if isinstance(base, dict) else None
             end = base.get('end_byte_offset') if isinstance(base, dict) else None
-            if (header.get('id') != thread_id or not isinstance(parent, str) or parent in seen
+            if ((header.get('id') != thread_id if not seen else not isinstance(header.get('id'), str)) or not isinstance(parent, str) or parent in seen
                     or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parent)
                     or type(end) is not int or end < 0):
                 raise ValueError('无法核验聊天历史来源')
@@ -894,9 +918,21 @@ class SessionStore:
             seen.add(parent)
             path = self._parent_rollout(thread_id, parent)
             if path is None:
-                raise ValueError('找不到原会话历史分段')
+                return {'meta': {key: meta.get(key) for key in ('name', 'title', 'cwd', 'model', 'model_provider')},
+                        'segments': list(reversed(segments)),
+                        'warnings': ['较早历史分段暂不可读取，已保留当前可读取部分，记录可能不完整']}
         return {'meta': {key: meta.get(key) for key in ('name', 'title', 'cwd', 'model', 'model_provider')},
                 'segments': list(reversed(segments))}
+
+    def transfer_index_turns(self, snapshot):
+        yield from _retained_index_module().turns(self.home, snapshot)
+
+    def transfer_index_page(self, thread_id, snapshot, offset=-1):
+        self.get(thread_id)
+        if snapshot.get('id') != thread_id:
+            raise ValueError('聊天历史来源不匹配')
+        turn = next(_retained_index_module().turns(self.home, snapshot, after=offset), None)
+        return {'turn': turn, 'next': turn['_archiveNextOrdinal'] if turn else snapshot['end']}
 
     def transfer_page(self, thread_id, meta, segment, offset=0, page_bytes=2 * 1024 * 1024, record_reader=None,
                       join_text=None):
@@ -935,6 +971,12 @@ class SessionStore:
 
     def history(self, thread_id, turn_limit=None, item_limit=None):
         meta = self.get(thread_id)
+        path = Path(meta['rollout_path']).resolve()
+        if not self._rollout_in_home(path):
+            raise ValueError('会话记录路径不在 Codex 数据目录中')
+        if not path.exists():
+            index = _retained_index_module()
+            return index.history(self.home, meta, index.pin(self.home, thread_id), max(1, int(item_limit or 40)))
         if item_limit is not None:
             indexed = self._indexed_history(thread_id, meta, max(1, int(item_limit)))
             if indexed is not None:

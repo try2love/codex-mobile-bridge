@@ -62,6 +62,21 @@ def _local_file_size(path):
         return None
 
 
+def _source_error(session, error):
+    LOG.warning('Unable to pin history transfer source (%s, %s)', session['client'], type(error).__name__, exc_info=True)
+    if isinstance(error, FileNotFoundError):
+        reason, message = 'missing_history', '原始历史及原生保存记录暂不可读取'
+    elif isinstance(error, PermissionError):
+        reason, message = 'permission_denied', '没有权限读取原会话保存记录'
+    elif isinstance(error, sqlite3.Error):
+        reason, message = 'history_database', '原生历史数据库暂不可读取，请稍后重试'
+    elif isinstance(error, ValueError) and str(error) in ('找不到原会话历史分段', '无法核验聊天历史来源'):
+        reason, message = 'history_lineage', '原会话的历史分段暂不可读取'
+    else:
+        reason, message = 'source_unavailable', '原会话接入暂不可读取，请检查对应客户端连接'
+    return {'id': session['id'], 'message': message, 'reason': reason}
+
+
 class HistorySources:
     """Resolve the same configured entry/session pairs as the ordinary API."""
     def __init__(self, bridge, desktop, desktop_uploads=None):
@@ -284,30 +299,38 @@ def _codex_rows(target, sid, snapshot):
                  if snapshot.get('owner') else None)
     live_turn = live_view['turns'][0] if live_view and live_view['turns'] else None
     order = 0
-    for segment in snapshot['segments']:
-        offset = 0
-        while offset < segment[-1]:
-            options = {'record_reader': _rollout_record_reader(), 'join_text': join_text} if filesystem_local else {}
-            page = target.store.transfer_page(sid, snapshot['meta'], segment, offset, **options)
-            if not offset < page['next'] <= segment[-1]:
-                raise ValueError('聊天历史读取未继续推进')
-            offset = page['next']
-            view = normalize_state(page['state'], process_bodies=False, retain_transfer_attachments=True)
-            if live_turn:
-                for idx, turn in enumerate(view['turns']):
-                    if turn['id'] == live_turn['id']:
-                        merge_saved_message_times(live_view, view)
-                        merged = _merge_owner_turn(live_turn, turn)
-                        if merged is None:
-                            snapshot.setdefault('warnings', []).append('当前回合有未同步内容，稍后可补传')
-                        else:
-                            view['turns'][idx] = merged
-                        live_turn = None
-                        break
-            order += (yield from _project_codex_rows(view, sid, uploads, filesystem_local, order))
+    def saved_pages():
+        if snapshot.get('nativeIndex'):
+            for turn in target.store.transfer_index_turns(snapshot['nativeIndex']):
+                yield {'id': sid, 'turns': [turn]}
+            return
+        for segment in snapshot['segments']:
+            offset = 0
+            while offset < segment[-1]:
+                options = {'record_reader': _rollout_record_reader(), 'join_text': join_text} if filesystem_local else {}
+                page = target.store.transfer_page(sid, snapshot['meta'], segment, offset, **options)
+                if not offset < page['next'] <= segment[-1]:
+                    raise ValueError('聊天历史读取未继续推进')
+                offset = page['next']
+                yield page['state']
+
+    for state in saved_pages():
+        view = normalize_state(state, process_bodies=False, retain_transfer_attachments=True)
+        if live_turn:
+            for idx, turn in enumerate(view['turns']):
+                if turn['id'] == live_turn['id']:
+                    merge_saved_message_times(live_view, view)
+                    merged = _merge_owner_turn(live_turn, turn)
+                    if merged is None:
+                        snapshot.setdefault('warnings', []).append('当前回合有未同步内容，稍后可补传')
+                    else:
+                        view['turns'][idx] = merged
+                    live_turn = None
+                    break
+        order += (yield from _project_codex_rows(view, sid, uploads, filesystem_local, order))
     if live_turn:
         if live_turn.get('itemsComplete') is False:
-            if not snapshot['segments']:
+            if not snapshot['segments'] and not snapshot.get('nativeIndex'):
                 raise ValueError('原会话仅提供当前回合的部分内容')
             snapshot.setdefault('warnings', []).append('当前回合有未同步内容，稍后可补传')
         else:
@@ -663,8 +686,8 @@ class HistoryTransfer:
             for session in selected:
                 try:
                     pinned[session['id']] = self.sources.pin_local(session)
-                except (OSError, RuntimeError, ValueError, KeyError):
-                    errors.append({'id': session['id'], 'message': '原会话暂不可读取'})
+                except (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error) as error:
+                    errors.append(_source_error(session, error))
             with self.connect() as db:
                 cutoff = capture - 24 * 60 * 60 * 1000
                 db.execute("DELETE FROM items WHERE manifest IN (SELECT id FROM manifests WHERE estimate=1 AND captured<? AND status!='preparing')",
@@ -692,9 +715,9 @@ class HistoryTransfer:
                 try:
                     if pinned[session['id']] is None:
                         pinned[session['id']] = self.sources.pin(session)
-                except (OSError, RuntimeError, ValueError, KeyError):
+                except (OSError, RuntimeError, ValueError, KeyError, sqlite3.Error) as error:
                     pinned.pop(session['id'])
-                    errors.append({'id': session['id'], 'message': '原会话暂不可读取'})
+                    errors.append(_source_error(session, error))
                     processed += 1
             for session in selected:
                 if session['id'] not in pinned:

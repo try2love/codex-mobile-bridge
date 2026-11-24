@@ -185,7 +185,9 @@ class RemoteStore:
         raise RemoteUnavailable('正在后台读取 SSH 主机；本机会话可正常使用。')
 
     def call(self, method, args, *, home=None):
-        source = source_text('features/sessions/store.py')
+        source = ('import types\n_bridge_index_archive=types.ModuleType("bridge_native_saved_index")\n'
+                  + 'exec(' + repr(source_text('features/sessions/index_archive.py')) + ', _bridge_index_archive.__dict__)\n'
+                  + source_text('features/sessions/store.py'))
         suffix = ('\nimport os\nhome_source = "environment" if os.environ.get("CODEX_HOME") else "default"\n'
                   's = SessionStore(' + ('Path(' + repr(str(home)) + ')' if home is not None else
                     'Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))') + ')\n'
@@ -232,6 +234,17 @@ class RemoteStore:
 
     def transfer_snapshot(self, thread_id):
         return self.call('transfer_snapshot', {'thread_id': thread_id})
+
+    def transfer_index_turns(self, snapshot):
+        cursor = -1
+        while cursor < snapshot['end']:
+            page = self.call('transfer_index_page', {'thread_id': snapshot['id'], 'snapshot': snapshot, 'offset': cursor})
+            if page['turn'] is None:
+                return
+            if page['next'] <= cursor:
+                raise ValueError('聊天历史读取未继续推进')
+            cursor = page['next']
+            yield page['turn']
 
     def transfer_page(self, thread_id, meta, segment, offset):
         return self.call('transfer_page', {'thread_id': thread_id, 'meta': meta, 'segment': segment, 'offset': offset})

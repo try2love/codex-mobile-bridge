@@ -254,7 +254,7 @@ class LiveSession:
                 saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
                 for turn in result['turns']:
                     saved = saved_labels.get(turn['id'])
-                    label_known = (self.history_state or {}).get('historyReadSource') != 'native-index' or saved and saved.get('model')
+                    label_known = (self.history_state or {}).get('historyReadSource') not in ('native-index', 'native-index-retained') or saved and saved.get('model')
                     if saved is not None:
                         # Indexed rollouts can recover historical labels independently
                         # of the metadata used by earlier clients' body versions.
@@ -4913,6 +4913,8 @@ class Bridge:
                     break
                 session.sync_timeline.update(view, conversation=True)
                 session.sync_timeline.meta['syncPartialHead'] = partial_head
+                if mode == 'recent' and session.history_state and session.history_state.get('savedHistoryPartial'):
+                    break
                 if not history_sync.needs_older(session.sync_timeline, mode, options):
                     break
                 if refresh and not partial_head and session.saved_view and session.saved_view['historyComplete']:

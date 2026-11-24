@@ -23,3 +23,5 @@ Status: implemented
 源码夹具复现相同 ValueError，验证保留已保存正文、拒绝混入无法核验的实时尾部；清单覆盖其他 Agent 和读取失败；任务验证警告会话不被标记完整。Chrome/WebKit 宽窄视口验证跨页、跨 Agent 选择计数和行布局。
 
 历史审计：[传输与清理边界](../feature/2026-11-23-history-transfer-from-22bce.md)部分重叠；本次调整进行中回合的导出失败策略，保留身份、快照和清理约束。
+
+原生历史文件缺失但消息索引仍存在、以及分支物理分段身份的读取补充见[原生保存记录来源](2026-11-24-retained-native-history-source.md)。

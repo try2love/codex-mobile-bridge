@@ -2,6 +2,7 @@
   "LICENSE",
   "NOTICE",
   "bridge/features/sessions/store.py",
+  "bridge/features/sessions/index_archive.py",
   "bridge/features/sessions/message_management.py",
   "bridge/clients/codex/catalog.py",
   "bridge/clients/codex/remote_models.py",
