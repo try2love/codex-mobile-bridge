@@ -2,7 +2,7 @@
 
 class GitPanel {
   constructor(workbench, session, tab) {
-    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'changes'; this.historyLimit = 40; this.windowStates = {};
+    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'history'; this.historyLimit = 40; this.windowStates = {};
     this.node = (...args) => workbench.node(...args);
     this.button = (...args) => workbench.button(...args);
   }
@@ -10,12 +10,18 @@ class GitPanel {
   async load() {
     this.dispose(); const controller = this.tab.controller = new AbortController();
     const head = this.node('div', 'wb-git-head'), title = this.node('div', 'wb-git-heading');
-    title.append(this.node('strong', '', 'Git'), this.node('span', '', BridgeI18n.t('当前项目的变更')));
+    title.append(this.node('strong', '', 'Git'), this.node('span', '', BridgeI18n.t(this.mode === 'history' ? '提交历史' : '当前项目的变更')));
     const refresh = this.button(BridgeI18n.t('刷新'), () => this.load(), BridgeI18n.t('刷新 Git 状态'));
     head.append(title, refresh);
+    const modes = this.node('div', 'wb-git-modes');
+    for (const [key, label] of [['changes', BridgeI18n.t('变更')], ['history', BridgeI18n.t('历史')], ['branches', BridgeI18n.t('分支')]]) {
+      const button = this.button(label, () => { this.mode = key; this.load(); }); button.setAttribute('aria-pressed', String(this.mode === key)); modes.append(button);
+    }
     const status = this.node('p', 'wb-status', BridgeI18n.t('正在读取 Git 状态…')); status.setAttribute('role', 'status');
-    this.tab.body.replaceChildren(head, status);
+    status.hidden = this.mode === 'history';
+    this.tab.body.replaceChildren(head, modes, status);
     try {
+      if (this.mode === 'history') { await this.history(controller); return; }
       const result = await this.workbench.request(this.workbench.url(this.session, 'git-status'), undefined, controller.signal);
       if (controller.signal.aborted) return;
       if (!result.available) { status.textContent = result.message; return; }
@@ -29,13 +35,7 @@ class GitPanel {
       if (result.scope !== '.') notes.push(BridgeI18n.t('文件差异仅限当前项目目录'));
       if (result.upstream) notes.push(result.upstream + (result.ahead === null ? '' : BridgeI18n.t(' · 领先 ') + result.ahead + BridgeI18n.t(' / 落后 ') + result.behind) + BridgeI18n.t('（本地记录）'));
       status.textContent = notes.join(' · '); status.hidden = !notes.length;
-      const modes = this.node('div', 'wb-git-modes');
-      for (const [key, label] of [['changes', BridgeI18n.t('变更')], ['history', BridgeI18n.t('历史')], ['branches', BridgeI18n.t('分支')]]) {
-        const button = this.button(label, () => { this.mode = key; this.load(); }); button.setAttribute('aria-pressed', String(this.mode === key)); modes.append(button);
-      }
-      this.tab.body.append(modes);
       if (this.actionError) this.tab.body.append(this.node('p', 'wb-status error', this.actionError));
-      if (this.mode === 'history') { await this.history(controller); return; }
       if (this.mode === 'branches') { await this.branches(controller); return; }
       const actions = this.node('div', 'wb-git-actions');
       const stage = this.button(BridgeI18n.t('全部暂存'), () => this.execute({action:'stage-all'}).catch(()=>{}));

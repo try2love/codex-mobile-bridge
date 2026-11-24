@@ -39,9 +39,9 @@ test('an explicit 36px upward read near the bottom disables following before res
  try{f.ui.following=true;f.ui.lastTop=9400;f.viewport.scrollTop=9364;f.emit('scroll');assert.equal(f.ui.following,false);f.viewport.scrollHeight=12000;f.resize();assert.equal(f.viewport.scrollTop,9364);}
  finally{f.ui.dispose();}
 });
-test('opening a process summary pins its heading instead of following a resized bottom',()=>{
- const f=scrollFixture(),group={dataset:{key:'process'},hidden:false,classList:{contains:()=>false},parentElement:null,getBoundingClientRect:()=>({top:9900-f.viewport.scrollTop,bottom:10000-f.viewport.scrollTop})};
- const summary={closest:selector=>selector==='.chat-process-page'?group:null},target={closest:selector=>selector==='summary'?summary:null};
+test('opening an activity pins its row instead of following a resized bottom',()=>{
+ const f=scrollFixture(),group={dataset:{key:'process'},hidden:false,classList:{contains:()=>false},parentElement:null,closest:selector=>selector==='[data-key]'?group:null,getBoundingClientRect:()=>({top:9900-f.viewport.scrollTop,bottom:10000-f.viewport.scrollTop})};
+ const summary={closest:selector=>selector==='.activity'?group:null},target={closest:selector=>selector==='summary'?summary:null};
  f.ui.nodes.set('process',{node:group});f.ui.following=true;f.viewport.scrollTop=9400;f.ui.lastTop=9400;
  try{f.emit('click',{target});f.viewport.scrollHeight=14000;f.resize();assert.equal(f.ui.following,false);assert.equal(f.viewport.scrollTop,9400);}
  finally{f.ui.dispose();}
@@ -53,7 +53,7 @@ test('upward scrolling within the first few tall messages does not load history 
   f.ui.lastTop=180;f.viewport.scrollTop=120;f.emit('scroll');assert.equal(f.requests.length,1,'genuine upward scrolling near the top still loads history');
  }finally{f.ui.dispose();await tick();}
 });
-for(const className of ['chat-activity-items','activity-body'])for(const gesture of ['wheel','touch']){
+for(const className of ['activity-body'])for(const gesture of ['wheel','touch']){
  test('history edge ignores '+gesture+' originating inside '+className,async()=>{
   const f=scrollFixture(),inner={scrollTop:90},target={closest:selector=>selector.split(',').some(value=>value.trim()==='.'+className)?inner:null};
   f.viewport.scrollTop=0;
@@ -70,6 +70,8 @@ for(const className of ['chat-activity-items','activity-body'])for(const gesture
 function persistentFixture(){
  const writes=[],meta=[],window={BridgeChatHistoryCache:{read:()=>new Promise(resolve=>cachedResolve=resolve),write:(...args)=>writes.push(args)}};let cachedResolve,freshResolve;
  const ctx=vm.createContext({window,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},syncChatMessageNodes(container,nodes){container.children=nodes;}});
+ vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),ctx);
+ ctx.syncChatMessageNodes=(container,nodes)=>{container.children=nodes;};
  vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);const Type=vm.runInContext('ChatTimeline',ctx);
  const ui=Object.assign(Object.create(Type.prototype),{cacheKey:'synthetic-history',sequence:-1,epoch:'',generation:0,windowRevision:0,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),abort:new AbortController(),older:{},newer:{},following:true,
   container:{children:[],replaceChildren(){this.children=[];}},viewport:{removeEventListener(){}},resize:{disconnect(){}},
@@ -93,7 +95,7 @@ test('a disposed timeline ignores both outstanding persistent history and its fr
 test('temporary pages never persist while fresh empty history replaces the old page and loading history preserves it',()=>{
  const temporary=persistentFixture();temporary.ui.apply(historyPage('temporary',{temporary:true}),true);assert.equal(temporary.writes.length,0);
  const empty=persistentFixture();empty.ui.apply(historyPage('old'),true);empty.ui.apply(historyPage(null,{connected:false}),true);
- assert.equal(empty.writes.length,2);assert.equal(empty.writes[1][0],empty.writes[0][0]);assert.equal(empty.writes[1][1],'conversation-recent-v1');assert.equal(empty.writes[1][2].rows.length,0);
+ assert.equal(empty.writes.length,2);assert.equal(empty.writes[1][0],empty.writes[0][0]);assert.equal(empty.writes[1][1],'timeline-recent-v1');assert.equal(empty.writes[1][2].rows.length,0);
  const loading=persistentFixture();loading.ui.apply(historyPage('old'),true);loading.ui.cached=true;loading.ui.apply(historyPage(null,{loadingHistory:true,connected:false}),true);
  assert.equal(loading.writes.length,1);assert.equal(loading.ui.rows.has('old'),true);
 });
@@ -135,4 +137,21 @@ test('a live reset keeps the visible message during a mobile handoff and resumes
  timeline.restore(null,true);assert.equal(viewport.scrollTop,830);assert.equal(timeline.following,false);
  viewport.scrollTop=1500;timeline.restore(null,true);assert.equal(viewport.scrollTop,830);
  delete window.BridgeMobileHandoff;timeline.restore(null,true);assert.equal(timeline.following,true);
+});
+
+test('viewport height clamping keeps bottom following but an ordinary upward read still opts out',()=>{
+ const f=scrollFixture();
+ try{
+  f.ui.following=true;f.ui.lastTop=9400;f.viewport.clientHeight=800;f.viewport.scrollTop=9200;f.emit('scroll');
+  assert.equal(f.ui.following,true);
+  f.viewport.scrollTop=9164;f.emit('scroll');assert.equal(f.ui.following,false);
+ }finally{f.ui.dispose();}
+});
+
+test('restoring after a viewport resize does not swallow the next real upward read',()=>{
+ const f=scrollFixture();
+ try{
+  f.viewport.clientHeight=800;f.ui.restore(null,true);
+  f.ui.lastTop=9200;f.viewport.scrollTop=9164;f.emit('scroll');assert.equal(f.ui.following,false);
+ }finally{f.ui.dispose();}
 });

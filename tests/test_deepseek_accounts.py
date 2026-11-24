@@ -6,12 +6,67 @@ import unittest
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from bridge.clients.deepseek.accounts import DeepSeekAccounts, GRANT_KEY, API_REF, ORIGIN, _document, _request, _balance
 
 
 class DeepSeekAccountsTests(unittest.TestCase):
+    def test_native_empty_mapping_sections_remain_read_only_and_have_a_model_identity(self):
+        from bridge.clients.manager import DesktopSessions
+        manager = SimpleNamespace(adapters={'deepseek': SimpleNamespace(home=self.home)}, config={},
+                                  _account_store=lambda provider: self.accounts)
+        for newline in ('\n', '\r\n'):
+            for section in ('{}', '{ }', 'null', '~', ''):
+                with self.subTest(section=section, newline=repr(newline)):
+                    raw = newline.join(['version: 1', 'refs: '+section, 'records: '+section, '']).encode()
+                    self.path.write_bytes(raw)
+                    self.path.chmod(0o600)
+                    self.assertEqual(_document(raw), {'version': 1, 'refs': {}, 'records': {}})
+                    result = self.accounts.public()
+                    self.assertNotIn('error', result.get('current', {}))
+                    self.assertTrue(DesktopSessions._account_model_identity(manager, 'deepseek'))
+                    self.assertEqual(self.path.read_bytes(), raw)
+        self.assertEqual(_document(b'version: 1\n'), {'version': 1})
+
+    def test_restore_into_inline_empty_section_preserves_other_bytes_and_exact_rollback(self):
+        self.write(extra=False)
+        identifiers = {kind: self.identifier(kind, kind) for kind in ('official', 'api')}
+        for newline in ('\n', '\r\n'):
+            for scalar in ('{}', '{ }', 'null', '~'):
+                for kind, section in (('api', 'refs'), ('official', 'records')):
+                    other = 'records' if section == 'refs' else 'refs'
+                    unrelated = ('records:\n  unrelated/default:\n    exact: 1.2300\n'
+                                 if other == 'records' else 'refs:\n  OTHER_API_KEY: "untouched"\n')
+                    raw = ('# native header\nversion: 1\n'+section+': '+scalar+'\n'
+                           '# keep this comment\n'+unrelated).replace('\n', newline).encode()
+                    with self.subTest(kind=kind, scalar=scalar, newline=repr(newline)):
+                        self.path.write_bytes(raw)
+                        self.path.chmod(0o600)
+                        token = self.accounts.restore(identifiers[kind])
+                        after = self.path.read_bytes()
+                        self.assertIn(('# keep this comment\n'+unrelated).replace('\n', newline).encode(), after)
+                        self.assertIn(('# native header\nversion: 1\n'+section+':\n').replace('\n', newline).encode(), after)
+                        parsed = _document(after)
+                        self.assertEqual(parsed['refs'][API_REF] if kind == 'api' else parsed['records'][GRANT_KEY]['payload']['token'],
+                                         'private-api' if kind == 'api' else 'private-one')
+                        self.accounts.rollback(token)
+                        self.assertEqual(self.path.read_bytes(), raw)
+
+    def test_empty_flow_mapping_never_admits_wrong_types_or_nested_block_children(self):
+        invalid = [
+            'refs: []', 'records: []', 'refs: {secret: value}', 'records: &anchor {}',
+            'refs: *alias', 'refs: !!map {}', 'refs: {}\n  X: value',
+            'refs: null\n  X: value', 'records: {}\n  X: value',
+            'refs: {}\nrefs: {}', 'refs:\n  X: first\n  X: second',
+        ]
+        for section in invalid:
+            with self.subTest(section=section):
+                raw = ('version: 1\n'+section+'\n').encode()
+                with self.assertRaisesRegex(ValueError, '格式无法识别'):
+                    _document(raw)
+
     def test_new_api_snapshot_can_be_edited_and_applied_without_secret_response(self):
         self.write()
         before = self.path.read_bytes()

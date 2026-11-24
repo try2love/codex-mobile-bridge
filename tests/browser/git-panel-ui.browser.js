@@ -5,6 +5,8 @@ async function runGitPanelTests() {
   const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const wait = async predicate => { for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 20)); } throw Error('Git fixture did not settle'); };
   const row = (section, path) => [...tab.body.querySelectorAll('.wb-git-file')].find(n => n.dataset.section === section && n.dataset.path === path);
+  await wait(() => !!tab.body.querySelector('.wb-history-row'));
+  tab.body.querySelector('.wb-git-modes button:first-child').click(); await wait(() => !!row('staged', 'src/app.py'));
   check(!!row('staged', 'src/app.py') && !!row('unstaged', 'src/app.py'), 'Same file has separate staged and unstaged entries');
   row('staged', 'src/app.py').click(); await wait(() => tab.body.querySelector('.wb-diff-summary'));
   check(tab.body.querySelector('.wb-git-diff').textContent.includes('Hello, mobile') && !tab.body.querySelector('.wb-git-diff').textContent.includes('Hello, workbench'), 'Staged selection compares HEAD with the index');

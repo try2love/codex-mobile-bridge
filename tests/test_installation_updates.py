@@ -79,6 +79,26 @@ class InventoryFingerprintTests(InstallationFixtures):
                 image.write_bytes(b'updated binary with a different length')
                 self.assertFalse(inventory_current(config, {}))
 
+    def test_unreadable_version_root_keeps_metadata_evidence_instead_of_failing_scan(self):
+        image = self.file('OpenAI.Codex_1/app/Codex.exe')
+        manifest = self.file('OpenAI.Codex_1/AppxManifest.xml', b'initial metadata')
+        rows = self.rows(image)
+        version_root = manifest.parent
+        # The version root is the package parent; WindowsApps can be stat'ed by a
+        # normal user but iterdir() raises WinError 5 on the package directory.
+        unreadable = str(version_root.parent)
+        real_iterdir = Path.iterdir
+        def guarded_iterdir(self):
+            if str(self) == unreadable:
+                raise PermissionError(13, 'Access is denied')
+            return real_iterdir(self)
+        with patch.object(Path, 'iterdir', guarded_iterdir):
+            fingerprint = inventory_fingerprint(rows, {})
+            self.assertIn(None, fingerprint[unreadable])
+            self.assertEqual(fingerprint, inventory_fingerprint(rows, {}))
+        config = self.cached(rows)
+        self.assertTrue(inventory_current(config, {}))
+
     @unittest.skipUnless(os.name == 'posix', 'synthetic executable symlinks')
     def test_stable_linux_symlink_retarget_invalidates_cache_while_old_image_remains(self):
         old, new = self.file('v1/codex-desktop'), self.file('v2/codex-desktop')
@@ -117,6 +137,28 @@ class InventoryFingerprintTests(InstallationFixtures):
             self.assertTrue(inventory_current(config, {}))
             shutil.rmtree(directory/'OpenAI.Codex_2')
             self.assertFalse(inventory_current(config, {}))
+
+    def test_protected_version_root_does_not_abort_inventory_refresh(self):
+        old = self.file('WindowsApps/OpenAI.Codex_1/app/Codex.exe')
+        self.file('WindowsApps/OpenAI.Codex_1/AppxManifest.xml')
+        directory = self.root/'WindowsApps'
+        original_iterdir = Path.iterdir
+        state = {'denied': True}
+
+        def deny_protected_root(path):
+            if path == directory and state['denied']:
+                raise PermissionError(5, 'Access is denied', str(path))
+            return original_iterdir(path)
+
+        config = self.cached(self.rows(old))
+        with patch.object(Path, 'iterdir', deny_protected_root):
+            self.assertFalse(inventory_current(config, {}))
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
+            state['denied'] = False
+            self.assertFalse(inventory_current(config, {}))
+            config = self.cached(self.rows(old))
+            self.assertTrue(inventory_current(config, {}))
 
     def test_new_squirrel_and_msix_versions_invalidate_cache_even_when_old_directories_survive(self):
         for provider, old_name, new_name, executable in (

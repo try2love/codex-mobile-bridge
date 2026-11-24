@@ -27,7 +27,7 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.hosts = SimpleNamespace(lifecycle_hosts=Mock(return_value={}))
         self.bridge.lock = threading.RLock(); self.bridge.live = {}
         self.bridge.store = SimpleNamespace(lifecycle_threads=Mock(return_value=[{'id': 'desktop-only'}]), history=Mock())
-        self.bridge.ipc = SimpleNamespace(path='fixture-ipc')
+        self.bridge.ipc = SimpleNamespace(path='fixture-ipc', original_path='fixture-ipc')
         self.bridge.remote_bridges = {}; self.bridge.accounts = SimpleNamespace(blockers=Mock(return_value=[]))
         self.bridge.closed = threading.Event()
         self.bridge.activate = Mock(side_effect=AssertionError('idle checks cannot activate chats'))
@@ -80,6 +80,20 @@ class DesktopIdle(unittest.TestCase):
         self.bridge.activate.assert_not_called()
         self.assertEqual(self.bridge.live, {})
 
+    def test_v13_system_error_is_still_unknown_for_shutdown_audit(self):
+        def v13(message):
+            message['version'] = 13
+            state = message['params']['change']['conversationState']
+            state.update(modelProvider='original-provider', cwd='/original/project',
+                         threadRuntimeStatus={'type': 'systemError'},
+                         turns=[{'turnId': 'failed', 'status': 'failed',
+                                 'completedAt': 1794977273000, 'items': []}])
+            return message
+        self.transform_event = v13
+        with self.assertRaisesRegex(TaskStateUnavailable, '无法确认'):
+            self.bridge.assert_desktop_idle()
+        self.assertEqual(self.bridge.live, {})
+
     def test_unfollowed_desktop_busy_thread_prevents_shutdown(self):
         self.states[('local', 'desktop-only')] = {'id': 'desktop-only', 'threadRuntimeStatus': {'type': 'active'}, 'turns': [], 'requests': []}
         with self.assertRaisesRegex(ValueError, '任务运行'): self.bridge.assert_desktop_idle()
@@ -87,6 +101,18 @@ class DesktopIdle(unittest.TestCase):
         self.assertEqual(self.bridge.live, {})
         self.bridge.activate.assert_not_called(); self.bridge.store.history.assert_not_called()
         self.assertTrue(all(instance.closed for instance in self.instances))
+
+    def test_ownerless_native_router_can_finish_discovery_before_the_audit_deadline(self):
+        # The installed Desktop router gives all discovery clients ten seconds.
+        # A follower ending its own read sooner cannot observe no-client-found.
+        self.owners[('local', 'desktop-only')] = IPCError('no-client-found')
+        def router_window(sid, options):
+            if options['timeout'] <= 10 or options['deadline'] - time.monotonic() <= 10:
+                raise IPCError('桌面读取超时；尚未取得实时会话状态。')
+        self.before_request = router_window
+        self.bridge.assert_desktop_idle(timeout=20, identifiers={'desktop-only'})
+        self.bridge.activate.assert_not_called()
+        self.bridge.store.history.assert_not_called()
 
     def test_future_stream_preserves_idle_and_busy_audits(self):
         def future(message):
@@ -384,7 +410,7 @@ class DesktopIdle(unittest.TestCase):
     def test_remote_and_live_only_threads_are_checked_with_their_original_host(self):
         remote = SimpleNamespace(host='remote:test', lock=threading.RLock(), live={'remote-live': object()},
                                  store=SimpleNamespace(lifecycle_threads=Mock(return_value=[{'id': 'remote-history'}])),
-                                 ipc=SimpleNamespace(path='fixture-ipc'))
+                                 ipc=SimpleNamespace(path='fixture-ipc', original_path='fixture-ipc'))
         self.bridge.hosts.lifecycle_hosts.return_value = {'remote:test': {'alias': 'test'}}
         self.bridge.for_host = Mock(return_value=remote)
         self.bridge.remote_bridges['remote:test'] = remote
@@ -450,14 +476,29 @@ class DesktopIdle(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_slow_metadata_read_is_bounded_without_following_partial_results(self):
-        release = threading.Event()
-        self.bridge.store.lifecycle_threads.side_effect = lambda: release.wait(2) or []
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def read():
+            entered.set()
+            try:
+                release.wait()
+                return [{'id': 'partial-metadata'}]
+            finally:
+                finished.set()
+        self.bridge.store.lifecycle_threads.side_effect = read
         try:
-            with self.assertRaisesRegex(ValueError, '读取'): self.bridge.assert_desktop_idle(timeout=.02)
+            # Isolate the metadata Future's real timeout from the outer audit
+            # clock, so scheduler delays cannot select a different failure path.
+            started = time.monotonic()
+            with patch('bridge.app.service.time', SimpleNamespace(monotonic=lambda: 100)):
+                with self.assertRaisesRegex(TaskStateUnavailable, '读取'):
+                    self.bridge.assert_desktop_idle(timeout=.2)
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertTrue(entered.wait(1))
             self.assertFalse(release.is_set())
             self.assertEqual(self.calls, [])
         finally:
             release.set()
+            self.assertTrue(finished.wait(1))
 
     def test_busy_nested_desktop_subagent_is_checked_without_exposing_it_in_chat_list(self):
         path = self.bridge.codex_home/'state_5.sqlite'

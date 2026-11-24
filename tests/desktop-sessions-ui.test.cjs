@@ -44,9 +44,9 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  }
  document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,getSelection:()=>null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{send:true,queue:true,steer:true}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
- const context=vm.createContext({document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
+ const context=vm.createContext({ComposerToolbar:class{addChoices(){return [];}requestSync(){}resizeInput(){}actionMode(){return this.sendState?.().running?this.controls.sendMode.value:'send';}constructor({input,controls,sendState}){this.input=input;this.controls=controls;this.sendState=sendState;}sync(){}setCollapsed(value){this.input.closest('.ds-composer-body').hidden=value;}anchor(id){return this.controls[id];}},document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
- for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
@@ -70,7 +70,7 @@ test('persistent history is display only and cannot override fresh disconnected 
  view.prepareChat('b');view.applyDetail({session:{id:'b',title:'Fresh',requests:[{id:'live'}]},messages:[{id:'fresh',role:'assistant',text:'Fresh content'}],connected:false});
  ui.run('window.historyReads.shift().resolve({session:{id:"b",title:"Old"},messages:[{id:"old",role:"assistant",text:"Obsolete content"}]})');
  await Promise.resolve();assert.match(view.messageList.textContent,/Fresh content/);assert.doesNotMatch(view.messageList.textContent,/Obsolete/);
- const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'conversation-recent-v1');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
+ const [scope,slot,value]=ui.run('window.historyWrites.at(-1)');assert.deepEqual(JSON.parse(scope),['auth-a','machine-a','claude','b']);assert.equal(slot,'timeline-recent-v1');assert.equal(value.connected,false);assert.equal(value.session.readOnly,true);assert.equal(value.session.requests.length,0);assert.equal(Object.keys(value.session.capabilities).length,0);
 });
 test('late persistent history cannot cross a desktop chat or authentication switch',async()=>{
  const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
@@ -87,57 +87,42 @@ test('fresh empty desktop history replaces persisted content and account changes
  await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
 });
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
-test('shared process stays unread until opened and loads only the selected body',async()=>{
- const ui=await opened(),view=ui.view,reads=[];
- ui.setHandler(async(url,body,signal)=>{const query=new URL(url,'http://fixture').searchParams;reads.push({query,signal});if(query.has('historyProcess'))return {rows:[{key:'note',version:'v',role:'assistant',kind:'agentMessage',phase:'commentary',text:'Progress explanation',detailCursor:'note-body'},{key:'tool',version:'v',role:'activity',kind:'commandExecution',title:'Run command',text:'',hasDetail:true,detailCursor:'tool-body'},{key:'empty',version:'v',role:'activity',title:'Completed action',text:'',hasDetail:false}],next:null};return {key:'tool',version:'v',text:'Command and output',offset:0,next:null};});
- const message={id:'process',key:'process',version:'v',role:'activity',kind:'processPage',processCursor:'process-cursor',turnId:'t',turnStatus:'inProgress'};
- view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:[message],requests:[]});
- const group=view.messageList.querySelector('.chat-process-page');assert.ok(group);assert.equal(group.open,false);assert.equal(reads.length,0);
- group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,1);assert.equal(reads[0].query.get('historyProcess'),'process-cursor');assert.match(group.textContent,/Progress explanation/);
- const tool=group.__records.get('tool').node;assert.equal(tool.open,false);assert.equal(group.__records.get('empty').node.tagName,'SECTION');
- tool.open=true;tool.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2);assert.equal(reads[1].query.get('historyDetail'),'tool-body');assert.match(tool.textContent,/Command and output/);assert.ok(tool.querySelector('.activity-copy'));
- group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads.length,2,'same directory and body reuse loaded content');
- view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:[{...message,turnStatus:'completed',version:'v2'}],requests:[]});assert.equal(group.open,true,'completion preserves explicit reader intent');
+test('native details expose each intermediate row without process-directory requests',async()=>{
+ const ui=await opened(),view=ui.view;const rows=[
+  {id:'input',role:'user',text:'Request'},
+  {id:'reason',role:'reasoning',text:'Reasoning summary'},
+  {id:'tool',role:'activity',title:'Run command',text:'echo fixture'},
+  {id:'progress',role:'assistant',phase:'commentary',text:'Progress explanation'},
+  {id:'final',role:'assistant',text:'Final reply'},
+ ];
+ const calls=ui.calls.length;view.applyDetail({session:{id:'a',title:'A',status:'active'},messages:rows});
+ assert.deepEqual(view.messageList.children.filter(node=>node.dataset.key).map(node=>node.dataset.key),rows.map(row=>row.id));
+ assert.equal(view.messageList.querySelector('.chat-activity-group'),null);
+ assert.equal(view.messageList.querySelector('.chat-process-page'),null);
+ const tool=view.messageNodes.get('tool').node;tool.open=true;tool.ontoggle();
+ view.applyDetail({session:{id:'a',title:'A',status:'idle'},messages:rows});
+ assert.equal(view.messageNodes.get('tool').node,tool);assert.equal(tool.open,true);
+ assert.match(view.messageList.textContent,/Progress explanation/);assert.match(view.messageList.textContent,/Final reply/);
+ assert.equal(ui.calls.length,calls);
 });
-test('closing process cancels directory reads and ignores late results',async()=>{
- const ui=await opened(),view=ui.view;let finish,signal;
- ui.setHandler((url,body,requestSignal)=>{signal=requestSignal;return new Promise(resolve=>finish=resolve);});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await Promise.resolve();group.open=false;group.ontoggle();assert.equal(signal.aborted,true);
- finish({rows:[{key:'late',role:'activity',text:'Late private body'}],next:null});await new Promise(setImmediate);assert.doesNotMatch(group.textContent,/Late private body/);assert.equal(group.__records.size,0);
-});
-test('completed process cache stays in the component and cannot evict shared conversation history',async()=>{
- const ui=await opened(),view=ui.view;view.listCacheIdentity='auth';view.listCacheHost='host';
- ui.run('window.cacheReads=[];window.cacheWrites=[];window.BridgeChatHistoryCache={read:(...args)=>{window.cacheReads.push(args);return null;},write:(...args)=>window.cacheWrites.push(args)}');
- let reads=0;ui.setHandler(async url=>{reads++;return url.includes('historyProcess')?{rows:[{key:'tool',role:'activity',kind:'commandExecution',version:'v',text:'',hasDetail:true,detailCursor:'body'}],next:null}:{version:'v',offset:0,text:'Loaded command output',next:null};});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',turnStatus:'completed',processCursor:'cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);const tool=group.__records.get('tool').node;tool.open=true;tool.ontoggle();await new Promise(setImmediate);
- group.open=false;group.ontoggle();group.open=true;group.ontoggle();await new Promise(setImmediate);
- assert.equal(reads,2);assert.equal(ui.run('window.cacheReads.length'),0);assert.equal(ui.run('window.cacheWrites.every(entry=>entry[1]==="conversation-recent-v1")'),true);
-});
-test('long commentary preview does not request its body until the reader clicks',async()=>{
- const ui=await opened(),view=ui.view;let reads=0;
- ui.setHandler(async url=>{reads++;return {rows:[{key:'note',role:'assistant',phase:'commentary',text:'p'.repeat(8000),version:'v',detailCursor:'full-note'}],next:null};});
- view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'p-cursor'}]});
- const group=view.messageList.querySelector('.chat-process-page');group.open=true;group.ontoggle();await new Promise(setImmediate);assert.equal(reads,1);assert.equal(group.__records.get('note').node.querySelector('button').textContent,'展开完整内容');
-});
-test('ordinary long message expands in body pages and copy reads its full text',async()=>{
- const ui=await opened(),view=ui.view;const full='x'.repeat(20000);let reads=0;
- ui.setHandler(async url=>{reads++;const query=new URL(url,'http://fixture').searchParams,offset=Number(query.get('historyOffset')||0);return {key:'reply',version:'v',offset,text:full.slice(offset,offset+16000),next:offset+16000<full.length?offset+16000:null};});
- const message={id:'reply',key:'reply',role:'assistant',text:full.slice(0,8000),truncated:true,version:'v',detailCursor:'scoped-reply'};
- view.applyDetail({session:{id:'a',title:'A'},messages:[message]});assert.equal(reads,0);
- const more=view.messageList.querySelector('.detail-more');await more.click();assert.equal(reads,1);assert.equal(view.messageList.querySelector('.message-body').textContent.length,16000);await more.click();assert.equal(view.messageList.querySelector('.message-body').textContent.length,20000);assert.equal(more.hidden,true);
- assert.equal(await view.fullMessage(message),full);
+test('native long message remains complete for copy without a second process-body request',async()=>{
+ const ui=await opened(),view=ui.view,full='x'.repeat(20000);let copied;
+ ui.run('window.BridgeClipboard.copy=async(getText)=>window.copiedText=await getText()');
+ const count=ui.calls.length;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:full}]});
+ assert.equal(view.messageList.querySelector('.message-body').textContent,full);
+ await view.messageList.querySelector('.message-copy').click();assert.equal(ui.run('window.copiedText'),full);
+ assert.equal(ui.calls.length,count);
 });
 test('desktop upward reading 36px from the bottom remains stable during resize',async()=>{
  const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'reply',role:'assistant',text:'Visible reply'}]});
  view.messages.scrollHeight=1000;view.messages.clientHeight=100;view.messages.scrollTop=864;view.reading={top:900,following:true};view.rememberReading();assert.equal(view.reading.following,false);
  view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,864);
 });
-test('desktop process disclosure click disables bottom following before content grows',async()=>{
- const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'p',key:'p',version:'v',role:'activity',processCursor:'cursor'}]});
- view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};const group=view.messageList.querySelector('.chat-process-page');
- view.messages.onclick?.({target:group.firstChild});assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
+test('opening an individual native activity keeps the outer reading position',async()=>{
+ const ui=await opened(),view=ui.view;view.applyDetail({session:{id:'a',title:'A'},messages:[{id:'tool',role:'activity',title:'Command',text:'echo fixture'}]});
+ view.messages.scrollHeight=1000;view.messages.scrollTop=900;view.reading={top:900,following:true};
+ const activity=view.messageNodes.get('tool').node;view.messages.onclick?.({target:activity.firstChild});
+ assert.equal(view.reading.following,false);view.messages.scrollHeight=2000;view.restoreReading();assert.equal(view.messages.scrollTop,900);
 });
 test('Antigravity lists filter APP CLI and IDE without crossing saved source selection',async()=>{
  const ui=fixture(),view=ui.view;ui.setHandler(async()=>({sessions:['app','cli','ide'].map(backend=>({id:backend,title:backend,cwd:'/same-project',backend}))}));
@@ -418,7 +403,7 @@ test('returning to list clears selection and prevents an old detail from reopeni
  const ui=await opened();ui.view.input.value='draft';let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const reading=ui.view.open('b');assert.equal(ui.view.isChatOpen,true);ui.view.backToList();assert.equal(ui.view.sid,null);assert.equal(ui.view.isChatOpen,false);assert.equal(ui.view.welcome.hidden,false);finish({session:{id:'b',title:'late',status:'idle'},messages:[]});await reading;assert.equal(ui.view.sid,null);assert.equal(ui.view.conversation.hidden,true);assert.equal(ui.view.drafts.get('claude:a'),'draft');
 });
 test('composer and historical replies show their own model and effort without rewriting history',async()=>{
- const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',model:'new-model',effort:'high',status:'idle',capabilities:{}},messages:[{id:'1',role:'assistant',model:'old-model',effort:'low',text:'answer'},{id:'2',role:'assistant',text:'no metadata'}]}));await ui.view.open('a');assert.match(ui.view.modelButton.textContent,/new-model/);assert.match(ui.view.modelButton.textContent,/high/);assert.match(ui.view.messageList.children[0].textContent,/old-model.*low/);assert.doesNotMatch(ui.view.messageList.children[1].textContent,/new-model|high/);assert.ok(ui.view.modelButton.classList.contains('tool-button'));assert.equal(ui.view.input.rows,1);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,true);ui.view.composerToggle.click();assert.equal(ui.view.composerBody.hidden,false);
+ const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',model:'new-model',effort:'high',status:'idle',capabilities:{}},messages:[{id:'1',role:'assistant',model:'old-model',effort:'low',text:'answer'},{id:'2',role:'assistant',text:'no metadata'}]}));await ui.view.open('a');assert.match(ui.view.modelButton.textContent,/new-model/);assert.match(ui.view.modelButton.textContent,/high/);assert.match(ui.view.messageList.children[0].textContent,/old-model.*low/);assert.doesNotMatch(ui.view.messageList.children[1].textContent,/new-model|high/);assert.ok(ui.view.modelButton.classList.contains('tool-button'));assert.equal(ui.view.input.rows,1);assert.equal(ui.view.composerBody.hidden,false);
 });
 test('Claude recent list combines types chronologically and retains archive, search and project filters',async()=>{
  const ui=fixture();await ui.view.choose('claude');ui.view.rows=[{id:'a',title:'Code chat',backend:'code',cwd:'/same',updatedAt:1},{id:'b',title:'Cowork chat',backend:'cowork',cwd:'/same',updatedAt:2},{id:'c',title:'Archive',backend:'code',cwd:'/same',archived:true}];ui.view.renderList();
@@ -727,9 +712,18 @@ test('skills send only selectable installed skills and preserve failed-send sele
 });
 test('Claude request-size limit stays in attachment help and rejects oversized images before upload',async()=>{
  const ui=fixture();await ui.view.choose('claude');ui.setHandler(async()=>({session:{id:'a',title:'Chat',status:'idle'},capabilities:{attachments:true},maxRequestBytes:10*1024*1024,messages:[]}));await ui.view.open('a');assert.ok(!ui.view.composerBody.querySelector('.ds-attachment-hint'));assert.match(ui.view.attachButton.title,/10 MiB/);ui.view.attachments.add([{name:'large.png',type:'image/png',size:8*1024*1024}]);assert.equal(ui.calls.some(c=>c.upload),false);assert.match(ui.view.attachments.error,/10 MiB/);
+ const view=ui.view;
+ for(const text of ['plain ASCII','中文\n"','🙂','\u0000\ud800']){
+   view.input.value=text;
+   const bytes=new TextEncoder().encode(JSON.stringify(text)).length;
+   view.state.maxRequestBytes=bytes+4;
+   assert.equal(view.overRequestLimit([{size:3}]),false);
+   view.state.maxRequestBytes--;
+   assert.equal(view.overRequestLimit([{size:3}]),true);
+ }
 });
 test('history updates retain expanded activities and honor visibility settings',async()=>{
- const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].open=true;ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
+ const ui=await opened();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'before'}]);ui.view.messageList.children[0].open=true;ui.view.messageList.children[0].ontoggle();ui.view.renderMessages([{id:'step',role:'activity',title:'Write',text:'after'},{id:'thought',role:'reasoning',text:'summary'}]);assert.equal(ui.view.messageList.children[0].open,true);ui.document.documentElement.dataset.showProcess='false';ui.document.documentElement.dataset.showReasoning='false';ui.view.renderMessages(ui.view.lastMessages);assert.ok(ui.view.messageList.children.every(n=>n.hidden));
 });
 
 test('skill selection clears after acceptance and expired choices cannot be submitted',async()=>{
@@ -1246,11 +1240,11 @@ for(const [provider,backend,runtime] of [['claude','code','local'],['claude','co
  const ui=fixture(),view=ui.view;await view.choose(provider);await view.open('a');view.state={...view.state,backend,runtime,connectionState:'ready'};
  let finish;ui.setHandler((url,body)=>body?new Promise(resolve=>finish=resolve):Promise.resolve(url.includes('/detail')?{session:{id:'a',status:'idle',capabilities:{}},messages:[{id:'native',role:'user',text:'slow message'}]}:{sessions:[]}));
  view.input.value='slow message';const sending=view.submit();
- assert.equal(view.sendFeedback.hidden,false);assert.match(view.sendFeedback.textContent,/正在发送….*slow message/);assert.equal(view.send.textContent,'正在发送…');assert.equal(view.send.disabled,true);assert.equal(ui.notices.length,0);
+ assert.equal(view.sendFeedback.hidden,false);assert.match(view.sendFeedback.textContent,/正在发送….*slow message/);assert.equal(view.send.disabled,true);assert.equal(ui.notices.length,0);
  await view.submit();assert.equal(ui.calls.filter(call=>call.body).length,1,'a second click does not submit twice');
  view.applyDetail({session:{id:'a',status:'idle',capabilities:{}},messages:[{id:'native',role:'user',text:'slow message'}]});assert.equal(view.messages.querySelectorAll('.message').length,1,'pending preview is not a second native-history bubble');assert.equal(view.sendFeedback.hidden,false);
  view.input.value='next draft';view.input.oninput();finish({status:'accepted'});await sending;
- assert.equal(view.sendFeedback.hidden,true);assert.equal(view.send.textContent,'发送 ↑');assert.equal(view.input.value,'next draft');assert.deepEqual(ui.notices,['已发送到会话']);
+ assert.equal(view.sendFeedback.hidden,true);assert.equal(view.input.value,'next draft');assert.deepEqual(ui.notices,['已发送到会话']);
 });
 
 test('queued send confirmation differs from delivery and failures keep the original draft and request id',async()=>{
@@ -1445,15 +1439,6 @@ test('refreshing creation catalog identity never rotates an uncertain creation r
  assert.notEqual(ui.calls.filter(call=>call.body).at(-1).body.id,blocked,'A known preflight block can be explicitly retried');
 });
 
-test('native per-mode availability reuses the shared composer without disabling queue and guide',async()=>{
- const ui=await opened(),v=ui.view;v.provider='zcode';v.applyDetail({connected:true,session:{id:'a',status:'active',capabilities:{send:true,queue:true,steer:true,sendModes:{send:false,queue:true,steer:true}}},messages:[]});
- v.mode.value='send';v.updateComposer();assert.equal(v.send.disabled,true);
- v.mode.value='queue';v.updateComposer();assert.equal(v.send.disabled,false);
- v.mode.value='steer';v.updateComposer();assert.equal(v.send.disabled,false);
- v.applyDetail({connected:true,session:{id:'a',status:'idle',capabilities:{send:true,queue:true,steer:false,sendModes:{send:true,queue:true,steer:false}}},messages:[]});
- assert.equal(v.mode.value,'send');assert.equal(v.send.disabled,false);
-});
-
 test('shared context dialog shows native cache and threshold and blocks stale compaction',async()=>{
  const ui=await opened(),view=ui.view;
  view.applyDetail({session:{id:'a',status:'idle',contextUsage:{usedTokens:250,contextWindow:1000,autoCompactThresholdTokens:800,cache:{cacheReadTokens:100}},capabilities:{compact:true,tasks:true}},messages:[]});
@@ -1507,6 +1492,34 @@ test('a verified per-session connection enables only text without granting app-w
  assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.modelButton.disabled,true);assert.equal(view.workMode.hidden,false);assert.equal(view.workMode.disabled,true);
  assert.equal(view.stop.hidden,true);assert.equal(view.skillsButton.hidden,false);assert.equal(view.skillsButton.disabled,true);assert.equal(view.canResume(),false);
  assert.equal(ui.calls.filter(c=>c.body).length,1);
+});
+
+test('created ZCode sessions stay writable when application inventory only advertises session access',async()=>{
+ for(const cwd of ['/project','/another-project']){
+  const ui=fixture(),view=ui.view,client={id:'zcode',enabled:true,connected:false,historyAvailable:true};
+  const session={id:'sess_new',title:'New chat',cwd,status:'idle',runtimeKnown:true,
+   controlScope:'session',connectionState:'ready',requests:[]};
+  let capabilities={send:true,resume:true,stop:false,queue:false,steer:false};
+  ui.setHandler(async(url,body)=>{
+   if(body){assert.match(url,/\/send/);return {status:'accepted'};}
+   if(url.includes('/detail'))return {session,messages:[{id:'reply',role:'assistant',text:'First reply'}],capabilities};
+   if(url.includes('/list'))return {sessions:[session],connected:true};
+   return {};
+  });
+  view.setClientStates([client]);await view.choose('zcode');await view.open(session.id);
+  assert.equal(view.canMutate(),true);assert.equal(view.canResume(),false);assert.match(view.status.textContent,/已连接/);
+  view.input.value='Continue';view.updateComposer();assert.equal(view.send.disabled,false);
+  view.setClientStates([{...client}]);
+  assert.equal(view.canMutate(),true);assert.equal(view.freshDetail,true);assert.equal(view.send.disabled,false);
+  await view.submit();await new Promise(setImmediate);assert.equal(ui.calls.filter(call=>call.body&&call.url.includes('/send')).length,1);
+
+  capabilities={...capabilities,send:false};session.runtimeKnown=false;session.status='unknown';
+  view.applyDetail({session,messages:[],capabilities});view.input.value='Do not send';view.updateComposer();
+  assert.equal(view.send.disabled,true);await view.submit();
+  assert.equal(ui.calls.filter(call=>call.body&&call.url.includes('/send')).length,1);
+  view.setClientStates([{...client,historyAvailable:false}]);
+  assert.equal(view.canMutate(),false);assert.equal(view.send.disabled,true);
+ }
 });
 
 test('only selecting a ZCode row continues its verified private session',async()=>{
@@ -1614,7 +1627,7 @@ test('cwd without declared project reference capability keeps attachments and sa
  const ui=await opened(),view=ui.view,reference={kind:'file',path:'saved.txt',absolutePath:'/project/saved.txt',name:'saved.txt'};
  view.applyDetail({session:{id:'a',title:'Ready',status:'idle',cwd:'/project'},capabilities:{send:true,attachments:false},messages:[]});
  assert.equal(view.attachButton.hidden,false);assert.equal(view.attachButton.disabled,true);assert.equal(view.attachButton.dataset.capabilityState,'unknown');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),false);
- ui.run('globalThis.referencePicks=0;window.BridgeFileActions={attach:(_button,_upload,reference)=>reference(),pickReference:()=>referencePicks++};');view.state.capabilities.attachments=true;view.updateComposer();await view.attachButton.click();assert.equal(ui.run('referencePicks'),0);view.state.capabilities.attachments=false;view.updateComposer();
+ ui.run('globalThis.referencePicks=0;window.BridgeFileActions={attach:(_button,_upload,reference)=>{if(reference)reference();},pickReference:()=>referencePicks++};');view.state.capabilities.attachments=true;view.updateComposer();await view.attachButton.click();assert.equal(ui.run('referencePicks'),0);view.state.capabilities.attachments=false;view.updateComposer();
  view.attachments.rows.push({id:'saved',name:'saved.txt',status:'ready',reference:{path:reference.path,absolutePath:reference.absolutePath}});view.input.value='Keep draft';view.updateComposer();
  assert.equal(view.send.disabled,true);await view.submit();assert.equal(ui.calls.some(call=>call.body),false);assert.equal(view.input.value,'Keep draft');assert.equal(view.attachments.rows.length,1);
  view.state.capabilities.projectReferences=true;view.updateComposer();assert.equal(view.attachButton.disabled,false);assert.equal(view.attachButton.dataset.capabilityState,'supported');assert.equal(view.workbench.referenceFile(view.workbench.current,reference),true);

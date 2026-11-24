@@ -5,6 +5,8 @@ final class ConnectionDiscovery: NSObject, URLSessionTaskDelegate, @unchecked Se
     static func retryableStatus(_ status: Int) -> Bool { status == 404 || status == 410 || (500...599).contains(status) }
     private let lock = NSLock()
     private var stopped = false
+    private let probeTimeout: TimeInterval?
+    init(probeTimeout: TimeInterval? = nil) { self.probeTimeout = probeTimeout; super.init() }
     private var cancelled: Bool {
         get { lock.lock(); defer { lock.unlock() }; return stopped }
         set { lock.lock(); stopped = newValue; lock.unlock() }
@@ -12,7 +14,7 @@ final class ConnectionDiscovery: NSObject, URLSessionTaskDelegate, @unchecked Se
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
-        config.timeoutIntervalForRequest = 6; config.timeoutIntervalForResource = 10
+        config.timeoutIntervalForRequest = probeTimeout ?? 6; config.timeoutIntervalForResource = probeTimeout ?? 10
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
     func cancel() { cancelled = true; session.invalidateAndCancel() }
@@ -93,12 +95,22 @@ enum GatewayChannels {
         (descriptor["endpoints"] as? [String] ?? []).filter { (try? GatewayURL.origin($0)) == $0 && GatewayURL.httpOrigin($0) == $0 }
     }
     static func proves(_ device: String, target: String, token: String) async -> Bool {
-        let probe = ConnectionDiscovery(), key = ConnectionDiscovery.hash(token)
-        defer { probe.cancel() }
+        let key = ConnectionDiscovery.hash(token), deadline = ProcessInfo.processInfo.systemUptime + 12
         let nonce = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
-        guard let response = try? await probe.read(target + "/api/connection/prove?device=" + device + "&id=" + ConnectionDiscovery.hash(key) + "&challenge=" + nonce),
-              response["deviceId"] as? String == device, let code = response["proof"] as? String else { return false }
-        return ConnectionDiscovery.verify(code, key: key, device: device, target: target, nonce: nonce)
+        for budget in [4.0, 8.0] {
+            let remaining = min(budget, deadline - ProcessInfo.processInfo.systemUptime)
+            guard !Task.isCancelled, remaining > 0 else { return false }
+            let probe = ConnectionDiscovery(probeTimeout: remaining)
+            defer { probe.cancel() }
+            do {
+                let response = try await probe.read(target + "/api/connection/prove?device=" + device + "&id=" + ConnectionDiscovery.hash(key) + "&challenge=" + nonce)
+                guard response["deviceId"] as? String == device, let code = response["proof"] as? String else { return false }
+                return ConnectionDiscovery.verify(code, key: key, device: device, target: target, nonce: nonce)
+            } catch let error as URLError where error.code == .timedOut && budget == 4 {
+                continue
+            } catch { return false }
+        }
+        return false
     }
     static func probe(_ descriptor:[String:Any], root:String, targets:[String], sample:@escaping @MainActor (String,Int?) -> Void) async {
         guard let id=descriptor["deviceId"] as? String, let anchor=descriptor["anchor"] as? String else { return }

@@ -11,14 +11,45 @@ class ComposerDrafts {
   write(key,value){if(!key)return false;try{this.storage.setItem(key,JSON.stringify(value));return true;}catch{return false;}}
   remove(key){if(!key)return;try{this.storage.removeItem(key);}catch{}}
   load(scope){const saved=this.read(this.key(scope));return saved&&typeof saved.text==='string'?saved:null;}
+  #lastDraft;
+  #readDraftForSave(key){
+    try{
+      const raw=this.storage.getItem(key);
+      if(this.#lastDraft?.key!==key||this.#lastDraft.raw!==raw){
+        const value=JSON.parse(raw||'null');
+        this.#lastDraft={key,raw,value:typeof value?.text==='string'?value:null};
+      }
+      return this.#lastDraft.value;
+    }catch{return null;}
+  }
+  #sameDraft(draft,previous){
+    const sameList=(list,stored,equal)=>Array.isArray(stored)&&list.length===stored.length&&list.every((item,i)=>equal(item,stored[i]));
+    return previous&&draft.text===previous.text&&draft.selectionStart===previous.selectionStart&&
+      draft.selectionEnd===previous.selectionEnd&&draft.workMode===previous.workMode&&
+      sameList(draft.quotes,previous.quotes,(a,b)=>b&&a.text===b.text&&a.source===b.source&&a.provider===b.provider)&&
+      sameList(draft.skills,previous.skills,(a,b)=>a===b);
+  }
   save(scope,fields){
     const key=this.key(scope);if(!key)return null;
-    const previous=this.load(scope),text=String(fields.text||'').slice(0,100000);
-    const draft={text,selectionStart:Math.max(0,Math.min(text.length,Number(fields.selectionStart)||0)),selectionEnd:Math.max(0,Math.min(text.length,Number(fields.selectionEnd)||0)),sendMode:fields.sendMode||'send',workMode:fields.workMode||'default',quotes:Array.isArray(fields.quotes)?fields.quotes.filter(value=>value&&typeof value.text==='string'&&value.text.trim()).slice(0,8).map(value=>({text:value.text.slice(0,100000),source:typeof value.source==='string'?value.source.slice(0,500):'',provider:typeof value.provider==='string'?value.provider.slice(0,40):''})):[],skills:Array.isArray(fields.skills)?fields.skills.filter(value=>typeof value==='string').slice(0,8):[],revision:previous?.revision||0};
-    if(JSON.stringify({...draft,revision:0})!==JSON.stringify({...previous,revision:0}))draft.revision++;
-    return this.write(key,draft)?draft:null;
+    // Re-read the stored value so another tab's edit or removal is always seen.
+    const previous=this.#readDraftForSave(key);
+    const text=String(fields.text||'').slice(0,100000);
+    const clamp=value=>Math.max(0,Math.min(text.length,Number(value)||0));
+    const quotes=Array.isArray(fields.quotes)?fields.quotes.filter(value=>value&&typeof value.text==='string'&&value.text.trim()).slice(0,8).map(value=>({
+      text:value.text.slice(0,100000),source:typeof value.source==='string'?value.source.slice(0,500):'',provider:typeof value.provider==='string'?value.provider.slice(0,40):'',
+    })):[];
+    const skills=Array.isArray(fields.skills)?fields.skills.filter(value=>typeof value==='string').slice(0,8):[];
+    const draft={text,selectionStart:clamp(fields.selectionStart),selectionEnd:clamp(fields.selectionEnd),workMode:fields.workMode||'default',quotes,skills,revision:previous?.revision||0};
+    if(this.#sameDraft(draft,previous))return draft;
+    draft.revision++;
+    try{
+      const raw=JSON.stringify(draft);
+      this.storage.setItem(key,raw);
+      this.#lastDraft={key,raw,value:{...draft,quotes:draft.quotes.map(quote=>({...quote})),skills:[...draft.skills]}};
+      return draft;
+    }catch{return null;}
   }
-  clear(scope){this.remove(this.key(scope));}
+  clear(scope){const key=this.key(scope);if(this.#lastDraft?.key===key)this.#lastDraft=undefined;this.remove(key);}
   pending(scope){const saved=this.read(this.key(scope,'pending'));return saved&&typeof saved.id==='string'&&saved.id?saved:null;}
   discardPending(scope,id){if(this.pending(scope)?.id===id)this.remove(this.key(scope,'pending'));}
   begin(scope,body,id){
@@ -178,14 +209,14 @@ class ComposerDrafts {
     if(this.pendingRecords(previous).length||this.pendingRecords(next).length||this.load(next))return null;
     const draft=this.load(previous);if(!draft)return null;
     return this.save(next,{text:draft.text,selectionStart:draft.selectionStart,selectionEnd:draft.selectionEnd,
-      quotes:draft.quotes,sendMode:'send',workMode:'default'});
+      quotes:draft.quotes,workMode:'default'});
   }
   migrate(scope,temporary,keys){
     if(!this.key(scope)||this.load(scope))return this.load(scope);
     let text;try{text=temporary.getItem(keys.text);}catch{return null;}
     if(text===null)return null;
     let skills=[];try{skills=JSON.parse(temporary.getItem(keys.skills)||'[]');}catch{}
-    const saved=this.save(scope,{text,skills,sendMode:'send',workMode:'default'});
+    const saved=this.save(scope,{text,skills,workMode:'default'});
     if(saved)for(const key of Object.values(keys))try{temporary.removeItem(key);}catch{}
     return saved;
   }

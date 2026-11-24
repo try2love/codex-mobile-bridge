@@ -27,13 +27,14 @@ PUBLIC_URLS = set('''
 /vendor/xterm/addon-fit.js /vendor/xterm/xterm.css /command-terminal-panel.js
 /list-sync.js /agents-panel.js /side-chat.js /terminal-panel.js /floating-panel.js /project-picker.js
 /git-panel.js /file-actions.js /code-syntax.js /workbench.js /source-view.js /pdf-preview.js /html-preview.js /vendor/pdfjs/pdf.min.mjs /vendor/pdfjs/pdf.worker.min.mjs /vendor/prism/source-view.min.js /image-viewer.js /workbench.css /i18n.js /app.js
-/modes.js /attachments.js /activity.js /fast-mode.js /accounts.js /account.js
+/composer-toolbar-editor.css /composer-toolbar-editor.js /modes.js /attachments.js /activity.js /fast-mode.js /accounts.js /account.js
 /account.css /presentation.js /presentation.css /markdown.js /message-actions.js
 /timeline.js /vendor/markdown-it.min.js /vendor/texmath.js
 /mermaid-renderer.js /mermaid-render-frame.js /vendor/mermaid/mermaid.min.js
 /mermaid-viewer.js /mermaid-viewer.css /mermaid-cards.js /mermaid-cards.css
 /vendor/katex/katex.min.js /vendor/katex/katex.min.css /style.css
 /manifest.webmanifest /icon.png /icon-ui.png /icon-favicon.png /icon-touch.png /icon-192.png
+/manifest-dark.webmanifest /icon-dark.png /icon-ui-dark.png /icon-favicon-dark.png /icon-touch-dark.png /icon-192-dark.png
 '''.split())
 
 SSH_SOURCES = {

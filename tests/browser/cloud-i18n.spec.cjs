@@ -17,14 +17,14 @@ test.beforeEach(async({page,context,baseURL,request})=>{
     window.cloudNow=now;Date.now=()=>window.cloudNow;
     window.setInterval=callback=>{window.cloudTick=callback;return 1;};
     window.cloudCalls=[];window.cloudAllCalls=[];window.recordDirectoryCalls=false;window.cloudErrors={};window.cloudPendingAction='';
-    window.cloudStatus={configured:true,enabled:true,origin:'https://relay.example.test',account_id:'account-original',login:'original-user',gateway_id:'gateway-original',entitlement:{required:true,active:true,expires_at:'2030-05-02T03:04:05Z',server_time:new Date(now).toISOString()},entitlement_error:'',runtime:{state:'connected'},bindings:[{binding_id:'pinned-original',mobile_public_key:'control-original',preview_public_key:'preview-original',device_name:'Verified phone',allowed:true,remote_status:'active',remote_revision:1,generation:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'}]};
+    window.cloudStatus={configured:true,enabled:true,origin:'https://relay.example.test',account_id:'account-original',login:'original-user',gateway_id:'gateway-original',entitlement:{required:true,active:true,expires_at:'2030-05-02T03:04:05Z',server_time:new Date(now).toISOString()},entitlement_error:'',runtime:{state:'connected'},bindings:[{binding_id:'pinned-original',mobile_public_key:'control-original',preview_public_key:'preview-original',device_name:'Verified phone',trusted:true,allowed:true,remote_status:'active',remote_revision:1,generation:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'}]};
     window.cloudStatus.web_access={allowed:false,revision:0,error:''};
     window.cloudOriginalAccount=JSON.parse(JSON.stringify(window.cloudStatus));
     window.cloudResponses={
       capabilities:{mode:'hosted',email_verification_methods:['code'],registration_flow:'email_code_password'},entitlement:{...window.cloudStatus.entitlement},
       'signup-code':{accepted:true,verification_method:'code',expires_in:600,retry_after:60},forgot:{accepted:true},
       'signup-verify':{verified:true,registration_token:'t'.repeat(43),expires_in:600},register:{registered:true},
-      devices:{devices:[]}
+      devices:{devices:window.cloudStatus.bindings.map(item=>({...item}))}
     };
     window.bridgeDesktop={cloud:async payload=>{
       window.cloudAllCalls.push({...payload});if(!['devices'].includes(payload.action)||window.recordDirectoryCalls)window.cloudCalls.push({...payload});
@@ -73,9 +73,11 @@ test.beforeEach(async({page,context,baseURL,request})=>{
     await page.route(url,route=>route.fulfill({contentType:'application/javascript',body:readFileSync(path.join(root,file),'utf8')}));
     await page.addScriptTag({url});
   }
-  await page.evaluate(()=>{window.cloudInitialServer=document.querySelector('[data-cloud-server]').value;BridgeI18n.setLanguage('zh');window.CloudPanel.update(window.cloudStatus);});
+  await page.evaluate(()=>{window.cloudInitialServer=document.querySelector('[data-cloud-server]').value;BridgeI18n.setLanguage('zh');window.CloudPanel.update(window.cloudStatus);return window.cloudTick();});
+  await expect(page.locator('[data-cloud-allow="pinned-original"]')).toBeChecked();
   expect(await page.evaluate(()=>window.cloudCalls.map(call=>call.action))).toEqual([]);
-  await page.evaluate(()=>window.cloudCalls=[]);
+  expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([{action:'devices'}]);
+  await page.evaluate(()=>{window.cloudCalls=[];window.cloudAllCalls=[];});
 });
 
 async function language(page,value){await page.evaluate(value=>BridgeI18n.setLanguage(value),value);}
@@ -346,8 +348,8 @@ test('cloud errors translate while preserving diagnostic codes and unknown serve
   await expect(page.locator('[data-cloud-result]')).toHaveText('\u4e91\u670d\u52a1\uff1afuture_error');
 });
 
-test('account phones appear without a popup and their access switch is reversible',async({page},testInfo)=>{
-  await page.evaluate(()=>{window.recordDirectoryCalls=true;window.cloudStatus.bindings=[];window.CloudPanel.update(window.cloudStatus);window.cloudResponses.devices={devices:[{binding_id:'request-original',device_name:'Test phone',mobile_public_key:'candidate-control',preview_public_key:'candidate-preview',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:true,allowed:false,remote_status:'pending',remote_revision:0,generation:0,online:true}]};return window.cloudTick();});
+test('trusted account phones appear without a popup and their access switch is reversible',async({page},testInfo)=>{
+  await page.evaluate(()=>{window.recordDirectoryCalls=true;window.cloudStatus.bindings=[];window.CloudPanel.update(window.cloudStatus);window.cloudResponses.devices={devices:[{binding_id:'request-original',device_name:'Test phone',mobile_public_key:'candidate-control',preview_public_key:'candidate-preview',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',trusted:true,proof_verified:true,allowed:false,remote_status:'disabled',remote_revision:0,generation:0,online:true}]};return window.cloudTick();});
   await expect(page.locator('#cloud-pairing-dialog')).toHaveCount(0);
   const devices=page.locator('[data-cloud-devices]');
   await expect(devices).toContainText('Test phone');
@@ -355,16 +357,16 @@ test('account phones appear without a popup and their access switch is reversibl
   await expect(toggle).not.toBeChecked();await expect(toggle).toBeEnabled();
   await expect(page.locator('[data-cloud-qr]')).toHaveCount(0);
   await expect(page.locator('[data-cloud-action="pairing"]')).toHaveCount(0);
-  await language(page,'en');await expect(devices).toContainText('12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90');
+  await language(page,'en');await expect(devices).toContainText('Test phone · ABCDEF90');await expect(devices).toContainText('Connection disabled; verified keys are kept / Online');
+  await expect(devices).not.toContainText('12345678 ABCDEF90 12345678 ABCDEF90');
   const screenshot=testInfo.outputPath('desktop-account-devices.png');await page.locator('#cloud-account').screenshot({path:screenshot});await testInfo.attach('desktop-account-devices',{path:screenshot,contentType:'image/png'});
   await page.evaluate(()=>{window.cloudNow+=365*24*60*60*1000;return window.cloudTick();});
   await expect(page.locator('[data-cloud-devices]')).toContainText('Test phone');
   await expect(page.locator('[data-cloud-devices] [data-cloud-allow]')).not.toBeChecked();
   expect(await page.evaluate(()=>window.cloudCalls.some(call=>['approve','reject','access'].includes(call.action)))).toBe(false);
-  await page.evaluate(()=>window.confirm=()=>true);
   await page.locator('[data-cloud-devices] [data-cloud-allow]').click();
   await expect(page.locator('[data-cloud-devices] [data-cloud-allow="request-original"]')).toBeChecked();
-  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='access'))).toEqual([{action:'access',binding_id:'request-original',allowed:true,expected_revision:0,safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90'}]);
+  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='access'))).toEqual([{action:'access',binding_id:'request-original',allowed:true,expected_revision:0}]);
   await toggle.click();await expect(toggle).not.toBeChecked();
   await expect(devices).toContainText('Test phone');
   await toggle.click();await expect(toggle).toBeChecked();
@@ -375,12 +377,27 @@ test('account phones appear without a popup and their access switch is reversibl
   expect(await page.evaluate(()=>window.settingsSubmissions)).toBe(0);
 });
 
-test('an unverified discovered phone cannot connect and has no rejection or delete button',async({page})=>{
-  await page.evaluate(()=>{window.cloudStatus.bindings=[];window.CloudPanel.update(window.cloudStatus);window.cloudResponses.devices={devices:[{binding_id:'unverified',device_name:'Unverified phone',mobile_public_key:'unverified-control',proof_verified:false,allowed:false,remote_status:'pending',remote_revision:0,generation:0}]};return window.cloudTick();});
-  await expect(page.locator('[data-cloud-devices] [data-cloud-allow]')).toBeDisabled();
+test('unverified requests stay hidden and pairing approval requires a verified scan',async({page})=>{
+  await page.evaluate(()=>{window.cloudStatus.bindings=[];window.CloudPanel.update(window.cloudStatus);window.cloudResponses.devices={devices:[{binding_id:'unverified',device_name:'Unverified phone',mobile_public_key:'unverified-control',preview_public_key:'unverified-preview',safety_code:'12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90 12345678 ABCDEF90',proof_verified:false,scan_verified:false,allowed:false,remote_status:'pending',remote_revision:0,generation:0}]};return window.cloudTick();});
+  await expect(page.locator('[data-cloud-device="unverified"]')).toHaveCount(0);
+  await expect(page.locator('[data-cloud-devices] [data-cloud-allow]')).toHaveCount(0);
   await expect(page.locator('#cloud-pairing-dialog')).toHaveCount(0);
   await expect(page.locator('[data-cloud-devices] button')).toHaveCount(0);
-  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>['approve','reject','access'].includes(call.action)))).toEqual([]);
+  await language(page,'en');
+  await page.evaluate(()=>{window.cloudResponses.devices.devices[0].proof_verified=true;return window.cloudTick();});
+  const row=page.locator('[data-cloud-device="unverified"]');
+  await expect(row).toContainText('Waiting for phone to scan');
+  await expect(row.locator('[data-cloud-allow]')).toHaveCount(0);
+  await expect(row.getByRole('button',{name:'Allow Connection',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>['approve','reject','access','delete-device'].includes(call.action)))).toEqual([]);
+  await page.evaluate(()=>{window.cloudResponses.devices.devices[0].scan_verified=true;return window.cloudTick();});
+  const approve=row.getByRole('button',{name:'Allow Connection',exact:true});
+  await expect(approve).toBeEnabled();await approve.click();
+  await expect(row.locator('[data-cloud-allow]')).toBeChecked();
+  const approval=[{action:'access',binding_id:'unverified',allowed:true,expected_revision:0,confirm_pairing:true}];
+  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='access'))).toEqual(approval);
+  await language(page,'zh');
+  expect(await page.evaluate(()=>window.cloudCalls.filter(call=>call.action==='access'))).toEqual(approval);
 });
 
 test('cloud device deletion confirms the selected offline phone and preserves the online phone',async({page},testInfo)=>{

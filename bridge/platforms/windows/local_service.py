@@ -5,6 +5,7 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 from .zcode_pipe import _identity, _native, identity, local_connect, local_listener, peer_pid
@@ -158,6 +159,47 @@ def write_record(path, value):
     finally:temp.unlink(missing_ok=True)
 
 
+def write_private(path, content):
+    """Atomically write a file owned by the current Windows user.
+
+    A process launched elevated can otherwise inherit an Administrators-owned
+    file from a protected data directory. The normal desktop token for the same
+    user then receives ERROR_ACCESS_DENIED when it opens that file.
+    """
+    import msvcrt
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError('私有文件不能使用符号链接')
+    if path.parent.is_symlink():
+        raise ValueError('私有文件目录不能使用符号链接')
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name('.' + uuid.uuid4().hex)
+    try:
+        with private_security() as security:
+            handle = _open(temporary, write=True, security=security)
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+                handle = None
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                if handle is not None:
+                    _native().close(handle)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in (5, 32, 33) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def require_peer(conn, *, server, expected=None):
     peer = identity(peer_pid(conn, server=server))
     if peer['image'] != identity(os.getpid())['image'] or expected is not None and any(peer.get(key) != expected.get(key) for key in ('pid', 'created', 'session', 'image')):
@@ -176,9 +218,18 @@ def listener(address):
     return local_listener(address, security_attributes=private_security)
 
 
-def byte_stream(connection):
+def byte_stream(connection, *, duplicate=False):
     import _winapi
-    _winapi.SetNamedPipeHandleState(connection.fileno(), 0, None, None)  # PIPE_READMODE_BYTE
-    # connection owns the handle. Each WindowsPipe operation finishes cancelled
-    # overlapped I/O before returning, so its caller may then close connection.
-    return WindowsPipe(connection.fileno())
+    handle = connection.fileno()
+    if duplicate:
+        current = _winapi.GetCurrentProcess()
+        handle = _winapi.DuplicateHandle(current, handle, current, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
+    try:
+        _winapi.SetNamedPipeHandleState(handle, 0, None, None)  # PIPE_READMODE_BYTE
+    except OSError:
+        if duplicate:
+            _winapi.CloseHandle(handle)
+        raise
+    # The ordinary caller retains connection through all IO. A long-lived
+    # follower duplicates ownership so its stream can outlive that connection.
+    return WindowsPipe(handle)

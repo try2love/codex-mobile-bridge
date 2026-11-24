@@ -1,7 +1,7 @@
 {
   "name": "codex-mobile-bridge-desktop",
   "desktopName": "codex-mobile-bridge.desktop",
-  "version": "2.2.2-preview.1",
+  "version": "2.2.2-preview.3",
   "description": "Codex App 手机网关桌面启动器",
   "author": "try2love",
   "license": "AGPL-3.0-only",
@@ -42,6 +42,7 @@
     "files": [
       "desktop/**",
       "web/shared/i18n.js",
+      "web/shared/brand-icons.js",
       "web/shared/dialog-dismiss.js",
       "web/shared/creation-model-picker.js",
       "web/features/accounts/account.js",
@@ -127,6 +128,7 @@
       "perMachine": false,
       "allowElevation": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "desktop/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false

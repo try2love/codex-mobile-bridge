@@ -400,6 +400,13 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None,
                 continue
             else:
                 message = normalize_item(item, image_cache=image_cache, include_body=process_bodies)
+            if (kind in ('agentMessage', 'assistantMessage') and message.get('role') == 'assistant'
+                    and not str(message.get('text') or '').strip() and not message.get('attachments')):
+                # Codex can persist whitespace-only assistant items around a
+                # real answer (for example an auxiliary item before the final
+                # card). They have no phone-visible content; omit them before
+                # timeline projection so they cannot render model/action/time rows.
+                continue
             first_user = (item.get('id') == turn['_firstUserItemId']
                           if '_firstUserItemId' in turn else id(item) == first_user_id)
             if message['role'] == 'user' and message.get('timestamp') is None and first_user and started_at is not None:
@@ -426,7 +433,10 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None,
         result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
                        "startedAt": started_at, "completedAt": completed_at, "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
-                       "error": turn.get("error"), "diff": turn.get("diff"),
+                       # Native automatic retries keep the turn running. Their last
+                       # warning must not trail every new item as a terminal error.
+                       "error": None if turn.get('willRetry') is True and turn.get('status') == 'inProgress' else turn.get("error"),
+                       "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer
                        # until backfill includes the whole turn; never scan omitted patches.
                        "fileChanges": native_turn_file_changes(turn) if '_nativeFileChanges' in turn or (not omitted and (items_complete or authoritative_diff)) else [],

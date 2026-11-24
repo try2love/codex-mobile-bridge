@@ -115,6 +115,7 @@
 .api-access-editor .api-access-models{min-width:0}
 .api-access-editor .api-access-models textarea{min-height:80px;resize:vertical}
 .api-access-editor .api-access-model-head,.api-access-editor .api-access-model-footer{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.api-access-editor .api-access-model-actions{display:flex;align-items:center;gap:12px;flex:none}
 .api-access-editor .api-access-model-head>label{margin:0;font-size:13px;font-weight:500;color:var(--text)}
 .api-access-editor .api-access-fetch{flex:none;min-height:36px;margin:0;padding:6px 0;border:0;background:transparent;color:var(--accent);font-size:13px;white-space:nowrap}
 .api-access-editor .api-access-models>label{display:block;margin:0}

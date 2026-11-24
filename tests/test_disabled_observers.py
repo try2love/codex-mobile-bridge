@@ -170,6 +170,7 @@ class DisabledObserversTests(unittest.TestCase):
         # 某个会话的元数据缺失（_attach -> store.get 抛 KeyError）时，后台维护线程不应退出，
         # 且同一轮及后续轮次中的其他健康会话仍需继续得到维护。
         bridge = Bridge.__new__(Bridge)
+        bridge.host = 'local'
         bridge.observation_enabled = lambda: True
         bridge.store = Mock()
         bridge.store.get.side_effect = KeyError('missing-sid')

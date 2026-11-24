@@ -12,13 +12,13 @@ function fixture({durable=true,request,local=storage(),temporary=storage(),coord
   const scope={gateway:'gateway',provider:'codex',account:'account',host:'local',session:'fixture'};
   const nodes={composer:{},message:{value:'same text'},'send-mode':{value:'send'},send:{},'send-error':{}};
   const calls=[];let sequence=0;const tab=++tabSequence;
-  const context={$:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},
+  const context={composerToolbar:{actionMode:()=>nodes['send-mode'].value},$:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},
     codexQuotes:null,sending:false,currentId:'fixture',currentHost:'local',state:{},currentAccess:()=>({canSend:true}),
     attachments:{ready:()=>true,ids:()=>['attachment'],references:()=>[],rows:[{id:'attachment'}],setLocked(){},clear(){}},
-    workModes:{value:()=> 'default',render(){},submitted(){}},invalidSkills:new Set(),selectedSkills:new Set(['skill']),
+    renderCodexWorkModes(){},workModes:{value:()=> 'default',render(){},submitted(){}},invalidSkills:new Set(),selectedSkills:new Set(['skill']),
     codexProvisionalDrafts:new Map(),composerDrafts:drafts,codexDraftScope:durable?scope:null,messageManagement:null,renderQueue(){},
     sessionStorage:temporary,draftGateway:'gateway',chatKey:()=> 'local|fixture',uuid:()=> 'submission-'+tab+'-'+(++sequence),
-    saveDraft:()=>drafts.save(scope,{text:nodes.message.value,sendMode:nodes['send-mode'].value,skills:['skill'],quotes:context.codexQuotes?.quotes||[]}),
+    saveDraft:()=>drafts.save(scope,{text:nodes.message.value,skills:['skill'],quotes:context.codexQuotes?.quotes||[]}),
     bumpRecency(){},renderSkillPills(){},restoringComposer:false,window:{BridgePresentation:{showError(){}}},sessionUrl:()=> '/synthetic/send',toast(){},
     api:async(url,body)=>{calls.push(body);return request?request(body):{status:'unknown'};}};
   const source=fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8');

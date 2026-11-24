@@ -2,6 +2,10 @@
 
 Status: implemented
 
+后续的账号独立准备、持续恢复、有界实时同步与编辑支持见[原生连接恢复](../bug-fix/2026-11-21-desktop-connection-recovery.md)；本篇保留原决定及其约束。
+
+新版 utility host 的执行连接适配见[宿主进程与旧 IPC 并存](../bug-fix/2026-11-21-hosted-codex-desktop.md)。本篇的准备事务、空闲核验与未知任务确认边界继续有效。
+
 ## 问题
 
 原生侧聊必须与原 App 共用运行时；手动初始化虽能避免独立 writer 冲突，却让正常新用户先经历失败才能找到配置入口。Windows 冻结网关更新还会改变适配器启动路径，旧配置存在不等于当前可连接。

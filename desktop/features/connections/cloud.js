@@ -316,7 +316,7 @@
       row.append(remove);
       const allowed=item.allowed===true&&item.remote_status==='active'&&item.trusted&&!item.device_revoked;
       const revoked=item.remote_status==='revoked'||item.device_revoked;
-      const status=document.createElement('p');status.className='hint';status.textContent=t(revoked?'Device permanently revoked':item.sync_state==='unconfirmed'?'Connection blocked locally; cloud permission unconfirmed':allowed?'Connection allowed':item.trusted?'Connection disabled; verified keys are kept':'Waiting for desktop permission')+' / '+t(item.online?'在线':'离线');
+      const status=document.createElement('p');status.className='hint';status.textContent=t(revoked?'Device permanently revoked':item.sync_state==='unconfirmed'?'Connection blocked locally; cloud permission unconfirmed':allowed?'Connection allowed':item.trusted?'Connection disabled; verified keys are kept':'Waiting for desktop permission')+' / '+(item.online?t('Online'):BridgeI18n.language()==='en'?'Offline':'离线');
       toggle.type='checkbox';toggle.setAttribute('role','switch');toggle.setAttribute('data-cloud-allow',item.binding_id);toggle.checked=allowed;
       toggle.setAttribute('aria-label',format('Allow connection for {name}',{name:item.device_name||t('Phone')}));
       toggle.disabled=busy||revoked||item.sync_state==='identity_changed'||(!allowed&&(!state.enabled||!item.trusted));

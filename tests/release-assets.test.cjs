@@ -11,9 +11,10 @@ function fixture(t){
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   for(const name of releaseAssetNames())fs.writeFileSync(path.join(directory,name),'fixture '+name);
   const keys=generateKeyPairSync('ed25519'),assets={};
-  for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){
-    const name=assetName(version,platform,arch),bytes=fs.readFileSync(path.join(directory,name));
-    assets[`${platform}-${arch}`]={name,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+  for(const [platform,arch,format] of [['darwin','arm64'],['darwin','x64'],['win32','x64'],
+    ['linux','x64','deb'],['linux','x64','AppImage'],['linux','arm64','deb'],['linux','arm64','AppImage']]){
+    const name=assetName(version,platform,arch,format),bytes=fs.readFileSync(path.join(directory,name));
+    assets[`${platform}-${arch}${format?'-'+format:''}`]={name,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
   }
   const payload=Buffer.from(JSON.stringify({schema:1,version,notes:'Current release only',assets}));
   fs.writeFileSync(path.join(directory,'bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,keys.privateKey).toString('base64')}));
@@ -58,6 +59,12 @@ test('recomputed checksums cannot conceal a changed desktop ZIP or wrong signing
   writeChecksums(directory);
   assert.throws(()=>verifyRelease(directory,{key,write:true}),/Signed update asset mismatch/);
 });
+test('Linux installer integrity is authenticated even when release checksums are recomputed',t=>{
+  const {directory,key}=fixture(t);
+  fs.appendFileSync(path.join(directory,assetName(version,'linux','x64','deb')),'modified');
+  writeChecksums(directory);
+  assert.throws(()=>verifyRelease(directory,{key}),/Signed update asset mismatch/);
+});
 test('release workflow prepares a draft and uses the packaged signing identity',()=>{
   const workflow=fs.readFileSync(path.join(__dirname,'../.github/workflows/release.yml'),'utf8');
   assert.ok(workflow.includes('desktop/features/updates/update-public-key.pem'));
@@ -77,7 +84,22 @@ test('release caller grants reusable desktop read permissions and keeps ordinary
   assert.deepEqual(release.jobs.release.permissions,{contents:'write'});
   assert.equal(build.with.acceptance_only,undefined);
   for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.acceptance_only.default,false);
-  for(const name of ['package','linux'])assert.equal(desktop.jobs[name].if,'inputs.acceptance_only != true');
+  assert.equal(desktop.jobs.package.if,'inputs.acceptance_only != true');
+  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse'");
+  assert.equal(desktop.on.workflow_dispatch.inputs.build_target.default,'all');
+  assert.deepEqual(desktop.on.workflow_dispatch.inputs.build_target.options,['all','intel','mac-windows-reuse','windows-reuse']);
+  assert.equal(desktop.on.workflow_call.inputs.build_target.default,'all');
+  const matrix=desktop.jobs.package.strategy.matrix.include;
+  assert.ok(matrix.includes("inputs.build_target == 'intel'"));
+  const selected=JSON.parse(matrix.match(/inputs.build_target == 'mac-windows-reuse' && '([^']+)'/)[1]);
+  assert.deepEqual(selected,[{os:'macos-15',arch:'arm64','app-dir':'mac-arm64'},{os:'windows-latest',arch:'x64'}]);
+  const windows=JSON.parse(matrix.match(/inputs.build_target == 'windows-reuse' && '([^']+)'/)[1]);
+  assert.deepEqual(windows,[{os:'windows-latest',arch:'x64'}]);
+  assert.ok(desktop.jobs.reuse.strategy.matrix.artifact.includes('desktop-macOS-arm64'));
+  const fullSuite=desktop.jobs.package.steps.find(step=>step.run==='python -B -m unittest discover -s tests -v');
+  assert.equal(fullSuite.if,"inputs.build_target != 'intel'");
+  assert.equal(matrix.match(/macos-15-intel/g).length,2);
+  assert.ok(matrix.includes('macos-15')&&matrix.includes('windows-latest'));
 });
 test('mobile Intel supplement keeps the same checks and the default ARM build',()=>{
   const yaml=require('js-yaml'),load=name=>yaml.load(fs.readFileSync(path.join(__dirname,'../.github/workflows/'+name),'utf8'));
@@ -89,11 +111,13 @@ test('mobile Intel supplement keeps the same checks and the default ARM build',(
   assert.deepEqual(supplement.steps.filter(step=>step.uses==='actions/setup-java@v4'||step.run?.startsWith('python3 scripts/')),
     ci.jobs['mobile-update-tests'].steps.filter(step=>step.uses==='actions/setup-java@v4'||step.run?.startsWith('python3 scripts/')));
   for(const job of [mobile.jobs.ios,supplement]){
-    const validation=job.steps[0];assert.equal(validation.name,'Validate frozen Intel supplement source');
-    assert.ok(validation.run.includes('1561a0c82d8eb4f02f02c7a608f94812ba87a75f'));
-    assert.ok(validation.run.includes('exit 1'));
+    const validation=job.steps.find(step=>step.name==='Validate frozen Intel supplement source');assert.ok(validation);
+    assert.ok(validation.run.includes("re.fullmatch(r'[0-9a-f]{40}', source)"));
+    assert.ok(validation.run.includes("['git', 'rev-parse', 'HEAD']"));
+    assert.ok(validation.run.includes("'2.2.2-preview.3'"));
     const checkout=job.steps.find(step=>step.uses==='actions/checkout@v4');
     assert.ok(checkout.with.ref.includes('inputs.source_ref'));
+    assert.ok(job.steps.indexOf(validation)>job.steps.indexOf(checkout));
   }
   assert.ok(mobile.jobs.ios.steps.some(step=>step.run==='python scripts/build-mobile-ios.py'));
   assert.ok(mobile.jobs.ios.steps.some(step=>step.run?.includes('node --test mobile/tests/*.test.cjs')&&step.run.includes('test_mobile_ios_build.py')));

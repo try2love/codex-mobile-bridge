@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -527,25 +528,152 @@ class AntigravitySafetyTests(unittest.TestCase):
         with self.assertRaises(sqlite3.DatabaseError):
             adapter.store.is_native_busy(self.root, CID)
 
-    def test_creation_sends_only_after_exact_project_binding(self):
-        adapter = Antigravity(self.directory, home=self.home)
-        project = Path(self.temp.name)/'My Project'
+    @contextmanager
+    def _creation_server(self, adapter, replies, *, surface='app', restart_after=None):
+        requests = []
+        original = {'pid': 123, 'birth': 456, 'image': '/official/language_server'}
+
+        def find_endpoint(source, home):
+            self.assertEqual(source, surface)
+            self.assertEqual(home, self.home.resolve())
+            identity = {**original, 'birth': 789} if len(requests) == restart_after else original
+            return {'identity': identity, 'address': 'http://127.0.0.1:12345', 'token': 'fixture'}
+
+        @contextmanager
+        def respond(request, *, timeout):
+            method = request.full_url.rsplit('/', 1)[-1]
+            requests.append((method, json.loads(request.data)))
+            self.assertIn(method, replies)
+            yield mock.Mock(read=mock.Mock(return_value=json.dumps(replies[method]).encode()))
+
+        with mock.patch('bridge.clients.antigravity.cli_session.endpoint', side_effect=find_endpoint), \
+                mock.patch('bridge.clients.antigravity.cli_session.verify_endpoint'), \
+                mock.patch.object(adapter.cli._opener, 'open', side_effect=respond):
+            yield requests
+
+    def _creation_project(self, *, surface='app'):
+        project = Path(self.temp.name) / '项目 My Project'
         project.mkdir()
-        request = {'directoryProject': {'surface': 'app', 'cwd': str(project)}, 'text': 'first'}
-        for reply in ({'cascadeId': CID}, {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': ['file:///wrong']}}):
-            with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value=reply) as rpc, \
-                    mock.patch.object(adapter.cli, 'send_user_message') as send:
-                with self.assertRaises(BridgeUnavailable):
-                    adapter.call('create', body=request)
-                send.assert_not_called()
-                self.assertEqual(rpc.call_count, 1)
-                self.assertEqual(rpc.call_args.args[1]['workspace_uris'], [project.resolve().as_uri()])
-        reply = {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [project.resolve().as_uri()]}}
-        with mock.patch.object(adapter.cli, 'call_ls_rpc', return_value=reply), \
-                mock.patch.object(adapter.cli, 'send_user_message') as send:
-            result = adapter.call('create', body=request)
-            self.assertEqual(result['status'], 'accepted')
-            send.assert_called_once_with(CID, 'first', model=None, surface='app')
+        return ({'directoryProject': {'surface': surface, 'cwd': str(project)}, 'text': 'first'},
+                project.resolve().as_uri())
+
+    def _assert_creation_requests(self, requests, expected_methods, uri):
+        self.assertEqual([method for method, _ in requests], expected_methods)
+        for method, payload in requests:
+            if method == 'StartCascade':
+                self.assertEqual(payload['workspace_uris'], [uri])
+            elif method == 'GetCascadeTrajectory':
+                self.assertEqual(payload, {'cascadeId': CID})
+            elif method == 'SendUserCascadeMessage':
+                self.assertEqual(payload['cascade_id'], CID)
+                self.assertEqual(payload['items'], [{'text': 'first'}])
+
+    def test_explicit_creation_binding_is_authoritative(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        request, uri = self._creation_project()
+        _create_surface_db(self.root, [(*self.row[:5], json.dumps([uri]), *self.row[6:])])
+        for workspace in ({}, None, {'other': 'field'}, {'workspaceUris': []},
+                          {'workspaceUris': ['file:///elsewhere']},
+                          {'workspaceUris': [uri], 'workspace_uris': ['file:///elsewhere']}):
+            with self.subTest(workspace=workspace):
+                replies = {'StartCascade': {'cascadeId': CID, 'projectEnvInfo': workspace}}
+                with self._creation_server(adapter, replies) as requests:
+                    with self.assertRaisesRegex(BridgeUnavailable, '尚未确认新会话项目绑定'):
+                        adapter.call('create', body=request)
+                self._assert_creation_requests(requests, ['StartCascade'], uri)
+
+        replies = {'StartCascade': {'cascadeId': CID, 'project_env_info': {'workspace_uris': [uri]}},
+                   'SendUserCascadeMessage': {}}
+        with self._creation_server(adapter, replies) as requests:
+            self.assertEqual(adapter.call('create', body=request)['status'], 'accepted')
+        self._assert_creation_requests(requests, ['StartCascade', 'SendUserCascadeMessage'], uri)
+
+    def test_creation_checks_single_database_workspace_on_the_selected_surface(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        request, uri = self._creation_project(surface='ide')
+        _create_surface_db(self.root, [self.row])
+        ide_root = self.home / '.gemini/antigravity-ide'
+        _create_surface_db(ide_root, [(*self.row[:5], json.dumps([uri]), *self.row[6:])])
+        replies = {'StartCascade': {'cascadeId': CID}, 'SendUserCascadeMessage': {}}
+        with self._creation_server(adapter, replies, surface='ide') as requests:
+            self.assertEqual(adapter.call('create', body=request)['status'], 'accepted')
+        self._assert_creation_requests(requests, ['StartCascade', 'SendUserCascadeMessage'], uri)
+
+        # A matching trajectory cannot override an existing contradictory or incomplete row.
+        replies['GetCascadeTrajectory'] = {'trajectory': {'metadata': {'workspaceUris': [uri]}}}
+        for stored in (None, 'bad json', '[]', json.dumps([uri, uri]), json.dumps(['file:///elsewhere'])):
+            with self.subTest(stored=stored):
+                connection = sqlite3.connect(ide_root / 'conversation_summaries.db')
+                try:
+                    connection.execute('UPDATE conversation_summaries SET workspace_uris = ? WHERE conversation_id = ?',
+                                       (stored, CID))
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self._creation_server(adapter, replies, surface='ide') as requests:
+                    with self.assertRaisesRegex(BridgeUnavailable, '尚未确认新会话项目绑定'):
+                        adapter.call('create', body=request)
+                self._assert_creation_requests(requests, ['StartCascade'], uri)
+
+    def test_omitted_creation_binding_reads_live_trajectory_when_database_has_no_evidence(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        request, uri = self._creation_project()
+        _create_surface_db(self.root, [(str(uuid.uuid4()), *self.row[1:])])
+        for database_available in (True, False):
+            with self.subTest(database_available=database_available):
+                if not database_available:
+                    (self.root / 'conversation_summaries.db').write_bytes(b'not a sqlite database')
+                metadata = {'workspaces': [{'workspaceFolderAbsoluteUri': uri}]}
+                if database_available:
+                    metadata['workspaceUris'] = [uri]
+                replies = {
+                    'StartCascade': {'cascadeId': CID},
+                    'GetCascadeTrajectory': {'trajectory': {'metadata': metadata}},
+                    'SendUserCascadeMessage': {},
+                }
+                with self._creation_server(adapter, replies) as requests:
+                    self.assertEqual(adapter.call('create', body=request)['status'], 'accepted')
+                self._assert_creation_requests(
+                    requests, ['StartCascade', 'GetCascadeTrajectory', 'SendUserCascadeMessage'], uri,
+                )
+
+    def test_trajectory_binding_rejects_missing_conflicting_or_other_session_evidence(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        request, uri = self._creation_project()
+        for metadata in (
+            {},
+            {'workspaceUris': ['file:///elsewhere']},
+            {'workspaceUris': [uri], 'workspace_uris': ['file:///elsewhere']},
+            {'workspaceUris': [uri], 'workspaces': [{'workspaceFolderAbsoluteUri': 'file:///elsewhere'}]},
+            {'workspaceUris': [], 'workspaces': [{'workspaceFolderAbsoluteUri': uri}]},
+            {'workspaces': [{'workspaceFolderAbsoluteUri': uri}, {'workspaceFolderAbsoluteUri': uri}]},
+            {'workspaceUris': [uri], 'cascadeId': str(uuid.uuid4())},
+        ):
+            with self.subTest(metadata=metadata):
+                replies = {
+                    'StartCascade': {'cascadeId': CID},
+                    'GetCascadeTrajectory': {'trajectory': {'metadata': metadata}},
+                }
+                with self._creation_server(adapter, replies) as requests:
+                    with self.assertRaisesRegex(BridgeUnavailable, '尚未确认新会话项目绑定'):
+                        adapter.call('create', body=request)
+                self._assert_creation_requests(requests, ['StartCascade', 'GetCascadeTrajectory'], uri)
+
+    def test_creation_does_not_query_or_send_on_a_replacement_endpoint(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        request, uri = self._creation_project()
+        replies = {
+            'StartCascade': {'cascadeId': CID},
+            'GetCascadeTrajectory': {'trajectory': {'metadata': {'workspaceUris': [uri]}}},
+            'SendUserCascadeMessage': {},
+        }
+        methods = ['StartCascade', 'GetCascadeTrajectory']
+        for restart_after in (1, 2):
+            with self.subTest(restart_after=restart_after):
+                with self._creation_server(adapter, replies, restart_after=restart_after) as requests:
+                    with self.assertRaises(BridgeUnavailable):
+                        adapter.call('create', body=request)
+                self._assert_creation_requests(requests, methods[:restart_after], uri)
 
     def test_model_catalog_is_native_only_and_surface_specific(self):
         adapter = self.adapter()
@@ -603,13 +731,17 @@ class AntigravitySafetyTests(unittest.TestCase):
     def test_uploaded_images_and_files_remain_native_path_references(self):
         from bridge.clients.uploads import DesktopUploads
         uploads = DesktopUploads(self.directory)
-        rows = [{'id': 'image', 'image': 'image/png', 'localPath': '/tmp/photo.png', 'name': 'photo.png'},
+        img_file = Path(self.temp.name) / 'photo.png'
+        img_file.write_bytes(b'\x89PNG\r\n\x1a\n')
+        rows = [{'id': 'image', 'image': 'image/png', 'localPath': str(img_file), 'name': 'photo.png'},
                 {'id': 'file', 'image': None, 'localPath': '/tmp/report.txt', 'name': 'report.txt'}]
         with mock.patch.object(uploads.store, 'resolve', return_value=rows):
             images, files = uploads.resolve('antigravity', CID, ['image', 'file'], native_files=True)
-        self.assertEqual(images, [])
-        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedFiles': files}),
-                         'inspect\n\n@/tmp/photo.png\n@/tmp/report.txt')
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0]['url'].startswith('data:image/png;base64,'))
+        self.assertEqual(images[0]['name'], 'photo.png')
+        self.assertEqual(Antigravity._prompt({'text': 'inspect', 'resolvedImages': images, 'resolvedFiles': files}),
+                         'inspect\n\n@/tmp/report.txt')
         self.assertNotEqual(uploads.scope('claude', CID), uploads.scope('antigravity', CID))
 
     def test_hook_injection_requires_verified_session_and_native_idle(self):
@@ -737,6 +869,97 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(changed['cache']['state'], 'unavailable')
             self.assertTrue(changed['capabilities']['manualModels'])
 
+    def test_catalog_resolution_reads_at_most_one_live_directory(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        legacy = {'models': [{'id': 'legacy-flat', 'name': 'Legacy'}]}
+        existing = {'models': [{'id': 'existing', 'nativeModel': 'MODEL_EXISTING'}]}
+        new_model = {'id': 'new-live', 'name': 'New', 'nativeModel': 'MODEL_NEW'}
+        new = {'models': [new_model], 'userStatus': {}, 'notice': ''}
+        no_match = {**new, 'models': existing['models']}
+        flat = {'models': [{'id': 'm-high', 'nativeModel': 'MODEL_M_HIGH'}]}
+        grouped = {**new, 'models': [{'id': 'm', 'name': 'M',
+            'variants': {'high': {'id': 'm-high', 'nativeModel': 'MODEL_M_HIGH'}}}]}
+
+        for name, cached, payload, model, effort, expected in (
+                ('legacy and new model', legacy, new, 'new-live', None, ('MODEL_NEW', 'new-live', '', 'New')),
+                ('legacy and still missing', legacy, no_match, 'new-live', None, None),
+                ('legacy and refresh failure', legacy, BridgeUnavailable('refresh failed'), 'new-live', None, None),
+                ('current schema and new model', existing, new, 'new-live', None, ('MODEL_NEW', 'new-live', '', 'New')),
+                ('cold cache and missing model', None, no_match, 'new-live', None, None),
+                ('old flat catalog and auto effort', flat, grouped, 'm-high', 'auto', ('MODEL_M_HIGH', 'm', 'high', 'M'))):
+            with self.subTest(name=name), \
+                    mock.patch.object(adapter, 'account_scope', return_value='account-a'), \
+                    mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'app'), \
+                    mock.patch.object(adapter.cli, 'catalog_models') as read:
+                identity = manager._account_model_identity('antigravity', 'app')
+                manager.model_store.clear()
+                if cached is not None:
+                    manager.model_store.write(identity, cached)
+                before = manager.model_store.read(identity)
+                if isinstance(payload, Exception):
+                    read.side_effect = payload
+                else:
+                    read.return_value = payload
+                if expected is not None:
+                    self.assertEqual(adapter.cli.canonicalize_model_selection(model, effort), expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'MODEL_'):
+                        adapter.cli.canonicalize_model_selection(model, effort)
+                read.assert_called_once_with(surface='app', refresh=cached is not None)
+                after = manager.model_store.read(identity)
+                if isinstance(payload, Exception):
+                    self.assertEqual(after, before)
+                else:
+                    self.assertEqual(after[1]['models'], payload['models'])
+
+    def test_automatic_catalog_refresh_checks_the_selected_surface(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        legacy = {'models': [{'id': 'legacy-flat', 'name': 'Legacy'}]}
+        with mock.patch.object(adapter, 'account_scope', return_value='account-a'), \
+                mock.patch.object(adapter.cli, 'available', side_effect=lambda surface: surface == 'ide'), \
+                mock.patch.object(adapter.cli, 'catalog_models', return_value={
+                    'models': [{'id': 'ide', 'nativeModel': 'MODEL_IDE'}], 'userStatus': {}, 'notice': ''}) as read:
+            for surface in ('app', 'ide'):
+                manager.model_store.write(manager._account_model_identity('antigravity', surface), legacy)
+            app = manager._desktop_model_directory('antigravity', 'app')
+            self.assertFalse(app['capabilities']['models'])
+            self.assertEqual(app['models'], legacy['models'])
+            read.assert_not_called()
+            ide = manager._desktop_model_directory('antigravity', 'ide')
+            self.assertTrue(ide['capabilities']['models'])
+            self.assertEqual(ide['models'], [{'id': 'ide', 'nativeModel': 'MODEL_IDE'}])
+            read.assert_called_once_with(surface='ide', refresh=True)
+
+    def test_cache_miss_cannot_refresh_after_source_account_changes(self):
+        settings = self.directory/'desktop-sessions/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'antigravityHome': str(self.home), 'enabled': {'antigravity': True}}))
+        manager = DesktopSessions(self.directory)
+        self.addCleanup(manager.close)
+        adapter = manager.adapters['antigravity']
+        with mock.patch.object(adapter, 'account_scope', side_effect=['account-a', 'account-a', 'account-b']) as account, \
+                mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'catalog_models') as native:
+            identity = manager._account_model_identity('antigravity', 'app')
+            cached = {'models': [{'id': 'old', 'nativeModel': 'MODEL_OLD'}]}
+            manager.model_store.write(identity, cached)
+            before = manager.model_store.read(identity)
+            with self.assertRaisesRegex(BridgeUnavailable, '账号或配置已变化'):
+                adapter.cli.canonicalize_model_selection('new')
+            self.assertEqual(manager.model_store.read(identity), before)
+            native.assert_not_called()
+            self.assertEqual(account.call_args_list, [mock.call('app')] * 3)
+
     def test_unknown_account_preserves_history_but_cannot_save_manual_models(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory/'desktop-sessions/settings.json'
@@ -763,11 +986,16 @@ class AntigravitySafetyTests(unittest.TestCase):
     def test_manual_native_model_is_exact_for_start_and_send(self):
         self.home.mkdir(parents=True, exist_ok=True)
         cli = AntigravityCli(self.home, model_catalog=mock.Mock(side_effect=AssertionError('no guessed catalog')))
-        with mock.patch.object(cli, 'call_ls_rpc', return_value={'cascadeId': CID,
-                'projectEnvInfo': {'workspaceUris': [self.home.as_uri()]}}) as call:
-            cli.start_cascade(surface='ide', model='MODEL_EXPLICIT_525', cwd=str(self.home))
+        identity = {'pid': 123}
+        with mock.patch.object(cli, 'call_ls_rpc', side_effect=[
+            ({'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [self.home.as_uri()]}}, identity), {},
+        ]) as call:
+            cid, expected_identity = cli.start_cascade(surface='ide', model='MODEL_EXPLICIT_525', cwd=str(self.home))
+            self.assertEqual(cid, CID)
             self.assertEqual(call.call_args.args[1]['requested_model'], 'MODEL_EXPLICIT_525')
-            cli.send_user_message(CID, 'fixture', model='MODEL_EXPLICIT_525', surface='ide')
+            cli.send_user_message(cid, 'fixture', model='MODEL_EXPLICIT_525', surface='ide',
+                                  expected_identity=expected_identity)
+            self.assertEqual(call.call_args.kwargs['expected_identity'], identity)
             self.assertEqual(call.call_args.args[1]['cascade_config']['planner_config']['requested_model'],
                              {'model': 'MODEL_EXPLICIT_525'})
             self.assertEqual(call.call_count, 2)
@@ -853,6 +1081,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                 return {'trajectorySummaries': state['trajectories'] if surface == 'app' else {}}
             if method == 'GetCascadeTrajectory':
                 return {'trajectory': {'steps': state['traj_steps'].get((body or {}).get('cascadeId'), [])}}
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
@@ -1003,6 +1233,8 @@ class AntigravitySafetyTests(unittest.TestCase):
                         },
                     }
                 }
+            if method == 'GetCascadeTrajectoryGeneratorMetadata':
+                return {}
             if method == 'HandleCascadeUserInteraction':
                 return {}
             raise AssertionError(f'Unexpected RPC: {method}')
@@ -1209,17 +1441,27 @@ class AntigravitySafetyTests(unittest.TestCase):
         self.assertEqual([(t['id'], t['cancellable']) for t in tasks], [(child_run, False), (child_done, False)])
         sid = gateway_id('app', CID)
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
-                mock.patch.object(adapter.cli, 'stop') as stop_mock:
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source'), \
+                mock.patch.object(adapter.cli, 'stop') as stop_mock, \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, *args, **kwargs: (
+                    {'trajectorySummaries': {child_run: {
+                        'status': 'CASCADE_RUN_STATUS_RUNNING', 'trajectoryMetadata': {'parentCascadeId': CID},
+                    }}} if method == 'GetAllCascadeTrajectories' else {}
+                )) as rpc_mock:
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': unrelated})
             with self.assertRaises(ValueError):
                 adapter.call('stop-task', sid, {'taskId': child_done})
             adapter.hooks = mock.MagicMock()
             adapter.hooks.permission_mode.return_value = 'desktop'
-            with self.assertRaises(ValueError):
-                adapter.call('stop-task', sid, {'taskId': child_run})
+            result = adapter.call('stop-task', sid, {'taskId': child_run})
+            self.assertEqual(result, {'status': 'accepted'})
             stop_mock.assert_not_called()
-            adapter.hooks.request_stop.assert_not_called()
+            adapter.hooks.request_stop.assert_called_once_with(gateway_id('app', child_run))
+            self.assertEqual(
+                [call.args[0] for call in rpc_mock.call_args_list if call.args[0] != 'GetAllCascadeTrajectories'],
+                ['CancelCascadeInvocation', 'ForceStopCascadeTree'],
+            )
 
         resolved_count = 0
         def resolve_once(payload):
@@ -1332,7 +1574,7 @@ class AntigravitySafetyTests(unittest.TestCase):
                 mock.patch.object(adapter.cli, 'slash_commands', return_value=cmds) as slash_mock, \
                 mock.patch.object(adapter.cli, 'catalog_models', return_value={'models': [{'id': 'm1', 'name': 'M1', 'nativeModel': 'MODEL_M1'}], 'userStatus': {}, 'notice': ''}), \
                 mock.patch.object(adapter.cli, 'send_user_message') as send_mock, \
-                mock.patch.object(adapter.cli, 'start_cascade', return_value=CID):
+                mock.patch.object(adapter.cli, 'start_cascade', return_value=(CID, None)):
             detail = adapter.call('detail', sid)
             for cap in ('skills', 'multiSkills', 'slashCommands', 'compact', 'plan', 'goal'):
                 self.assertTrue(detail['capabilities'][cap], cap)
@@ -1623,6 +1865,19 @@ class AntigravitySafetyTests(unittest.TestCase):
                     ('ForceStopCascadeTree', {'conversationId': CID}),
                 ])
 
+            # ForceStopCascadeTree 超时或失败时必须清理轨迹缓存，同时仍向上抛出 BridgeUnavailable
+            adapter.cli._trajectories_cache['ide'] = (time.monotonic(), {}, {CID})
+            adapter.cli._trajectories_cache['app'] = (time.monotonic(), {}, {CID})
+            def fail_tree(method, payload=None, *, surface='app'):
+                if method == 'ForceStopCascadeTree':
+                    raise BridgeUnavailable('tree stop timed out')
+                return {}
+            with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fail_tree):
+                with self.assertRaises(BridgeUnavailable):
+                    adapter.cli.stop(CID, surface='ide')
+            self.assertNotIn('ide', adapter.cli._trajectories_cache)
+            self.assertIn('app', adapter.cli._trajectories_cache)
+
     def test_antigravity_groups_effort_variants_by_base_model_and_preserves_legacy_ids(self):
         _create_surface_db(self.root, [self.row])
         settings = self.directory / 'desktop-sessions/settings.json'
@@ -1737,10 +1992,12 @@ class AntigravitySafetyTests(unittest.TestCase):
                 create_cat = manager.call('antigravity', 'create-models', body={'environment': env_key, 'projectKey': f'app:{project}'})
                 self.assertTrue(create_cat['capabilities']['effort'])
                 self.assertFalse(create_cat['capabilities']['manualEffort'])
-                with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda method, payload=None, *, surface='app': (
-                    {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [project.as_uri()]}} if method == 'StartCascade'
-                    else fake_rpc(method, payload, surface=surface)
-                )) as rpc_create:
+                def create_rpc(method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
+                    if method == 'StartCascade':
+                        return {'cascadeId': CID, 'projectEnvInfo': {'workspaceUris': [project.as_uri()]}}, {'pid': 123}
+                    return fake_rpc(method, payload, surface=surface)
+
+                with mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=create_rpc) as rpc_create:
                     created = manager.call('antigravity', 'create', body={
                         'id': str(uuid.uuid4()), 'projectKey': f'app:{project}', 'environment': env_key,
                         'firstMessage': 'hi grouped', 'model': 'gemini-4-hydrogen', 'effort': 'xhigh',

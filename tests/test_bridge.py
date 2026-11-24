@@ -119,6 +119,11 @@ class DesktopFixture:
 
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
+        # Reconnection may navigate even in approval tests; never invoke the
+        # runner's registered codex:// handler from an isolated IPC fixture.
+        navigation = patch('bridge.app.service.open_in_desktop')
+        self.opened_desktop = navigation.start()
+        self.addCleanup(navigation.stop)
         self.temp = tempfile.TemporaryDirectory(dir=str(ROOT / '.tmp'), prefix='t')
         self.root = Path(self.temp.name)
         # Path must fit macOS's 104-byte Unix socket limit; bind via relative path.
@@ -134,13 +139,21 @@ class IntegrationTests(unittest.TestCase):
         db.close()
         db.close()
         # This fixture uses desktop IPC only, never the runner's installed Codex.
-        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
 
     def tearDown(self):
         self.bridge.close()
         self.fixture.close()
         self.temp.cleanup()
+
+    def test_fixture_reconnect_keeps_its_explicit_ipc_endpoint(self):
+        self.bridge.ipc.connect()
+        self.bridge.ipc.close()
+        self.bridge.ipc.connect()
+        self.assertEqual(self.bridge.ipc.path, self.fixture.path)
+        self.assertEqual(self.bridge.ipc.original_path, self.fixture.path)
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
 
     def test_live_read_send_same_thread_and_idempotence(self):
         view = self.bridge.view(THREAD)
@@ -159,6 +172,52 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('model', request)
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
+
+    def test_title_only_update_reaches_an_open_chat_without_an_ipc_title_patch(self):
+        self.fixture.state['title'] = None
+        with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
+            db.execute('ALTER TABLE threads ADD COLUMN name TEXT')
+            db.execute('UPDATE threads SET title = NULL')
+        session = self.bridge.session(THREAD)
+        self.assertTrue(session.connected)
+        before = self.bridge.timeline_read(THREAD)
+        self.assertEqual(before['meta']['title'], '未命名聊天')
+        session.viewers = 1
+        with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
+            db.execute('UPDATE threads SET name = ? WHERE id = ?', ('原生自动标题', THREAD))
+        self.bridge._maintain_session(session)
+        after = self.bridge.timeline_read(THREAD, 'changes', after=before['sequence'], epoch=before['epoch'], start='')
+        self.assertEqual(after['meta']['title'], '原生自动标题')
+        self.assertGreater(after['sequence'], before['sequence'])
+        self.assertEqual(after['rows'], [])
+        self.assertIsNone(session.state['title'])
+
+    def test_session_list_does_not_wait_for_a_busy_session_to_observe_its_title(self):
+        from concurrent.futures import ThreadPoolExecutor
+        session = self.bridge.live[THREAD] = LiveSession(THREAD)
+        held, release, listed = threading.Event(), threading.Event(), threading.Event()
+        def hold_session():
+            with session.condition:
+                held.set()
+                release.wait(3)
+        def read_list():
+            rows = self.bridge.list(local_only=True)
+            listed.set()
+            return rows
+        with ThreadPoolExecutor(2) as pool:
+            holder = pool.submit(hold_session)
+            self.assertTrue(held.wait(1))
+            pending = pool.submit(read_list)
+            try:
+                self.assertTrue(listed.wait(.5), 'list waited for unrelated live-session work')
+            finally:
+                release.set()
+            rows = pending.result(2)
+            holder.result(2)
+        self.assertEqual([row['id'] for row in rows], [THREAD])
+        self.assertEqual(rows[0]['title'], 'Desktop test')
+        self.bridge.list(local_only=True)
+        self.assertEqual(session.saved_title, 'Desktop test')
 
     def test_desktop_router_restart_rediscovers_owner_without_restarting_gateway(self):
         session = self.bridge.session(THREAD)
@@ -183,7 +242,7 @@ class IntegrationTests(unittest.TestCase):
                 super().send(message)
 
         self.fixture = RestartedDesktop(self.root)
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge.ipc.path = self.bridge.ipc.original_path = self.fixture.path
         self.fixture.state['title'] = 'After desktop restart'
         with patch('bridge.app.service.open_in_desktop') as activate:
             self.bridge._refresh_async(session)
@@ -200,6 +259,61 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0]['targetClientId'], 'new-owner')
         self.assertEqual(sends[0]['params']['conversationId'], THREAD)
+
+    def test_native_host_appearing_is_detected_without_closing_a_live_follower(self):
+        self.bridge.session(THREAD)
+        ipc = self.bridge.ipc
+        original = ipc.socket
+        ipc.codex_home = self.root
+        with patch('bridge.clients.codex.desktop_runtime.hosted_endpoint', return_value={
+                'path': 'new-native-endpoint', 'generation': 'new-generation'}):
+            self.assertTrue(ipc.endpoint_changed())
+        self.assertIs(ipc.socket, original)
+
+    def test_native_chat_unload_does_not_invalidate_another_chat_with_same_owner(self):
+        session = self.bridge.session(THREAD)
+        another = self.bridge.live['other'] = LiveSession('other')
+        another.connected = True
+        another.owner = session.owner
+        self.bridge._event({'method': 'client-status-changed', 'params': {'status': 'disconnected',
+            'clientId': session.owner, 'hostId': 'local', 'conversationId': 'other'}})
+        self.assertTrue(session.connected)
+        self.assertFalse(another.connected)
+
+    def test_hosted_cold_chat_checks_owner_before_joining_shared_follower(self):
+        session = self.bridge.session(THREAD)
+        session.connected = False
+        self.bridge.ipc.hosted = True
+        with patch.object(self.bridge.ipc, 'owner', side_effect=IPCError('no-client-found')) as owner, \
+                patch.object(self.bridge.ipc, 'follow') as follow:
+            self.bridge._attach(session, timeout=0)
+        owner.assert_called_once_with(THREAD, host='local', legacy_discovery=False)
+        follow.assert_not_called()
+        self.assertIsNotNone(self.bridge.ipc.socket)
+
+    def test_passive_transport_recovery_defers_while_a_write_is_in_flight(self):
+        from bridge.features.accounts.accounts import Accounts
+        self.bridge.accounts = Accounts(self.bridge)
+        entered, release = threading.Event(), threading.Event()
+        def writing():
+            with self.bridge.accounts.gate.host('local'):
+                entered.set()
+                release.wait(3)
+        worker = threading.Thread(target=writing)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            with patch.object(self.bridge.ipc, 'endpoint_changed', return_value=True), \
+                    patch.object(self.bridge, '_rebuild_desktop_transport') as rebuild:
+                self.bridge._recover_desktop_transport()
+                rebuild.assert_not_called()
+                release.set()
+                worker.join(2)
+                self.bridge._recover_desktop_transport()
+                rebuild.assert_called_once()
+        finally:
+            release.set()
+            worker.join(3)
 
     def test_external_provider_change_does_not_use_stale_managed_account_to_block_send(self):
         from bridge.features.accounts.accounts import Accounts
@@ -507,15 +621,14 @@ class IntegrationTests(unittest.TestCase):
                 self.assertTrue(session.condition.wait_for(lambda: session.connected, timeout=2))
 
     def test_explicit_activation_recovers_cold_chat_without_a_model_request(self):
-        from unittest.mock import patch
         self.fixture.loaded = False
         self.bridge.store.history = lambda tid, **kwargs: state()
-        with patch('bridge.app.service.open_in_desktop', side_effect=lambda *args: setattr(self.fixture, 'loaded', True)) as opened:
-            session = self.bridge.activate(THREAD)
-            self.assertTrue(session.connected)
-            opened.assert_called_once_with(THREAD, 'local')
-            self.bridge.activate(THREAD)
-            self.assertEqual(opened.call_count, 1)
+        self.opened_desktop.side_effect = lambda *args: setattr(self.fixture, 'loaded', True)
+        session = self.bridge.activate(THREAD)
+        self.assertTrue(session.connected)
+        self.opened_desktop.assert_called_once_with(THREAD, 'local')
+        self.bridge.activate(THREAD)
+        self.assertEqual(self.opened_desktop.call_count, 1)
         self.assertFalse(any(r['method'].startswith('thread-follower-') for r in self.fixture.requests))
 
     def test_existing_owner_needs_no_desktop_navigation(self):
@@ -690,8 +803,8 @@ class IntegrationTests(unittest.TestCase):
             self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': 'wrong'})
         self.bridge.respond(THREAD, pending['id'], {'action': 'skip', 'questionId': question})
         self.bridge.close()
-        self.bridge = Bridge(self.root, self.root / 'data', codex_bin=self.root / 'fixture-codex-not-installed')
-        self.bridge.ipc.path = self.fixture.path
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
         remaining = self.bridge.view(THREAD)['requests']
         self.assertEqual([r['id'] for r in remaining], ['approval'])
         self.assertEqual(len(self.bridge.session(THREAD).state['turns'][0]['items'][0]['questions']), 1)
@@ -1087,6 +1200,23 @@ class IntegrationTests(unittest.TestCase):
         emit({'type': 'snapshot', 'revision': 54, 'conversationState': state()}, version=13)
         self.assertTrue(session.connected)
         self.assertIsNone(session.desktop_stream_error)
+        self.assertTrue(session.access['canSend'])
+
+    def test_v13_system_error_after_failed_response_remains_connected_to_original_owner(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        session = self.bridge.session(THREAD)
+        failed = state()
+        failed['threadRuntimeStatus'] = {'type': 'systemError'}
+        failed['turns'] = [{'turnId': 'failed-turn', 'status': 'failed',
+                            'completedAt': 1794977273000,
+                            'items': [{'id': 'error', 'type': 'agentMessage', 'text': '',
+                                       'phase': 'final_answer'}]}]
+        self.bridge._event({'method': 'thread-stream-state-changed', 'version': 13,
+            'sourceClientId': 'owner', 'params': {'hostId': 'local', 'conversationId': THREAD,
+            'change': {'type': 'snapshot', 'revision': 2, 'conversationState': failed}}})
+        self.assertTrue(session.connected)
+        self.assertIsNone(session.desktop_stream_error)
+        self.assertEqual(session.state['threadRuntimeStatus']['type'], 'systemError')
         self.assertTrue(session.access['canSend'])
 
 
@@ -1885,7 +2015,8 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/sessions/'+THREAD+'/catalog?kind=skills&offset=bad', headers=headers)[0], 400)
 
     def test_web_appearance_assets_are_served_with_correct_types(self):
-        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css')]:
+        for name, content_type in [('presentation.js', 'text/javascript'), ('presentation.css', 'text/css'),
+                                   ('composer-toolbar-editor.css', 'text/css')]:
             conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
             self.addCleanup(conn.close)
             conn.request('GET', '/' + name, headers={'Origin': self.origin})
@@ -2114,7 +2245,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script (?:src|data-bridge-src)="([^"]+)"', response.read().decode())
             self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/bootstrap.js', '/host.js', '/layout.js', '/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
-                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/cli-access.js', '/wsl-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/file-actions.js', '/code-syntax.js', '/vendor/prism/source-view.min.js', '/source-view.js', '/pdf-preview.js', '/html-preview.js', '/workbench.js', '/list-sync.js', '/client-lifecycle.js', '/project-picker.js', '/desktop-sessions.js', '/client-navigation.js', '/app.js', '/presentation.js'])
+                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/downloads.js', '/image-viewer.js', '/timeline.js', '/account.js', '/modes.js', '/composer-toolbar-editor.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/client-accounts.js', '/cli-access.js', '/wsl-accounts.js', '/floating-panel.js', '/git-panel.js', '/vendor/xterm/xterm.js', '/vendor/xterm/addon-fit.js', '/command-terminal-panel.js', '/terminal-panel.js', '/permissions.js', '/side-chat.js', '/agents-panel.js', '/file-actions.js', '/code-syntax.js', '/vendor/prism/source-view.min.js', '/source-view.js', '/pdf-preview.js', '/html-preview.js', '/workbench.js', '/list-sync.js', '/client-lifecycle.js', '/project-picker.js', '/desktop-sessions.js', '/client-navigation.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)
                 response = conn.getresponse()

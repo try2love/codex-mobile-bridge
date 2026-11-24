@@ -11,7 +11,7 @@ for(const paired of [false,true])test('optional official service starts after th
   const app={requestSingleInstanceLock:()=>true,whenReady:()=>({then(fn){ready=fn;}}),on(){},getLocale:()=> 'zh-CN',getPath:()=>'/fixture',isPackaged:false};
   const context=vm.createContext({__dirname:path.dirname(main),process:{env:{},platform:'linux'},calls,
     require(name){
-      if(name==='electron')return {app};
+      if(name==='electron')return {app,nativeTheme:new (require('node:events').EventEmitter)()};
       if(name==='./features/zcode-official/controller.cjs'){calls.push('load-official');return {OfficialRemote};}
       if(name==='./features/connections/qr.cjs')return {};
       if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};

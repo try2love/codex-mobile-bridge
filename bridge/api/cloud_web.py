@@ -41,7 +41,7 @@ def adapt_response(server, path, body, headers, request):
         headers['Content-Security-Policy'] = re.sub(r'script-src [^;]+', "script-src 'nonce-" + nonce + "'", headers['Content-Security-Policy'])
     elif path in STATIC:
         mime = STATIC[path][1]
-        if path == '/manifest.webmanifest':
+        if path in ('/manifest.webmanifest', '/manifest-dark.webmanifest'):
             value = json.loads(body)
             value['start_url'] = base + '/'
             value['scope'] = base + '/'

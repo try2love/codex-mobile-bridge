@@ -13,6 +13,10 @@ from bridge.features.sessions.cli_release import CliConnections
 from tests.test_cli_force import CliForceFixture
 
 
+def release_threads():
+    return SimpleNamespace(Thread=Mock(), RLock=threading.RLock, Event=threading.Event)
+
+
 class CliScopeTests(CliForceFixture):
     def setUp(self):
         super().setUp()
@@ -82,7 +86,7 @@ class CliScopeTests(CliForceFixture):
         self.bridge.activate.assert_not_called()
         body = {'id': str(uuid.uuid4()), 'mode': 'scopeWait', 'scopeKey': preview['scopeKey'],
                 'connections': preview['connections'], 'generation': preview['generation']}
-        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+        with patch('bridge.features.sessions.cli_release.threading', release_threads()):
             job = manager.submit(body)
         manager._run_scope(manager.jobs[job['id']], manager.callbacks)
         self.assertEqual([row['status'] for row in manager.jobs[job['id']]['results']], ['released', 'released'])
@@ -150,12 +154,12 @@ class CliScopeTests(CliForceFixture):
         body = {'mode': 'scopeWait', 'id': str(uuid.uuid4()), 'scopeKey': scope_key,
                 'connections': preview['connections'], 'generation': preview['generation']}
         self.idle.side_effect = CliTasksPending('busy fixture')
-        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+        with patch('bridge.features.sessions.cli_release.threading', release_threads()):
             waiting = manager.submit(body)
         self.scope.release(self.thread_id, 'key-a', waiting['id'], manager.jobs[waiting['id']]['scopeGeneration'])
         self.bridge.submissions[self.thread_id + ':unknown'] = {'status': 'unknown', 'text': 'retained'}
         preview = manager.submit({'mode': 'scopePreview', 'scopeKey': scope_key, 'connections': ['key-b']})
-        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+        with patch('bridge.features.sessions.cli_release.threading', release_threads()):
             forced = manager.submit({'mode': 'scopeForce', 'id': str(uuid.uuid4()), 'scopeKey': scope_key,
                 'connections': preview['connections'], 'generation': preview['generation']})
         manager._run_scope(manager.jobs[forced['id']], manager.callbacks)
@@ -188,7 +192,7 @@ class CliScopeTests(CliForceFixture):
         manager = self.manager()
         preview = manager.submit({'mode': 'scopePreview', 'scopeKey': self.scope.descriptor()['scopeKey'], 'all': True})
         self.stop.side_effect = OSError('normal exit acknowledgment unknown')
-        with patch('bridge.features.sessions.cli_release.threading.Thread'):
+        with patch('bridge.features.sessions.cli_release.threading', release_threads()):
             job = manager.submit({'mode': 'scopeWait', 'id': str(uuid.uuid4()), 'scopeKey': preview['scopeKey'],
                                   'connections': preview['connections'], 'generation': preview['generation']})
         manager._run_scope(manager.jobs[job['id']], manager.callbacks)
@@ -197,7 +201,7 @@ class CliScopeTests(CliForceFixture):
         self.assertTrue(all(row['status'] == 'unknown' for row in reopened.jobs[job['id']]['results']))
         for absent in (False, True):
             with patch('bridge.features.sessions.cli_scope.daemon_generation_absent', return_value=absent), \
-                    patch('bridge.features.sessions.cli_release.threading.Thread'):
+                    patch('bridge.features.sessions.cli_release.threading', release_threads()):
                 check = reopened.submit({'mode': 'check', 'id': str(uuid.uuid4()), 'connections': preview['connections']})
             with patch('bridge.features.sessions.cli_scope.daemon_generation_absent', return_value=absent):
                 reopened._run(reopened.jobs[check['id']], reopened.callbacks)
@@ -234,14 +238,17 @@ class CliScopeTests(CliForceFixture):
             except BaseException as error:
                 errors.append(error)
         workers = [threading.Thread(target=submit) for _ in range(2)]
+        local_threads = release_threads()
         with patch.object(manager, '_scope_preview', side_effect=preview_together), \
-                patch('bridge.features.sessions.cli_release.threading.Thread') as background:
+                patch('bridge.features.sessions.cli_release.threading', local_threads):
+            self.assertIsInstance(threading.Thread(target=lambda: None), type(workers[0]))
             for worker in workers:
                 worker.start()
             for worker in workers:
                 worker.join(3)
                 self.assertFalse(worker.is_alive())
-            background.assert_called_once()
+            local_threads.Thread.assert_called_once()
+            self.assertEqual(local_threads.Thread.call_args.kwargs['name'], 'cli-release')
         self.assertFalse(errors)
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0], results[1])

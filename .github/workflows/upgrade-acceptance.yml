@@ -58,7 +58,7 @@ jobs:
           PY
   upgrade:
     needs: select
-    timeout-minutes: 35
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
@@ -75,7 +75,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Verify provenance and download real stable package
+      - name: Verify source and download official stable and preview1 packages
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REF: ${{ inputs.source_ref }}
@@ -96,10 +96,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb xauth dbus-x11 libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0
-      - name: Real package manual upgrade and rollback
+      - name: Real package bootstrap and in-app stable return with failure recovery
         if: runner.os != 'Linux'
         run: node scripts/smoke-published-upgrade.cjs
-      - name: Real Debian manual upgrade and rollback
+      - name: Real Debian bootstrap and explicit manual stable return
         if: runner.os == 'Linux'
         run: dbus-run-session -- xvfb-run -a node scripts/smoke-published-upgrade.cjs
       - uses: actions/upload-artifact@v4
@@ -113,3 +113,7 @@ jobs:
             .tmp/published-upgrade/result.json
             .tmp/published-upgrade/*-desktop.png
             .tmp/published-upgrade/*-browser.png
+            .tmp/published-upgrade/*/result.json
+            .tmp/published-upgrade/*/release.json
+            .tmp/published-upgrade/*/*-desktop.png
+            .tmp/published-upgrade/*/*-browser.png

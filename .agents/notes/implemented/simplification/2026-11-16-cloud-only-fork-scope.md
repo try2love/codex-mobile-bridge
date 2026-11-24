@@ -8,11 +8,15 @@ Status: implemented
 
 ## Decision
 
-当前上游同步点是 `try2love/codex-mobile-bridge` 的 `release/v2.2.2-preview`（`edf121a5`），按各分支顶端的提交时间选出。它包含上游 `main` 的 `v2.2.1`（`1004e5ae`）和发布标签 `v2.2.2-preview.1`（`1561a0c8`）；标签后只增加 [Intel 移动端 CI 补验](../testing/2026-11-18-published-package-upgrade.md)，产品代码和版本不变。本分支只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
+当前上游同步点是 `try2love/codex-mobile-bridge` 的标签 `v2.2.2-preview.3`（`d79a89c0`），由本次用户明确指定。普通双亲合并保留原 `main`（`bda81a5c`）与上游的完整历史，不以其他分支的顶端替代指定标签。本分支只保留云账号、设备授权、Noise 加密中继、EasyTier P2P、账号 Web、云通知及其必要的桌面接入、资源、构建、测试和文档。根目录 `AGENTS.md` 持有此范围约束。清理前的 `d90d939a` 保存在 `backup/main-before-cloud-scope-20261116-d90d939a`，已有提交历史不重写。
 
 通用 WebSocket、通知 JSON 存储、直连推送、旧共享中继、模型选择与非云测试直接恢复上游。删除开发热刷新命令、主进程和 preload 扩展、源码监听器、页面钩子、样式及测试。混合文件从上游实现重新叠加最小云接入，不保留顺手修复或通用重构。云专用 Range 校验移至 `relay/http_framing.py`，`relay/protocol.py`、`relay/server.py` 和 `shared_relay.py` 整文件跟随上游。
 
 桌面入口在上游脚本顺序中加载云面板，保留上游共享模型选择脚本。云浏览器测试由独立的 `cloud-panel.config.cjs` 复用上游合成夹具和浏览器设置；通用 Playwright 配置直接采用上游。
+
+主题图标、聊天工具栏、历史版本下载和网关数据格式声明采用上游实现。静态清单保留 `/cloud-web.js`，桌面主进程保留云 IPC 并使用上游按渠道检查更新的接口。动态桌面聊天图标的浅色、深色地址均带 `BridgeRelayBase`；[云网页资源适配](../feature/2026-11-07-cloud-web-proxy.md)同时处理两种安装清单。构建脚本保留上游 `DATA_FORMAT` 导入及版本描述，同时收集云加密依赖与 P2P 产物，不改变通用更新流程。
+
+[云面板语言边界](../bug-fix/2026-11-01-cloud-relay-localization.md)把离线状态留在云显示层，不以共享词条改变上游模型目录的 `Offline` 错误。云设备浏览器夹具采用[二维码配对](../feature/2026-11-19-desktop-qr-pairing.md)的现有信任与扫码字段，不把首次批准当作已信任设备的可逆开关。
 
 退出云网页时，`web/shell/app.js` 的 `showLogin` 先触发上游的聊天历史缓存清理，再根据 `BridgeCloudWeb` 返回可选择电脑的云账号首页。聊天时间线尚未加载时，`BridgeChatHistoryCache.forget()` 负责清理。
 
@@ -36,11 +40,21 @@ Status: implemented
 
 ## Testing
 
-### 发布分支 CI 补验合并
+### v2.2.2-preview.3 合并
 
-无冲突合入 `edf121a5`，三个上游文件与发布分支完全一致；`node --test tests/release-assets.test.cjs` 通过 8 项。本次没有触发远端 CI 或重新部署客户端。
+指定标签新增的 164 个上游提交通过普通合并进入 `main`。上游相对共同祖先 `edf121a5` 修改 330 个文件，其中 308 个仅由上游修改的文件与标签内容一致。双方均有改动的 22 个文件只保留必要云差异；六处文本冲突位于资源白名单、桌面入口、云 IPC、网关构建、Web 清单与桌面聊天主题图标。客户端、平台和原生移动壳直接采用标签内容。
+
+- 后端源码全量 `scripts/test-backend.py --source-only` 共 4,589 项，4,539 项通过、50 项按平台或原生执行边界跳过；包含云专项的 129 项。最终资源、云网页与模块边界复核 34 项通过，真实回环 HTTP 另外确认主题属性地址和两种安装清单保留电脑前缀。深色清单回归先复现缺少 `id`，适配后通过。
+- `npm run test:desktop` 共 1,879 项，1,878 项通过、1 项平台跳过。合并前的 `main` 可复现 `Offline/离线` 断言失败，原始上游标签的同组 41 项全部通过；收窄云离线文案后保留上游断言，全量通过。
+- `npm run test:browser` 有 394 项通过、6 项跳过，覆盖 Chromium/WebKit 宽窄屏。云面板 `cloud-panel.config.cjs` 的 184 项全部通过。四类旧配对夹具的失败在原 `main` 的隔离副本中复现；修正合成目录、扫码批准与初始化观察窗口后，不放宽原来的写入次数和语言切换断言。补充的四组真实浏览器检查确认动态图标的电脑前缀、内容版本、明暗切换及草稿保留。
+
+后端验证复用项目原有锁定依赖与 Codex 自带 Python 3.12.14，未修改依赖版本或原环境；原 `.venv` 的 Python 3.14 可执行路径已失效。所有账号、目录与浏览器数据均为隔离合成数据，未操作真实云账号或手机。
+
+笔记格式和归档封印通过。笔记树仅报告上游媒体播放笔记中「本机路径」的代码示例链接；原始标签独立校验产生同一告警，相关文件的 Git blob 完全一致，不修改非云上游文档或增加校验豁免。本次没有触发远端 CI、打包、安装或推送。日志、基线副本与补充夹具位于 `.tmp/upstream-preview3-20261124/`。
 
 ### v2.2.2-preview.1 合并
+
+此前无冲突合入发布分支的 `edf121a5`，三个 CI 文件与上游完全一致，发布资源 8 项通过；它只增加 [Intel 移动端 CI 补验](../testing/2026-11-18-published-package-upgrade.md)，产品代码和版本不变。
 
 逐文件比较上游标签与本分支，216 个仅由上游修改的文件与标签内容一致。双方均有改动的 15 个文件中，只有 `web/shell/app.js` 需要手动合并。相对上游，该文件的唯一差异是云网页返回账号首页的判断。
 

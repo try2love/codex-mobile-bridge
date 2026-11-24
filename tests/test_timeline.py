@@ -85,6 +85,13 @@ class TimelineTests(unittest.TestCase):
         timeline.update(value)
         self.assertNotIn('turnStartedAt', timeline.page(1)['rows'][0])
 
+    def test_generic_session_fallback_is_not_native_completion_evidence(self):
+        value = view(3)
+        value['turns'][0].update(status='completed', completionKnown=False)
+        timeline = Timeline()
+        timeline.update(value)
+        self.assertTrue(all(row.get('turnCompletionKnown') is False for row in timeline.page()['rows']))
+
     def test_native_answers_are_presentational_interactions_not_steered_tasks(self):
         from bridge.features.sessions.model import normalize_item
         reply = '<send_user_message_question_reply>' + json.dumps([{

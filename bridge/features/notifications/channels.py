@@ -4,6 +4,7 @@ from bridge.features.notifications.providers import PROVIDERS, desktop_provider,
 import hashlib
 import base64
 import hmac
+import os
 from bridge.api.validation import FieldError, at_field
 import json
 import logging
@@ -196,6 +197,10 @@ def read_status_json(path, default=None):
 
 def write_json(path, value):
     path = Path(path)
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

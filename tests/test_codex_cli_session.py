@@ -127,6 +127,41 @@ class CliSessionTests(unittest.TestCase):
         rows = turn['messages']
         self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
 
+    def test_streamed_agent_text_survives_empty_item_replacements(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='streamed reply')
+        emit('item/completed', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed',
+                                     'items': [{'id': 'reply', 'type': 'agentMessage', 'text': ''}]})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+
+    def test_late_agent_started_event_does_not_erase_delta(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='early reply')
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'early reply')
+
+    def test_empty_reasoning_completion_keeps_deltas_only_without_summary(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        emit('item/reasoning/textDelta', turnId='turn-1', itemId='reason', delta='reason delta')
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], ['reason delta'])
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': ['safe summary'], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['summary'], ['safe summary'])
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], [])
+
     def test_thread_snapshot_turn_clocks_convert_native_seconds_without_inventing_completion(self):
         stamp = 1794211440000
         self.fake.thread['turns'] = [
@@ -1120,6 +1155,45 @@ class CliSessionTests(unittest.TestCase):
         self.sessions._event(started)
         self.assertEqual(self.states[-1][1]['turns'][-1]['status'], 'inProgress')
         self.assertNotIn('willRetry', self.states[-1][1]['turns'][-1])
+
+    def test_native_retry_error_does_not_trail_resumed_output_as_a_terminal_failure(self):
+        from bridge.features.sessions.timeline import Timeline
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'retry-turn', 'status': 'inProgress', 'items': []}}})
+        error = {'message': 'Temporary response stream interruption'}
+        timeline = Timeline()
+        sent = list(self.fake.sent)
+        for sequence in (1, 2):
+            self.sessions._event({'method': 'error', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': True, 'error': error}})
+            self.sessions._event({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'itemId': 'reply', 'delta': 'resumed output'}})
+            state = self.states[-1][1]
+            timeline.update({**normalize_state(state), 'sequence': sequence})
+            self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant'])
+            # Presentation must not rewrite native retry/error evidence or replay the turn.
+            self.assertEqual(state['turns'][-1]['error'], error)
+            self.assertIs(state['turns'][-1]['willRetry'], True)
+        self.assertEqual(self.fake.sent, sent)
+        self.sessions._event({'method': 'error', 'params': {
+            'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': False, 'error': error}})
+        timeline.update({**normalize_state(self.states[-1][1]), 'sequence': 3})
+        self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant', 'error'])
+        self.assertEqual(timeline.page()['rows'][-1]['turnId'], 'retry-turn')
+
+    def test_retry_presentation_preserves_terminal_legacy_and_item_errors(self):
+        error = {'message': 'Native error'}
+        for status, retry in (('failed', True), ('failed', False), ('inProgress', None)):
+            with self.subTest(status=status, retry=retry):
+                turn = {'turnId': 'turn', 'status': status, 'error': error, 'items': []}
+                if retry is not None:
+                    turn['willRetry'] = retry
+                self.assertEqual(normalize_state({'turns': [turn]})['turns'][0]['error'], error)
+        view = normalize_state({'turns': [{'turnId': 'turn', 'status': 'inProgress', 'willRetry': True,
+            'error': error, 'items': [{'id': 'tool-error', 'type': 'error', 'message': 'Tool failed'}]}]})
+        self.assertEqual(view['turns'][0]['messages'][0]['role'], 'error')
+        self.assertEqual(view['turns'][0]['messages'][0]['text'], 'Tool failed')
 
     def test_completed_turn_keeps_user_item_omitted_from_event(self):
         self.fake.thread['turns'] = [{'id': 'turn-1', 'status': 'inProgress', 'items': [

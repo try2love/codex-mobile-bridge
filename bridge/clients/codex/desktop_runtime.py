@@ -292,6 +292,44 @@ def process_identity(pid):
     return {key: (list(item) if isinstance(item, tuple) else item) for key, item in value.items()}
 
 
+def desktop_owner(parent, application):
+    """Bind either the original App or its bundled utility host to that App."""
+    if parent['image'] == application:
+        if sys.platform != 'win32':
+            return parent, None
+        try:
+            ancestor = process_identity(parent['parent'])
+        except (OSError, ValueError):
+            return parent, None  # A verified main App need not retain its launcher.
+        if ancestor['image'] != application:
+            return parent, None
+        if process_identity(parent['pid']) != parent:
+            raise ValueError('Desktop host generation changed')
+        return ancestor, parent
+    if sys.platform != 'darwin':
+        raise ValueError('Desktop runtime parent is not the selected App')
+    frameworks = Path(application).parent.parent / 'Frameworks'
+    if frameworks not in Path(parent['image']).parents:
+        raise ValueError('Desktop runtime host is outside the selected App')
+    app = process_identity(parent['parent'])
+    if app['image'] != application or process_identity(parent['pid']) != parent:
+        raise ValueError('Desktop runtime host owner changed')
+    return app, parent
+
+
+def verify_record(record):
+    """Recheck every process generation, including the optional utility host."""
+    parent = record.get('host', record['app'])
+    if (record['adapter']['parent'] != parent['pid'] or
+            record['runtime']['parent'] != record['adapter']['pid']):
+        raise ValueError('Shared runtime process ancestry changed')
+    if 'host' in record and desktop_owner(record['host'], record['app']['image']) != (record['app'], record['host']):
+        raise ValueError('Shared runtime host changed')
+    for kind in ('app', 'host', 'adapter', 'runtime'):
+        if kind in record and process_identity(record[kind]['pid']) != record[kind]:
+            raise ValueError('Shared runtime generation changed')
+
+
 def runtime_alive(identity):
     if sys.platform == 'win32':
         from bridge.platforms.windows.codex_daemon_env import recorded_process_absent
@@ -342,12 +380,15 @@ def connect(home, cli):
                 record.get('home') != value['home'] or
                 record.get('cli') != value['cli'] or value['cli'] != str(Path(cli).resolve()) or
                 record['app']['image'] != value['application'] or
-                record['adapter']['parent'] != record['app']['pid'] or
+                record['adapter']['parent'] != record.get('host', record['app'])['pid'] or
                 record['runtime']['parent'] != record['adapter']['pid']):
             raise ValueError('Shared runtime owner mismatch')
-        for kind in ('app', 'adapter', 'runtime'):
-            if process_identity(record[kind]['pid']) != record[kind]:
-                raise ValueError('Shared runtime generation changed')
+        verify_record(record)
+        if record.get('transport') == 'desktop-stdio':
+            from bridge.clients.codex.desktop_host import MetadataClient
+            client = MetadataClient(home)
+            client.connect()
+            return client
         if sys.platform == 'win32':
             from bridge.clients.codex.desktop_runtime_windows import MetadataClient
             client = MetadataClient(directory(home), record)
@@ -375,6 +416,31 @@ def connect(home, cli):
         raise AppServerUnavailable('Codex 原生共享连接尚未就绪，可在账号管理中查看自动准备状态；不会另起运行时重试写入') from exc
 
 
+def hosted_endpoint(home):
+    """An authenticated, live hosted record selects the new control transport."""
+    value = settings(home) if sys.platform in ('darwin', 'win32') else None
+    if value is None:
+        return None
+    active = directory(home) / 'active.json'
+    if not active.exists():
+        return None
+    record = _read(active)
+    if record.get('transport') != 'desktop-stdio':
+        return None
+    if (record.get('version') != VERSION or record.get('ready') is not True or
+            record.get('home') != value['home'] or record.get('cli') != value['cli'] or
+            record['app']['image'] != value['application']):
+        raise ValueError('原生桌面接入记录尚未就绪或归属已变化')
+    verify_record(record)
+    expected = (r'\\.\pipe\cmb-codex-desktop-' + record['generation'] if sys.platform == 'win32'
+                else str(socket_path(home, record['generation'])))
+    if record.get('socket') != expected or not isinstance(record.get('controlToken'), str) or len(record['controlToken']) != 64:
+        raise ValueError('原生桌面接入端点身份不匹配')
+    identity = verified_socket(expected) if sys.platform != 'win32' else None
+    return {'path': expected, 'generation': record['generation'], 'controlToken': record['controlToken'],
+            'record': record, 'identity': identity}
+
+
 def server_arguments(arguments, socket_path):
     """Select only the Desktop stdio server, preserving every native override."""
     args = list(arguments)
@@ -397,6 +463,8 @@ def server_arguments(arguments, socket_path):
             result.extend(args[i:i + 2]); i += 2
         elif token.startswith('--config=') or token == '--analytics-default-enabled':
             result.append(token); i += 1
+        elif token in ('--plugin-mcp-launch-cwd', '--mcp-launch-cwd') and i + 3 < len(args):
+            result.extend(args[i:i + 4]); i += 4
         elif token == '--stdio':
             i += 1
         elif token == '--listen' and i + 1 < len(args) and args[i + 1] == 'stdio://':

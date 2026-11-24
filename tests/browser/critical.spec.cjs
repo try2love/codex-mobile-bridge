@@ -18,6 +18,46 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
+  await ready(page);
+  await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));
+  const result = await page.evaluate(async () => {
+    const body = document.createElement('div'); document.body.append(body);
+    let statusRequests = 0; const historyRequests = [];
+    const workbench = {
+      node(tag, cls = '', text) {
+        const node = document.createElement(tag); node.className = cls;
+        if (text !== undefined) node.textContent = BridgeI18n.t(text);
+        return node;
+      },
+      button(text, action) { const node = this.node('button', '', text); node.onclick = action; return node; },
+      raw(node) { return node; },
+      url: (_session, operation) => '/fixture/' + operation + '?',
+      async request(url) {
+        if (url.includes('git-status')) { statusRequests++; throw Error('Git 变更列表过大或不可读取'); }
+        historyRequests.push(url);
+        return {commits:[{id:'a'.repeat(40),parents:[],author:'Fixture',date:'2026-11-20T00:00:00Z',subject:'Latest commit',refs:'HEAD -> main'}],hasMore:true};
+      }
+    };
+    const panel = new GitPanel(workbench, {host:'remote:fixture'}, {body});
+    const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } throw Error('Git history fixture did not settle'); };
+    await panel.load();
+    await wait(() => !!body.querySelector('.wb-history-row'));
+    const latestVisibleByDefault = body.querySelector('.wb-history-row')?.textContent.includes('Latest commit') || false;
+    const firstLimit = new URL(historyRequests[0], location.href).searchParams.get('limit');
+    body.querySelector('.wb-history-list button:last-child').click(); await wait(() => historyRequests.length === 2);
+    await wait(() => body.querySelector('.wb-history-list')?.textContent.includes('加载更早的提交'));
+    const nextLimit = new URL(historyRequests[1], location.href).searchParams.get('limit');
+    body.querySelector('.wb-git-modes button:first-child').click(); await wait(() => statusRequests === 1);
+    const navigationVisible = !!body.querySelector('.wb-git-modes') && body.querySelectorAll('.wb-git-modes button').length === 3;
+    const changeErrorVisible = !!body.querySelector('.wb-status.error');
+    body.querySelector('.wb-git-modes button:nth-child(2)').click(); await wait(() => historyRequests.length === 3);
+    panel.dispose(); body.remove();
+    return {statusRequests, historyRequests:historyRequests.length, navigationVisible, changeErrorVisible, latestVisibleByDefault, firstLimit, nextLimit};
+  });
+  expect(result).toEqual({statusRequests:1,historyRequests:3,navigationVisible:true,changeErrorVisible:true,latestVisibleByDefault:true,firstLimit:'40',nextLimit:'80'});
+});
+
 async function historyCacheFixture(browser,viewport){
   const context=await browser.newContext({viewport});
   await context.route('**/*',route=>new URL(route.request().url()).origin==='https://history-cache.fixture.invalid'
@@ -376,12 +416,13 @@ for(const [name,file,invoke] of [
 }
 
 for (const [name, file, invoke] of [
-  ['shared native activity groups preserve reading and presentation', 'activity-groups', 'runActivityGroupBrowserChecks'],
-  ['shared history batches preserve reading and page cached process rows', 'history-batches', 'runHistoryBatchBrowserChecks'],
+  ['shared native rows remain chronological without task groups', 'activity-groups', 'runActivityGroupBrowserChecks'],
+  ['shared history batches preserve reading and native row order', 'history-batches', 'runHistoryBatchBrowserChecks'],
   ['paperclip host reference and native attachment actions', 'host-file-reference', 'runHostFileReferenceChecks'],
   ['agent manual model and reasoning settings', 'agent-model-settings', 'runAgentModelSettingsChecks'],
   ['chat history, list entry and scroll position', 'desktop-history', 'runDesktopHistoryBrowserChecks'],
   ['shared chat reading state across refreshes', 'chat-reading-state', 'runChatReadingStateChecks'],
+  ['native turn process folding experiment', 'turn-fold', 'runTurnFoldBrowserChecks'],
   ['account-scoped drafts and late send acknowledgement', 'persistent-drafts', 'runPersistentDraftTests'],
   ['API form labels, layout and upstream model selection', 'api-form', 'runApiFormBrowserChecks'],
   ['shared session menu on desktop and mobile', 'session-menu', 'runSessionMenuBrowserChecks'],
@@ -620,6 +661,78 @@ test('Codex project trust cancellation prevents creation and confirmation stays 
  expect(result.calls[1].body).toEqual({key:'synthetic-key',confirmed:true,confirmation:'bound-to-selection'});
 });
 
+test('message management keeps native Codex items visible and read only as the queue changes', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(async()=>{
+    BridgeI18n.setLanguage('en');
+    draftGateway='native-queue-fixture';currentId=crypto.randomUUID();currentHost='local';codexDraftScope=null;
+    bindCodexDraft({draftAccountIdentity:'fixture-account'});
+    window.__nativeQueueFixture={rows:[],writes:0,reads:0};
+    const old=api;
+    api=async (url,body,...rest)=>{
+      if(!String(url).includes('/message-management'))return old(url,body,...rest);
+      const fixture=window.__nativeQueueFixture;
+      if(body){fixture.writes++;throw Error('Unexpected native write');}
+      fixture.reads++;
+      return {draftAccountIdentity:'fixture-account',version:'gateway-version',receipts:[],unknown:[],
+        queue:[{id:'gateway-item',text:'Bridge draft',status:'queued'}],nativeQueue:fixture.rows};
+    };
+    messageManagement.request=(...args)=>api(...args);
+    await openMessageManagement();
+  });
+  const dialog=page.locator('dialog.message-management[open]');
+  await expect(dialog.getByText('Bridge draft')).toBeVisible();
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[{id:'desktop-item',text:'Queued on my computer',attachments:['report.png']}];});
+  const native=dialog.locator('section').filter({has:page.getByRole('heading',{name:'Queued in Codex'})});
+  await expect(native.getByText('Queued on my computer')).toBeVisible({timeout:7000});
+  await expect(native.getByText('report.png')).toBeVisible();
+  await expect(native.getByRole('button')).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'Edit',exact:true})).toHaveCount(1);
+  await page.evaluate(()=>{__nativeQueueFixture.rows=[];});
+  await expect(native).toHaveCount(0,{timeout:7000});
+  await dialog.getByRole('button',{name:/^(Close|关闭)$/}).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(()=>page.evaluate(()=>messageManagement.panel.nativeTimer)).toBe(null);
+  expect(await page.evaluate(()=>({writes:__nativeQueueFixture.writes,timer:messageManagement.panel.nativeTimer}))).toEqual({writes:0,timer:null});
+});
+
+test('Codex chat header uses the same host title when history is still unnamed', async ({page}) => {
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  const titles=await page.evaluate(async()=>{
+    const old=api,id=crypto.randomUUID(),opening=[];
+    let persisted='自动生成的标题';
+    const detail=title=>({id,title,host:'local',requests:[],submissions:[],connected:false,
+      loadingHistory:false,historyComplete:true,status:'idle'});
+    api=async (url,body,signal)=>{
+      const path=new URL(url,location.origin);
+      if(path.pathname==='/api/sessions')return {sessions:[{id,title:persisted,host:'local',cwd:'/fixture',recency:1,projectKey:'local|unassigned',projectName:'其他'}],remoteHosts:[],availableSources:['desktop']};
+      if(path.pathname.endsWith('/timeline'))return new Promise(resolve=>opening.push(()=>resolve({epoch:id,sequence:1,rows:[],meta:detail('未命名聊天'),files:[]})));
+      if(path.pathname.endsWith('/changes'))return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+      if(path.pathname.endsWith('/notifications'))return {available:false};
+      return {};
+    };
+    try{
+      $('login').hidden=true;$('app').hidden=false;
+      await loadList(true);
+      listRows.unshift({...listRows[0],host:'remote:other',title:'错误主机上的同 ID'});
+      const open=openChat(id,'local');
+      for(let i=0;!opening.length&&i<100;i++)await new Promise(resolve=>setTimeout(resolve,10));
+      const initial=$('chat-title').textContent;
+      opening[0]();await open;
+      const afterHistory=$('chat-title').textContent;
+      persisted='列表收到更新后的名称';await loadList(true);
+      const afterList=$('chat-title').textContent;
+      renderState(detail('未命名聊天'));
+      const afterStale=$('chat-title').textContent;
+      renderState(detail('比列表更新的原生名称'));
+      const afterNative=$('chat-title').textContent;
+      return {initial,afterHistory,afterList,afterStale,afterNative};
+    }finally{chatTimeline?.dispose();chatTimeline=null;api=old;}
+  });
+  expect(titles).toEqual({initial:'自动生成的标题',afterHistory:'自动生成的标题',
+    afterList:'列表收到更新后的名称',afterStale:'列表收到更新后的名称',afterNative:'比列表更新的原生名称'});
+});
+
 test('lost send response reconciles once and preserves newer composer edits', async ({page}) => {
   await ready(page);
   const results = await page.evaluate(async () => {
@@ -821,12 +934,12 @@ test('native saved and connected composer keeps production control geometry and 
     view.setClientStates([{id:'zcode',enabled:true,connected:true,historyAvailable:true}]);await view.choose('zcode');await view.open(session.id);clearTimeout(view.timer);
     view.input.value='保留这份尚未发送的草稿';view.attachments.rows.push({id:'fixture-upload',name:'notes.txt',size:20,status:'ready'});view.attachments.render();view.messages.scrollTop=120;view.rememberReading();
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    const items=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.composerToggle,view.attachButton,view.mode,view.workMode,view.send];
-    const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden};});
+    const items=[view.modelButton,view.skillsButton,view.permissionsButton,view.contextButton,view.toolbar.moreButton,view.attachButton,view.send];
+    const measure=()=>items.map(node=>{const b=node.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:node.hidden,stored:node===view.skillsButton&&view.toolbar.layout.more.includes('skills')&&view.toolbar.sources.contains(node)};});
     globalThis.__composerLayout={root,view,live,measure,first:view.messageList.firstElementChild,scroll:view.messages.scrollTop};
     return {rects:measure(),disabled:[view.modelButton,view.skillsButton,view.permissionsButton,view.workMode,view.send].every(n=>n.disabled),text:view.modelName.textContent,modelLabelWidth:view.modelName.clientWidth,scroll:view.messages.scrollTop};
   });
-  expect(before.disabled).toBe(true);expect(before.text).toBe('GLM-5.3-Flash');expect(before.modelLabelWidth).toBeGreaterThanOrEqual(50);expect(before.rects.every(r=>!r.hidden&&r.width>10)).toBe(true);
+  expect(before.disabled).toBe(true);expect(before.text).toBe('GLM-5.3-Flash');expect(before.modelLabelWidth).toBeGreaterThanOrEqual(50);expect(before.rects.every(r=>!r.hidden&&(r.stored||r.width>10))).toBe(true);
   await testInfo.attach('composer-before',{body:await page.locator('#composer-layout-test .ds-composer').screenshot(),contentType:'image/png'});
   const after=await page.evaluate(async()=>{const f=__composerLayout;f.view.applyDetail(f.live);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return {rects:f.measure(),draft:f.view.input.value,attachments:f.view.attachments.rows.map(row=>row.id),sameMessage:f.view.messageList.firstElementChild===f.first,scroll:f.view.messages.scrollTop,canSend:!f.view.send.disabled,formFits:f.view.form.scrollWidth<=f.view.form.clientWidth+1};});
   expect(after.canSend).toBe(true);expect(after.draft).toBe('保留这份尚未发送的草稿');expect(after.attachments).toEqual(['fixture-upload']);expect(after.sameMessage).toBe(true);expect(Math.abs(after.scroll-before.scroll)).toBeLessThanOrEqual(1);
@@ -968,11 +1081,11 @@ test('Antigravity shared chat preserves source identity and composer geometry wh
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-list.png')});
  await page.locator('#agy-chat .ds-surface').selectOption('cli');await expect(page.locator('#agy-chat .ds-session-row')).toHaveCount(1);await page.locator('#agy-chat .ds-session-row').click();
  await expect(page.locator('#agy-chat .ds-title')).toHaveText('测试失败排查');
- const before=await page.evaluate(()=>{const v=__agyChat.view;clearTimeout(v.timer);v.input.value='请继续检查';v.input.oninput();const controls=[v.modelButton,v.skillsButton,v.permissionsButton,v.contextButton,v.composerToggle,v.attachButton,v.mode,v.workMode,v.send];__agyChat.controls=controls;return controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};});});
- expect(before.every(row=>!row.hidden&&row.width>10)).toBe(true);expect(before[1].disabled).toBe(true);expect(before[7].disabled).toBe(true);expect(before[8].disabled).toBe(false);
+ const before=await page.evaluate(()=>{const v=__agyChat.view;clearTimeout(v.timer);v.input.value='请继续检查';v.input.oninput();const controls=[v.modelButton,v.skillsButton,v.permissionsButton,v.contextButton,v.toolbar.moreButton,v.attachButton,v.toolbar.submitControl.root,v.send];__agyChat.controls=controls;return controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled,stored:n===v.skillsButton&&v.toolbar.layout.more.includes('skills')&&v.toolbar.sources.contains(n)};});});
+ expect(before.every(row=>!row.hidden&&(row.stored||row.width>10))).toBe(true);expect(before[1].disabled).toBe(true);expect(before[7].disabled).toBe(false);
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-connected.png')});
- const after=await page.evaluate(()=>{const f=__agyChat,v=f.view;v.clientStates=[{...f.client,connected:false}];v.applyDetail({session:{...f.sessions[1],readOnly:true,status:'idle',connectionState:'detached'},capabilities:{...f.caps,send:false,models:false,permissions:false,attachments:false},messages:f.messages});return {controls:f.controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled};}),draft:v.input.value,overflow:v.form.scrollWidth>v.form.clientWidth+1};});
- expect(after.draft).toBe('请继续检查');expect(after.overflow).toBe(false);expect(after.controls.every(row=>!row.hidden)).toBe(true);expect(after.controls[8].disabled).toBe(true);
+ const after=await page.evaluate(()=>{const f=__agyChat,v=f.view;v.clientStates=[{...f.client,connected:false}];v.applyDetail({session:{...f.sessions[1],readOnly:true,status:'idle',connectionState:'detached'},capabilities:{...f.caps,send:false,models:false,permissions:false,attachments:false},messages:f.messages});return {controls:f.controls.map(n=>{const b=n.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,hidden:n.hidden,disabled:n.disabled,stored:n===v.skillsButton&&v.toolbar.layout.more.includes('skills')&&v.toolbar.sources.contains(n)};}),draft:v.input.value,overflow:v.form.scrollWidth>v.form.clientWidth+1};});
+ expect(after.draft).toBe('请继续检查');expect(after.overflow).toBe(false);expect(after.controls.every(row=>!row.hidden)).toBe(true);expect(after.controls[7].disabled).toBe(true);
  for(let i=0;i<before.length;i++)for(const key of ['left','top','width','height'])expect(Math.abs(before[i][key]-after.controls[i][key]),i+' '+key).toBeLessThanOrEqual(1);
  await page.screenshot({path:path.join(__dirname,'../../.tmp/feedback-20261110/agy-'+info.project.name+'-offline.png')});
  await page.evaluate(async()=>{const f=__agyChat;f.view.clientStates=[f.client];f.view.applyDetail({session:{...f.sessions[1],status:'idle',connectionState:'ready'},capabilities:f.caps,messages:f.messages});f.setCatalog('empty');await f.view.models();});
@@ -1032,7 +1145,7 @@ test('shared session menu retains working chat notification settings without a c
  await page.route('**/api/desktop-sessions/claude/notifications?*',route=>{const body=route.request().postDataJSON();if(body)writes.push(body);return route.fulfill({json:{available:true,requests:body?.requests||'inherit',completion:body?.completion||'off'}});});
  await ready(page,'session-menu');await page.locator('#client-switch').getByRole('button',{name:'Claude',exact:true}).click();const row=page.locator('.ds-session-row:visible').filter({hasText:'Claude · 页面交互验证'}).first();await expect(row).toBeVisible();
  if(page.viewportSize().width<=640){await row.dispatchEvent('pointerdown',{pointerType:'touch',button:0,clientX:80,clientY:150});await expect(page.locator('dialog.session-menu')).toBeVisible();await row.dispatchEvent('pointerup',{pointerType:'touch',button:0});}else await row.click({button:'right'});
- await page.locator('dialog.session-menu').getByRole('button',{name:'聊天通知设置',exact:true}).click();const dialog=page.locator('dialog[open]').filter({hasText:'聊天通知设置'});await expect(dialog).toBeVisible();await dialog.getByLabel('请求处理通知',{exact:true}).selectOption('on');await dialog.getByLabel('运行完毕通知',{exact:true}).selectOption('inherit');await dialog.getByRole('button',{name:'保存配置',exact:true}).click();await expect(dialog).toHaveCount(0);expect(writes).toEqual([{requests:'on',completion:'inherit'}]);expect(await page.locator('.ds-composer .composer-tools').getByRole('button',{name:/提醒/}).count()).toBe(0);
+ await page.locator('dialog.session-menu').getByRole('button',{name:'聊天通知设置',exact:true}).click();const dialog=page.locator('dialog.picker[open]').filter({hasText:'聊天通知设置'});await expect(dialog).toBeVisible();await dialog.getByLabel('请求处理通知',{exact:true}).selectOption('on');await dialog.getByLabel('运行完毕通知',{exact:true}).selectOption('inherit');await dialog.getByRole('button',{name:'保存配置',exact:true}).click();await expect(dialog).toHaveCount(0);expect(writes).toEqual([{requests:'on',completion:'inherit'}]);expect(await page.locator('.ds-composer .composer-tools').getByRole('button',{name:/提醒/}).count()).toBe(0);
 });
 
 
@@ -1152,4 +1265,68 @@ test('visible files render decoded thumbnails in the right split pane and narrow
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
  await testInfo.attach('files-thumbnail',{body:await page.screenshot(),contentType:'image/png'});
 });
+});
+
+test('desktop update cache and official version controls keep download and install separate in both languages',async({page},testInfo)=>{
+ const root=path.resolve(__dirname,'../..'),errors=[];page.on('pageerror',error=>errors.push(error.message));
+ await page.addInitScript(()=>{
+  window.fixtureCacheCalls=[];window.fixtureVersionCalls=[];window.fixtureCancelDelete=true;window.fixtureInstalls=[];window.fixtureDownloads=[];
+  window.fixtureEntries=[{id:'stable.zip',version:'2.2.2',platform:'darwin',arch:'arm64',format:'zip',size:1024,inUse:false},{id:'preview.zip',version:'2.2.2-preview.3',platform:'darwin',arch:'arm64',format:'zip',size:2048,inUse:true}];
+  window.fixtureSnapshot={runtime:{running:false,portOccupied:false,supportsNotifications:true},preferences:{port:8787,lan:false,autoStart:false,connections:[]},auth:{mode:'password',username:'fixture'},notifications:{enabled:false,server:'https://ntfy.sh',topic:''},notificationStatus:{},watches:[],origins:[],urls:[],dataDir:'/fixture',credentialsAvailable:false,update:{state:'idle',current:'2.2.2',channel:'stable'}};
+  const release=()=>({current:'2.2.2',platform:'darwin',arch:'arm64',releases:[{version:'2.2.2',channel:'stable',assets:[{id:'stable-zip',name:'Codex-Mobile-Bridge-2.2.2-arm64.zip',format:'zip',size:1024}]},{version:'2.2.2-preview.3',channel:'preview',assets:[{id:'preview-zip',name:'Codex-Mobile-Bridge-2.2.2-preview.3-arm64.zip',format:'zip',size:2048},{id:'preview-dmg',name:'Codex-Mobile-Bridge-2.2.2-preview.3-arm64.dmg',format:'dmg',size:3072}]}]});
+  window.bridgeDesktop={platform:'darwin',language:async()=>'zh-CN',setLanguage:async value=>value,snapshot:async()=>structuredClone(fixtureSnapshot),logs:async()=>({text:''}),account:async()=>({visible:false}),transferSettings:async()=>({clickDownloadMiB:60}),
+   updateCache:async body=>{fixtureCacheCalls.push(body);if(body.action==='delete'&&!fixtureCancelDelete)fixtureEntries=fixtureEntries.filter(entry=>!body.ids.includes(entry.id));return {entries:fixtureEntries,totalBytes:fixtureEntries.reduce((sum,entry)=>sum+entry.size,0),...(body.action==='delete'?fixtureCancelDelete?{cancelled:true}:{deleted:body.ids}:{})};},
+   updateVersions:async body=>{fixtureVersionCalls.push(body);if(body.action==='list')return release();const item=release().releases.find(item=>item.assets.some(asset=>asset.id===body.id)),asset=item.assets.find(asset=>asset.id===body.id);fixtureSnapshot.update={state:'available',current:'2.2.2',selected:true,intent:'switch-version',version:item.version,candidateId:asset.id,format:asset.format,assetName:asset.name,manualInstall:asset.format==='dmg'};return fixtureSnapshot.update;},
+   downloadUpdate:async body=>{fixtureDownloads.push(body);fixtureSnapshot.update={...fixtureSnapshot.update,state:'downloaded',path:'/fixture/cache/package.zip'};},installUpdate:async body=>{fixtureInstalls.push(body);},open:async()=>{throw Error('Unexpected external open');}};
+ });
+ // Retain production HTML, layout, translation and renderer; unrelated client panels
+ // stay absent and every host call is served by the isolated bridge stub above.
+ const omitted=new Set(['/desktop/features/clients/desktop-sessions.js','/desktop/features/clients/harness.js','/web/features/accounts/accounts.js','/web/features/accounts/client-accounts.js','/web/features/accounts/cli-access.js','/desktop/features/files/settings.js']);
+ await page.route('**/*',async route=>{
+  const filename=new URL(route.request().url()).pathname;
+  if(filename==='/desktop/index.html')return route.fulfill({contentType:'text/html',body:readFileSync(path.join(root,'desktop/index.html'))});
+  if(omitted.has(filename))return route.fulfill({contentType:'text/javascript',body:''});
+  if(!filename.startsWith('/desktop/')&&!filename.startsWith('/web/'))return route.continue();
+  const file=path.resolve(root,'.'+filename);if(!file.startsWith(root+path.sep))return route.abort();
+  try{return route.fulfill({body:readFileSync(file),contentType:filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'image/png'});}catch{return route.abort();}
+ });
+ await page.setViewportSize({width:1200,height:950});await page.goto('/desktop/index.html');
+ await expect(page.locator('#sidebar-status')).toHaveText('未启动');
+ expect(await page.evaluate(()=>fixtureCacheCalls.length+fixtureVersionCalls.length)).toBe(0);
+ await page.locator('[data-tab=advanced]').click();await page.locator('[data-maintenance-tab=updates]').click();
+ await expect(page.locator('.update-cache-entry')).toHaveCount(2);
+ await expect(page.locator('#update-cache-summary')).toHaveText('2 个更新包 · 3 KiB');
+ await expect(page.locator('[data-update-cache-id="preview.zip"]')).toBeDisabled();
+ await expect(page.locator('.update-cache-in-use')).toHaveText('使用中');
+ await page.locator('#update-cache-all').check();await expect(page.locator('#update-cache-delete')).toBeEnabled();
+ await page.locator('#update-cache-delete').click();await expect(page.locator('#update-cache-state')).toHaveText('已取消删除，缓存已保留。');
+ await expect(page.locator('[data-update-cache-id="stable.zip"]')).toBeChecked();
+ await page.locator('#language').selectOption('en');
+ await expect(page.locator('#update-cache')).toBeVisible();await expect(page.locator('#update-cache h2')).toHaveText('Download cache');
+ await expect(page.locator('#update-versions .update-version-fields label > span')).toHaveText(['Release channel','Version','Package format']);
+ await expect(page.locator('.update-cache-in-use')).toHaveText('In use');
+ await expect(page.locator('#update-cache-state')).toHaveText('Deletion cancelled. Downloaded packages were kept.');
+ await page.locator('#update-versions-version').selectOption('2.2.2-preview.3');await expect(page.locator('#update-versions-download')).toBeEnabled();
+ expect(await page.evaluate(()=>fixtureDownloads.length+fixtureInstalls.length)).toBe(0);
+ await page.locator('#update-versions-download').click();await expect(page.locator('#update-state')).toContainText('current version is still running');
+ expect(await page.evaluate(()=>fixtureDownloads.length)).toBe(1);expect(await page.evaluate(()=>fixtureInstalls.length)).toBe(0);
+ await page.locator('#update-versions-install').click();expect(await page.evaluate(()=>fixtureInstalls.map(call=>call.candidateId))).toEqual(['preview-zip']);
+ await page.locator('#update-versions-asset').selectOption('preview-dmg');await expect(page.locator('#update-versions-install')).toHaveText('Download and open installer');
+ await page.locator('#update-versions-version').selectOption('2.2.2');await expect(page.locator('#update-versions-install')).toHaveText('Switch version and restart');
+ await page.locator('#update-versions-install').click();expect(await page.evaluate(()=>fixtureInstalls.map(call=>call.candidateId))).toEqual(['preview-zip','stable-zip']);
+ await page.evaluate(()=>{fixtureSnapshot.update.state='downloading';render(fixtureSnapshot);});
+ await expect(page.locator('#update-cache-delete')).toBeDisabled();await expect(page.locator('[data-update-cache-id="stable.zip"]')).toBeDisabled();
+ await page.evaluate(()=>{fixtureSnapshot.update.state='error';render(fixtureSnapshot);fixtureCancelDelete=false;});
+ await expect(page.locator('#update-cache-delete')).toBeEnabled();await page.locator('#update-cache-delete').click();await expect(page.locator('.update-cache-entry')).toHaveCount(1);
+ await expect(page.locator('#update-cache-state')).toHaveText('Selected downloaded packages were deleted.');
+ for(const width of [1200,820,700]){
+  await page.setViewportSize({width,height:950});
+  const geometry=await page.locator('#update-cache').evaluate(node=>{const article=node.getBoundingClientRect(),toolbar=node.querySelector('.update-cache-toolbar').getBoundingClientRect(),check=node.querySelector('.update-cache-toolbar label').getBoundingClientRect(),actions=node.querySelector('.update-cache-toolbar .actions').getBoundingClientRect();return {fits:node.scrollWidth<=node.clientWidth+1&&toolbar.right<=article.right,overflow:document.documentElement.scrollWidth>innerWidth+1,sameRow:Math.abs(check.y+check.height/2-actions.y-actions.height/2)<2};});
+  expect(geometry).toEqual({fits:true,overflow:false,sameRow:true});
+  const versionFits=await page.locator('#update-versions').evaluate(node=>node.scrollWidth<=node.clientWidth+1);expect(versionFits).toBe(true);
+  await testInfo.attach('desktop-updates-'+width,{body:await page.screenshot({fullPage:true}),contentType:'image/png'});
+ }
+ await page.evaluate(()=>{fixtureEntries=[];});await page.locator('#update-cache-refresh').click();await expect(page.locator('#update-cache-state')).toHaveText('No downloaded packages.');
+ await expect(page.locator('#update-cache-all')).toBeDisabled();await expect(page.locator('#update-cache-delete')).toBeDisabled();
+ expect(errors).toEqual([]);
 });

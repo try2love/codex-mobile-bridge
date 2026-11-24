@@ -11,11 +11,12 @@ function buildManifest(directory,notes,key){
   const trusted=fs.readFileSync(path.join(root,'desktop/features/updates/update-public-key.pem'),'utf8');
   if(createPublicKey(key).export({type:'spki',format:'pem'})!==trusted)throw Error('Signing key does not match the public key shipped in this release.');
   const assets={};
-  for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){
-    const name=assetName(version,platform,arch),bytes=fs.readFileSync(path.join(directory,name));
-    assets[`${platform}-${arch}`]={name,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
+  for(const [platform,arch,format] of [['darwin','arm64'],['darwin','x64'],['win32','x64'],
+    ['linux','x64','deb'],['linux','x64','AppImage'],['linux','arm64','deb'],['linux','arm64','AppImage']]){
+    const name=assetName(version,platform,arch,format),bytes=fs.readFileSync(path.join(directory,name));
+    assets[`${platform}-${arch}${format?'-'+format:''}`]={name,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
   }
-  const payload=Buffer.from(JSON.stringify({schema:1,version,notes,assets}));
+  const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',notes,assets}));
   return JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,key).toString('base64')})+'\n';
 }
 if(require.main===module){

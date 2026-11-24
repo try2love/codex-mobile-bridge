@@ -10,6 +10,8 @@ from importlib.metadata import distribution
 from pathlib import Path
 import certifi
 root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root))
+from bridge.features.updates.gateway import DATA_FORMAT
 runtime_packages = {'keyring': 'keyring', 'aiohttp': 'aiohttp', 'noise': 'noise.connection'}
 for module in runtime_packages.values():
     try:
@@ -65,4 +67,4 @@ shutil.rmtree(root/'dist/gateway', ignore_errors=True)
 source.rename(root/'dist/gateway')
 print('Gateway runtime ready:', root/'dist/gateway')
 
-(root/'dist/update-version.json').write_text(json.dumps({'version': json.loads((root/'package.json').read_text(encoding='utf-8'))['version'], 'platform': sys.platform, 'arch': {'aarch64':'arm64', 'arm64':'arm64', 'AMD64':'x64', 'x86_64':'x64'}.get(platform.machine(), platform.machine())}), encoding='utf-8')
+(root/'dist/update-version.json').write_text(json.dumps({'version': json.loads((root/'package.json').read_text(encoding='utf-8'))['version'], 'dataFormat': DATA_FORMAT, 'platform': sys.platform, 'arch': {'aarch64':'arm64', 'arm64':'arm64', 'AMD64':'x64', 'x86_64':'x64'}.get(platform.machine(), platform.machine())}), encoding='utf-8')

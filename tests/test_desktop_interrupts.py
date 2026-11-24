@@ -32,7 +32,30 @@ class DesktopInterrupts(unittest.TestCase):
 
     def call(self, action, rid=None):
         return self.manager.call('antigravity', action, 'one',
-                                 {'id': rid or str(uuid.uuid4()), **({'text': 'hello'} if action == 'send' else {})})
+                                 {'id': rid or str(uuid.uuid4()), **({'text': 'hello'} if action == 'send' else {}),
+                                  **({'taskId': 'bg:12'} if action == 'stop-task' else {})})
+
+    def test_task_stop_arrives_while_send_waits(self):
+        entered, stopped = threading.Event(), threading.Event()
+        def native(action, *_):
+            if action == 'send':
+                entered.set()
+                if not stopped.wait(2):
+                    raise AssertionError('task stop was blocked by send')
+            elif action == 'stop-task':
+                stopped.set()
+            return {'status': 'accepted'}
+        self.adapter.call.side_effect = native
+        with ThreadPoolExecutor(2) as pool:
+            sent = pool.submit(self.call, 'send')
+            self.assertTrue(entered.wait(1))
+            rid = str(uuid.uuid4())
+            stop = pool.submit(self.call, 'stop-task', rid)
+            self.assertEqual(stop.result(3)['status'], 'accepted')
+            self.assertEqual(sent.result(3)['status'], 'accepted')
+            self.call('stop-task', rid)
+        self.assertEqual([c.args[0] for c in self.adapter.call.call_args_list].count('stop-task'), 1)
+        self.assertTrue(stopped.is_set())
 
     def test_stop_arrives_before_blocked_send_and_duplicate_receipt_is_not_replayed(self):
         entered, stopped = threading.Event(), threading.Event()
@@ -158,6 +181,50 @@ class DesktopInterrupts(unittest.TestCase):
 
 
 class NativeInterrupts(unittest.TestCase):
+    def test_task_validation_and_cancel_bypass_pending_send_transport(self):
+        cli = AntigravityCli()
+        entered, cancelled = threading.Event(), threading.Event()
+        methods = []
+        def opened(request, **kwargs):
+            method = request.full_url.rsplit('/', 1)[-1]
+            methods.append(method)
+            if method == 'SendUserCascadeMessage':
+                entered.set()
+                if not cancelled.wait(2):
+                    raise OSError('task validation was blocked')
+            if method == 'CancelCascadeSteps':
+                cancelled.set()
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            response.read.return_value = b'{"tasks": []}' if method == 'ListBackgroundTasks' else b'{}'
+            return response
+        cli._opener.open = opened
+        target = {'address': 'http://127.0.0.1:1', 'identity': 'same', 'token': 'synthetic'}
+        def cancel():
+            cli.list_background_tasks('cid', expected_identity='same')
+            cli.stop_background_step('cid', 12, expected_identity='same')
+        with patch('bridge.clients.antigravity.cli_session.endpoint', return_value=target), \
+                patch('bridge.clients.antigravity.cli_session.verify_endpoint'), ThreadPoolExecutor(2) as pool:
+            sent = pool.submit(cli.call_ls_rpc, 'SendUserCascadeMessage', {})
+            self.assertTrue(entered.wait(1))
+            stop = pool.submit(cancel)
+            self.assertEqual(sent.result(3), {})
+            stop.result(3)
+        self.assertEqual(methods, ['SendUserCascadeMessage', 'ListBackgroundTasks', 'CancelCascadeSteps'])
+
+    def test_adapter_task_stop_skips_session_model_hydration(self):
+        adapter = Antigravity.__new__(Antigravity)
+        adapter.store = Mock()
+        adapter.store.resolve_session.return_value = {'id': 'one', 'nativeId': 'cid', 'surfaceDirKey': 'ide'}
+        adapter.cli = Mock()
+        adapter.cli.running_child_cids.return_value = {'11111111-2222-4333-8444-555555555555'}
+        adapter.hooks = None
+        adapter._session = Mock(side_effect=AssertionError('unnecessary model read'))
+        self.assertEqual(adapter.call('stop-task', 'one', {'taskId': '11111111-2222-4333-8444-555555555555'}),
+                         {'status': 'accepted'})
+        adapter.cli.stop_child_cascade.assert_called_once()
+
     def test_cancel_transport_bypasses_busy_send_and_preserves_identity_checks(self):
         cli = AntigravityCli()
         entered, cancelled = threading.Event(), threading.Event()

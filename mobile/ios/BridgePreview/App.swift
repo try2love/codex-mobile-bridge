@@ -130,11 +130,23 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     private var session: URLSession?
     private var data = Data()
     private var completion: ((Bool) -> Void)?
+    private var address = ""
+    private var deadline: TimeInterval = 0
+    private var slowConfirmation = false
     func start(_ origin: String, completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: origin + "/api/auth") else { completion(false); return }
+        cancel()
+        address = origin; deadline = ProcessInfo.processInfo.systemUptime + 12; slowConfirmation = false
         self.completion = completion
+        attempt(timeout: 4)
+    }
+    private func attempt(timeout: TimeInterval) {
+        let budget = min(timeout, deadline - ProcessInfo.processInfo.systemUptime)
+        guard budget > 0 else { completion?(false); completion = nil; return }
+        let origin = address
+        guard let url = URL(string: origin + "/api/auth") else { completion?(false); completion = nil; return }
+        data.removeAll(keepingCapacity: true)
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 4; config.timeoutIntervalForResource = 5
+        config.timeoutIntervalForRequest = budget; config.timeoutIntervalForResource = budget
         config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil); self.session = session
         var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -144,24 +156,32 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     func cancel() { completion = nil; session?.invalidateAndCancel(); session = nil }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard self.session === session else { completionHandler(.cancel); return }
         completionHandler((response as? HTTPURLResponse)?.statusCode == 200 && response.expectedContentLength <= 16384 ? .allow : .cancel)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive bytes: Data) {
+        guard self.session === session else { return }
         guard data.count + bytes.count <= 16384 else { dataTask.cancel(); return }; data.append(bytes)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard self.session === session else { return }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let online = (value?["relay"] as? Bool != true || value?["online"] as? Bool == true) && error == nil && (task.response as? HTTPURLResponse)?.statusCode == 200 && value?["authenticated"] is Bool && value?["passwordless"] is Bool && !(value?["instanceId"] as? String ?? "").isEmpty
         session.finishTasksAndInvalidate()
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; self.completion?(online); self.completion = nil; self.session = nil
+            guard let self, self.session === session, self.completion != nil else { return }
+            let failure = error as NSError?
+            if !self.slowConfirmation && failure?.domain == NSURLErrorDomain && failure?.code == NSURLErrorTimedOut {
+                self.slowConfirmation = true; self.attempt(timeout: 8); return
+            }
+            self.completion?(online); self.completion = nil; self.session = nil
         }
     }
 }
 
 final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
     private var web: WKWebView?
-    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String)?
+    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String, navigationType: WKNavigationType)?
     private var origin = ""
     private var channelCatalogTimer:Timer?
     private var channelMonitor: NWPathMonitor?
@@ -1097,7 +1117,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func loadNative(_ web: WKWebView, _ request: URLRequest) {
         guard self.web === web, connectionError == nil else { return }
-        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString) }
+        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString, .other) }
         web.load(request)
     }
     private func recoverConnection() { if !checkChannels(failure: true) { recoverLegacy() } }
@@ -1193,7 +1213,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         connectionDeadline = deadline; DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: deadline)
         web.scrollView.pinchGestureRecognizer?.isEnabled = false
     }
-    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString) }; web.reload() } }
+    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString, .reload) }; web.reload() } }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let status = (response.response as? HTTPURLResponse)?.statusCode ?? 0
         if let peer=peerViews[webView] {decisionHandler((response.response.url?.absoluteString.components(separatedBy:"#").first==peer.next+"/mobile-channel" && status==200) ? .allow:.cancel);return}
@@ -1213,7 +1233,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let expected = nativeMainNavigation
             nativeMainNavigation = nil
             if !action.sourceFrame.isMainFrame {
-                guard action.navigationType == .other, expected?.generation == generation,
+                guard action.navigationType == expected?.navigationType, expected?.generation == generation,
                       expected?.url == url.absoluteString, GatewayURL.same(url, documentAddress) else { decisionHandler(.cancel); return }
             }
         } else if !action.sourceFrame.isMainFrame { decisionHandler(.cancel); return }

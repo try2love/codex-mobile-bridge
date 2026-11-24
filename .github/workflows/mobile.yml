@@ -24,18 +24,25 @@ jobs:
   ios:
     runs-on: ${{ inputs.intel_fallback == true && 'macos-15-intel' || 'macos-15' }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - name: Validate frozen Intel supplement source
         if: inputs.intel_fallback == true
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
-          if [ "$SOURCE_REF" != '1561a0c82d8eb4f02f02c7a608f94812ba87a75f' ]; then
-            echo 'Intel supplement requires the exact frozen release commit.'
-            exit 1
-          fi
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          if not re.fullmatch(r'[0-9a-f]{40}', source):
+              raise SystemExit('Intel supplement requires an exact 40-character release source SHA.')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              raise SystemExit('Intel supplement checkout does not match the requested source.')
+          with open('package.json') as package:
+              if json.load(package)['version'] != '2.2.2-preview.3':
+                  raise SystemExit('Unexpected frozen release version.')
+          PY
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -64,17 +71,24 @@ jobs:
     if: inputs.intel_fallback == true
     runs-on: macos-15-intel
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
       - name: Validate frozen Intel supplement source
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
-          if [ "$SOURCE_REF" != '1561a0c82d8eb4f02f02c7a608f94812ba87a75f' ]; then
-            echo 'Intel supplement requires the exact frozen release commit.'
-            exit 1
-          fi
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref }}
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          if not re.fullmatch(r'[0-9a-f]{40}', source):
+              raise SystemExit('Intel supplement requires an exact 40-character release source SHA.')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              raise SystemExit('Intel supplement checkout does not match the requested source.')
+          with open('package.json') as package:
+              if json.load(package)['version'] != '2.2.2-preview.3':
+                  raise SystemExit('Unexpected frozen release version.')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

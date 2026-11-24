@@ -40,25 +40,30 @@ class ChatTimeline {
     this.showReasoning=document.documentElement.dataset.showReasoning!=='false';
     this.showProcess=document.documentElement.dataset.showProcess!=='false';
     this.showToolImages=document.documentElement.dataset.showToolImages!=='false';
+    this.lastViewportHeight=this.viewport.clientHeight;
     this.onScroll=()=>{
       if(this.suppress||!this.viewport.clientHeight)return;
       const upward=this.viewport.scrollTop<this.lastTop;
-      this.lastTop=this.viewport.scrollTop;this.following=!upward&&this.atBottom();this.anchor=this.capture();
+      // A viewport resize can clamp scrollTop upward while it remains at bottom.
+      const resized=this.viewport.clientHeight!==this.lastViewportHeight;this.lastViewportHeight=this.viewport.clientHeight;
+      this.lastTop=this.viewport.scrollTop;this.following=resized&&this.following&&this.atBottom()||!upward&&this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
     this.viewport.addEventListener('scroll',this.onScroll,{passive:true});
-    this.onDisclosure=event=>{
-      const summary=event.target?.closest?.('summary'),group=summary?.closest?.('.chat-process-page');
-      if(!group)return;
-      this.following=false;this.anchor={key:group.dataset.key,offset:group.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top};
+    this.onActivityClick=event=>{
+      const activity=event.target?.closest?.('summary')?.closest?.('.activity');
+      const row=activity?.closest?.('[data-key]');
+      if(!row||this.nodes.get(row.dataset.key)?.node!==row)return;
+      this.following=false;
+      this.anchor={key:row.dataset.key,offset:row.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top};
     };
-    this.viewport.addEventListener('click',this.onDisclosure,true);
+    this.viewport.addEventListener('click',this.onActivityClick,true);
     // At the scroll boundary wheel/touch intent produces no scroll event.
     this.atHistoryEdge=()=>!this.suppress&&this.viewport.clientHeight&&this.viewport.scrollTop<=1&&!this.retryCount;
-    this.onWheel=event=>{if(event.deltaY<0&&!event.target?.closest?.('.chat-activity-items,.activity-body')&&this.atHistoryEdge())this.loadOlder(100);};
-    this.onTouchStart=event=>{this.touchY=event.touches.length===1&&!event.target?.closest?.('.chat-activity-items,.activity-body')?event.touches[0].clientY:null;};
-    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1||event.target?.closest?.('.chat-activity-items,.activity-body'))return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
+    this.onWheel=event=>{if(event.deltaY<0&&!event.target?.closest?.('.activity-body')&&this.atHistoryEdge())this.loadOlder(100);};
+    this.onTouchStart=event=>{this.touchY=event.touches.length===1&&!event.target?.closest?.('.activity-body')?event.touches[0].clientY:null;};
+    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1||event.target?.closest?.('.activity-body'))return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
     this.viewport.addEventListener('wheel',this.onWheel,{passive:true});
     this.viewport.addEventListener('touchstart',this.onTouchStart,{passive:true});
     this.viewport.addEventListener('touchmove',this.onTouchMove,{passive:true});
@@ -66,8 +71,10 @@ class ChatTimeline {
     this.newer.onclick=()=>{this.jumpBottom();this.anchor=this.capture();};
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
+    // The keyboard and composer can resize the viewport without changing message content.
+    this.resize.observe(this.viewport);
   }
-  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('click',this.onDisclosure,true);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
+  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('click',this.onActivityClick,true);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
   atBottom(){return chatFollowsLatest(this.viewport);}
   nearTop(){return this.viewport.scrollTop<=160;}
   capture(accept){return this.viewport.clientHeight?captureChatScrollAnchor(this.viewport,this.container,accept):this.anchor;}
@@ -93,7 +100,8 @@ class ChatTimeline {
       entry.node.hidden=!this.rowVisible(row);
       if(entry.node.hidden)entry.node.__cancelProcessReads?.();
     }
-    syncChatMessageNodes(this.container,[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order).map(row=>this.nodes.get(row.key).node));
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     this.refreshActions();
     this.restore(anchor,bottom);
   }
@@ -106,7 +114,7 @@ class ChatTimeline {
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
     else restoreChatScrollAnchor(this.viewport,node,anchor);
-    this.lastTop=this.viewport.scrollTop;
+    this.lastTop=this.viewport.scrollTop;this.lastViewportHeight=this.viewport.clientHeight;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
   }
@@ -117,12 +125,12 @@ class ChatTimeline {
     if(this.sequence<0&&this.cacheKey&&recentTimelinePages.has(this.cacheKey)){
       this.apply(recentTimelinePages.get(this.cacheKey),true,false,true);
     }
-    if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey,'conversation-recent-v1').then(page=>{
+    if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey,'timeline-recent-v1').then(page=>{
       if(page&&!this.receivedFreshPage&&this.sequence<0&&!this.abort.signal.aborted)this.apply(page,true,false,true);
     });
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
-      const page=await this.read('conversation',{limit:20});
+      const page=await this.read('timeline',{limit:20});
       if(this.abort.signal.aborted)return;
       this.apply(page,true);this.updates();
       if(this.hasMore&&page.rows.length&&page.rows.every(row=>chatActivityKind(row)))this.loadOlder(100);
@@ -138,7 +146,7 @@ class ChatTimeline {
       // of hidden tool activity may otherwise leave scrollTop stuck at zero.
       for(let attempt=0;attempt<3;attempt++){
         const generation=this.generation,before=this.before;
-        const result=await readChatHistoryBatch(cursor=>this.read('conversation',{before:cursor,limit:count}),before,{
+        const result=await readChatHistoryBatch(cursor=>this.read('timeline',{before:cursor,limit:count}),before,{
           known:new Set(this.rows.keys()),current:()=>!this.abort.signal.aborted&&generation===this.generation});
         if(this.abort.signal.aborted)return;
         if(result.cancelled)continue;
@@ -151,7 +159,7 @@ class ChatTimeline {
             for(const file of page.files||[])files.set(file.id,file);
           }
           // Commit one visual change for one history intent, even when several
-          // native pages contained only folded process records.
+          // native pages contained only intermediate activity records.
           this.apply({...last,sequence:Math.min(...pages.map(page=>page.sequence)),rows:[...rows.values()],files:[...files.values()]},false,true);
         }
         if(result.error||result.stalled)this.retryCount=count;
@@ -172,7 +180,7 @@ class ChatTimeline {
     }
     this.cached=cached;
     const anchor=this.capture(),bottom=this.following;
-    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.container.__chatActivityGroups=null;this.container.__chatTaskGroups=null;this.epoch=page.epoch;this.retryCount=0;}
+    if(reset){this.generation++;window.BridgeMermaidCards?.clearScope(this.mermaidScope);this.mermaidScope=window.BridgeMermaidCards?.createScope();this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
     if((!history&&page.sequence>=this.sequence)||reset){this.sequence=page.sequence;this.meta=page.meta;if(!cached)this.renderMeta({...page.meta,files:[...this.files.values()]});}
     if(!history)this.pendingRequests=!cached&&!!page.meta.requests?.length;
@@ -192,7 +200,7 @@ class ChatTimeline {
           old.node.__chatMessage=row;old.stamp=stamp;continue;
         }
       }
-      const node=this.renderRow(row,undefined,old?.node);node.dataset.key=row.key;
+      const node=this.renderRow(row);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});
     }
@@ -203,8 +211,7 @@ class ChatTimeline {
       for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
       ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
     }
-    this.container.__chatTaskState=this.meta||{};
-    syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
@@ -215,25 +222,16 @@ class ChatTimeline {
       recentTimelinePages.delete(this.cacheKey);
       if(rows.length)recentTimelinePages.set(this.cacheKey,JSON.parse(JSON.stringify({rows,sequence:this.sequence,epoch:this.epoch,
         before:this.epoch+'.'+rows[0].key,hasMore:this.hasMore||ordered.length>20,meta:{requests:[]},files:page.files||[]})));
-      if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'conversation-recent-v1',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
+      if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'timeline-recent-v1',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
       while(recentTimelinePages.size>8)recentTimelinePages.delete(recentTimelinePages.keys().next().value);
     }
     if(!cached&&!history&&!this.abort.signal.aborted&&!page.meta.loadingHistory)this.onReady?.();
   }
-  renderRow(row,open,existing){
-    if(row.processCursor)return renderChatProcessPage(existing?.__chatMessage?.processCursor?existing:null,row,{
-      current:()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version,
-      signal:this.abort.signal,
-      readDirectory:(cursor,after,signal)=>this.request(this.url('process')+'&'+new URLSearchParams({cursor,...(after?{after}:{})}),undefined,signal),
-      readDetail:(record,offset,signal)=>this.request(this.url('detail')+'&'+new URLSearchParams({key:record.detailCursor,offset,version:record.version,projection:'conversation'}),undefined,signal),
-      renderText:(node,text)=>this.renderText(node,text,[...this.files.values()]),
-      renderAttachments:(node,attachments)=>renderChatAttachments(node,attachments,{showToolImages:this.showToolImages,url:item=>{if(!item.desktopId)return null;const source=this.url('desktop-images/'+encodeURIComponent(item.desktopId));return {preview:source,original:source};}}),
-      onFiles:files=>{for(const file of files)this.files.set(file.id,file);}});
-    const activity=!!chatActivityKind(row)||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
+  renderRow(row,open){
+    const activity=row.role==='activity'||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
     node.__chatMessage=row;
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
-    if(chatActivityKind(row)){node.dataset.chatActivity=chatActivityKind(row);node.dataset.chatActivityState=row.turnStatus==='inProgress'?'active':'complete';node.dataset.chatToolKind=row.kind||'';node.dataset.chatTurnId=row.turnId||'';}
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
@@ -267,7 +265,7 @@ class ChatTimeline {
       const prior=this.details.get(row.key);if(prior?.next===null)return;
       more.disabled=true;more.textContent=timelineText('正在读取…');
       try{
-        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset:prior?.next||0,version:prior?.version||row.version,projection:'conversation'});
+        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset:prior?.next||0,version:prior?.version||row.version});
         if(this.abort.signal.aborted||!node.isConnected||this.rows.get(row.key)?.row.version!==detail.version)return;
         for(const file of detail.files||[])this.files.set(file.id,file);
         this.details.set(row.key,{version:detail.version,text:(detail.offset?prior?.text||'':'')+detail.text,next:detail.next});paint();
@@ -302,7 +300,7 @@ class ChatTimeline {
     return (async()=>{
       let text='',offset=0;
       do{
-        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset,version:row.version,projection:'conversation'});
+        const detail=await this.read('detail',{key:this.epoch+'.'+row.key,offset,version:row.version});
         if(!valid()||detail.version!==row.version||detail.offset!==offset||detail.key!==row.key)throw Error(timelineText('消息内容已变化，请重新打开编辑'));
         text+=detail.text;
         if(detail.next===null)return text;
@@ -329,7 +327,7 @@ class ChatTimeline {
     this.historyStatus();
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
-      const node=entry.node,activity=!!chatActivityKind(row)||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
+      const node=entry.node,activity=row.role==='activity'||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
       if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
       else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');}
       const more=node.querySelector('.detail-more');
@@ -338,6 +336,8 @@ class ChatTimeline {
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered);
   }
   async updates(){
     let after=this.sequence,through='',snapshot=null;
@@ -345,7 +345,7 @@ class ChatTimeline {
       if(!this.active()){await this.pause(1000);continue;}
       try{
         const generation=this.generation,windowRevision=this.windowRevision;
-        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through,projection:'conversation'});
+        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through});
         if(this.abort.signal.aborted)return;
         if(generation!==this.generation||windowRevision!==this.windowRevision){after=-1;through='';snapshot=null;continue;}
         // History may have expanded the window while this poll was in flight.

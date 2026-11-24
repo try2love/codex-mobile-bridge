@@ -16,6 +16,77 @@ function renderChatMessageTime(container,value,now=new Date()){
   time.title=new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'short'}).format(date);
   time.setAttribute('aria-label',time.title);container.append(time);
 }
+function chatTurnCompletionLabel(turn){
+  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+  if(turn.status==='interrupted')return t('已停止');
+  if(turn.status==='failed')return t('运行失败');
+  if(turn.status!=='completed')return '';
+  const start=chatMessageDate(turn.start),end=chatMessageDate(turn.end);
+  if(!start||!end||!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return t('已完成');
+  const seconds=Math.floor((end-start)/1000),minutes=Math.floor(seconds/60);
+  return t(minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒')
+    .replace('{minutes}',minutes).replace('{seconds}',seconds%60);
+}
+// Use native turn and answer identities. Missing evidence keeps the flat rows visible.
+function chatTurnProcessRow(row){
+  return !row.fileSummary&&(row.role==='activity'||row.role==='reasoning'||
+    row.role==='assistant'&&row.phase==='commentary');
+}
+function chatNodesWithTurnCompletions(container,nodes,rows){
+  const turns=new Map(),nodeByKey=new Map(nodes.map(node=>[node.dataset.key,node])),managed=new Set();
+  for(const [index,row] of rows.entries()){
+    const key=String(row.key??row.id??index);
+    if(row.turnId===undefined||row.turnId===null||row.turnId==='history'||row.turnCompletionKnown===false)continue;
+    const id=String(row.turnId),turn=turns.get(id)||{id,rows:[]};
+    turn.last=key;turn.rows.push({row,key,index});
+    if(row.turnStatus)turn.status=row.turnStatus;
+    if(row.turnStartedAt!==undefined)turn.start=row.turnStartedAt;
+    if(row.turnCompletedAt!==undefined)turn.end=row.turnCompletedAt;
+    if(row.role==='assistant'&&(row.phase==='final_answer'||row.forkable===true&&row.phase!=='commentary')){
+      turn.answerKey=key;turn.answerIndex=index;
+    }
+    turns.set(id,turn);
+  }
+  const existing=new Map([...container.children].filter(node=>node.classList?.contains('chat-turn-completion')).map(node=>[node.dataset.key,node]));
+  const before=new Map(),after=new Map();
+  for(const turn of turns.values()){
+    const process=turn.rows.filter(({row,index})=>chatTurnProcessRow(row)&&
+      (turn.answerIndex===undefined||index<turn.answerIndex));
+    const label=turn.status==='inProgress'&&process.length
+      ?(typeof BridgeI18n==='undefined'?'正在思考与执行…':BridgeI18n.t('正在思考与执行…'))
+      :chatTurnCompletionLabel(turn);
+    if(!label)continue;
+    const key='turn-completion:'+turn.id,foldable=turn.status==='completed'&&!!turn.answerKey&&process.length>0;
+    const control=existing.get(key)||document.createElement('button');
+    control.type='button';control.className='chat-turn-completion';control.dataset.key=key;control.__chatTurn=turn;
+    if(control.__chatAnswer!==turn.answerKey||turn.status==='inProgress')control.__chatProcessOpen=undefined;
+    control.__chatAnswer=turn.answerKey;
+    const processNodes=process.map(({key})=>nodeByKey.get(key)).filter(Boolean);
+    for(const node of processNodes)managed.add(node);
+    const selected=document.getSelection?.();
+    const reading=selected&&!selected.isCollapsed&&processNodes.some(node=>node.contains(selected.anchorNode));
+    if(reading)control.__chatProcessOpen=true;
+    const update=()=>{
+      const open=!foldable||control.__chatProcessOpen===true;
+      for(const node of processNodes)node.classList.toggle('chat-process-collapsed',!open);
+      control.disabled=!foldable;
+      if(foldable)control.setAttribute('aria-expanded',String(open));else control.removeAttribute('aria-expanded');
+      const text=label+(foldable?(open?' ▴':' ▾'):'');
+      if(control.textContent!==text)control.textContent=text;
+    };
+    control.onclick=()=>{control.__chatProcessOpen=control.__chatProcessOpen!==true;update();};
+    update();
+    if(process.length)before.set(process[0].key,control);else after.set(turn.last,control);
+  }
+  for(const node of nodes)if(!managed.has(node))node.classList?.remove('chat-process-collapsed');
+  const result=[];
+  for(const node of nodes){
+    if(before.has(node.dataset.key))result.push(before.get(node.dataset.key));
+    result.push(node);
+    if(after.has(node.dataset.key))result.push(after.get(node.dataset.key));
+  }
+  return result;
+}
 function chatFollowsLatest(viewport){
   return viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<110;
 }
@@ -25,33 +96,24 @@ function chatShouldSlideHistory(count,following){
 function captureChatScrollAnchor(viewport,container,accept=()=>true){
   const top=viewport.getBoundingClientRect().top;
   let anchor=null;
-  const candidates=[];
-  const visit=node=>{
-    if(node.hidden||node.dataset.key===undefined||!accept(node))return;
-    if(node.classList.contains('chat-activity-turn')&&node.open&&node.firstChild.getBoundingClientRect().bottom<=top){
-      for(const child of node.lastChild.children)visit(child);
-    }else candidates.push(node);
-  };
-  for(const node of container.children)visit(node);
-  for(const node of candidates){
+  for(const node of container.children){
+    if(node.hidden||node.dataset.key===undefined||node.classList?.contains('chat-turn-completion')||!accept(node))continue;
     const rect=node.getBoundingClientRect();
-    anchor={key:node.dataset.key,offset:rect.top-top,group:node.classList.contains('chat-activity-turn')?'turn':node.classList.contains('chat-activity-tools')?'tools':null};
+    anchor={key:node.dataset.key,offset:rect.top-top};
     if(rect.bottom>top)break;
   }
   return anchor;
 }
 function restoreChatScrollAnchor(viewport,node,anchor){
   if(!node||node.hidden||!anchor)return false;
-  if(anchor.group)node=node.closest('.chat-activity-'+anchor.group)||node;
-  for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.classList?.contains('chat-activity-group')&&!parent.open)node=parent;
   viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-anchor.offset;
   return true;
 }
 function captureChatActivityState(node){
   const details=node?.tagName==='DETAILS'?node:node?.querySelector('details.activity');
   if(!details)return null;
-  const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
-  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0,children:details.classList?.contains('chat-activity-group')?[...details.querySelectorAll('details.activity,details.chat-activity-group')].map(node=>[node,captureChatActivityState(node)]):[]};
+  const body=details.querySelector('.activity-body');
+  return {open:details.open,top:body?.scrollTop||0,left:body?.scrollLeft||0};
 }
 function restoreChatActivityState(node,state){
   if(!state)return;
@@ -59,9 +121,8 @@ function restoreChatActivityState(node,state){
   if(!details)return;
   details.open=state.open;
   if(state.open)details.__loadActivityBody?.();
-  const body=details.classList?.contains('chat-activity-group')?details.lastChild:details.querySelector('.activity-body');
+  const body=details.querySelector('.activity-body');
   if(body){body.scrollTop=state.top;body.scrollLeft=state.left;}
-  for(const [child,reading] of state.children||[])restoreChatActivityState(child,reading);
 }
 // Desktop adapters already delivered bounded native pages. Reuse that text
 // only when the reader opens the activity; do not build hidden output bodies.
@@ -98,21 +159,6 @@ function chatActivityKind(row){
   if(row.role==='reasoning'||row.kind==='reasoning')return 'reasoning';
   return row.role==='activity'?'tool':'';
 }
-function chatActivityIcon(row){
-  if(chatActivityKind(row)==='reasoning')return 'reasoning';
-  if(row.kind==='commandExecution')return 'command';
-  if(['fileChange','FileChange'].includes(row.kind)||row.kind==='code'&&['write','edit'].includes(row.changeType))return 'file';
-  if(['ImageView','imageView'].includes(row.kind))return 'read';
-  const tool=row.toolName||row.tool;
-  if(['Bash','bash'].includes(tool))return 'command';
-  if(['Write','Edit','MultiEdit'].includes(tool))return 'file';
-  if(tool==='Read')return 'read';
-  if(['Grep','Glob','WebSearch'].includes(tool))return 'search';
-  if(tool==='WebFetch')return 'browser';
-  if(['cua_repl.js','mcp__cua_repl__js'].includes(tool))return 'computer';
-  if(row.kind==='todo/write'||['TaskCreate','TaskUpdate','TodoWrite'].includes(tool))return 'task';
-  return 'tool';
-}
 function chatActivityLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(row.interaction==='response')return t('已回答问题');
@@ -137,7 +183,7 @@ function renderChatActivityLabel(heading,row){
     heading.append(label,stats);
   }else heading.append(label);
 }
-// One history gesture seeks ordinary conversation, not a page of folded tools.
+// One history gesture backfills bounded native rows until ordinary dialogue appears.
 // Native pages stay bounded; collect before rendering once, preserving a manual
 // continuation after four pages or a transport failure.
 async function readChatHistoryBatch(read,before,{known=new Set(),current=()=>true}={}){
@@ -154,232 +200,9 @@ async function readChatHistoryBatch(read,before,{known=new Set(),current=()=>tru
   }
   return {pages};
 }
-function syncChatActivityPage(group){
-  const body=group.lastChild,rows=group.__rows;
-  let start=rows.findIndex(node=>node.dataset.key===group.__firstKey);
-  if(start<0||!group.open&&!group.__readPage)start=Math.max(0,rows.length-20);
-  else{
-    // A native reorder can move an already displayed row before the page
-    // anchor. Keep it in the page so its detail and reading state survive.
-    const visible=new Set([...body.children].map(node=>node.dataset.key));
-    const first=rows.findIndex(node=>visible.has(node.dataset.key));
-    if(first>=0)start=Math.min(start,first);
-  }
-  const shown=rows.slice(start),top=body.scrollTop;
-  if(!group.__older){
-    const older=document.createElement('button');older.type='button';older.className='plain chat-activity-older';
-    older.onclick=()=>{
-      const rows=group.__rows,index=rows.findIndex(node=>node.dataset.key===group.__firstKey),anchor=rows[index],offset=anchor?.getBoundingClientRect().top;
-      group.__readPage=true;group.__firstKey=rows[Math.max(0,index-20)].dataset.key;syncChatActivityPage(group);
-      if(anchor&&offset!==undefined)body.scrollTop+=anchor.getBoundingClientRect().top-offset;
-    };
-    group.__older=older;
-  }
-  group.__older.textContent=typeof BridgeI18n==='undefined'?'加载更早过程':BridgeI18n.t('加载更早过程');
-  group.__older.hidden=start===0;
-  group.__firstKey=shown[0].dataset.key;group.dataset.key=group.__firstKey;
-  syncChatMessageNodes(body,[group.__older,...shown],false);body.scrollTop=top;
-}
-// Task boundaries come from native turn IDs when available. Older adapters
-// without them use ordinary user messages; response envelopes are never a task.
-function chatTaskSegments(nodes,state={}){
-  const tasks=new Map();let current='history';
-  for(const node of nodes){
-    const row=node.__chatMessage;if(!row)continue;
-    // Legacy saved history uses a placeholder, not a native task boundary.
-    if(row.turnId&&row.turnId!=='history')current='turn:'+row.turnId;
-    else if(row.role==='user'&&row.interaction!=='response')current='user:'+node.dataset.key;
-    let task=tasks.get(current);if(!task){task={nodes:[],finals:new Set()};tasks.set(current,task);}
-    task.nodes.push(node);
-  }
-  const latest=[...tasks.values()].at(-1),byNode=new Map();
-  for(const task of tasks.values()){
-    const rows=task.nodes.map(node=>node.__chatMessage),status=[...rows].reverse().find(row=>row.turnStatus)?.turnStatus;
-    task.active=status?status==='inProgress':task===latest&&state.status==='active';
-    // Native asynchronous questions may also carry final_answer before the
-    // same task resumes. Only its latest final is the task result.
-    const final=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase==='final_answer');
-    if(final)task.finals.add(final);
-    if(!task.active&&!task.finals.size){
-      const last=[...task.nodes].reverse().find(node=>node.__chatMessage.role==='assistant'&&node.__chatMessage.phase!=='commentary');
-      if(last)task.finals.add(last);
-    }
-    // Only native message/turn clocks; no wall-clock estimate for old history.
-    const first=rows.find(row=>row.role==='user'&&row.interaction!=='response');
-    const start=rows.find(row=>row.turnStartedAt)?.turnStartedAt??first?.timestamp;
-    const end=rows.find(row=>row.turnCompletedAt)?.turnCompletedAt??[...task.finals].at(-1)?.__chatMessage.timestamp;
-    const a=chatMessageDate(start),b=chatMessageDate(end);
-    task.seconds=!task.active&&a&&b&&b>=a?Math.floor((b-a)/1000):null;
-    const last=task.nodes.at(-1);
-    for(const node of task.nodes){
-      const row=node.__chatMessage;
-      if(chatActivityKind(row)){
-        node.dataset.icon=chatActivityIcon(row);
-        if(node.firstElementChild?.classList?.contains('activity'))node.firstElementChild.dataset.icon=node.dataset.icon;
-      }
-      node.__chatRunning=task.active&&node===last&&!!chatActivityKind(row)&&!['completed','failed','interrupted','accepted'].includes(row.status);
-      node.dataset.running=String(node.__chatRunning);byNode.set(node,task);
-    }
-  }
-  return byNode;
-}
-function chatTaskLabel(task){
-  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
-  if(task.active)return t('正在处理');
-  if(task.seconds===null)return t('执行过程');
-  const minutes=Math.floor(task.seconds/60),seconds=task.seconds%60;
-  return minutes?t('用时 {minutes} 分钟 {seconds} 秒').replace('{minutes}',minutes).replace('{seconds}',seconds):t('用时 {seconds} 秒').replace('{seconds}',seconds);
-}
-// An explicit disclosure owns its reads. Native status updates only its label.
-function renderChatProcessPage(existing,row,{readDirectory,readDetail,renderText,renderAttachments,current=()=>true,signal,onFiles=()=>{}}){
-  const group=existing||document.createElement('details'),t=text=>typeof BridgeI18n==='undefined'?text:BridgeI18n.t(text);
-  if(!existing){
-    group.className='chat-activity-group timeline-row chat-process-page';
-    group.append(document.createElement('summary'),document.createElement('div'));
-    group.lastChild.className='chat-activity-items chat-process-items';group.__records=new Map();group.__pages=new Map();
-  }
-  group.__chatMessage=row;group.dataset.key=row.key;group.dataset.chatTurnId=row.turnId||'';
-  const start=chatMessageDate(row.turnStartedAt),end=chatMessageDate(row.turnCompletedAt);
-  group.firstChild.textContent=chatTaskLabel({active:row.turnStatus==='inProgress',seconds:start&&end&&end>=start?Math.floor((end-start)/1000):null});
-  const valid=()=>current()&&!signal?.aborted&&group.isConnected;
-  const cancel=()=>{group.__directoryController?.abort();group.__directoryController=null;for(const entry of group.__records.values()){entry.controller?.abort();entry.controller=null;}};
-  group.__cancelProcessReads=cancel;
-  const paint=()=>{
-    const nodes=[...group.__records.values()].map(entry=>entry.node);
-    if(group.__next){
-      const more=document.createElement('button');more.type='button';more.className='plain chat-process-more';more.textContent=t('继续加载过程');more.onclick=()=>load(group.__next);nodes.push(more);
-    }
-    syncChatMessageNodes(group.lastChild,nodes,false);
-  };
-  const record=metadata=>{
-    let entry=group.__records.get(metadata.key);
-    if(!entry){
-      const leaf=metadata.role==='assistant'||metadata.hasDetail===false;
-      const node=document.createElement(leaf?'section':'details'),heading=document.createElement(leaf?'div':'summary'),body=document.createElement('div');
-      node.className='activity';body.className='activity-body';node.append(heading,body);
-      entry={node,body};group.__records.set(metadata.key,entry);
-    }
-    const node=entry.node;
-    if(entry.row?.version!==metadata.version)entry.detail=null;
-    entry.row=metadata;node.dataset.key=metadata.key;node.dataset.icon=chatActivityIcon(metadata);node.__chatMessage=metadata;
-    renderChatActivityLabel(node.firstChild,metadata);
-    node.firstChild.hidden=metadata.role==='assistant';
-    const paintBody=()=>{
-      const detail=entry.detail;if(!detail)return;
-      const content=document.createElement(metadata.role==='assistant'?'div':'pre');content.className=metadata.role==='assistant'?'message-body':'activity-text';
-      if(metadata.role==='assistant'&&renderText)renderText(content,detail.text);else content.textContent=detail.text;
-      entry.body.replaceChildren(content);renderAttachments?.(entry.body,detail.attachments);
-      if(detail.text){const copy=document.createElement('button');copy.type='button';copy.className='plain activity-copy';copy.textContent=t('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>entry.detail.text,copy);entry.body.append(copy);}
-      if(detail.next!==null){const more=document.createElement('button');more.type='button';more.className='plain detail-more';more.textContent=t('继续加载正文');more.onclick=()=>loadBody();entry.body.append(more);}
-    };
-    const loadBody=async()=>{
-      if(!valid()||!group.open||!node.open||entry.controller||entry.detail?.next===null)return;
-      const controller=entry.controller=new AbortController(),target=entry.row,prior=entry.detail;
-      const offset=prior?.next||0;
-      try{
-        if(controller.signal.aborted||!valid()||!group.open||!node.open)return;
-        const detail=await readDetail(target,offset,controller.signal);
-        if(controller.signal.aborted||!valid()||!group.open||!node.open||entry.row!==target)return;
-        if(detail.version!==target.version||detail.offset!==offset)throw Error(t('消息内容已变化，请重新打开编辑'));
-        onFiles(detail.files||[]);
-        entry.detail={...detail,text:(offset?prior.text:'')+detail.text,attachments:detail.attachments||prior?.attachments};paintBody();
-      }catch(error){if(!controller.signal.aborted&&valid()&&group.open&&node.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>loadBody();entry.body.replaceChildren(retry);}}
-      finally{if(entry.controller===controller)entry.controller=null;}
-    };
-    node.ontoggle=()=>{if(node.open){if(entry.detail)paintBody();else loadBody();}else{entry.controller?.abort();entry.controller=null;}};
-    if(metadata.role==='assistant'){
-      const content=document.createElement('div');content.className='message-body';if(renderText)renderText(content,metadata.text||'');else content.textContent=metadata.text||'';entry.body.replaceChildren(content);
-      if((metadata.text||'').length>=8000){node.open=true;const more=document.createElement('button');more.type='button';more.className='plain';more.textContent=t('展开完整内容');more.onclick=()=>loadBody();entry.body.append(more);}
-    }
-    if(node.open&&metadata.role!=='assistant'){if(entry.detail)paintBody();else loadBody();}
-  };
-  const load=async after=>{
-    if(!valid()||!group.open||group.__directoryController)return;
-    const target=group.__chatMessage,controller=group.__directoryController=new AbortController();
-    const slot='process:'+target.processCursor+':'+target.version+':'+(after||'');
-    try{
-      const saved=group.__pages.get(slot);
-      if(controller.signal.aborted||!valid()||!group.open)return;
-      const page=saved||await readDirectory(target.processCursor,after,controller.signal);
-      if(controller.signal.aborted||!valid()||!group.open||group.__chatMessage.version!==target.version)return;
-      onFiles(page.files||[]);for(const metadata of page.rows||[])record(metadata);
-      group.__next=page.next;group.__loadedVersion=target.version;group.__pages.set(slot,page);paint();
-    }catch(error){if(!controller.signal.aborted&&valid()&&group.open){const retry=document.createElement('button');retry.type='button';retry.className='plain';retry.textContent=t('读取失败，点击重试');retry.title=error.message;retry.onclick=()=>{retry.remove();load(after);};group.lastChild.append(retry);}}
-    finally{if(group.__directoryController===controller)group.__directoryController=null;}
-  };
-  group.ontoggle=()=>{if(group.open){if(group.__loadedVersion!==group.__chatMessage.version)load();else paint();}else cancel();};
-  if(group.__processSignal!==signal){group.__processSignal?.removeEventListener('abort',group.__abortProcessListener);group.__processSignal=signal;group.__abortProcessListener=cancel;signal?.addEventListener('abort',cancel,{once:true});}
-  if(group.open&&group.__loadedVersion!==row.version){cancel();load();}
-  return group;
-}
-function groupChatTasks(container,nodes){
-  const previous=container.__chatTaskGroups||new Map(),next=new Map(),used=new Set(),result=[],tasks=chatTaskSegments(nodes,container.__chatTaskState);
-  let cluster=[],current=null;
-  const flush=()=>{
-    if(!cluster.length)return;
-    const key=cluster[0].dataset.key;
-    let group=previous.get(key)||[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys.has(node.dataset.key)));
-    if(!group){
-      group=document.createElement('details');group.className='chat-activity-group chat-activity-turn';
-      const summary=document.createElement('summary'),body=document.createElement('div');body.className='chat-task-items';group.append(summary,body);group.open=current.active;
-    }else if(group.__active&&!current.active)group.open=false;
-    // Active tasks have no outer toggle; cached collapsed state must not hide them.
-    if(current.active)group.open=true;
-    group.dataset.state=current.active?'active':'complete';
-    group.__active=current.active;group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
-    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
-    const label=chatTaskLabel(current);if(group.firstChild.textContent!==label)group.firstChild.textContent=label;
-    // Keep the independently scrollable tool batches inside the task disclosure.
-    syncChatMessageNodes(group.lastChild,groupChatActivities(group.lastChild,cluster),false);
-    used.add(group);next.set(key,group);result.push(group);cluster=[];
-  };
-  for(const node of nodes){
-    const row=node.__chatMessage,task=tasks.get(node);
-    if(row?.processCursor){flush();result.push(node);current=null;continue;}
-    const process=row&&(chatActivityKind(row)||row.role==='assistant'&&!task.finals.has(node))&&!row.fileSummary;
-    if(!process){flush();result.push(node);current=null;continue;}
-    if(current&&current!==task)flush();current=task;cluster.push(node);
-  }
-  flush();container.__chatTaskGroups=next;return result;
-}
-// Consecutive tools and reasoning share the second disclosure level. Each
-// native tool still owns its original third-level detail and lazy body.
-function groupChatActivities(container,nodes){
-  const previous=container.__chatActivityGroups||new Map(),next=new Map(),used=new Set(),result=[];
-  let cluster=[];
-  const flush=()=>{
-    if(!cluster.length)return;
-    const key=cluster[0].dataset.key;
-    let group=previous.get(key);
-    if(!group)group=[...previous.values()].find(old=>!used.has(old)&&cluster.some(node=>old.__memberKeys?.has(node.dataset.key)));
-    if(!group){
-      group=document.createElement('details');group.className='chat-activity-group chat-activity-tools';
-      const summary=document.createElement('summary'),label=document.createElement('span'),body=document.createElement('div');
-      label.className='chat-activity-label';body.className='chat-activity-items';summary.append(label);group.append(summary,body);
-    }
-    used.add(group);next.set(key,group);group.__memberKeys=new Set(cluster.map(node=>node.dataset.key));
-    group.dataset.key=key;group.hidden=cluster.every(node=>node.hidden);
-    const icons=cluster.map(node=>node.dataset.icon),files=icons.includes('file'),commands=icons.includes('command');
-    const reasoningOnly=cluster.every(node=>node.dataset.chatActivity==='reasoning');
-    const label=files&&commands?'编辑了文件，运行了命令':files?'编辑了文件':commands?'运行了命令':reasoningOnly?'思考摘要':'执行了操作';
-    const translated=typeof BridgeI18n==='undefined'?label:BridgeI18n.t(label);
-    group.dataset.running=String(cluster.some(node=>node.__chatRunning));
-    group.dataset.icon=files?'file':commands?'command':icons.every(icon=>icon===icons[0])?icons[0]:'tool';
-    if(group.firstChild.firstChild.textContent!==translated)group.firstChild.firstChild.textContent=translated;
-    group.__rows=cluster;syncChatActivityPage(group);result.push(group);cluster=[];
-  };
-  for(const node of nodes){
-    if(['tool','reasoning'].includes(node.dataset?.chatActivity)){
-      if(cluster.length&&node.dataset.chatTurnId&&cluster[0].dataset.chatTurnId&&node.dataset.chatTurnId!==cluster[0].dataset.chatTurnId)flush();
-      cluster.push(node);
-    }else{flush();result.push(node);}
-  }
-  flush();container.__chatActivityGroups=next;return result;
-}
 // Stable row keys are local to this conversation container. Do not detach
 // unchanged rows: even reattaching the same node resets nested scroll areas.
-function syncChatMessageNodes(container,nodes,group=true){
-  if(group)nodes=groupChatTasks(container,nodes);
+function syncChatMessageNodes(container,nodes){
   const previous=new Map([...container.children].filter(node=>node.dataset.key!==undefined).map(node=>[node.dataset.key,node]));
   const reading=new Map(),wanted=new Set(nodes);
   for(const node of nodes){

@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import sys
 import tempfile
 import threading
 import traceback
@@ -8,6 +9,7 @@ import unittest
 import uuid
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from contextlib import contextmanager, nullcontext
 from unittest.mock import Mock, patch
 
 from bridge.features.accounts import accounts as accounts_module
@@ -33,6 +35,20 @@ class PrivateWriteTests(unittest.TestCase):
         self.path = Path(self.tmp.name)/'config.toml'
         self.path.write_bytes(b'original')
 
+    @contextmanager
+    def windows_writer(self, replace, clock):
+        from bridge.platforms.windows import local_service as native
+        native_os = SimpleNamespace(O_WRONLY=os.O_WRONLY, O_BINARY=getattr(os, 'O_BINARY', 0),
+                                  fdopen=os.fdopen, fsync=os.fsync, replace=replace)
+        def create(path, **kwargs):
+            return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with patch.object(accounts_module, 'os', SimpleNamespace(name='nt')), \
+                patch.object(native, 'os', native_os), patch.object(native, 'time', clock), \
+                patch.object(native, 'private_security', return_value=nullcontext(None)), \
+                patch.object(native, '_open', side_effect=create), \
+                patch.dict(sys.modules, {'msvcrt': SimpleNamespace(open_osfhandle=lambda handle, flags: handle)}):
+            yield
+
     def test_windows_transient_sharing_denial_retries_atomic_replace(self):
         original_replace = os.replace
         attempts = []
@@ -43,14 +59,13 @@ class PrivateWriteTests(unittest.TestCase):
                 error.winerror = (5, 32)[len(attempts)-1]
                 raise error
             return original_replace(source, destination)
-        windows = SimpleNamespace(name='nt', fdopen=os.fdopen, fsync=os.fsync, replace=replace)
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, .01, .02]), sleep=Mock())
-        with patch.object(accounts_module, 'os', windows), patch.object(accounts_module, 'time', clock):
+        with self.windows_writer(replace, clock):
             private_bytes(self.path, b'restored')
         self.assertEqual(self.path.read_bytes(), b'restored')
         self.assertEqual(len(attempts), 3)
         self.assertEqual(clock.sleep.call_count, 2)
-        self.assertEqual(list(self.path.parent.glob('.account-*')), [])
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
     def test_windows_persistent_denial_keeps_original_and_cleans_source(self):
         attempts = []
@@ -59,30 +74,28 @@ class PrivateWriteTests(unittest.TestCase):
             error = PermissionError('persistent sharing denial')
             error.winerror = 5
             raise error
-        windows = SimpleNamespace(name='nt', fdopen=os.fdopen, fsync=os.fsync, replace=replace)
         clock = SimpleNamespace(monotonic=Mock(side_effect=[0, 1, 2]), sleep=Mock())
-        with patch.object(accounts_module, 'os', windows), patch.object(accounts_module, 'time', clock):
+        with self.windows_writer(replace, clock):
             with self.assertRaises(PermissionError):
                 private_bytes(self.path, b'uncommitted')
         self.assertEqual(len(attempts), 2)
         clock.sleep.assert_called_once_with(.05)
         self.assertEqual(self.path.read_bytes(), b'original')
-        self.assertEqual(list(self.path.parent.glob('.account-*')), [])
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
     def test_other_denial_is_not_retried(self):
         replace = Mock()
         error = PermissionError('different denial')
         error.winerror = 13
         replace.side_effect = error
-        windows = SimpleNamespace(name='nt', fdopen=os.fdopen, fsync=os.fsync, replace=replace)
         clock = SimpleNamespace(monotonic=Mock(return_value=0), sleep=Mock())
-        with patch.object(accounts_module, 'os', windows), patch.object(accounts_module, 'time', clock):
+        with self.windows_writer(replace, clock):
             with self.assertRaises(PermissionError):
                 private_bytes(self.path, b'uncommitted')
         replace.assert_called_once()
         clock.sleep.assert_not_called()
         self.assertEqual(self.path.read_bytes(), b'original')
-        self.assertEqual(list(self.path.parent.glob('.account-*')), [])
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
 
 class AccountsTests(unittest.TestCase):

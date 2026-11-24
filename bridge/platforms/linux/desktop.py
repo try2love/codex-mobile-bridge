@@ -7,15 +7,22 @@ from bridge.platforms.posix.desktop import start
 from bridge.platforms.posix.desktop import terminate
 
 
-def _process_rows():
+def _process_rows(*, preserve_deleted_marker=False):
     for path in Path('/proc').iterdir():
         if not path.name.isdigit():
             continue
         try:
             if path.stat().st_uid != os.getuid():
                 continue
-            # /proc retains the original image path after an update unlinks it.
-            executable = Path(os.readlink(path/'exe').removesuffix(' (deleted)'))
+            exe_link = path/'exe'
+            raw = os.readlink(exe_link)
+            deleted = raw.endswith(' (deleted)')
+            if deleted and preserve_deleted_marker:
+                # Keep the kernel marker only for Antigravity's AppImage verifier.
+                executable = Path(raw)
+            else:
+                # Keep the shared inventory's historical absolute image path.
+                executable = Path(raw.removesuffix(' (deleted)'))
             if not executable.is_absolute():
                 continue
         except (OSError, RuntimeError):

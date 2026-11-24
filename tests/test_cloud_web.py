@@ -1,6 +1,7 @@
 """Account-Web exercises the live private listener with synthetic account authority."""
 import asyncio
 import json
+import re
 import tempfile
 import threading
 import time
@@ -209,6 +210,9 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((base + '/cloud-web.js?v=').encode(), html)
         self.assertIn((base + '/bootstrap.js?v=').encode(), html)
         self.assertNotIn(b'src="/bootstrap.js', html)
+        theme_urls = re.findall(rb'data-icon-(?:light|dark)="([^"]+)"', html)
+        self.assertTrue(theme_urls)
+        self.assertTrue(all(url.startswith((base + '/').encode()) for url in theme_urls), theme_urls)
         self.assertIn(self.web.origin + base + '/html-preview-shell', start['headers']['Content-Security-Policy'])
         _, raw = await self.proxy('/api/auth')
         auth = json.loads(raw)
@@ -219,6 +223,19 @@ class CloudWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(auth['csrf'], local['csrf'])
         self.web.forget(self.session)
         self.assertIsNone(self.server.auth.get(token))
+
+    async def test_light_and_dark_install_manifests_keep_the_account_computer_scope(self):
+        base = self.request()['base']
+        for path in ('/manifest.webmanifest', '/manifest-dark.webmanifest'):
+            with self.subTest(path=path):
+                start, raw = await self.proxy(path)
+                self.assertEqual(start['status'], 200, raw)
+                manifest = json.loads(raw)
+                for field in ('id', 'scope', 'start_url'):
+                    self.assertEqual(manifest[field], base + '/')
+                self.assertTrue(manifest['icons'])
+                for icon in manifest['icons']:
+                    self.assertTrue(icon['src'].startswith(base + '/'), icon['src'])
 
     async def test_disabled_gate_never_looks_up_capabilities_or_opens_socket(self):
         self.grant['allowed'] = False

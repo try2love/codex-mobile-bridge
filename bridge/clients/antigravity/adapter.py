@@ -1,18 +1,21 @@
 """Antigravity history, original-server writes and explicitly enabled hooks."""
+import base64
 import hashlib
 import json
 from pathlib import Path
 import re
 import threading
 
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.clients.file_mentions import file_mentions
+from bridge.features.sessions.create import ArchiveNotSent
+from bridge.features.workspace.uploads import MAX_FILE, MAX_FILES, MAX_TOTAL, image_type
 from bridge.platforms.antigravity import profile_lease
 from .cli_session import AntigravityCli
 from .hook_ipc import HookIPCServer
 from .model import COMPOSER_PRESENTATION, PERMISSION_OPTIONS, SURFACE_LABELS, gateway_id
 from .setup import disable_plugin, ensure_plugin, inspect_plugin, plugin_directory
-from .store import AntigravityStore
+from .store import AntigravityStore, read_annotation_pbtxt
 
 _UNSET = object()
 _SLASH_PREFIX_RE = re.compile(r'^/([A-Za-z0-9_-]+)(?:$|([ \t\r\n][\s\S]*))')
@@ -20,6 +23,9 @@ _KNOWN_NATIVE_SYSTEM_COMMANDS = frozenset({
     'goal', 'compact', 'schedule', 'browser', 'plan', 'grill-me', 'teamwork', 'learn', 'boost',
 })
 _BUSY_STRUCTURED_ERROR = '原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送'
+
+
+_DATA_IMAGE_URL_RE = re.compile(r'^data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$')
 
 
 def _parse_slash_prefix(text):
@@ -158,13 +164,14 @@ class Antigravity:
 
     def project_environments(self):
         return [{'surface': row['key'], 'host': 'local', 'hostLabel': '此电脑', 'name': row['name'],
-                 'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': False} for row in self.store.surfaces()]
+                 'scope': str(row['root']), 'createRequiresMessage': True, 'createTitle': True} for row in self.store.surfaces()]
 
-    def _waiting_state(self, surface, *, live=True, fresh=False):
+    def _waiting_state(self, surface, *, live=True, fresh=False, expected_identity=None):
         if not live:
             return {}, set()
         if fresh:
-            return self.cli.waiting_state_by_cid(surface=surface, max_age=0)
+            return self.cli.waiting_state_by_cid(surface=surface, max_age=0,
+                                                **({'expected_identity': expected_identity} if expected_identity is not None else {}))
         try:
             return self.cli.waiting_state_by_cid(surface=surface)
         except (OSError, ValueError, BridgeUnavailable):
@@ -189,7 +196,16 @@ class Antigravity:
         raw_model = saved_settings.get('model') or ''
         raw_effort = saved_settings.get('effort') or ''
         proj_model, proj_effort, display_name = self.cli.resolve_model_display(surface, raw_model, raw_effort)
-        return {**row, 'status': 'active' if active else 'idle', 'requests': requests,
+        title = row.get('title')
+        archived = bool(row.get('archived'))
+        if live:
+            ann = self.cli.annotations_for(cid, surface=surface)
+            if ann.get('title'):
+                title = ann['title']
+            if isinstance(ann.get('archived'), bool):
+                archived = ann['archived']
+        return {**row, 'title': title, 'archived': archived,
+                'status': 'active' if active else 'idle', 'requests': requests,
                 'model': proj_model, 'effort': proj_effort,
                 **({'modelDisplayName': display_name} if display_name else {}),
                 'collaborationMode': collaboration_mode,
@@ -200,8 +216,8 @@ class Antigravity:
                 'capabilities': {'send': live, 'stop': live, 'models': live, 'effort': live, 'manualModels': live, 'manualEffort': False,
                                  'permissions': bool(self.hooks), 'attachments': live, 'uploadFiles': live,
                                  'queue': hooked, 'steer': hooked, 'skills': live, 'multiSkills': live,
-                                 'slashCommands': live, 'compact': live, 'rename': False,
-                                 'plan': live, 'goal': live, 'archive': False, 'unarchive': False}}
+                                 'slashCommands': live, 'compact': live, 'rename': live, 'fork': live, 'tasks': True,
+                                 'plan': live, 'goal': live, 'archive': live, 'unarchive': live}}
 
     def management(self):
         """Inspect each native source and existing per-session settings without starting it."""
@@ -235,10 +251,82 @@ class Antigravity:
         return None
 
     @staticmethod
-    def _prompt(body):
+    def _build_media(body):
+        """Convert data-URL resolvedImages into native SendUserCascadeMessage Media items."""
+        media = []
+        fallback_paths = []
+        images = body.get('resolvedImages') or []
+        if len(images) > MAX_FILES:
+            raise ValueError('每条消息最多添加 10 个不同附件')
+        total = 0
+        for idx, row in enumerate(images):
+            if not isinstance(row, dict):
+                continue
+            url = row.get('url')
+            if isinstance(url, str):
+                match = _DATA_IMAGE_URL_RE.match(url.strip())
+                if not match:
+                    raise ValueError('图片附件格式无效，请重新上传')
+                mime = match.group(1).lower()
+                raw_b64 = re.sub(r'\s+', '', match.group(2))
+                if len(raw_b64) > 4 * ((MAX_FILE + 2) // 3):
+                    raise ValueError('每个附件需为 1 字节至 20 MB')
+                try:
+                    decoded = base64.b64decode(raw_b64, validate=True)
+                except ValueError as exc:
+                    raise ValueError('图片附件编码无效，请重新上传') from exc
+                if not decoded:
+                    raise ValueError('图片附件内容为空，请重新上传')
+                if len(decoded) > MAX_FILE:
+                    raise ValueError('每个附件需为 1 字节至 20 MB')
+                total += len(decoded)
+                if total > MAX_TOTAL:
+                    raise ValueError('每条消息的附件总计不能超过 100 MB')
+                if image_type(decoded) != mime:
+                    raise ValueError('图片附件类型与内容不匹配，请重新上传')
+                name = str(row.get('name') or f'image-{idx + 1}.png').strip() or f'image-{idx + 1}.png'
+                media.append({
+                    'mime_type': mime,
+                    'inline_data': base64.b64encode(decoded).decode('ascii'),
+                    'description': name,
+                    'display_name': name,
+                })
+            elif isinstance(row.get('path'), str) and row['path'].strip():
+                fallback_paths.append(row)
+        return media, fallback_paths
+
+    @staticmethod
+    def _build_scope_items(body):
+        """Convert existing workspace resolvedReferences into native PathScopeItem entries."""
+        scope_items = []
+        fallback_refs = []
+        for row in body.get('resolvedReferences') or []:
+            if not isinstance(row, dict) or not isinstance(row.get('path'), str) or not row['path'].strip():
+                continue
+            candidate = Path(row['path'])
+            if (candidate.is_absolute() and candidate.resolve() == candidate
+                    and (candidate.is_file() or candidate.is_dir())):
+                kind = 'directory' if candidate.is_dir() else 'file'
+                if row.get('kind') not in (None, kind):
+                    raise ValueError('项目引用类型已变化，请重新选择')
+                scope_items.append({'item': {kind: {'absolute_uri': candidate.resolve().as_uri()}}})
+            else:
+                raise ValueError('项目引用已失效或目录已变化，请重新选择')
+        return scope_items, fallback_refs
+
+    @staticmethod
+    def _prompt(body, *, exclude_scoped_references=False):
         text = str(body.get('text') or body.get('firstMessage') or '').strip()
-        files = [row for name in ('resolvedReferences', 'resolvedImages', 'resolvedFiles')
-                 for row in body.get(name, []) if isinstance(row, dict) and isinstance(row.get('path'), str)]
+        files = []
+        if exclude_scoped_references:
+            _, fallback_refs = Antigravity._build_scope_items(body)
+            files.extend(fallback_refs)
+        else:
+            files.extend(row for row in (body.get('resolvedReferences') or []) if isinstance(row, dict) and isinstance(row.get('path'), str))
+        for row in body.get('resolvedImages') or []:
+            if isinstance(row, dict) and not isinstance(row.get('url'), str) and isinstance(row.get('path'), str):
+                files.append(row)
+        files.extend(row for row in (body.get('resolvedFiles') or []) if isinstance(row, dict) and isinstance(row.get('path'), str))
         return file_mentions(text, files) if files else text
 
     def _account(self, surface='app', refresh=False):
@@ -308,48 +396,53 @@ class Antigravity:
             raise ValueError('最多选择 8 个 Skill')
         return unique
 
-    def _build_message_items(self, prompt, *, plugins, default_command=None, surface, cid=None, model=None, effort=None, cwd=None):
+    def _build_message_items(self, prompt, *, plugins, default_command=None, scope_items=None, surface, cid=None, model=None, effort=None, cwd=None):
         cmd_name, remainder = _parse_slash_prefix(prompt)
-        if not cmd_name and not plugins and not default_command:
+        extra_scope = list(scope_items or [])
+        if not cmd_name and not plugins and not default_command and not extra_scope:
             return None
-        commands_by_name = self._commands_by_name(surface=surface, cid=cid, model=model, effort=effort, cwd=cwd)
-        offered_skills = {name: row for name, row in commands_by_name.items() if row.get('category') == 'skill'}
-        for skill_id in plugins:
-            if skill_id not in offered_skills:
-                raise ValueError('技能已不可用，请刷新后选择')
-        leading_cmd = commands_by_name.get(cmd_name) if cmd_name else None
-        if cmd_name and leading_cmd is None and cmd_name in _KNOWN_NATIVE_SYSTEM_COMMANDS:
-            raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{cmd_name} 指令')
         items = []
-        seen_commands = set()
-        if leading_cmd is not None:
-            items.append({'item': {'slashCommand': {'info': dict(leading_cmd['info'])}}})
-            seen_commands.add(leading_cmd['name'])
-        elif default_command:
-            mode_cmd = commands_by_name.get(default_command)
-            if not mode_cmd:
-                raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{default_command} 模式')
-            items.append({'item': {'slashCommand': {'info': dict(mode_cmd['info'])}}})
-            seen_commands.add(mode_cmd['name'])
-        for skill_id in plugins:
-            if skill_id not in seen_commands:
-                items.append({'item': {'slashCommand': {'info': dict(offered_skills[skill_id]['info'])}}})
-                seen_commands.add(skill_id)
+        leading_cmd = None
+        if cmd_name or plugins or default_command:
+            commands_by_name = self._commands_by_name(surface=surface, cid=cid, model=model, effort=effort, cwd=cwd)
+            offered_skills = {name: row for name, row in commands_by_name.items() if row.get('category') == 'skill'}
+            for skill_id in plugins:
+                if skill_id not in offered_skills:
+                    raise ValueError('技能已不可用，请刷新后选择')
+            leading_cmd = commands_by_name.get(cmd_name) if cmd_name else None
+            if cmd_name and leading_cmd is None and cmd_name in _KNOWN_NATIVE_SYSTEM_COMMANDS:
+                raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{cmd_name} 指令')
+            seen_commands = set()
+            if leading_cmd is not None:
+                items.append({'item': {'slashCommand': {'info': dict(leading_cmd['info'])}}})
+                seen_commands.add(leading_cmd['name'])
+            elif default_command:
+                mode_cmd = commands_by_name.get(default_command)
+                if not mode_cmd:
+                    raise BridgeUnavailable(f'当前 Antigravity 原生环境暂未提供 /{default_command} 模式')
+                items.append({'item': {'slashCommand': {'info': dict(mode_cmd['info'])}}})
+                seen_commands.add(mode_cmd['name'])
+            for skill_id in plugins:
+                if skill_id not in seen_commands:
+                    items.append({'item': {'slashCommand': {'info': dict(offered_skills[skill_id]['info'])}}})
+                    seen_commands.add(skill_id)
+        items.extend(extra_scope)
         if not items:
             return None
         if leading_cmd is not None:
             if remainder:
                 items.append({'text': remainder})
-        else:
+        elif prompt:
             text_chunk = ' ' + prompt if not prompt.startswith((' ', '\n', '\t')) else prompt
             items.append({'text': text_chunk})
         return items
 
-    def _ensure_native_idle(self, row, key, cid, surface, *, waiting_msg, busy_msg):
+    def _ensure_native_idle(self, row, key, cid, surface, *, waiting_msg, busy_msg, expected_identity=None):
         if not self.cli.available(surface):
             raise BridgeUnavailable('原客户端服务未连接，请先打开 Antigravity 应用')
         native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
-        waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
+        waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True,
+                                                        **({'expected_identity': expected_identity} if expected_identity is not None else {}))
         if waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key)):
             raise BridgeUnavailable(waiting_msg)
         if native_busy or cid in active_cids:
@@ -371,16 +464,53 @@ class Antigravity:
         if cmd_name in (known_names | _KNOWN_NATIVE_SYSTEM_COMMANDS):
             raise BridgeUnavailable(_BUSY_STRUCTURED_ERROR)
 
+    @staticmethod
+    def _validate_title(raw):
+        if not isinstance(raw, str) or not 1 <= len(raw.strip()) <= 120 or re.search(r'[\x00-\x1f\x7f]', raw):
+            raise ValueError('标题为 1–120 字，不能包含控制字符')
+        return raw.strip()
+
     def _send_prompt_or_items(self, cid, prompt, *, model, surface, effort=None, items=None,
-                              turn_generation=None, before_send=None):
+                              media=None, turn_generation=None, before_send=None, expected_identity=None):
         selection = {'effort': effort} if effort else {}
+        if media:
+            selection['media'] = media
         if turn_generation is not None:
             selection['turn_generation'] = turn_generation
         if before_send is not None:
             selection['before_send'] = before_send
+        if expected_identity is not None:
+            selection['expected_identity'] = expected_identity
         if items is not None:
             return self.cli.send_user_message(cid, prompt, model=model, surface=surface, items=items, **selection)
         return self.cli.send_user_message(cid, prompt, model=model, surface=surface, **selection)
+
+    def _stop_task(self, cid, surface, body):
+        task_id = str(body.get('taskId') or '').strip()
+        bg_match = re.fullmatch(r'bg:(\d+)', task_id)
+        if not bg_match and (not re.fullmatch(r'[0-9a-fA-F-]{36}', task_id) or task_id == cid):
+            raise ResumePreflightBlocked('后台任务标识无效')
+        try:
+            expected_identity = self.cli.source_identity(surface)
+            if bg_match:
+                live_bg = self.cli.list_background_tasks(cid, surface=surface, expected_identity=expected_identity)
+                if not any(task.get('id') == task_id and task.get('cancellable') is True for task in live_bg):
+                    raise ResumePreflightBlocked('找不到该运行中的后台任务或任务已结束')
+            else:
+                children = self.cli.running_child_cids(cid, surface=surface, expected_identity=expected_identity)
+                if task_id not in children:
+                    raise ResumePreflightBlocked('该子任务已结束或无法核验其属于当前会话')
+        except (OSError, ValueError, BridgeUnavailable) as exc:
+            raise ResumePreflightBlocked(str(exc)) from exc
+        if bg_match:
+            self.cli.stop_background_step(cid, int(bg_match.group(1)), surface=surface,
+                                          expected_identity=expected_identity)
+        else:
+            child_key = gateway_id(surface, task_id)
+            before_stop = (lambda: self.hooks.request_stop(child_key)) if self.hooks else None
+            self.cli.stop_child_cascade(task_id, surface=surface, before_stop=before_stop,
+                                        expected_identity=expected_identity)
+        return {'status': 'accepted'}
 
     def call(self, action, sid=None, body=None):
         body = body or {}
@@ -428,13 +558,26 @@ class Antigravity:
             effort = body.get('effort')
             if body.get('manualEffort') is True:
                 raise ValueError('Antigravity 暂不支持手动填写思考强度')
+            raw_title = body.get('title')
+            cleaned_title = self._validate_title(raw_title) if isinstance(raw_title, str) and raw_title.strip() else (
+                self._validate_title(raw_title) if raw_title not in (None, '') else '')
             plugins = self._validate_plugins_arg(body.get('plugins'))
             items = self._build_message_items(
                 prompt, plugins=plugins, default_command=None,
                 surface=surface, cid=None, model=model, effort=effort, cwd=cwd,
             )
-            cid = self.cli.start_cascade(surface=surface, model=model, effort=effort, cwd=cwd)
-            self._send_prompt_or_items(cid, prompt, model=model, effort=effort, surface=surface, items=items)
+            cid, expected_identity = self.cli.start_cascade(
+                surface=surface, model=model, effort=effort, cwd=cwd,
+            )
+            title_unconfirmed = False
+            if cleaned_title:
+                try:
+                    self.cli.update_annotations(cid, title=cleaned_title, surface=surface,
+                                                expected_identity=expected_identity)
+                except (OSError, ValueError, BridgeUnavailable):
+                    title_unconfirmed = True
+            self._send_prompt_or_items(cid, prompt, model=model, effort=effort, surface=surface, items=items,
+                                       expected_identity=expected_identity)
             key = gateway_id(surface, cid)
             if model:
                 try:
@@ -445,7 +588,9 @@ class Antigravity:
                     canonical_model, canonical_effort = model, (effort or '')
                 if canonical_model:
                     self._update_session_settings(key, model=canonical_model, effort=canonical_effort)
-            return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key}}
+            return {'status': 'accepted', 'id': key, 'sessionId': key, 'result': {'id': key, 'sessionId': key},
+                    **({'titleStatus': 'unconfirmed', 'notice': '会话已创建，标题结果待核对；请在原客户端检查'}
+                       if title_unconfirmed else {})}
         row = self.store.resolve_session(sid)
         if row is None:
             raise ValueError('找不到此 Antigravity 会话')
@@ -456,6 +601,78 @@ class Antigravity:
                 self.cli.stop(cid, surface=surface, before_stop=lambda: self.hooks.request_stop(key))
             else:
                 self.cli.stop(cid, surface=surface)
+            return {'status': 'accepted'}
+        if action == 'stop-task':
+            return self._stop_task(cid, surface, body)
+        if action == 'rename':
+            try:
+                title = self._validate_title(body.get('title'))
+            except ValueError as exc:
+                raise ResumePreflightBlocked(str(exc)) from exc
+            if not self.cli.available(surface):
+                raise ResumePreflightBlocked('当前会话尚不能原生改名，请先打开原 Antigravity 应用')
+            self.cli.update_annotations(cid, title=title, surface=surface)
+            fresh_ann = self.cli.annotations_for(cid, surface=surface, fresh=True)
+            confirmed_title = fresh_ann.get('title')
+            if not confirmed_title:
+                confirmed_title = read_annotation_pbtxt(row['surfaceRoot'], cid).get('title')
+            if confirmed_title != title:
+                raise BridgeUnavailable('改名结果待核对，请检查原客户端；不会重复提交')
+            return {'status': 'confirmed', 'result': {'id': key, 'title': title}}
+        if action in ('archive-state', 'archive'):
+            live = self.cli.available(surface)
+            if action == 'archive-state':
+                waiting_state = self._waiting_state(surface, live=live, fresh=True) if live else ({}, set())
+                session = self._session(row, live=live, waiting_state=waiting_state)
+                native_known = True
+                if live:
+                    try:
+                        if self.store.is_native_busy(row['surfaceRoot'], cid):
+                            session['status'] = 'active'
+                    except ValueError:
+                        native_known = False
+                pending_hooks = bool(self.hooks and (self.hooks.has_pending_approvals(key) or self.hooks.get_queued_items(key)))
+                archive_safe = bool(live and native_known and session.get('runtimeKnown') is True
+                                    and session['status'] == 'idle' and not session['requests'] and not pending_hooks)
+                return {**session, 'archiveSafe': archive_safe, '_archiveFlags': {key: bool(session['archived'])}}
+            archived = body.get('archived')
+            if type(archived) is not bool:
+                raise ArchiveNotSent('聊天归档设置无效')
+            if not live:
+                raise ArchiveNotSent('原客户端服务未连接，请先打开 Antigravity 应用')
+            waiting_state = self._waiting_state(surface, live=True, fresh=True)
+            session = self._session(row, live=True, waiting_state=waiting_state)
+            try:
+                native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
+            except ValueError as exc:
+                if not (body.get('disconnect') is True and archived is True):
+                    raise ArchiveNotSent(str(exc)) from exc
+                native_busy = True
+            pending_hooks = bool(self.hooks and (self.hooks.has_pending_approvals(key) or self.hooks.get_queued_items(key)))
+            if body.get('disconnect') is True and archived is True:
+                if session['status'] == 'active' or native_busy or session['requests'] or pending_hooks:
+                    if self.hooks:
+                        self.cli.stop(cid, surface=surface, before_stop=lambda: self.hooks.request_stop(key))
+                    else:
+                        self.cli.stop(cid, surface=surface)
+                # A successful cancellation RPC is not evidence that every task
+                # or pending interaction has finished. Re-read before archiving.
+                try:
+                    fresh_row = self.store.resolve_session(key)
+                    if fresh_row is None or fresh_row.get('runtimeKnown') is not True:
+                        raise ValueError('聊天运行状态尚未确认')
+                    native_busy = self.store.is_native_busy(fresh_row['surfaceRoot'], cid)
+                    waiting_state = self._waiting_state(surface, live=True, fresh=True)
+                    session = self._session(fresh_row, live=True, waiting_state=waiting_state)
+                    pending_hooks = bool(self.hooks and (self.hooks.has_pending_approvals(key)
+                                                         or self.hooks.get_queued_items(key)))
+                except (OSError, ValueError, BridgeUnavailable) as exc:
+                    raise ArchiveNotSent('停止后的聊天状态尚未确认，请在原客户端处理后重试') from exc
+                if session['status'] != 'idle' or native_busy or session['requests'] or pending_hooks:
+                    raise ArchiveNotSent('聊天仍有运行、排队或审批，请在原客户端处理后重试')
+            elif session['status'] != 'idle' or native_busy or session['requests'] or pending_hooks:
+                raise ArchiveNotSent('聊天有运行、排队、审批或未知状态，请先在原客户端处理')
+            self.cli.update_annotations(cid, archived=archived, surface=surface)
             return {'status': 'accepted'}
         begin_turn = (lambda: self.hooks.begin_user_turn(key)) if self.hooks else None
         session = self._session(row, waiting_state=None if action == 'detail' else ({}, set()))
@@ -474,7 +691,21 @@ class Antigravity:
             page = self.store.read_transcript_page(row['surfaceRoot'], cid, limit=body.get('historyLimit') or 40,
                                                    before=body.get('historyBefore'), session_active=session['status'] == 'active')
             if page.get('contextUsage'):
-                session['contextUsage'] = page['contextUsage']
+                session['contextUsage'] = dict(page['contextUsage'])
+            if not session['readOnly'] and not body.get('historyBefore'):
+                try:
+                    ctx_meta = self.cli.context_window_metadata(cid, surface=surface, step_count=row.get('stepCount'))
+                except (OSError, ValueError, BridgeUnavailable):
+                    ctx_meta = None
+                if isinstance(ctx_meta, dict) and ctx_meta.get('contextWindow'):
+                    if isinstance(session.get('contextUsage'), dict):
+                        session['contextUsage']['contextWindow'] = ctx_meta['contextWindow']
+                    elif ctx_meta.get('estimatedTokensUsed') is not None:
+                        session['contextUsage'] = {
+                            'usedTokens': ctx_meta['estimatedTokensUsed'],
+                            'contextWindow': ctx_meta['contextWindow'],
+                            'measurement': 'session',
+                        }
             queued = self.hooks.get_queued_items(key) if self.hooks else []
             return {'connected': True, 'session': session, **{k: page[k] for k in ('messages', 'turns', 'history')},
                     'readOnly': session['readOnly'],
@@ -495,7 +726,21 @@ class Antigravity:
             merged_caps = {**account_data.get('capabilities', {}), **session['capabilities']}
             return {**account_data, 'currentModel': session['model'], 'currentEffort': session['effort'], 'capabilities': merged_caps, **slash_data}
         if action == 'tasks':
-            return {'tasks': self.store.list_tasks(row['surfaceRoot'], cid)}
+            child_tasks = self.store.list_tasks(row['surfaceRoot'], cid, live=False)
+            bg_tasks = []
+            if self.cli.available(surface):
+                try:
+                    identity = self.cli.source_identity(surface)
+                    bg_tasks = self.cli.list_background_tasks(cid, surface=surface, expected_identity=identity)
+                    running = self.cli.running_child_cids(cid, surface=surface, expected_identity=identity)
+                    if self.cli.source_identity(surface) != identity:
+                        raise BridgeUnavailable('原生服务进程已变化')
+                    for task in child_tasks:
+                        if task['id'] in running:
+                            task.update(status='running', cancellable=True)
+                except (OSError, ValueError, BridgeUnavailable):
+                    bg_tasks = []
+            return {'tasks': bg_tasks + child_tasks}
         if action == 'image':
             return self.store.read_image(row['surfaceRoot'], cid, body.get('source'))
         if action == 'resume':
@@ -582,6 +827,27 @@ class Antigravity:
                 items=[{'item': {'slashCommand': {'info': dict(compact_cmd['info'])}}}],
             )
             return {'status': 'accepted', 'delivery': 'native'}
+        if action == 'fork':
+            try:
+                expected_identity = self.cli.source_identity(surface)
+                self._ensure_native_idle(
+                    row, key, cid, surface,
+                    waiting_msg='原会话正在等待交互确认，请先回应后再创建分支',
+                    busy_msg='请等待 Antigravity 原生会话空闲后再创建分支',
+                    expected_identity=expected_identity,
+                )
+            except (ValueError, BridgeUnavailable) as exc:
+                raise ResumePreflightBlocked(str(exc)) from exc
+            anchor = str(body.get('messageId') or '').strip()
+            if not re.fullmatch(r'\d+', anchor):
+                raise ResumePreflightBlocked('请选择原会话中可分支的消息')
+            step_index = int(anchor)
+            valid_steps = self.store.valid_fork_steps(row['surfaceRoot'], cid)
+            if step_index not in valid_steps:
+                raise ResumePreflightBlocked('请选择原会话中可分支的消息')
+            new_cid = self.cli.fork_conversation(cid, step_index, cwd=row.get('cwd'), surface=surface,
+                                                 expected_identity=expected_identity)
+            return {'status': 'ready', 'result': {'id': gateway_id(surface, new_cid)}}
         if action == 'queue-action':
             if not self.hooks:
                 raise ValueError('排队连接不可用')
@@ -597,9 +863,12 @@ class Antigravity:
             return {'status': 'accepted', **({'text': item['text']} if operation == 'edit' else {})}
         if action == 'send':
             native_busy = self.store.is_native_busy(row['surfaceRoot'], cid)
-            prompt, mode = self._prompt(body), body.get('mode') or 'send'
+            media, _ = self._build_media(body)
+            scope_items, _ = self._build_scope_items(body)
+            prompt = self._prompt(body, exclude_scoped_references=True)
+            mode = body.get('mode') or 'send'
             plugins = self._validate_plugins_arg(body.get('plugins'))
-            if not prompt or mode not in ('send', 'queue', 'steer'):
+            if (not prompt and not media and not scope_items) or mode not in ('send', 'queue', 'steer'):
                 raise ValueError('Antigravity 消息或发送方式无效')
             waiting_by_cid, active_cids = self._waiting_state(surface, live=True, fresh=True)
             if (waiting_by_cid.get(cid) or (self.hooks and self.hooks.has_pending_approvals(key))) and mode == 'send':
@@ -607,20 +876,23 @@ class Antigravity:
             if native_busy or cid in active_cids:
                 if mode not in ('queue', 'steer') or not self.hooks or not self.hooks.has_recent_heartbeat(key):
                     raise BridgeUnavailable('原会话正在运行；请等待结束，或在原会话重新载入网关 Hook 后排队')
+                if media:
+                    raise BridgeUnavailable('原会话运行中，排队或插话暂不支持图片附件，请等待当前回复结束后直接发送')
+                queued_prompt = self._prompt(body, exclude_scoped_references=False)
                 self._reject_busy_structured_follow_up(
-                    prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
+                    queued_prompt, {**body, 'plugins': plugins}, work_mode=session.get('collaborationMode'),
                     surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
                 )
-                item = self.hooks.enqueue_follow_up(key, prompt, mode=mode)
+                item = self.hooks.enqueue_follow_up(key, queued_prompt, mode=mode)
                 return {'status': 'queued', 'id': item['id'], 'delivery': 'hook-' + mode}
             default_command = 'plan' if session.get('collaborationMode') == 'plan' else None
             items = self._build_message_items(
-                prompt, plugins=plugins, default_command=default_command,
+                prompt, plugins=plugins, default_command=default_command, scope_items=scope_items,
                 surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
             )
             before_send = begin_turn if self.hooks and not waiting_by_cid.get(cid) and not self.hooks.has_pending_approvals(key) else None
             self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
-                                       items=items, turn_generation=turn_generation, before_send=before_send)
+                                       items=items, media=media, turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
         raise ValueError('此 Antigravity 操作尚不支持')
 

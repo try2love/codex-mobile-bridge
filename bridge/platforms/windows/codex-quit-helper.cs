@@ -69,9 +69,20 @@ class CodexQuit {
     }
     sealed class Operation {
         readonly object gate=new object();bool cancelled;
-        public volatile bool Submitted,Finished;public Exception Error;public string State,Reason;
+        public volatile bool Submitted,Finished;bool menuOpened;public Exception Error;public string State,Reason;
         public void Cancel() {lock(gate){cancelled=true;}}
         public void Check() {lock(gate){if(cancelled||cancelFile!=null&&File.Exists(cancelFile))throw new OperationCanceledException("已取消 Codex 退出");}}
+        public void OpenMenu(int pid,Action invoke) {
+            lock(gate) {
+                if(cancelled||Submitted||menuOpened||cancelFile!=null&&File.Exists(cancelFile))throw new OperationCanceledException("已取消 Codex 退出");
+                menuOpened=true;Stage("{\"quitPhase\":\"opening-menu\",\"pid\":"+pid+"}");
+            }
+            // An outstanding UIA call must not block cancellation. Opening the
+            // menu is not a Quit submission; a late return cannot dispatch Quit.
+            Check();
+            invoke();
+            Check();
+        }
         public void Dispatch(int pid,Action invoke) {
             lock(gate) {
                 if(cancelled||Submitted||cancelFile!=null&&File.Exists(cancelFile))throw new OperationCanceledException("已取消 Codex 退出");
@@ -220,8 +231,37 @@ class CodexQuit {
         check();var root=AutomationElement.FromHandle(main);
         var condition=new PropertyCondition(AutomationElement.AutomationIdProperty,"application-menu-content");
         var content=Unique(root,condition,process.Id);
-        var exit=content==null?null:FindQuit(content,process.Id);
-        if(exit==null)throw new Exception("没有可后台调用的 Codex 退出入口，尚未提交；请在电脑端正常退出");
+        if(content==null) {
+            var triggerCondition=new AndCondition(
+                new PropertyCondition(AutomationElement.AutomationIdProperty,"application-menu-trigger-file-menu"),
+                new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.MenuItem));
+            var trigger=Unique(root,triggerCondition,process.Id);
+            object openPattern;Action openMenu=null;
+            if(trigger!=null) {
+                if(trigger.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out openPattern)) {
+                    var expand=(ExpandCollapsePattern)openPattern;
+                    if(expand.Current.ExpandCollapseState!=ExpandCollapseState.LeafNode)openMenu=()=>expand.Expand();
+                } else if(trigger.TryGetCurrentPattern(InvokePattern.Pattern,out openPattern)) {
+                    var invoke=(InvokePattern)openPattern;openMenu=()=>invoke.Invoke();
+                }
+            }
+            if(openMenu==null)
+                throw new Exception("没有可后台调用的 Codex 退出入口，尚未提交；请在电脑端正常退出");
+            check();
+            if(PendingDialog(Windows(process.Id))){operation.State="pending";operation.Reason="Codex 有待处理的原生对话框";return;}
+            var currentTrigger=Unique(AutomationElement.FromHandle(main),triggerCondition,process.Id);
+            if(!IsWindowVisible(main)||currentTrigger==null||!Automation.Compare(currentTrigger,trigger))
+                throw new Exception("Codex 应用程序菜单已变化，尚未提交退出");
+            check();
+            operation.OpenMenu(process.Id,openMenu);
+            content=Wait(()=>Unique(AutomationElement.FromHandle(main),condition,process.Id),check,3000);
+        }
+        // Chromium can expose the menu container before its lazy children.
+        // Wait only for the same exact Quit selector; never reopen the menu.
+        var exit=Wait(()=>{
+            content=Unique(AutomationElement.FromHandle(main),condition,process.Id);
+            return content==null?null:FindQuit(content,process.Id);
+        },check,3000);
         object pattern;
         if(!exit.TryGetCurrentPattern(InvokePattern.Pattern,out pattern))throw new Exception("Codex 退出菜单不支持正常调用，尚未提交退出");
         check();
@@ -242,11 +282,29 @@ class CodexQuit {
         operation.State="submitted";operation.Reason="已请求 Codex 正常退出，正在等待保存和退出完成";
     }
     static void SelfCheck() {
+        if(QuitLabels[0]!="\u9000\u51fa Codex"||QuitLabels[2]!="\u9000\u51fa ChatGPT")throw new Exception("quit label encoding failed");
         if(!QuitName("退出 Codex Ctrl+Q","")||!QuitName("退出 ChatGPT Ctrl+Q","")||!QuitName("Quit Codex","Ctrl+Q")||QuitName("Quit Codex","Alt+F4")||
             QuitName("Close Codex Ctrl+Q","")||QuitName("Quit Codex Ctrl+Q extra","")||QuitName("Quit Claude Ctrl+Q","")||QuitName("退出登录 Ctrl+Q",""))throw new Exception("quit selector failed");
         var cancelled=new Operation();cancelled.Cancel();int invoked=0;
         try{cancelled.Dispatch(0,()=>invoked++);}catch(OperationCanceledException){}
         if(invoked!=0||cancelled.Submitted)throw new Exception("cancel guard failed");
+        try{cancelled.OpenMenu(0,()=>invoked++);}catch(OperationCanceledException){}
+        if(invoked!=0||cancelled.Submitted)throw new Exception("cancelled menu guard failed");
+        var opened=new Operation();opened.OpenMenu(0,()=>invoked++);
+        try{opened.OpenMenu(0,()=>invoked++);}catch(OperationCanceledException){}
+        if(invoked!=1||opened.Submitted)throw new Exception("menu must open once without submitting Quit");
+        using(var entered=new ManualResetEvent(false))using(var resume=new ManualResetEvent(false)) {
+            var blocked=new Operation();Exception lateError=null;
+            var thread=new Thread(delegate() {
+                try{blocked.OpenMenu(0,()=>{entered.Set();resume.WaitOne(2000);});}
+                catch(Exception error){lateError=error;}
+            });thread.IsBackground=true;thread.Start();
+            if(!entered.WaitOne(1000))throw new Exception("menu cancellation fixture did not enter");
+            blocked.Cancel();resume.Set();
+            if(!thread.Join(1000)||!(lateError is OperationCanceledException))throw new Exception("late menu invocation ignored cancellation");
+            try{blocked.Dispatch(0,()=>invoked++);}catch(OperationCanceledException){}
+            if(invoked!=1||blocked.Submitted)throw new Exception("late menu invocation submitted Quit");
+        }
         Stage("Codex menu selectors and cancellation guards OK");
     }
     static int Main(string[] args) {

@@ -2,6 +2,7 @@ package io.github.try2love.codexbridge;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.SocketTimeoutException;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -29,25 +30,49 @@ final class ConnectionDiscovery {
  JSONObject read(String address,String discoveryKey)throws Exception {
   return request(address,discoveryKey,null,null,null);
  }
+ JSONObject readProbe(String address)throws Exception {
+  long began=System.nanoTime();
+  try{return request(address,null,null,null,null,began+4_000_000_000L);}
+  catch(SocketTimeoutException timeout){
+   if(cancelled||Thread.currentThread().isInterrupted())throw new InterruptedIOException();
+   return request(address,null,null,null,null,began+12_000_000_000L);
+  }
+ }
+ private static int remaining(long deadline)throws SocketTimeoutException {
+  long value=(deadline-System.nanoTime())/1000000;
+  if(value<=0)throw new SocketTimeoutException();
+  return (int)Math.min(Integer.MAX_VALUE,value);
+ }
  JSONObject request(String address,String discoveryKey,String cookie,String csrf,JSONObject body)throws Exception {
+  return request(address,discoveryKey,cookie,csrf,body,0);
+ }
+ private JSONObject request(String address,String discoveryKey,String cookie,String csrf,JSONObject body,long probeDeadline)throws Exception {
   if(cancelled)throw new InterruptedIOException();
-  long deadline=System.nanoTime()+10_000_000_000L;
+  long deadline=probeDeadline!=0?probeDeadline:System.nanoTime()+10_000_000_000L;
+  int budget=probeDeadline!=0?remaining(deadline):0;
   HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection();active=c;
-  c.setInstanceFollowRedirects(false);c.setUseCaches(false);c.setConnectTimeout(4000);c.setReadTimeout(6000);c.setRequestProperty("Accept","application/json");
+  c.setInstanceFollowRedirects(false);c.setUseCaches(false);c.setConnectTimeout(probeDeadline!=0?budget:4000);c.setReadTimeout(probeDeadline!=0?budget:6000);c.setRequestProperty("Accept","application/json");
   if(discoveryKey!=null)c.setRequestProperty("X-Discovery-Key",discoveryKey);
   try{
    if(cookie!=null){
     c.setRequestProperty("Cookie",cookie);c.setRequestProperty("User-Agent",EventClient.USER_AGENT);
     if(body!=null){c.setRequestMethod("POST");c.setDoOutput(true);c.setRequestProperty("Origin",GatewayURL.httpOrigin(address));c.setRequestProperty("X-CSRF-Token",csrf);c.setRequestProperty("Content-Type","application/json");try(OutputStream out=c.getOutputStream()){out.write(body.toString().getBytes(StandardCharsets.UTF_8));}}
    }
+   if(probeDeadline!=0){
+    if(cancelled||Thread.currentThread().isInterrupted())throw new InterruptedIOException();
+    c.connect();c.setReadTimeout(remaining(deadline));
+   }
    if(cancelled||c.getResponseCode()!=200||c.getContentLengthLong()>32768)throw new IOException();
    try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
     byte[] bytes=new byte[2048];
     while(true){
-     long remaining=(deadline-System.nanoTime())/1000000;if(cancelled||remaining<=0)throw new InterruptedIOException();
-     c.setReadTimeout((int)Math.min(6000,Math.max(1,remaining)));int n=in.read(bytes);if(n==-1)break;
+     long remaining=(deadline-System.nanoTime())/1000000;if(cancelled||Thread.currentThread().isInterrupted())throw new InterruptedIOException();
+     if(remaining<=0){if(probeDeadline!=0)throw new SocketTimeoutException();throw new InterruptedIOException();}
+     c.setReadTimeout((int)Math.min(probeDeadline!=0?Integer.MAX_VALUE:6000,Math.max(1,remaining)));int n=in.read(bytes);if(n==-1)break;
+     if(probeDeadline!=0)remaining(deadline);
      if(out.size()+n>32768||System.nanoTime()>deadline)throw new IOException();out.write(bytes,0,n);
     }
+    if(probeDeadline!=0)remaining(deadline);
     return new JSONObject(out.toString("UTF-8"));
    }
   }finally{active=null;c.disconnect();}

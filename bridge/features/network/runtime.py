@@ -1,6 +1,7 @@
 """Runtime adaptation for LAN listeners, published entries, and Quick Tunnel."""
 import json
 import logging
+import os
 import ipaddress
 import threading
 import time
@@ -29,6 +30,10 @@ def notify_route_rechecks(callbacks):
 
 def _write_status(path, value):
     path = Path(path)
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, (json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n').encode('utf-8'))
+        return
     temp = path.with_suffix(path.suffix + '.tmp')
     temp.write_text(json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n', encoding='utf-8')
     temp.chmod(0o600)
