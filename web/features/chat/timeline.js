@@ -315,6 +315,18 @@ class ChatTimeline {
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);
+    const paintAttachments=()=>{
+      node.querySelector('.timeline-attachments')?.remove();
+    renderChatAttachments(node,row.attachments,{offlineTurnId:row.turnId,showToolImages:this.showToolImages,deferOriginals:!!this.cached&&!!this.syncTarget&&!this.syncTarget.offline,fileUrl:item=>{
+      const file=[...this.files.values()].find(file=>file.reference===item.path||file.references?.includes(item.path));
+      return file?this.fileUrl(file):null;
+    },url:item=>{
+      if(this.syncTarget?.offline)return item.offlineImage?{preview:item.offlineImage,original:item.offlineImage}:null;
+      if(!item.uploadId&&!item.desktopId)return null;
+      const source=item.uploadId?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview'):this.url('desktop-images/'+encodeURIComponent(item.desktopId));
+      return {preview:source,original:item.uploadId?source+'&variant=original':source};
+    }});
+    };
     const paint=()=>{
       const reading=captureChatActivityState(node);
       const detail=this.details.get(row.key),text=detail?.text??row.text;
@@ -322,7 +334,7 @@ class ChatTimeline {
       if(activity)body.hidden=!text;
       more.hidden=detail?detail.next===null:!row.truncated||this.syncTarget?.offline&&row.offlinePartial===true;
       more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
-      restoreChatActivityState(node,reading);
+      restoreChatActivityState(node,reading);paintAttachments();
     };
     if(!activity)node.__refreshFileLinks=paint;
     const load=async()=>{
@@ -345,15 +357,7 @@ class ChatTimeline {
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
       renderChatMessageTime(actions,row.timestamp);
     }
-    renderChatAttachments(node,row.attachments,{offlineTurnId:row.turnId,showToolImages:this.showToolImages,deferOriginals:!!this.cached&&!!this.syncTarget&&!this.syncTarget.offline,fileUrl:item=>{
-      const file=[...this.files.values()].find(file=>file.reference===item.path||file.references?.includes(item.path));
-      return file?this.fileUrl(file):null;
-    },url:item=>{
-      if(this.syncTarget?.offline)return item.offlineImage?{preview:item.offlineImage,original:item.offlineImage}:null;
-      if(!item.uploadId&&!item.desktopId)return null;
-      const source=item.uploadId?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview'):this.url('desktop-images/'+encodeURIComponent(item.desktopId));
-      return {preview:source,original:item.uploadId?source+'&variant=original':source};
-    }});
+
     if(activity){content.open=!!open;content.ontoggle=()=>{if(content.open&&!this.details.has(row.key)&&(!this.sync||row.truncated))load();};}
     return node;
   }

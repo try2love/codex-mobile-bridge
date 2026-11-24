@@ -42,10 +42,18 @@ test('uploaded files use their body hyperlink once and keep a text fallback with
  const context=vm.createContext({window:{},BridgeI18n:{t:s=>s},document:{createElement:make,createTextNode:text=>({textContent:text})}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),context);
  const render=vm.runInContext('renderChatAttachments',context);
- const body=make('article');body.querySelectorAll=()=>[{textContent:'附件：notes.txt',querySelectorAll:()=>[{textContent:'notes.txt'}]}];
+ const body=make('article');body.querySelectorAll=()=>[{textContent:'notes.txt',dataset:{chatFilePath:'/uploads/notes.txt',chatFileName:'notes.txt'}}];
  render(body,[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}],{});
  assert.equal(body.children.length,0,'linked file has no duplicate plain caption');
  body.querySelectorAll=()=>[];render(body,[{type:'file',name:'notes.txt'}],{});
+ assert.equal(body.children[0].children[0].children.at(-1).textContent,'notes.txt');
+});
+test('a same-name external link does not hide the uploaded file fallback',()=>{
+ const make=tag=>({tag,dataset:{},children:[],append(...nodes){this.children.push(...nodes);}});
+ const context=vm.createContext({window:{},BridgeI18n:{t:s=>s},document:{createElement:make,createTextNode:text=>({textContent:text})}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),context);
+ const body=make('article');body.querySelectorAll=()=>[{textContent:'notes.txt',dataset:{},getAttribute:()=> 'https://example.org/notes.txt'}];
+ vm.runInContext('renderChatAttachments',context)(body,[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}],{});
  assert.equal(body.children[0].children[0].children.at(-1).textContent,'notes.txt');
 });
 test('multi-select uploads independently and switching chats preserves host-scoped drafts',async()=>{

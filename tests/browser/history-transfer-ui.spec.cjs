@@ -260,3 +260,25 @@ test('normalized offline pages render process pagination and body pieces without
  expect(network).toEqual([]);await page.screenshot({path:info.outputPath('normalized-offline-records.png')});
 });
 
+test('uploaded attachment captions follow the resolved body link on initial render and metadata refresh',async({page},info)=>{
+ await page.goto('/?case=session-menu');await page.waitForFunction(()=>document.getElementById('app')?.hidden===false);
+ await page.evaluate(()=>BridgeFeatures.load('chat'));
+ await page.evaluate(()=>{
+  const root=document.createElement('div');root.id='attachment-followup-fixture';root.style.cssText='position:fixed;inset:20px;background:var(--bg,#fff);z-index:10000;overflow:auto;padding:20px';document.body.append(root);
+  const messages=document.createElement('div'),older=document.createElement('button'),newer=document.createElement('button');root.append(older,messages,newer);
+  let timeline;timeline=new ChatTimeline({url:action=>'/fixture/'+action+'?',request:async()=>{throw Error('Unexpected network');},renderMeta(){},status(){},
+   elements:{viewport:root,container:messages,older,newer},renderText:(node,text,files)=>renderMarkdown(node,text,files,file=>timeline.fileUrl(file))});
+  const row={key:'upload-row',version:'v',role:'user',order:0,text:'Please check [notes.txt](/uploads/notes.txt)',attachments:[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}]};
+  window.attachmentFollowup={timeline,row,file:{id:'notes',name:'notes.txt',reference:'/uploads/notes.txt',references:[],path:'/uploads/notes.txt'}};
+  timeline.apply({rows:[row],files:[],before:null,hasMore:false,sequence:1,epoch:'fixture',meta:{requests:[]}},true);
+ });
+ const root=page.locator('#attachment-followup-fixture');
+ await expect(root.locator('a')).toHaveCount(0);await expect(root.locator('.timeline-attachments')).toContainText('notes.txt');
+ await page.evaluate(()=>{const f=attachmentFollowup;f.timeline.apply({rows:[f.row],files:[f.file],before:null,hasMore:false,sequence:2,epoch:'fixture',meta:{requests:[]}});});
+ await expect(root.getByRole('link',{name:'notes.txt',exact:true})).toHaveCount(1);
+ await expect(root.locator('.timeline-attachments')).toHaveCount(0);
+ await page.evaluate(()=>{const f=attachmentFollowup;f.timeline.apply({rows:[{...f.row,key:'upload-initial'}],files:[f.file],before:null,hasMore:false,sequence:3,epoch:'fixture',meta:{requests:[]}},true);});
+ await expect(root.getByRole('link',{name:'notes.txt',exact:true})).toHaveCount(1);await expect(root.locator('.timeline-attachments')).toHaveCount(0);
+ await page.screenshot({path:info.outputPath('uploaded-attachment-single-link.png')});
+ await page.evaluate(()=>{attachmentFollowup.timeline.dispose();document.getElementById('attachment-followup-fixture').remove();});
+});

@@ -3,17 +3,17 @@
 // preview route. Keep attachment markup and the existing image viewer shared.
 function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offlineTurnId,deferOriginals=false}={}){
   if(!items?.length)return;
+  node.__refreshAttachmentLinks=()=>renderChatAttachments(node,items,{url,fileUrl,showToolImages,offlineTurnId,deferOriginals});
+  node.querySelector?.('.timeline-attachments')?.remove();
   const t=value=>BridgeI18n.t(value),attachments=document.createElement('div');attachments.className='timeline-attachments';
   const offline=()=>globalThis.window?.OfflineChatReader?.enabled;
   const originalLinks=new Map();
-  const bodyAttachments=new Map();
-  for(const line of node.querySelectorAll?.('.message-body p')||[]){
-    if(!/^(?:附件|Attachments?)\s*[:：]/i.test(line.textContent.trim()))continue;
-    for(const link of line.querySelectorAll('a[href]')){
-      const name=link.textContent.trim();
-      if(name)bodyAttachments.set(name,(bodyAttachments.get(name)||0)+1);
-    }
-  }
+  const bodyLinks=[...(node.querySelectorAll?.('.message-body a[href]')||[])];
+  const hasBodyLink=(item,name)=>bodyLinks.some(link=>{
+    const href=fileUrl?.(item),mapped=link.dataset?.chatFilePath,mappedName=link.dataset?.chatFileName;
+    return !!link.textContent.trim()&&((href&&link.getAttribute('href')===href)||
+      (item.path&&mapped===item.path)||(!item.path&&mapped&&mappedName===name));
+  });
   const openOffline=(target,item)=>target.addEventListener('click',event=>{
     if(!offline())return;
     event.preventDefault();
@@ -46,7 +46,7 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
   let count=0;
   items.forEach(item=>{
     const kind=item.type||item.kind,name=item.name||item.path?.split(/[\\/]/).pop()||kind||t('文件');
-    if(bodyAttachments.get(name)&&!offline()){bodyAttachments.set(name,bodyAttachments.get(name)-1);return;}
+    if(!offline()&&hasBodyLink(item,name))return;
     if(count++)label.append(document.createTextNode('、'));
     if(originalLinks.has(item)){label.append(originalLinks.get(item));return;}
     if(offline()&&offlineTurnId){
@@ -55,9 +55,9 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
       openOffline(button,item);label.append(button);return;
     }
     if(kind!=='file'||!item.path){label.append(document.createTextNode(name));return;}
-    const href=fileUrl?.(item),link=document.createElement(href?'a':'button');link.textContent=name;
-    if(href)link.href=href;
-    else{link.type='button';link.className='plain';link.dataset.unavailableFile='true';}
+    const href=fileUrl?.(item);
+    if(!href){label.append(document.createTextNode(name));return;}
+    const link=document.createElement('a');link.textContent=name;link.href=href;
     if(offlineTurnId)openOffline(link,item);
     label.append(link);
     const player=href && window.BridgeChatMedia?.create(name,href);

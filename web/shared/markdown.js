@@ -163,6 +163,7 @@
           if (token.type === 'link_open') {
             const destination = target(token.attrGet('href') || '');
             element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+            if(destination?.file){element.dataset.chatFilePath=destination.file.reference||destination.file.path||'';element.dataset.chatFileName=destination.file.name||'';}
             if (destination?.file?.image) { element.dataset.imagePreview = destination.url; element.dataset.imageName = destination.file.name; }
             const player=destination?.file && window.BridgeChatMedia?.create(destination.file.name,destination.url);
             if(player)media.set(element,player);

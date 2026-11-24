@@ -725,6 +725,7 @@ class DesktopSessionsView {
         output.replaceChildren();
         if(node.tagName==='DETAILS')output.textContent=text;
         else renderMarkdown(output,text,this.sessionFiles||[],file=>this.workbench.url(this.workbench.current,'download',file.path));
+        node.__refreshAttachmentLinks?.();
         more.hidden=offset===null;more.textContent=BridgeI18n.t('继续加载正文');
       }catch{more.textContent=BridgeI18n.t('读取失败，点击重试');}
       finally{more.disabled=false;}
