@@ -4,6 +4,22 @@ const chatSyncForeground=()=>!globalThis.document?.hidden&&globalThis.window?.Br
 function chatSyncScope(provider,host,id,legacyScope){
   return window.BridgeChatSyncCache?.scope(provider,host,id,legacyScope)||'';
 }
+async function chatSyncWithin(lookup){
+  let timer;
+  try{return await Promise.race([lookup.catch(()=>null),new Promise(resolve=>{timer=setTimeout(()=>resolve(null),50);})]);}
+  finally{clearTimeout(timer);}
+}
+async function chatSyncSaved(cache,scope,mode,params,source,legacyScope){
+  const lookup=(async()=>{
+    if(mode==='body'){
+      const body=await cache.read(scope,mode,params);
+      if(body?.version===params.version&&body.offset===params.offset&&Array.isArray(body.files))return {body};
+    }
+    return {known:await cache.known(scope,mode,params,source,{legacyScope})};
+  })();
+  // Bound cache work for a manual read or a process not yet opened in this page.
+  return chatSyncWithin(lookup);
+}
 async function readChatSync(target,mode,params={},source='manual',active=chatSyncForeground,signal){
   const reader=window.OfflineChatReader;
   if(reader?.enabled){
@@ -17,10 +33,17 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
     return target.request(target.url+(target.url.includes('?')?'&':'?')+query,undefined,signal,target.authorized);
   }
   const cache=window.BridgeChatSyncCache;
-  const independent=!!window.CodexBridgeNativeOffline&&source!=='prefetch'&&cache?.onlineKnown;
-  const cached=!independent&&mode==='body'&&target.scope?await cache?.read(target.scope,mode,params):null;
+  const independent=source!=='prefetch'&&cache?.onlineKnown;
+  let known=independent&&target.scope?cache.onlineKnown(target.scope,mode,params,source):undefined;
+  const saved=independent&&target.scope&&!window.CodexBridgeNativeOffline&&(source==='manual'||mode==='process'&&known.cold)
+    ?await chatSyncSaved(cache,target.scope,mode,params,source,target.legacyScope):null;
+  if(saved?.known)known=Object.assign(saved.known,{network:true,revision:known.revision,body:known.body});
+  const cached=mode==='body'&&target.scope?(independent?saved?.body||known?.body:await cache?.read(target.scope,mode,params)):null;
   if(!active()||target.authorized&&!target.authorized())return null;
-  if(mode==='body'&&cached?.version===params.version&&cached.offset===params.offset&&Array.isArray(cached.files))return cached;
+  if(mode==='body'&&cached?.version===params.version&&cached.offset===params.offset&&Array.isArray(cached.files)){
+    const page=independent?cache.onlinePage(target.scope,mode,params,cached,known):cached;
+    return page?.discarded?null:page;
+  }
   const fetchPage=async known=>{
     let scan='',restarted=false;
     while(active()&&(!target.authorized||target.authorized())){
@@ -35,9 +58,8 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
     }
     return null;
   };
-  let known;
   if(target.scope){
-    known=independent?cache.onlineKnown(target.scope,mode,params,source):await cache?.known(target.scope,mode,params,source,{legacyScope:target.legacyScope});
+    if(!independent)known=await cache?.known(target.scope,mode,params,source,{legacyScope:target.legacyScope});
     if(known?.skip)return null;
   }
   if(!active())return null;
@@ -47,8 +69,14 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   if(window.OfflineChatReader?.enabled)return source==='manual'?wire:null;
   if(known?.probe){
     if(!active()||target.authorized&&!target.authorized())return null;
-    known=await cache.afterProbe(known,wire);
+    const validation=known;
+    known=independent?await chatSyncWithin(cache.afterProbe(known,wire)):await cache.afterProbe(known,wire);
+    if(!known&&independent){
+      if(validation.generation!==cache.generation||validation.epoch!==cache.epoch)return null;
+      known=cache.onlineKnown(target.scope,mode,params,source);
+    }
     if(!known||known.skip||!active())return null;
+    if(independent)Object.assign(known,{network:true,source:validation.source,nativeBinding:validation.nativeBinding});
     wire=await fetchPage(known);
     if(!wire)return null;
   }
@@ -57,6 +85,11 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   if(independent){
     let page=cache.onlinePage(target.scope,mode,params,wire,known);
     if(page?.discarded)return null;
+    if(!page&&!window.CodexBridgeNativeOffline){
+      const hydrated=await chatSyncWithin(cache.hydrateOnline(target.scope,wire,known));
+      if(hydrated){known=hydrated;page=cache.onlinePage(target.scope,mode,params,wire,known);}
+      if(page?.discarded)return null;
+    }
     if(!page){
       wire=await fetchPage();
       if(!wire||!active()||target.authorized?.()===false)return null;

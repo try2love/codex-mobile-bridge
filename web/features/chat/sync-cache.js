@@ -145,7 +145,20 @@
       if(!this.active(scope)){out.skip=true;return out;}
       if(source!=='manual')for(const turn of memory.bans)out.append('omitTurn',turn);
       const page=memory.pages.get(pageKey(mode,params));
-      for(const row of [...memory.rows.values()].slice(-80)){
+      out.cold=!page;
+      if(mode==='body'){out.body=page;return out;}
+      let hints=[...memory.rows.values()].slice(-80);
+      if(mode==='process'){
+        const keys=new Map();
+        for(const [key,page] of memory.pages){
+          const [name,...pairs]=JSON.parse(key);
+          if(name==='process'&&Object.fromEntries(pairs).key===params.key)
+            for(const row of page.index||[])keys.set(row.key,row.order);
+        }
+        const direction=params.after==='latest'?-1:1;
+        hints=[...keys].sort((a,b)=>direction*(a[1]-b[1])).slice(0,100).map(([key])=>memory.rows.get(key)).filter(Boolean);
+      }
+      for(const row of hints){
         if(source!=='manual'&&memory.bans.has(row.turnId))continue;
         out.append('known',row.key+':'+row.version);
       }
@@ -158,7 +171,12 @@
       if(!this.active(scope)||validation.generation!==this.generation||validation.epoch!==this.epoch)return {discarded:true};
       const memory=this.memory(scope);
       if(validation.revision!==memory.revision)return {discarded:true};
-      if(mode==='body')return wire.notModified?null:wire;
+      if(mode==='body'){
+        if(wire.notModified)return memory.pages.get(pageKey(mode,params))||null;
+        memory.pages.set(pageKey(mode,params),wire);
+        while(memory.pages.size>30)memory.pages.delete(memory.pages.keys().next().value);
+        return wire;
+      }
       const prior=memory.pages.get(pageKey(mode,params)),index=wire.index||(wire.notModified?prior?.index:null);
       if(!Array.isArray(index))return wire;
       const updates=new Map((wire.rows||wire.items||[]).map(row=>[row.key,row])),rows=[],kept=[];
@@ -176,6 +194,10 @@
       memory.pages.set(pageKey(mode,params),safePage(page));
       while(memory.pages.size>30)memory.pages.delete(memory.pages.keys().next().value);
       return page;
+    }
+    async hydrateOnline(scope,wire,validation){
+      const rows=await this.disk.get(scope,'row',(wire.index||[]).map(row=>row.key));
+      return {...validation,resident:new Map([...validation.resident,...rows.filter(Boolean).map(row=>[row.key,row])])};
     }
     async localPreview(scope){
       if(!this.active(scope))return null;
@@ -364,6 +386,7 @@
         if(a&&b)keys=anchors.filter(row=>row.order>=a.order&&row.order<=b.order).map(row=>row.key);
       }else if(mode==='process'){
         const pages=await this.disk.list('page',scope),group=new Map();
+        for(const [key,value] of this.resident.get(scope)?.pages||[])pages.push({key,value});
         for(const r of pages){
           const [name,...pairs]=JSON.parse(r.key);
           if(name==='process'&&Object.fromEntries(pairs).key===params.key){
@@ -431,6 +454,13 @@
         out.delete('known');
         const ordered=[...page.index.filter(r=>!r.key.startsWith('process-')),...page.index.filter(r=>r.key.startsWith('process-'))];
         const rows=await this.disk.get(scope||known.lookup,'row',ordered.map(row=>row.key));
+        if(known.network){
+          const memory=this.memory(scope||known.lookup);
+          for(let i=0;i<rows.length;i++){
+            const row=memory.rows.get(ordered[i].key);
+            if(row?.version===ordered[i].version)rows[i]=row;
+          }
+        }
         out.resident=new Map(rows.filter(Boolean).map(row=>[row.key,row]));
         let held=0;
         for(let i=0;i<rows.length;i++){

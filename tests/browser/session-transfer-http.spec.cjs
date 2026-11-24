@@ -40,9 +40,14 @@ test('opening a native chat with an earlier cache cleanup loads without returnin
         allowPrefetch:false,allowTransfer:true,clearRevision:1,
         tombstones:event.sessionId?{[event.sessionId]:['turn-0']}:{},
       }:null};
+      // Match the native bridge's completed auth binding before opening a chat.
+      BridgeChatSyncCache.nativeState={clearRevision:1};
+      BridgeChatSyncCache.nativeReady=Promise.resolve(BridgeChatSyncCache.nativeState);
     });
     await entry.click();
-    await expect.poll(()=>page.evaluate(()=>nativeCleanupEvents.length)).toBeGreaterThan(0);
+    await expect.poll(()=>page.evaluate(()=>BridgeChatSyncCache.nativeState?.clearRevision)).toBe(1);
+    expect(await page.evaluate(()=>nativeCleanupEvents)).toEqual([]);
+    await expect(page.locator('#messages')).toContainText('Answer 89');
     await info.attach('native-opening-state',{contentType:'application/json',body:JSON.stringify(await page.evaluate(()=>({
       status:document.getElementById('status').textContent,rows:chatTimeline.rows.size,
       needsRefill:chatTimeline.sync.needsRefill,removedTurns:chatTimeline.sync.initial?.removedTurns,

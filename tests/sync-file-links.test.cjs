@@ -4,7 +4,7 @@ const fs=require('node:fs'),vm=require('node:vm');
 async function fixture(){
  const stored=new Map(),context=vm.createContext({window:{addEventListener(){},dispatchEvent(){}},
    sessionStorage:{getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)},
-   CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,BridgeI18n:{t:value=>value}});
+   setTimeout,clearTimeout,CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},URLSearchParams,TextEncoder,crypto:require('node:crypto').webcrypto,BridgeI18n:{t:value=>value}});
  for(const file of ['sync-cache.js','sync-transport.js'])vm.runInContext(fs.readFileSync('web/features/chat/'+file,'utf8'),context);
  const cache=context.window.BridgeChatSyncCache;
  await cache.bind({sessionSync:{version:1,gatewayId:'a'.repeat(32),identity:'b'.repeat(64)},listCacheIdentity:'fixture'});
@@ -127,4 +127,102 @@ test('a late native binding cannot persist a response after the account generati
  const writing=f.cache.commit(f.scope,'recent',{},f.page,{validation,source:'manual'});
  f.cache.generation++;release({clearRevision:'0'});
  assert.equal((await writing).discarded,true);
+});
+
+for(const blocked of ['known','write'])test('browser foreground displays a fresh page while cache '+blocked+' is stalled',async()=>{
+ const f=await fixture();
+ f.cache[blocked]=()=>new Promise(()=>{});
+ let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>{requests++;return f.page;}};
+ const page=await Promise.race([f.read(target,'recent',{},'manual',()=>true),new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
+ assert.equal(page?.rows?.[0]?.text,f.row.text);
+ assert.equal(requests,1);
+});
+
+test('browser body reads bypass stalled disk and reuse the authorized resident chunk',async()=>{
+ const f=await fixture();f.cache.disk.get=()=>new Promise(()=>{});
+ const body={key:f.row.key,version:f.row.version,offset:0,text:f.row.text,next:null,files:f.files};let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>{requests++;return body;}};
+ const params={key:body.key,version:body.version,offset:0};
+ for(let i=0;i<2;i++){
+  const page=await Promise.race([f.read(target,'body',params,'manual',()=>true),new Promise(resolve=>setTimeout(()=>resolve(null),80))]);
+  assert.equal(page?.text,body.text);assert.equal(page.files[0].path,f.files[0].path);
+ }
+ assert.equal(requests,1);
+});
+
+test('browser live refresh reuses resident versions and drops responses invalidated by clearing',async()=>{
+ const f=await fixture();f.cache.write=()=>new Promise(()=>{});let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async url=>{
+  if(requests++===0)return f.page;
+  assert(new URL(url,'https://fixture').searchParams.getAll('known').includes('answer:content'));
+  return {...f.page,rows:[],notModified:true};
+ }};
+ await f.read(target,'recent',{},'manual',()=>true);
+ assert.equal((await f.read(target,'recent',{},'live',()=>true)).rows[0].text,f.row.text);
+ let reply;target.request=()=>new Promise(resolve=>{reply=resolve;});
+ const pending=f.read(target,'recent',{},'live',()=>true);
+ f.cache.cleared({[f.scope]:['turn']},false);reply(f.page);
+ assert.equal(await pending,null);
+});
+
+test('browser falls back to a full authenticated page when a cache index probe stalls',async()=>{
+ const f=await fixture();
+ f.cache.known=async()=>Object.assign(new URLSearchParams('indexOnly=1'),{probe:true,generation:f.cache.generation,epoch:f.cache.epoch});
+ f.cache.afterProbe=()=>new Promise(()=>{});let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>requests++===0?{...f.page,rows:[],indexOnly:true}:f.page};
+ const page=await Promise.race([f.read(target,'recent',{},'manual',()=>true),new Promise(resolve=>setTimeout(()=>resolve(null),150))]);
+ assert.equal(page?.rows[0]?.text,f.row.text);assert.equal(requests,2);
+});
+
+test('a resident browser body cannot return after a clear during the bounded disk lookup',async()=>{
+ const f=await fixture(),body={key:f.row.key,version:f.row.version,offset:0,text:f.row.text,next:null,files:f.files};let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>{requests++;return body;}};
+ const params={key:body.key,version:body.version,offset:0};
+ await f.read(target,'body',params,'manual',()=>true);
+ f.cache.read=()=>new Promise(()=>{});
+ const pending=f.read(target,'body',params,'manual',()=>true);
+ f.cache.cleared({[f.scope]:['turn']},false);
+ assert.equal(await pending,null);assert.equal(requests,1);
+});
+
+for(const stalled of [false,true])test('browser conditional page '+(stalled?'falls back when indexed rows stall':'rehydrates expanded indexed rows without retransmission'),async()=>{
+ const f=await fixture();
+ f.cache.known=async()=>Object.assign(new URLSearchParams('known=answer:content'),{generation:f.cache.generation,epoch:f.cache.epoch,revision:0,resident:new Map(),bans:new Set()});
+ if(stalled)f.cache.disk.get=()=>new Promise(()=>{});
+ let requests=0;
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>requests++===0?{...f.page,rows:[],notModified:true}:f.page};
+ const page=await Promise.race([f.read(target,'recent',{},'manual',()=>true),new Promise(resolve=>setTimeout(()=>resolve(null),150))]);
+ assert.equal(page?.rows[0]?.text,f.row.text);assert.equal(requests,stalled?2:1);
+});
+
+test('resident process hints exclude messages and other process groups',async()=>{
+ const f=await fixture();
+ f.cache.onlinePage(f.scope,'recent',{},f.page,f.cache.onlineKnown(f.scope,'recent'));
+ for(const group of ['one','two']){
+  const params={key:group,after:'latest'},row={key:'step-'+group,version:'v',turnId:'turn',order:0,text:group};
+  f.cache.onlinePage(f.scope,'process',params,{version:group,index:[row],rows:[row]},f.cache.onlineKnown(f.scope,'process',params));
+ }
+ const known=f.cache.onlineKnown(f.scope,'process',{key:'one',after:'latest'},'live');
+ assert.deepEqual(Array.from(known.getAll('known')),['step-one:v']);
+});
+
+test('a browser index probe reuses displayed versions before their disk commit finishes',async()=>{
+ const f=await fixture(),row={...f.row,version:'fresh',text:'fresh'};
+ const page={...f.page,version:'fresh-page',rows:[row],index:[row]};
+ f.cache.onlinePage(f.scope,'recent',{},page,f.cache.onlineKnown(f.scope,'recent'));
+ const known=Object.assign(new URLSearchParams('indexOnly=1'),f.cache.onlineKnown(f.scope,'recent'),{lookup:f.scope,probe:true});
+ const result=await f.cache.afterProbe(known,{...page,rows:[],indexOnly:true});
+ assert.equal(result.get('ifVersion'),'fresh-page');
+ assert.equal(result.resident.get(row.key).text,'fresh');
+});
+
+test('process lookup includes page manifests whose persistence is still pending',async()=>{
+ const f=await fixture(),params={key:'group',after:'latest'};
+ const rows=Array.from({length:100},(_,i)=>({key:'saved-'+i,version:'v',turnId:'turn',order:i,text:String(i)}));
+ await f.cache.write(f.scope,'process',params,{version:'saved',rows,index:rows});
+ const fresh=Array.from({length:20},(_,i)=>({key:'new-'+i,version:'v',turnId:'turn',order:100+i,text:String(i)}));
+ f.cache.onlinePage(f.scope,'process',params,{version:'fresh',rows:fresh,index:fresh},f.cache.onlineKnown(f.scope,'process',params));
+ const known=await f.cache.known(f.scope,'process',{key:'group',before:'new-0'},'manual');
+ assert.equal(known.probe,true);assert.equal(known.get('indexOnly'),'1');
 });

@@ -282,3 +282,22 @@ test('uploaded attachment captions follow the resolved body link on initial rend
  await page.screenshot({path:info.outputPath('uploaded-attachment-single-link.png')});
  await page.evaluate(()=>{attachmentFollowup.timeline.dispose();document.getElementById('attachment-followup-fixture').remove();});
 });
+
+for(const blocked of ['read','write'])test('browser shows fresh chat while persistent cache '+blocked+' is stalled',async({page,context})=>{
+ const root=path.resolve(__dirname,'../..'),server=spawn('python3',['-B','tests/browser/session-transfer-http-fixture.py','--provider','codex'],{cwd:root});
+ const lines=createInterface({input:server.stdout});
+ try{
+  const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);server.once('exit',code=>reject(Error('fixture exited '+code)));});
+  await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+  await page.goto(origin);
+  await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+  await expect(page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'})).toBeVisible();
+  await page.evaluate(blocked=>{
+   if(window.CodexBridgeNativeOffline)throw Error('This regression requires a plain browser');
+   const disk=window.BridgeChatSyncCache.disk;
+   disk[blocked==='read'?'get':'change']=()=>new Promise(()=>{});
+  },blocked);
+  await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).click();
+  await expect(page.locator('#messages').getByText('Answer 89',{exact:true})).toBeVisible();
+ }finally{lines.close();server.kill('SIGTERM');}
+});
