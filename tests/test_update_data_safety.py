@@ -76,6 +76,75 @@ class UpdateDataSafetyTests(unittest.TestCase):
             for path in [backup, *backup.rglob('*')]:
                 self.assertEqual(path.stat().st_mode & 0o777, 0o700 if path.is_dir() else 0o600)
 
+    def gateway_credentials(self):
+        vault = self.data / '.credential-vault'
+        vault.mkdir(mode=0o700)
+        key = vault / 'key'
+        key.write_bytes(b'k' * 32)
+        cipher = vault / 'connections.enc'
+        cipher.write_bytes(b'CMB1' + b'c' * 44)
+        self.write(self.data / 'connection-vault.json', {'fixture-connection': 'gateway-v1'})
+        (self.data / 'zcode-official-auth.enc').write_bytes(b'CMB1' + b'z' * 44)
+        (self.data / 'zcode-official-auth.legacy.enc').write_bytes(b'v10-old-login')
+        self.write(self.data / 'zcode-official.json', {'link': 'fixture'})
+        return vault
+
+    def test_gateway_credential_snapshot_includes_key_ciphertext_and_legacy_login(self):
+        self.gateway_credentials()
+        files = updater.configuration_snapshot(self.data)
+        for name in ('.credential-vault/key', '.credential-vault/connections.enc',
+                     'zcode-official-auth.enc', 'zcode-official-auth.legacy.enc', 'zcode-official.json'):
+            self.assertEqual(files[name], (self.data / name).read_bytes())
+        self.assertFalse(any(name.endswith('.lock') for name in files))
+
+    def test_gateway_credentials_reject_legacy_downgrade_before_backup_or_mutation(self):
+        self.gateway_credentials()
+        before = {p.relative_to(self.data): p.read_bytes() for p in self.data.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(ValueError, '凭据'):
+            self.backup()
+        self.assertFalse((self.data / 'update-backups').exists())
+        self.assertEqual(before, {p.relative_to(self.data): p.read_bytes() for p in self.data.rglob('*') if p.is_file()})
+
+    def test_gateway_credentials_reject_old_preview_switch_before_staging(self):
+        self.gateway_credentials()
+        self.write(self.target / 'Contents/Resources/update-version.json',
+                   {'version': '2.2.2-preview.2', 'dataFormat': updater.DATA_FORMAT})
+        self.payload.update(version='2.2.2-preview.3')
+        self.payload['transition'].update(intent='switch-version', to='2.2.2-preview.3')
+        app, worker, _ = updater.locations(self.target)
+        for path in (app, worker):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'fixture executable')
+        self.payload['archive'] = str(self.root / 'not-opened.zip')
+        with self.assertRaisesRegex(ValueError, '凭据'):
+            updater.prepare(self.data, self.payload)
+        self.assertFalse((self.data / 'update-backups').exists())
+        self.assertEqual(app.read_bytes(), b'fixture executable')
+
+    def test_legacy_keychain_records_remain_eligible_for_reviewed_return(self):
+        self.write(self.data / 'connection-vault.json', {'fixture-connection': True})
+        (self.data / 'zcode-official-auth.enc').write_bytes(b'v10-old-login')
+        result = self.backup()
+        self.assertTrue((Path(result['backup']) / 'zcode-official-auth.enc').exists())
+
+    def test_upgrade_backs_up_gateway_credentials_with_private_permissions(self):
+        self.gateway_credentials()
+        self.payload.update(version='2.2.2-preview.4')
+        self.payload['transition'].update(intent='update', to='2.2.2-preview.4')
+        backup = Path(self.backup()['backup'])
+        for name in ('.credential-vault/key', '.credential-vault/connections.enc', 'zcode-official-auth.enc'):
+            self.assertEqual((backup / name).read_bytes(), (self.data / name).read_bytes())
+            if os.name != 'nt':
+                self.assertEqual((backup / name).stat().st_mode & 0o777, 0o600)
+
+    def test_gateway_credential_snapshot_rejects_symlinked_vault(self):
+        vault = self.root / 'external-vault'
+        vault.mkdir()
+        (vault / 'key').write_bytes(b'k' * 32)
+        (self.data / '.credential-vault').symlink_to(vault, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, '符号链接'):
+            updater.configuration_snapshot(self.data)
+
     def test_backup_always_captures_current_accounts_and_pairing_without_restoring_an_older_copy(self):
         old = Path(self.backup()['backup'])
         self.write(self.data / ('accounts/' + self.account_id + '/api.json'), {'key': 'new-fixture-key'})

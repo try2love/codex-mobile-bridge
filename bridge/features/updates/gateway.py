@@ -31,7 +31,8 @@ CONFIG_FILES = ('config.json', 'desktop.json', 'desktop-appearance.json', 'auth-
                 'notifications.json', 'notification-watches.json', 'notification-policies.json',
                 'network-adaptation.json', 'desktop-sessions/settings.json', 'desktop-sessions/settings.user.json',
                 'client-instances/entries.json', 'codex-entries/entries.json', 'cli-access/index.json',
-                'account-drafts.json')
+                'account-drafts.json', '.credential-vault/key', '.credential-vault/connections.enc',
+                'zcode-official.json', 'zcode-official-auth.enc', 'zcode-official-auth.legacy.enc')
 ACCOUNT_FILES = ('index.json', 'switch.json', 'shared-daemon-stop.json', 'reset-dynamic.json',
                  'reminders.json', 'global-reset-watch.json')
 
@@ -85,6 +86,8 @@ def configuration_files(data):
     for root in roots:
         if root.is_symlink():
             raise ValueError('资料登记目录不能使用符号链接。')
+        if (root / '.credential-vault').is_symlink():
+            raise ValueError('网关凭据目录不能使用符号链接。')
         yield from (root / name for name in CONFIG_FILES)
         accounts = root / 'accounts'
         if accounts.is_symlink():
@@ -108,7 +111,7 @@ def configuration_files(data):
         yield from (root / 'cli-access').glob('claude/*/api.json')
 
 
-def configuration_snapshot(data, *, rollback=False):
+def configuration_snapshot(data, *, rollback=False, transition=None):
     files, total = {}, 0
     for path in configuration_files(data):
         relative = path.relative_to(data)
@@ -186,6 +189,10 @@ def configuration_snapshot(data, *, rollback=False):
             except (TypeError, ValueError):
                 raise ValueError('设备授权规则不兼容，已取消回退。') from None
         files[path.relative_to(data).as_posix()] = raw
+    if (rollback and transition and version_key(transition['to']) < version_key('2.2.2-preview.4')
+            and any((name.endswith('/connections.enc') or name.endswith('zcode-official-auth.enc'))
+                    and raw.startswith(b'CMB1') for name, raw in files.items())):
+        raise ValueError('目标旧版本无法读取网关新凭据，已取消切换；请先完整备份资料并按凭据说明恢复旧凭据。')
     return files
 
 
@@ -254,7 +261,7 @@ def backup_configuration(data_dir, payload):
     transition = validate_transition(payload['target'], payload)
     if transition is None:
         raise ValueError('备份缺少已确认的版本操作。')
-    files = configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'))
+    files = configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'), transition=transition)
     parent = private_directory(data / 'update-backups')
     backup = private_directory(parent / uuid.uuid4().hex)
     try:
@@ -498,7 +505,7 @@ def prepare(data_dir, payload):
     preflight(target)
     transition = validate_transition(target, payload)
     if transition:
-        configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'))
+        configuration_snapshot(data, rollback=transition['intent'] in ('return-stable', 'switch-version'), transition=transition)
     digest = hashlib.sha256()
     with open(payload['archive'], 'rb') as stream:
         for chunk in iter(lambda: stream.read(1024*1024), b''):
