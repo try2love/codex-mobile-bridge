@@ -254,10 +254,7 @@ class ChatTimeline {
         const actions=old.node.querySelector('.message-actions');
         if(actions&&JSON.stringify(before)===JSON.stringify(after)){
           // Late native clocks must not replace text selection or a player.
-          if(chatProcessMessage(row)){
-            const heading=old.node.querySelector('.chat-process-meta');
-            if(heading){heading.replaceChildren();renderChatProcessMetadata(heading,row);}
-          }else{actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);}
+          actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);
           old.node.__chatMessage=row;old.stamp=stamp;continue;
         }
       }
@@ -302,8 +299,7 @@ class ChatTimeline {
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
-    if(!activity&&chatProcessMessage(row)){heading.className+=' chat-process-meta';renderChatProcessMetadata(heading,row);}
-    else heading.textContent=activity?chatActivityLabel(row):chatMessageHeading(row,'CODEX');content.append(heading);
+    heading.textContent=activity?chatActivityLabel(row):chatMessageHeading(row,'CODEX');content.append(heading);
     if(activity&&!row.fileSummary)renderChatActivityLabel(heading,row);
     if(row.fileSummary){
       renderChatFileSummary(content,row,this.onFile);
@@ -359,7 +355,7 @@ class ChatTimeline {
       const actions=document.createElement('div');actions.className='message-actions';
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
-      if(!chatProcessMessage(row))renderChatMessageTime(actions,row.timestamp);
+      renderChatMessageTime(actions,row.timestamp);
     }
 
     if(activity){content.open=!!open;content.ontoggle=()=>{if(content.open&&!this.details.has(row.key)&&(!this.sync||row.truncated))load();};}
@@ -405,7 +401,7 @@ class ChatTimeline {
       if(row.kind==='syncProcessPage'){entry.node.textContent=chatProcessPagerLabel(row);continue;}
       const node=entry.node,activity=chatActivityKind(row)==='reasoning'||row.role==='activity'||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
       if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
-      else if(heading){if(activity)renderChatActivityLabel(heading,row);else if(chatProcessMessage(row)){heading.replaceChildren();renderChatProcessMetadata(heading,row);}else heading.textContent=chatMessageHeading(row,'CODEX');}
+      else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=chatMessageHeading(row,'CODEX');}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.attachment-caption-prefix');

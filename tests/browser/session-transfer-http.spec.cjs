@@ -78,10 +78,16 @@ test('process metadata remains visible and native read-only status stays below c
       for(const [index,row] of rows.entries())holder.append(chatTimeline.renderRow({...row,key:'metadata-'+index,model:'recorded-model',effort:'high',timestamp:1700000000000,text:'Intermediate '+index,turnStatus:'completed'}));
       document.getElementById('messages').append(holder);
     });
-    const metadata=page.locator('#metadata-fixture .chat-process-meta');await expect(metadata).toHaveCount(4);
-    for(const item of await metadata.all()){
-      await expect(item).toBeVisible();await expect(item).toContainText('recorded-model · high');await expect(item.locator('time')).toHaveAttribute('datetime',new Date(1700000000000).toISOString());
+    const fixture=page.locator('#metadata-fixture'),assistant=fixture.locator('.message.assistant');
+    await expect(assistant.locator('.who')).toHaveText('CODEX · recorded-model high');
+    await expect(assistant.locator('.who time')).toHaveCount(0);
+    const time=assistant.locator('.message-actions time');await expect(time).toHaveAttribute('datetime',new Date(1700000000000).toISOString());
+    expect(await time.evaluate(node=>node.previousElementSibling?.textContent)).toBe('引用');
+    await expect(fixture.locator('.message.user .who')).toBeHidden();
+    for(const activity of await fixture.locator('details.activity').all()){
+      await expect(activity.locator('summary')).not.toContainText('recorded-model');await expect(activity.locator('time')).toHaveCount(0);
     }
+    await expect(fixture).not.toContainText('未记录');
     await page.evaluate(()=>window.dispatchEvent(new Event('offline')));
     const notice=page.locator('#notice');await expect(notice).toContainText('只读');await expect(notice).toHaveClass(/offline-readonly-notice/);
     await expect(page.locator('#composer #notice')).toHaveCount(0);await expect(page.locator('#composer')).toBeVisible();await expect(page.locator('#message')).toHaveCSS('visibility','visible');

@@ -62,18 +62,6 @@ function chatMessageHeading(row,agent){
   const label=model?[model,effort&&!/^(none|off|disabled|false|0|关闭|无)$/i.test(effort)?effort:''].filter(Boolean).join(' '):'';
   return [agent,label].filter(Boolean).join(' · ');
 }
-function chatProcessMessage(row){
-  return chatTurnProcessRow(row)||row.role==='user'&&(row.originalQuestion===false||['supplement','steer','response'].includes(row.interaction));
-}
-function renderChatProcessMetadata(container,row){
-  const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
-  const model=typeof row.model==='string'&&row.model.trim()&&row.model!=='<synthetic>'?row.model.trim():t('模型未记录');
-  const effort=typeof row.effort==='string'&&row.effort.trim()?row.effort.trim():t('思考强度未记录');
-  const label=document.createElement('span');label.className='chat-process-label';label.textContent=model+' · '+effort;container.append(label);
-  const date=chatMessageDate(row.timestamp);
-  if(date&&Number.isFinite(date.getTime()))renderChatMessageTime(container,row.timestamp);
-  else{const missing=document.createElement('span');missing.className='message-time';missing.textContent=t('时间未记录');container.append(missing);}
-}
 function chatProcessPagerLabel(row){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   return t(row.pageError?'读取失败，点击重试':row.pageDirection==='earlier'?'加载更早过程':'加载后续过程');
@@ -292,7 +280,6 @@ function renderChatActivityLabel(heading,row){
     stats.textContent='+'+row.activityFiles.reduce((sum,file)=>sum+file.added,0)+' −'+row.activityFiles.reduce((sum,file)=>sum+file.removed,0);
     heading.append(label,stats);
   }else heading.append(label);
-  const meta=document.createElement('span');meta.className='chat-process-meta';renderChatProcessMetadata(meta,row);heading.append(meta);
 }
 // One history gesture backfills bounded native rows until ordinary dialogue appears.
 // Native pages stay bounded; collect before rendering once, preserving a manual

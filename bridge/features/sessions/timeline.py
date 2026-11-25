@@ -162,7 +162,7 @@ class Timeline:
                     row['fileSummary'] = message['fileSummary']
                     row['text'] = ''
                     row['truncated'] = False
-                if assistant_output(message) or process_row(message) or message['role'] == 'user' and not first_user:
+                if assistant_output(message):
                     recorded = turn.get('_recordedReplyLabel', turn)
                     label = message if message.get('model') else recorded
                     model = label.get('model')

@@ -16,17 +16,6 @@ test('native milliseconds and ISO instants agree; local calendar dates include y
 test('missing, invalid and ambiguous timestamps never become current time',()=>{
  const render=fixture();for(const value of [null,undefined,0,-1,NaN,Infinity,true,{},'','2026-11-09','2026-11-09T08:07:00','garbage','2026-99-99T00:00:00Z'])assert.equal(render(value).length,0);
 });
-test('intermediate messages show their recorded model, effort and clock in both running and completed turns',()=>{
- const node=tag=>({tagName:tag,children:[],className:'',setAttribute(k,v){this[k]=v;},append(...children){this.children.push(...children);}});
- const context=vm.createContext({Date,Intl,BridgeI18n:{locale:()=> 'zh-CN',t:value=>value},document:{createElement:node}});
- vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),context);
- for(const status of ['inProgress','completed'])for(const row of [{role:'assistant',phase:'commentary'},{role:'user',interaction:'steer'},{role:'reasoning',kind:'reasoning'},{role:'activity',kind:'commandExecution'}]){
-  const heading=node('span');context.renderChatProcessMetadata(heading,{...row,model:'recorded-model',effort:'high',timestamp:1700000000000,turnStatus:status});
-  assert.equal(heading.children[0].textContent,'recorded-model · high');assert.equal(heading.children[1].tagName,'time');assert.equal(heading.children[1].dateTime,new Date(1700000000000).toISOString());
- }
- const missing=node('span');context.renderChatProcessMetadata(missing,{role:'user',interaction:'steer'});
- assert.equal(missing.children[0].textContent,'模型未记录 · 思考强度未记录');assert.equal(missing.children[1].textContent,'时间未记录');
-});
 test('English and timezone offsets preserve the same native instant',()=>{
  const render=fixture('en-US'),now=new Date('2026-11-09T10:00:00Z');
  assert.equal(render('2026-11-08T23:30:00-05:00',now)[0].dateTime,'2026-11-09T04:30:00.000Z');

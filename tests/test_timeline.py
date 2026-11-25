@@ -312,7 +312,7 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual((rows[1]['model'],rows[1]['effort']),('gemini-fixture','high'))
         self.assertNotIn('model',rows[2]);self.assertNotIn('effort',rows[2])
 
-    def test_every_process_row_keeps_native_clock_and_recorded_turn_model(self):
+    def test_process_clocks_survive_but_only_model_replies_get_recorded_model(self):
         state = {'latestModel': 'current-setting', 'turns': [{
             'turnId': 'saved', 'status': 'completed',
             'params': {'model': 'recorded-model', 'effort': 'high'},
@@ -327,13 +327,15 @@ class TimelineTests(unittest.TestCase):
         rows = timeline.rows[1:]
         self.assertEqual(len(rows), 4)
         self.assertEqual([row.get('timestamp') for row in rows], [2000, 3000, 4000, 5000])
-        self.assertTrue(all((row.get('model'), row.get('effort')) == ('recorded-model', 'high') for row in rows))
+        self.assertEqual((rows[0].get('model'), rows[0].get('effort')), ('recorded-model', 'high'))
+        self.assertTrue(all('model' not in row and 'effort' not in row for row in rows if row['role'] == 'user' or row.get('kind') == 'commandExecution'))
         self.assertNotIn('model', timeline.rows[0], 'the opening user prompt keeps its existing presentation')
         for sync in (False, True):
             exposed = [row for key in timeline.process_groups
                        for row in timeline.process(timeline.cursor(key), sync=sync)['rows']]
             self.assertEqual([row.get('timestamp') for row in exposed], [2000, 4000, 5000])
-            self.assertTrue(all((row.get('model'), row.get('effort')) == ('recorded-model', 'high') for row in exposed))
+            self.assertEqual((exposed[0].get('model'), exposed[0].get('effort')), ('recorded-model', 'high'))
+            self.assertTrue(all('model' not in row and 'effort' not in row for row in exposed if row['role'] == 'user' or row.get('kind') == 'commandExecution'))
 
     def test_saved_native_file_footer_survives_partial_live_turn_outside_saved_text_window(self):
         # Production API shape: the completed turn's tail is native-loaded while
