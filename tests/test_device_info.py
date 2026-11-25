@@ -10,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeviceInfoTests(unittest.TestCase):
+    def test_harmony_metadata_uses_the_existing_mobile_binding_and_device_display_contract(self):
+        agent = 'BridgeMobile/0.1.0-experimental-HarmonyOS BridgeModel/HUAWEI%20Pura%2080 BridgeOS/6.0.1 BridgeBuild/1'
+        self.assertTrue(Auth.mobile_client(agent))
+        self.assertEqual(describe(agent), {'kind': 'app', 'platform': 'HarmonyOS', 'model': 'HUAWEI Pura 80',
+                                          'osVersion': '6.0.1', 'build': '1', 'appVersion': '0.1.0-experimental'})
+        self.assertFalse(Auth.mobile_client('BridgeMobile/0.1-HarmonyOSExtra'))
+
     def test_edge_is_not_mislabeled_as_chrome_and_frozen_macos_is_not_claimed_as_actual_version(self):
         info = describe('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36 Edg/158.0.0.0')
         self.assertEqual(info, {'kind': 'browser', 'browser': 'Edge', 'browserVersion': '158.0.0.0', 'platform': 'macOS'})

@@ -3,8 +3,8 @@
 // These hints choose UI behavior only; native bridges still verify token/origin/frame.
 const BridgeHost = (() => {
   function kind(userAgent = globalThis.navigator?.userAgent || '') {
-    const match = /BridgeMobile\/[\w.-]+-(iOS|Android)(?:\s|$)/.exec(userAgent);
-    return match ? (match[1] === 'iOS' ? 'ios' : 'android') : 'browser';
+    const match = /BridgeMobile\/[\w.-]+-(iOS|Android|HarmonyOS)(?:\s|$)/.exec(userAgent);
+    return match ? ({iOS:'ios',Android:'android',HarmonyOS:'harmony'}[match[1]]) : 'browser';
   }
   function isNativeApp(userAgent) { return kind(userAgent) !== 'browser'; }
   function hasNativeLayout() {

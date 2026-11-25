@@ -5,7 +5,7 @@ from urllib.parse import unquote
 
 def describe(user_agent):
     agent = user_agent[:512]
-    mobile = re.search(r'(?:^|\s)BridgeMobile/([\w.-]+)-(iOS|Android)(?:\s|$)', agent)
+    mobile = re.search(r'(?:^|\s)BridgeMobile/([\w.-]+)-(iOS|Android|HarmonyOS)(?:\s|$)', agent)
     if mobile:
         result = {'kind': 'app', 'platform': mobile[2]}
         for token, field in (('BridgeModel', 'model'), ('BridgeOS', 'osVersion'), ('BridgeBuild', 'build')):
@@ -24,7 +24,9 @@ def describe(user_agent):
         if found:
             result.update(browser=name, browserVersion=found[1])
             break
-    if 'Android' in agent:
+    if 'HarmonyOS' in agent or 'OpenHarmony' in agent:
+        result['platform'] = 'HarmonyOS'
+    elif 'Android' in agent:
         result['platform'] = 'Android'
     elif 'iPhone' in agent or 'iPad' in agent:
         result['platform'] = 'iPadOS' if 'iPad' in agent else 'iOS'

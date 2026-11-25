@@ -1,6 +1,6 @@
 # 页面宿主适配
 
-此目录处理页面运行在普通浏览器、iOS App 或 Android App 时的差异。窗口尺寸与分屏由 `../layouts/` 管理；同一个宿主可以处于窄屏、横屏或宽屏。
+此目录处理页面运行在普通浏览器、iOS、Android 或 HarmonyOS App 时的差异。窗口尺寸与分屏由 `../layouts/` 管理；同一个宿主可以处于窄屏、横屏或宽屏。
 
 ## 页面入口
 
@@ -8,7 +8,7 @@
 
 | 方法 | 用途 |
 | --- | --- |
-| `kind(userAgent?)` | 返回 `browser`、`ios` 或 `android`，沿用现有 `BridgeMobile` 标识语法 |
+| `kind(userAgent?)` | 返回 `browser`、`ios`、`android` 或 `harmony`，沿用现有 `BridgeMobile` 标识语法 |
 | `isNativeApp(userAgent?)` | 登录界面和附件下载选择原生壳已有行为 |
 | `hasNativeLayout()` | 查询原生脚本是否已注入布局；供返回电脑列表、终端输入行为使用 |
 
@@ -33,6 +33,7 @@
 | Android 生命周期通知与会话续期提示桥 | `mobile/android/assets/mobile-session.js` 及 Android 原生实现 |
 | Android JavaScript 资源读取 | `mobile/android/.../MobileWebScripts.java` |
 | iOS 资源读取、viewport 注入 | `mobile/ios/BridgePreview/WebScripts.swift` |
+| HarmonyOS 资源准备、原生桥与离线归档 | `scripts/prepare-harmony.py`、`mobile/harmony/`；能力与构建限制见该目录 README |
 | 原生导航、token/origin/frame 验证 | 各平台的 `MainActivity.java` / `App.swift` |
 
 宿主 CSS 按原样式表中的优先级位置拆出，由 `web/assets.json` 的有序清单组合；不要通过插入更多覆盖规则来绕开已有布局。共享脚本随原生壳打包，网关不公开提供它们，也不通过网络动态加载原生桥脚本。

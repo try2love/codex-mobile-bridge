@@ -18,6 +18,8 @@ test('native identity preserves the existing user-agent token grammar', () => {
   for (const [ua, kind] of [
     ['Mozilla/5.0 BridgeMobile/0.1-iOS', 'ios'],
     ['Mozilla/5.0 BridgeMobile/0.1-Android', 'android'],
+    ['Mozilla/5.0 BridgeMobile/0.1.0-experimental-HarmonyOS', 'harmony'],
+    ['BridgeMobile/0.1-HarmonyOSExtra', 'browser'],
     ['BridgeMobile/2.0.0-preview.3-iOS Safari/605.1.15', 'ios'],
     ['BridgeMobile/build_42-Android\tOther/1', 'android'],
     ['prefixBridgeMobile/0.1-iOS', 'ios'],

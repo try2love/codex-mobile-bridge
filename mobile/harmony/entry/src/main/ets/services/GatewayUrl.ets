@@ -34,6 +34,13 @@ export class GatewayUrl {
     return parsed.origin + parsed.pathname.replace(/\/$/, '');
   }
 
+  static httpOrigin(value: string): string { return GatewayUrl.parse(value).origin; }
+
+  static apiPath(value: string, base: string): string {
+    if (!GatewayUrl.sameOrigin(value, base)) { throw new Error('地址不属于当前网关'); }
+    return GatewayUrl.parse(value).pathname.slice(GatewayUrl.parse(base).pathname.replace(/\/$/, '').length);
+  }
+
   static connection(value: string): string {
     const trimmed = value.trim();
     const hash = trimmed.indexOf('#');

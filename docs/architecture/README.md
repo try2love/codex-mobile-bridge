@@ -34,6 +34,7 @@
 | 浏览器与手机 App 的差别 | `web/hosts/` | `mobile/shared/web/` 共同注入脚本 |
 | Android 原生菜单、返回、下载、通知 | `mobile/android/` | 可选推送壳 `mobile/android-push/` |
 | iOS 原生菜单、导航、下载、通知 | `mobile/ios/` | Xcode 的 Sources/Resources 与 `WebScripts.swift` |
+| HarmonyOS 实验客户端、离线归档与历史传输 | `mobile/harmony/` | `scripts/prepare-harmony.py`、`mobile/shared/web/`；[能力与验证边界](../../mobile/harmony/README.md) |
 | 桌面网关页面与模块排布 | `desktop/shell/`、`desktop/features/` | `desktop/index.html`、`main.cjs`、`preload.cjs` |
 
 ## 目录与职责

@@ -32,4 +32,14 @@ export class ComputerStore {
     this.prefs.putSync('origins', JSON.stringify(origins));
     await this.prefs.flush();
   }
+
+  name(origin: string): string {
+    return this.prefs?.getSync('name:' + GatewayUrl.origin(origin), '') as string || origin;
+  }
+  async rename(origin: string, value: string): Promise<void> {
+    if (!this.prefs || !this.list().includes(GatewayUrl.origin(origin)) || value.trim().length > 80) {
+      throw new Error('无法保存电脑名称');
+    }
+    this.prefs.putSync('name:' + GatewayUrl.origin(origin), value.trim()); await this.prefs.flush();
+  }
 }
