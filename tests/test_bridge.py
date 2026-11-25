@@ -305,7 +305,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len([r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn']), 1)
 
     def test_offline_delivery_does_not_activate_a_read_only_cli(self):
-        with sqlite3.connect(self.root / 'state_5.sqlite') as db:
+        with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
             db.execute("UPDATE threads SET originator='codex_cli_rs',source='cli' WHERE id=?", (THREAD,))
         account, request_id = 'a' * 64, str(uuid.uuid4())
         from bridge.features.sessions.offline_delivery import DeliveryBlocked

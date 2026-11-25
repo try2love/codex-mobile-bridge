@@ -111,7 +111,9 @@ class RetainedIndexHistoryTests(unittest.TestCase):
     def test_remote_injection_reads_the_same_saved_index_without_installed_bridge(self):
         from bridge.clients.codex.remote import RemoteStore
         def read(_alias, script, **_kwargs):
-            result = subprocess.run([sys.executable, '-B', '-c', script], cwd=self.home,
+            injected = self.home/'injected-remote.py'
+            injected.write_text(script, encoding='utf-8')
+            result = subprocess.run([sys.executable, '-B', str(injected)], cwd=self.home,
                 env={**os.environ, 'PYTHONPATH': '', 'CODEX_HOME': str(self.home)}, capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
         with patch('bridge.clients.codex.remote.ssh_read', side_effect=read):

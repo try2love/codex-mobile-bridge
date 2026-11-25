@@ -107,6 +107,7 @@ class ServiceBoundary(unittest.TestCase):
         role = old + " zcode-pipe-host --data-dir " + str(client.profile) + " --application " + str(client.application)
         with patch.object(client, "supported", return_value=True), patch.object(client, "_signing", return_value=signature), \
                 patch.object(host, "read_json", return_value=record), patch.object(host, "private_dir"), \
+                patch.object(host.socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), create=True), \
                 patch.object(host.socket, "socket"), patch.object(host, "commands", return_value={123: role}) as commands, \
                 patch.object(host, "exchange_write") as write, patch.object(host, "exchange_read", return_value={"ok": True, "value": {"running": True}}):
             self.assertTrue(client._request({"command": "status"})["running"])

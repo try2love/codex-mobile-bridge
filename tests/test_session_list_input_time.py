@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -61,9 +62,8 @@ class InputTime(unittest.TestCase):
 
 class OtherClientInputTime(unittest.TestCase):
     def test_existing_async_detail_cache_uses_user_clock_and_binding_scope(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as temp:
-            manager=DesktopSessions(temp)
-            self.addCleanup(manager.close)
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.tmp') as temp, \
+             closing(DesktopSessions(temp)) as manager:
             adapter=Mock();manager.adapters['deepseek']=adapter
             binding=manager.binding_epochs['deepseek']
             detail={'session':{},'messages':[{'id':'native:0','role':'user','timestamp':'2026-11-22T03:04:05Z'},{'id':'native:1','role':'user'},{'role':'assistant','timestamp':'2026-11-22T09:00:00Z'}]}

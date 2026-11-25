@@ -4,7 +4,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -128,7 +128,7 @@ class ProjectGroupingTests(unittest.TestCase):
     def test_native_root_matching_uses_execution_platform_and_preserves_cwd(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
             home = Path(directory)
-            with sqlite3.connect(home / 'state_5.sqlite') as db:
+            with closing(sqlite3.connect(home / 'state_5.sqlite')) as db, db:
                 db.executescript("""
                     CREATE TABLE threads(id TEXT, cwd TEXT, source TEXT, archived INTEGER, updated_at INTEGER);
                     INSERT INTO threads VALUES ('different', '//work/project', 'vscode', 0, 1),
@@ -159,7 +159,7 @@ class ProjectGroupingTests(unittest.TestCase):
     def test_remote_list_transports_target_platform_in_the_same_read(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
             home = Path(directory)
-            with sqlite3.connect(home / 'state_5.sqlite') as db:
+            with closing(sqlite3.connect(home / 'state_5.sqlite')) as db, db:
                 db.executescript("""
                     CREATE TABLE threads(id TEXT, cwd TEXT, source TEXT, archived INTEGER, updated_at INTEGER);
                     INSERT INTO threads VALUES ('fixture', '//work/project', 'vscode', 0, 1);
@@ -205,7 +205,7 @@ class ProjectGroupingTests(unittest.TestCase):
     def test_native_store_lists_its_registered_secondary_root_without_legacy_state(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
             home = Path(directory)
-            with sqlite3.connect(home / 'state_5.sqlite') as db:
+            with closing(sqlite3.connect(home / 'state_5.sqlite')) as db, db:
                 db.executescript("""
                     CREATE TABLE threads(id TEXT, cwd TEXT, source TEXT, archived INTEGER, updated_at INTEGER, project_id TEXT);
                     INSERT INTO threads VALUES ('fixture', '/native/secondary/', 'vscode', 0, 4, NULL),
