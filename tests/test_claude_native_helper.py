@@ -533,7 +533,16 @@ class QuitFixture {
                         arguments.append(cancel)
                     started = time.monotonic()
                     helper = launch(arguments, output)
-                    code = wait(helper, 15)
+                    try:
+                        code = wait(helper, 15)
+                    except AssertionError as error:
+                        diagnostic = {'mode': mode, 'iteration': iteration,
+                            'elapsedSeconds': time.monotonic()-started,
+                            'helperExited': exited(helper), 'fixtureExited': exited(app),
+                            'quitLog': output.read_text(encoding='utf-8-sig', errors='replace') if output.exists() else None,
+                            'appLog': app_output.read_text(encoding='utf-8-sig', errors='replace') if app_output.exists() else None,
+                            'invoked': marker.read_text(encoding='utf-8', errors='replace') if marker.exists() else None}
+                        raise AssertionError(f'{error}: {diagnostic}') from error
                     if mode == 'initialize':
                         self.assertEqual(code, 1, output.read_text(encoding='utf-8-sig'))
                         self.assertIn('桌面不可用', output.read_text(encoding='utf-8-sig'))

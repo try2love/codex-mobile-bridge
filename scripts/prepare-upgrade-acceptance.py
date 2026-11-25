@@ -21,6 +21,8 @@ ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-publ
                     'tests/test_antigravity_reading.py', 'tests/test_retained_index_history.py',
                     'tests/test_history_control_separation.py', 'tests/test_progressive_loading.py',
                     'tests/browser/session-transfer-http.spec.cjs',
+                    'tests/desktop-appearance.test.cjs', 'tests/harmony-gateway-url.test.cjs',
+                    'tests/test_claude_native_helper.py',
                     'tests/test_wsl_manual_profiles.py', 'tests/test_cli_network_recovery.py',
                     'scripts/reuse-desktop-artifacts.py', 'tests/test_desktop_reuse.py', 'tests/test_desktop_idle.py',
                     'tests/release-assets.test.cjs',
