@@ -314,6 +314,22 @@ test('disabled connection ignores stale online status',async()=>{
   await ui.poll();assert.equal(status.textContent,'已配置但未启用');
 });
 
+test('an updated gateway keeps the legacy credential notice visible until restart clears it',async()=>{
+  for(const language of ['zh-CN','en']){
+    const ui=await renderer(language),notice=ui.nodes.get('credential-migration');
+    assert.equal(notice.hidden,true);
+    ui.value.runtime.running=true;
+    ui.value.externalStatus={legacy:{state:'credentials-required'}};
+    await ui.poll();assert.equal(notice.hidden,false);
+    assert.match(notice.textContent,language==='en'?/Migrate.*restart/:/迁移.*重启/);
+    await ui.poll();assert.equal(notice.hidden,false,'normal refresh must not dismiss the required action');
+    ui.value.externalStatus={legacy:{state:'ready'}};
+    await ui.poll();assert.equal(notice.hidden,true);
+    ui.value.externalStatus={legacy:{state:'credentials-required'}};ui.value.runtime.running=false;
+    await ui.poll();assert.equal(notice.hidden,true,'stopped gateway must not show stale connector state');
+  }
+});
+
 test('fixed-entry retry replaces an earlier error in card and summary across polling',async()=>{
   const ui=await renderer();
   ui.value.preferences.connections=[{id:'entry',name:'Home',enabled:true,accessMode:'external',publicUrl:'https://bridge.example.com:8443'}];

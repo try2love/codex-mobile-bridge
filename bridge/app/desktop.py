@@ -350,6 +350,7 @@ class Desktop:
 
     def start(self, value=None):
         temporary = (value or {}).get('connectionSecrets', {})
+        defer_legacy = sys.platform == 'darwin' and (value or {}).get('deferLegacyCredentials') is True
         self.config()
         state = self.status()
         if state['running']:
@@ -368,6 +369,7 @@ class Desktop:
         if any(c['enabled'] and c['accessMode'] == 'server' and not managed(c, self.data_dir) for c in preferences['connections']) and not shutil.which('ssh'):
             raise ValueError('未找到 OpenSSH 客户端；请先安装或启用系统 SSH 客户端')
         from bridge.features.network.server_connection import credentials
+        from bridge.features.accounts.secrets import LegacyCredentialsRequired
         for entry in preferences['connections']:
             if not entry['enabled']:
                 continue
@@ -375,7 +377,12 @@ class Desktop:
                 from bridge.features.network.tailscale import require_identity
                 require_identity(entry)
             if entry['accessMode'] == 'cloudflare' or (entry['accessMode'] == 'server' and entry.get('sshAuth', 'config') != 'config'):
-                secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                try:
+                    secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                except LegacyCredentialsRequired:
+                    if not defer_legacy:
+                        raise
+                    continue
                 if entry['accessMode'] == 'cloudflare' and not secret.get('tunnelToken'):
                     raise FieldError('请先填写并保存 Cloudflare Tunnel Token。', 'tunnelToken', entry['id'])
                 if entry['accessMode'] == 'server' and entry.get('sshAuth') == 'password' and not secret.get('password'):
@@ -395,6 +402,8 @@ class Desktop:
                     probe.close()
         command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(project_root()/'desktop.py')]
         command += ['serve', '--data-dir', str(self.data_dir), '--connection-secrets-stdin']
+        if defer_legacy:
+            command.append('--defer-legacy-credentials')
         kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         # Frozen children run as independent applications, not multiprocessing workers.
         environment = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}

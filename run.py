@@ -37,7 +37,7 @@ def save_config(path, config):
     temp.replace(path)
 
 
-def main(connections=None, connection_secrets=None):
+def main(connections=None, connection_secrets=None, *, defer_legacy_credentials=False):
     connection_secrets = connection_secrets or {}
     # Redirected Windows streams may use a codec that cannot encode Chinese.
     sys.stdout.reconfigure(encoding='utf-8')
@@ -229,8 +229,13 @@ def main(connections=None, connection_secrets=None):
             if not managed(entry, args.config.parent):
                 ssh_tunnel = SSHTunnel(entry['sshTarget'], entry['sshRemotePort'], args.port, args.config.parent, entry['id'])
             else:
-                from bridge.features.network.server_connection import ManagedForward
-                ssh_tunnel = ManagedForward(entry, args.port, args.config.parent, connection_secrets.get(entry['id']))
+                from bridge.features.network.server_connection import ManagedForward, startup_credentials
+                secret = connection_secrets.get(entry['id'])
+                if defer_legacy_credentials:
+                    secret = startup_credentials(entry, args.config.parent, secret, defer_legacy=True)
+                    if secret is None:
+                        continue
+                ssh_tunnel = ManagedForward(entry, args.port, args.config.parent, secret)
             ssh_tunnels.append(ssh_tunnel)
             ssh_tunnel.start()
         for entry in entries:
@@ -253,8 +258,11 @@ def main(connections=None, connection_secrets=None):
                 tailscale.start()
             if entry['enabled'] and entry['accessMode'] == 'cloudflare':
                 from bridge.features.network.named_tunnel import NamedTunnel
-                from bridge.features.network.server_connection import credentials
-                secret = credentials(entry, args.config.parent, connection_secrets.get(entry['id']))
+                from bridge.features.network.server_connection import startup_credentials
+                secret = startup_credentials(entry, args.config.parent, connection_secrets.get(entry['id']),
+                                             defer_legacy=defer_legacy_credentials)
+                if secret is None:
+                    continue
                 named = NamedTunnel(args.cloudflared, entry, args.config.parent, secret.get('tunnelToken', ''))
                 ssh_tunnels.append(named)
                 named.start()

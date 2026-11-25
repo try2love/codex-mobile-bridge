@@ -31,8 +31,8 @@ test('Launch Services child must match both original supervisor and actual GUI r
 test('GUI restores its gateway before acknowledging the legacy updater, without duplicate start',async t=>{
  const f=fixture(t);f.env.CMB_UPDATE_LAUNCHER_PID='101';f.write('launch-services.json',{pid:202,launcherPid:101,token:f.token});
  let snapshots=0;const calls=[];
- await restoreMacUpdate({handoff:f.read(202),env:f.env,pid:202,stillManaged:()=>!!f.read(202),worker:async action=>{calls.push(action);return {runtime:{running:action==='snapshot'&&++snapshots===2}};}});
- assert.deepEqual(calls,['start','snapshot','snapshot']);
+ await restoreMacUpdate({handoff:f.read(202),env:f.env,pid:202,stillManaged:()=>!!f.read(202),worker:async(action,payload)=>{calls.push([action,payload]);return {runtime:{running:action==='snapshot'&&++snapshots===2}};}});
+ assert.deepEqual(calls,[['start',{deferLegacyCredentials:true}],['snapshot',undefined],['snapshot',undefined]]);
 });
 test('stopped gateway stays stopped and an invalidated handoff cannot start a gateway',async t=>{
  const f=fixture(t);f.env.CMB_UPDATE_LAUNCHER_PID='101';f.write('launch-services.json',{pid:202,launcherPid:101,token:f.token});

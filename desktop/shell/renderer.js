@@ -286,6 +286,8 @@ function render(value,watchRevision=watchPanel.revision){
   if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts'&&!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
   const appearanceChanged=snapshot?.dataDir!==value.dataDir;
   snapshot=value;if(appearanceChanged)void updateAppearance();const running=value.runtime.running;
+  $('credential-migration').hidden=!running||!Object.values(value.externalStatus||{}).some(row=>row.state==='credentials-required');
+  $('credential-migration').textContent=t('部分连接需要迁移旧凭据。请在连接设置中迁移后重启网关；其他可用连接不受影响。');
   if(!networkAdaptationBusy){if(typeof value.networkAdaptation?.enabled==='boolean')networkAdaptationError='';renderNetworkAdaptation(value.networkAdaptation??null);}
   if(running||value.runtime.portOccupied)startingUntil=0;
   const starting=Date.now()<startingUntil;

@@ -28,7 +28,7 @@ async function restoreMacUpdate({handoff,env=process.env,pid=process.pid,worker,
     if(!stillManaged())throw Error('更新交接已失效');
     // The new GUI owns the gateway's privacy identity. Older update helpers'
     // subsequent start request is idempotent and attaches to this same gateway.
-    await worker('start');
+    await worker('start',{deferLegacyCredentials:true});
     for(let count=0;;count++){
       if(!stillManaged())throw Error('更新交接已失效');
       if((await worker('snapshot')).runtime?.running)return;

@@ -83,6 +83,21 @@ def credentials(entry, data_dir, temporary=None):
     return {}
 
 
+def startup_credentials(entry, data_dir, temporary=None, *, defer_legacy=False):
+    from bridge.features.accounts.secrets import LegacyCredentialsRequired
+    try:
+        return credentials(entry, data_dir, temporary)
+    except LegacyCredentialsRequired:
+        if not defer_legacy:
+            raise
+        # Only the verified update handoff opts in. Keep the saved connection
+        # enabled, but never launch a connector without its required secret.
+        write_json(Path(data_dir)/('ssh-status-'+entry['id']+'.json'), {
+            'pid': os.getpid(), 'state': 'credentials-required',
+            'message': '此连接需要迁移旧凭据。请在连接设置中迁移后重启网关。'})
+        return None
+
+
 def managed(entry, data_dir):
     if entry.get('sshAuth', 'config') != 'config':
         return True

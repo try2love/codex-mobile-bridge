@@ -322,6 +322,9 @@ test('only the matching unfinished update binds the GUI data directory and ackno
   fs.mkdirSync(path.dirname(cached));fs.writeFileSync(cached,'retained package');
   write('launched.json',{pid:123});await valid.acknowledgeUpdate();
   assert.deepEqual(JSON.parse(fs.readFileSync(ack,'utf8')),{token,version,dataDir:data});assert.equal(fs.readFileSync(cached,'utf8'),'retained package');fs.unlinkSync(ack);
+  valid.worker=async()=>{throw Error('Synthetic startup failure');};
+  await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);
+  assert.match(fs.readFileSync(path.join(transaction,'new-app.log'),'utf8'),/Synthetic startup failure/);
   valid.worker=async()=>write('result.json',{state:'failed'});
   await valid.acknowledgeUpdate();assert.equal(fs.existsSync(ack),false);assert.equal(valid.updateManaged(),false);assert.equal(fs.readFileSync(cached,'utf8'),'retained package');
   const finished=launch();assert.equal(directory(finished),explicit);assert.equal(finished.updateManaged(),false);

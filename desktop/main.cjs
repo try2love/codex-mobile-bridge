@@ -492,7 +492,14 @@ async function acknowledgeUpdate(){
     if(updateManaged()&&handoff.dataDir===dataDir){
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
     }
-  }catch{} // Missing acknowledgement makes the independent helper restore the old app.
+  }catch(error){
+    // The previous updater also reads this file. Keep its rollback decision,
+    // but retain the real startup failure instead of a silent ACK timeout.
+    if(updateManaged())try{
+      fs.appendFileSync(path.join(handoff.transaction,'new-app.log'),
+        'Update startup failed: '+String(error?.message||error).slice(0,2000)+'\n',{mode:0o600});
+    }catch{}
+  }
 }
 function createWindow(hidden=false){
   window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
