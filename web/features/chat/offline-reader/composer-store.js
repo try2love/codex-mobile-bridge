@@ -220,13 +220,17 @@
     }).then(record => { schedule(100); return record; });
   }
   function edit(route, id, text) {
+    const replacement = identifier();
     return mutateRoute(route, record => {
       const item = record.outbox.find(row => row.id === id);
-      if (!item || item.state !== 'pending') throw Error('消息已开始投递');
+      if (!item || !['pending','failed'].includes(item.state)) throw Error('消息已开始投递');
       if (typeof text !== 'string' || (!text.trim() && !item.body.attachments?.length && !item.body.references?.length) || text.length > 100000) throw Error('请输入 1–100000 字的消息');
       item.body.text = text;
+      if (item.state === 'failed') {
+        item.id = replacement; item.state = 'pending'; delete item.error;
+      }
       return record;
-    });
+    }).then(record => { schedule(0); return record; });
   }
   function remove(route, id) {
     return mutateRoute(route, record => {

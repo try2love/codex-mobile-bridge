@@ -184,9 +184,9 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual((ready['ready'], ready['status']), (True, 'notFound'))
             self.assertEqual(self.bridge.offline_delivery(THREAD, first, account, body)['status'], 'accepted')
             self.assertEqual(self.bridge.offline_delivery(THREAD, first, account, body)['duplicate'], True)
-            with self.assertRaises(DeliveryBlocked) as changed:
+            with self.assertRaises(ValueError) as changed:
                 self.bridge.offline_delivery(THREAD, first, account, {'text': 'different'})
-            self.assertEqual(changed.exception.code, 'offline_delivery_rejected')
+            self.assertNotIsInstance(changed.exception, DeliveryBlocked)
             with self.assertRaises(DeliveryBlocked) as busy:
                 self.bridge.offline_delivery(THREAD, second, account, body)
             self.assertEqual(busy.exception.code, 'offline_delivery_wait')
@@ -223,6 +223,86 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(result['status'], 'accepted')
         self.opened_desktop.assert_not_called()
         self.assertEqual([r['targetClientId'] for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn'], ['owner'])
+
+    def test_offline_validation_rejections_are_durable_without_dispatch(self):
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        account = 'a' * 64
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        bodies = [{'text': 'missing skill', 'skills': ['removed-skill']},
+                  {'text': 'missing file', 'attachments': [str(uuid.uuid4())]}]
+        ids = [str(uuid.uuid4()) for _ in bodies]
+        with patch.object(self.bridge, '_management_identity', return_value=account), \
+             patch.object(self.bridge.catalog_reader, 'validate_skills', return_value=[]):
+            for rid, body in zip(ids, bodies):
+                with self.subTest(body=body):
+                    with self.assertRaises(DeliveryBlocked) as rejected:
+                        self.bridge.offline_delivery(THREAD, rid, account, body)
+                    self.assertEqual(rejected.exception.code, 'offline_delivery_rejected')
+                    proof = self.bridge.offline_delivery(THREAD, rid, account)
+                    self.assertEqual((proof['status'], proof['ready']), ('rejected', False))
+            self.assertFalse([r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn'])
+        # A lost rejection response can be recovered after a gateway restart.
+        self.bridge.close()
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        with patch.object(self.bridge, '_management_identity', return_value=account):
+            for rid, body in zip(ids, bodies):
+                self.assertEqual(self.bridge.offline_delivery(THREAD, rid, account)['status'], 'rejected')
+                self.assertEqual(self.bridge.offline_delivery(THREAD, rid, account, body)['status'], 'rejected')
+            self.assertTrue(self.bridge.offline_delivery(THREAD, str(uuid.uuid4()), account)['ready'])
+        self.assertFalse([r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn'])
+
+    def test_offline_mode_rejection_and_dispatch_error_keep_different_receipts(self):
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        account = 'a' * 64
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        denied, unknown = str(uuid.uuid4()), str(uuid.uuid4())
+        with patch.object(self.bridge, '_management_identity', return_value=account):
+            access = self.bridge._access('desktop', self.bridge.session(THREAD))
+            with patch.object(self.bridge, '_access', return_value={**access, 'canUseModes': False}):
+                with self.assertRaises(DeliveryBlocked):
+                    self.bridge.offline_delivery(THREAD, denied, account, {'text': 'plan', 'workMode': 'plan'})
+            self.assertEqual(self.bridge.offline_delivery(THREAD, denied, account)['status'], 'rejected')
+            with patch.object(self.bridge, '_dispatch', side_effect=ValueError('result unavailable')) as dispatch:
+                with self.assertRaises(ValueError):
+                    self.bridge.offline_delivery(THREAD, unknown, account, {'text': 'unknown'})
+                self.assertEqual(self.bridge.offline_delivery(THREAD, unknown, account)['status'], 'unknown')
+                self.assertEqual(self.bridge.offline_delivery(THREAD, unknown, account, {'text': 'unknown'})['status'], 'unknown')
+                dispatch.assert_called_once()
+
+    def test_offline_rejection_cannot_overwrite_a_concurrent_accepted_receipt(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        account, rid = 'a' * 64, str(uuid.uuid4())
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        validating, release = threading.Event(), threading.Event()
+        body = {'text': 'once', 'skills': ['changing-skill']}
+        send = self.bridge.send
+        def delayed_rejection(*args, **kwargs):
+            try:
+                return send(*args, **kwargs)
+            except DeliveryBlocked:
+                # The send operation has released its account gate. Delay the
+                # caller before it can commit the negative receipt.
+                validating.set()
+                if not release.wait(3):
+                    raise TimeoutError('test validation did not resume')
+                raise
+        with patch.object(self.bridge, '_management_identity', return_value=account), \
+             patch.object(self.bridge.catalog_reader, 'validate_skills', side_effect=[
+                 [], [{'id': 'changing-skill', 'name': 'Skill', 'path': '/fixture/SKILL.md'}]]), \
+             patch.object(self.bridge, 'send', side_effect=delayed_rejection), \
+             ThreadPoolExecutor(max_workers=1) as pool:
+            earlier = pool.submit(self.bridge.offline_delivery, THREAD, rid, account, body)
+            try:
+                self.assertTrue(validating.wait(3))
+                self.assertEqual(self.bridge.offline_delivery(THREAD, rid, account, body)['status'], 'accepted')
+            finally:
+                release.set()
+            self.assertEqual(earlier.result(timeout=3)['status'], 'accepted')
+            self.assertEqual(self.bridge.offline_delivery(THREAD, rid, account)['status'], 'accepted')
+        self.assertEqual(len([r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn']), 1)
 
     def test_offline_delivery_does_not_activate_a_read_only_cli(self):
         with sqlite3.connect(self.root / 'state_5.sqlite') as db:
@@ -1630,6 +1710,28 @@ class HttpTests(unittest.TestCase):
         self.assertEqual((status, response['code']), (409, 'offline_delivery_wait'))
         deliver.assert_called_with(THREAD, rid, account, body)
 
+    def test_codex_http_delivery_returns_a_recoverable_skill_rejection(self):
+        from urllib.parse import urlencode
+        fixture = IntegrationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.addCleanup(fixture.tearDown)
+        self.server.bridge = fixture.bridge
+        self.assertTrue(fixture.bridge.view(THREAD)['connected'])
+        headers = self.login()
+        account, rid = 'a' * 64, str(uuid.uuid4())
+        path = '/api/sessions/' + THREAD + '/delivery?' + urlencode({
+            'host': 'local', 'gatewayId': self.server.auth.session_sync['gatewayId'], 'account': account, 'id': rid})
+        body = {'sessionId': THREAD, 'id': rid, 'text': 'offline text', 'skills': ['removed-skill']}
+        with patch.object(fixture.bridge, '_management_identity', return_value=account), \
+             patch.object(fixture.bridge.catalog_reader, 'validate_skills', return_value=[]):
+            self.assertTrue(self.request('GET', path, headers=headers)[2]['ready'])
+            status, _, rejected = self.request('POST', path, body, headers)
+            self.assertEqual((status, rejected.get('code')), (409, 'offline_delivery_rejected'))
+            self.assertEqual(self.request('GET', path, headers=headers)[2]['status'], 'rejected')
+            self.assertEqual(self.request('POST', path, body, headers)[2]['status'], 'rejected')
+        self.assertFalse([r for r in fixture.fixture.requests if r['method'] == 'thread-follower-start-turn'])
+
     def test_desktop_offline_delivery_uses_scoped_native_receipts_and_waits_between_turns(self):
         from unittest.mock import Mock
         from urllib.parse import urlencode
@@ -1665,7 +1767,8 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(send(first)[2], {'status': 'accepted', 'id': first})
         self.assertEqual(send(first)[2]['duplicate'], True)
         different = self.request('POST', path(first), {'sessionId': sid, 'id': first, 'text': 'different'}, headers)[2]
-        self.assertEqual(different['code'], 'offline_delivery_rejected')
+        self.assertNotIn('code', different)
+        self.assertIn('同一消息标识', different['error'])
         self.assertEqual(send(second)[2]['code'], 'offline_delivery_wait')
         detail['session'].update(status='active', updatedAt=2)
         self.assertEqual(send(second)[2]['code'], 'offline_delivery_wait')

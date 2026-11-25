@@ -309,7 +309,7 @@ class ComposerToolbar {
           catch { if(this.offlineRoute === current) this.showError(new Error('待发消息撤回失败')); }
         });
         const actions = ComposerUI.node('div', 'actions');
-        if(row.state === 'pending') actions.append(ComposerUI.textButton('编辑', () => this.editOutbox(current, row)));
+        actions.append(ComposerUI.textButton('编辑', () => this.editOutbox(current, row)));
         actions.append(remove);card.append(actions);
       }
       return card;

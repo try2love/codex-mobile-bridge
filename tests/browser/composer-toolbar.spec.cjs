@@ -780,6 +780,27 @@ for (const provider of ['codex', 'claude']) {
     await editor.locator('textarea').fill('编辑后的消息 A');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
     await expect(pending).toContainText('编辑后的消息 A');
+    await page.evaluate(async (provider) => {
+      const auth = { authenticated: true, sessionSync: { version: 1, gatewayId: 'a'.repeat(32), identity: 'b'.repeat(64) } };
+      let ready = true;
+      BridgeOfflineComposer.bind(auth, async (path, body) => {
+        if (path === '/api/auth') return auth;
+        if (!body) return { deliveryVersion:1, account:'fixture-account', ready, status:'notFound' };
+        ready = false;
+        throw Object.assign(Error('Skill unavailable'), { code:'offline_delivery_rejected' });
+      });
+      OfflineChatReader.disableHot();
+      await BridgeOfflineComposer.flush();
+    }, provider);
+    await expect(pending).toContainText('待发消息发送失败');
+    await pending.getByRole('button', { name: '编辑', exact: true }).click();
+    await editor.locator('textarea').fill('重新编辑的消息 A');
+    await editor.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(pending).toContainText('重新编辑的消息 A');
+    await expect(pending).not.toContainText('待发消息发送失败');
+    const corrected = await page.evaluate(provider => BridgeOfflineComposer.get({ provider, host:'local', session:'offline-test' }), provider);
+    expect(corrected.outbox[0].id).not.toBe(record.outbox[0].id);
+    expect(corrected.draft.text).toBe('新草稿 B');
     await pending.getByRole('button', { name: '撤回', exact: true }).click();
     await expect(pending).toHaveCount(0);
     await expect(input).toHaveValue('新草稿 B');

@@ -5732,8 +5732,6 @@ class Bridge:
                 self._refresh_async(session)
             status = self._delivery_status(thread_id, submission_id, account) if current == account else 'notFound'
             return delivery_proof(current, account, ready=ready, status=status)
-        if body.get('plugins'):
-            raise DeliveryBlocked('此会话离线发送不支持插件')
         current, ready, archived = self._delivery_admission(session)
         intent = delivery_fingerprint(body)
         if current == account:
@@ -5741,10 +5739,32 @@ class Bridge:
             if status != 'notFound':
                 return {'status': status, 'duplicate': True, 'id': submission_id}
         admit_delivery(current, account, ready, archived)
-        return self.send(thread_id, body['text'], submission_id, skills=body.get('skills', []),
-                         work_mode=body.get('workMode'), attachments=body.get('attachments'),
-                         references=body.get('references'), ui_locale=body.get('uiLocale'),
-                         _delivery_account=account, _delivery_intent=intent)
+        try:
+            if body.get('plugins'):
+                raise DeliveryBlocked('此会话离线发送不支持插件')
+            return self.send(thread_id, body['text'], submission_id, skills=body.get('skills', []),
+                             work_mode=body.get('workMode'), attachments=body.get('attachments'),
+                             references=body.get('references'), ui_locale=body.get('uiLocale'),
+                             _delivery_account=account, _delivery_intent=intent)
+        except DeliveryBlocked as exc:
+            if exc.code == 'offline_delivery_rejected':
+                # A negative receipt survives a lost response. Never overwrite a
+                # concurrent send or turn an existing unknown result into rejection.
+                with session.action_lock, self.goal_lock:
+                    status = self._delivery_status(thread_id, submission_id, account, intent)
+                    if status != 'notFound':
+                        return {'status': status, 'duplicate': True, 'id': submission_id}
+                    key = thread_id + ':' + submission_id
+                    with self.submit_lock:
+                        self.submissions[key] = {'text': body['text'], 'mode': 'send', 'status': 'rejected',
+                                                 'at': time.time(), 'deliveryAccount': account,
+                                                 'deliveryFingerprint': intent}
+                        try:
+                            self._save_ledger()
+                        except OSError:
+                            del self.submissions[key]
+                            raise
+            raise
 
     @operation
     def manage_messages(self, thread_id, body):
@@ -5930,11 +5950,16 @@ class Bridge:
         else:
             session = self._target(thread_id, **target_options)
         access = self._access(session.origin, session)
-        if work_mode is not None and not access['canUseModes']:
-            raise ValueError('此会话暂不能切换工作模式')
-        if skills and not access['canSelectSkills']:
-            raise ValueError('此会话暂不能选择 Skill')
-        selected = self._resolve_skills(session, [] if skills is None else skills)
+        try:
+            if work_mode is not None and not access['canUseModes']:
+                raise ValueError('此会话暂不能切换工作模式')
+            if skills and not access['canSelectSkills']:
+                raise ValueError('此会话暂不能选择 Skill')
+            selected = self._resolve_skills(session, [] if skills is None else skills)
+        except ValueError as exc:
+            if _delivery_account is not None:
+                raise DeliveryBlocked(str(exc)) from exc
+            raise
         key = thread_id + ":" + submission_id
         with session.action_lock:
             if _delivery_account is not None:
@@ -5972,6 +5997,8 @@ class Bridge:
                     raise SubmissionRejected("当前任务已经结束，请使用普通发送")
                 if work_mode is not None and not (session.state.get("latestModel") or
                         (session.state.get("latestCollaborationMode") or {}).get("settings", {}).get("model")):
+                    if _delivery_account is not None:
+                        raise DeliveryBlocked('尚未取得模型设置，请重新连接后再切换模式', wait=True)
                     raise ValueError("尚未取得模型设置，请重新连接后再切换模式")
                 if plan_response is not None:
                     pending = next((r for r in session.state.get("requests", [])

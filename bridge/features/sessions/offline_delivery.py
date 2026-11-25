@@ -47,7 +47,9 @@ def fingerprint(body):
 
 def require_intent(existing, supplied):
     if supplied is not None and existing != supplied:
-        raise DeliveryBlocked('同一消息标识不能用于不同内容')
+        # The original request may already have been sent. This is not proof
+        # that the caller may safely edit and replay it under another ID.
+        raise ValueError('同一消息标识不能用于不同内容')
 
 
 def waiting_for_turn(entry, turns, account):

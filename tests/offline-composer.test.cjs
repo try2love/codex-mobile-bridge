@@ -136,6 +136,55 @@ test('explicit pre-dispatch rejection can wait for reconnection, a legacy gatewa
   assert.equal(api.posts[0].id,api.posts[1].id);
 });
 
+test('rejected messages edit in place with a new ID and concurrent recovery preserves order and draft', async () => {
+  const native = archive(), api = gateway(), a = device(native);
+  a.store.bind(auth,api.request); await a.store.observe(route,meta);
+  await a.store.enqueue(route,body('A'));
+  await a.store.enqueue(route,body('later'));
+  await a.store.saveDraft(route,text('B'));
+  const before = await a.store.get(route), oldId = before.outbox[0].id;
+  api.send = row => {
+    api.receipts.set(row.id,'rejected');
+    throw Object.assign(Error('Skill unavailable'),{code:'offline_delivery_rejected'});
+  };
+  a.navigator.onLine = true; await a.store.flush();
+  assert.equal((await a.store.get(route)).outbox[0].state,'failed');
+  const edited = await a.store.edit(route,oldId,'A edited');
+  assert.notEqual(edited.outbox[0].id,oldId);
+  assert.equal(edited.outbox[0].state,'pending');
+  assert.equal(edited.outbox[0].error,undefined);
+  assert.equal(edited.outbox[1].id,before.outbox[1].id);
+  assert.equal(edited.draft.text,'B');
+  // A stale editor cannot overwrite or delete the replacement request.
+  await assert.rejects(a.store.edit(route,oldId,'stale edit'));
+  await a.store.remove(route,oldId);
+  api.send = null;
+  const other = device(native); other.store.bind(auth,api.request); other.navigator.onLine = true;
+  await Promise.all([a.store.flush(),other.store.flush()]);
+  assert.deepEqual(api.posts.map(row=>row.text),['A','A edited','later']);
+  assert.equal((await other.store.get(route)).draft.text,'B');
+});
+
+test('lost rejection response becomes editable only after a durable rejected receipt', async () => {
+  const native=archive(), api=gateway(), a=device(native);
+  a.store.bind(auth,api.request); await a.store.observe(route,meta);
+  await a.store.enqueue(route,body('A')); await a.store.enqueue(route,body('later'));
+  await a.store.saveDraft(route,text('B'));
+  api.send = row => { api.receipts.set(row.id,'rejected'); throw Error('response lost'); };
+  a.navigator.onLine=true; await a.store.flush();
+  const id=(await a.store.get(route)).outbox[0].id;
+  assert.equal((await a.store.get(route)).outbox[0].state,'checking');
+  await assert.rejects(a.store.edit(route,id,'too early'));
+  const reopened=device(native); reopened.store.bind(auth,api.request); reopened.navigator.onLine=true;
+  await reopened.store.flush();
+  assert.equal((await reopened.store.get(route)).outbox[0].state,'failed');
+  assert.equal(api.posts.length,1);
+  await reopened.store.remove(route,id);
+  api.send=null; await reopened.store.flush();
+  assert.deepEqual(api.posts.map(row=>row.text),['A','later']);
+  assert.equal((await reopened.store.get(route)).draft.text,'B');
+});
+
 test('an old account observation already in flight cannot authorize the next account after a switch',async () => {
   const native = archive(), api = gateway(); let release, started;
   const entering = new Promise(resolve => { started = resolve; });
