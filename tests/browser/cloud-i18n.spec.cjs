@@ -93,7 +93,7 @@ async function openLogin(page){
       await page.evaluate(()=>window.cloudCalls=[]);
     }
     await page.locator('[data-cloud-open-login]').click();
-    if(previousOrigin&&previousOrigin!=='https://bridge.waken.cloudns.be:8787'){
+    if(previousOrigin&&previousOrigin!=='https://bridge.apijr.xyz'){
       await page.locator('[data-cloud-server]').selectOption('custom');
       await page.locator('[data-cloud-origin]').fill(previousOrigin);
     }
@@ -241,7 +241,7 @@ test('official cloud selection changes only the draft and clears a different ser
   await page.locator('[data-cloud-password]').fill('private-custom-server-only');
   await page.locator('[data-cloud-server]').selectOption('official');
   await expect(page.locator('[data-cloud-official-address]')).toHaveCount(0);
-  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.waken.cloudns.be');
+  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.apijr.xyz');
   await expect(page.locator('[data-cloud-custom-origin]')).toBeHidden();
   await expect(page.locator('[data-cloud-password]')).toHaveValue('');
   await expect(page.locator('[data-cloud-account]')).toBeHidden();
@@ -252,7 +252,7 @@ test('official cloud selection changes only the draft and clears a different ser
   await page.evaluate(()=>window.cloudErrors.login='Cloud service: invalid_credentials');
   await page.locator('[data-cloud-password]').fill('synthetic-test-password');
   await action(page,'login');
-  expect(await page.evaluate(()=>window.cloudCalls)).toEqual([{action:'login',origin:'https://bridge.waken.cloudns.be:8787',login:'original-user',password:'synthetic-test-password'}]);
+  expect(await page.evaluate(()=>window.cloudCalls)).toEqual([{action:'login',origin:'https://bridge.apijr.xyz',login:'original-user',password:'synthetic-test-password'}]);
   expect(await page.evaluate(()=>window.cloudStatus.configured)).toBe(false);
 });
 
@@ -483,7 +483,7 @@ test('sponsorship appears only for a signed-in official cloud account',async({pa
   await openLogin(page);
   await page.locator('[data-cloud-server]').selectOption('custom');
   await expect(sponsor).toBeHidden();
-  await page.locator('[data-cloud-origin]').fill('https://bridge.waken.cloudns.be:8787');
+  await page.locator('[data-cloud-origin]').fill('https://bridge.apijr.xyz');
   await expect(sponsor).toBeHidden();
   await language(page,'en');
   await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
@@ -494,7 +494,7 @@ test('sponsorship appears only for a signed-in official cloud account',async({pa
   await closeLogin(page);
   for(const entitlement of [null,{required:true,active:false,expires_at:null},{required:true,active:true,expires_at:'2031-01-01T00:00:00Z'},{required:true,active:false,expires_at:'2029-01-01T00:00:00Z'}]){
     await page.evaluate(entitlement=>{
-      window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787',entitlement};
+      window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.apijr.xyz',entitlement};
       window.CloudPanel.update(window.cloudStatus);
     },entitlement);
     await expect(sponsor).toBeVisible();
@@ -503,7 +503,7 @@ test('sponsorship appears only for a signed-in official cloud account',async({pa
   await expect(sponsor).toBeHidden();
   expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([]);
   await page.evaluate(()=>{
-    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.apijr.xyz'};
     window.CloudPanel.update(window.cloudStatus);
   });
   await expect(sponsor).toBeVisible();
@@ -523,7 +523,7 @@ test('sponsor purchase opens a QR dialog, preserves drafts and fits both UI lang
     window.cloudOpened=[];
     window.bridgeDesktop.open=async target=>window.cloudOpened.push(target);
     window.cloudResponses.sponsorship=qr;
-    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.apijr.xyz'};
     window.CloudPanel.update(window.cloudStatus);
   },qr);
   const sponsor=page.locator('[data-cloud-sponsor]'),button=page.locator('[data-cloud-open-sponsor]');
@@ -552,14 +552,14 @@ test('sponsor purchase opens a QR dialog, preserves drafts and fits both UI lang
   await page.evaluate(()=>window.CloudPanel.update(window.cloudStatus));
   await expect(page.locator('[data-cloud-code]')).toHaveValue('UNSENT-TEST-CODE');
   await expect(page.locator('[data-cloud-identity]')).toContainText('original-user');
-  expect(await page.evaluate(()=>({opened:window.cloudOpened,cloud:window.cloudAllCalls,submissions:window.settingsSubmissions}))).toEqual({opened:[],cloud:Array.from({length:3},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),submissions:0});
+  expect(await page.evaluate(()=>({opened:window.cloudOpened,cloud:window.cloudAllCalls,submissions:window.settingsSubmissions}))).toEqual({opened:[],cloud:Array.from({length:3},()=>({action:'sponsorship',origin:'https://bridge.apijr.xyz'})),submissions:0});
 });
 
 test('sponsor QR retries on reopening and closes on a custom account or logout',async({page})=>{
   const qr=await sponsorImage();
   await page.evaluate(qr=>{
     window.cloudErrors.sponsorship='synthetic QR failure';window.cloudResponses.sponsorship=qr;
-    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};window.CloudPanel.update(window.cloudStatus);
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.apijr.xyz'};window.CloudPanel.update(window.cloudStatus);
   },qr);
   const button=page.locator('[data-cloud-open-sponsor]'),image=page.locator('[data-cloud-sponsor-qr-image]'),modal=page.locator('#cloud-sponsor-dialog');
   await button.click();await expect(modal).toBeVisible();await expect(image).toBeHidden();
@@ -570,7 +570,7 @@ test('sponsor QR retries on reopening and closes on a custom account or logout',
   await page.locator('[data-cloud-close-sponsor]').click();await button.click();await expect(image).toBeVisible();
   expect(await page.evaluate(()=>window.cloudAllCalls.length)).toBe(2);
   await page.evaluate(()=>window.CloudPanel.update(window.cloudOriginalAccount));await expect(modal).toBeHidden();
-  expect(await page.evaluate(()=>({cloud:window.cloudAllCalls,settings:window.settingsSubmissions}))).toEqual({cloud:Array.from({length:2},()=>({action:'sponsorship',origin:'https://bridge.waken.cloudns.be:8787'})),settings:0});
+  expect(await page.evaluate(()=>({cloud:window.cloudAllCalls,settings:window.settingsSubmissions}))).toEqual({cloud:Array.from({length:2},()=>({action:'sponsorship',origin:'https://bridge.apijr.xyz'})),settings:0});
   await page.evaluate(()=>{
     window.CloudPanel.update(window.cloudStatus);
     window.cloudPendingAction='sponsorship';
@@ -612,7 +612,7 @@ test('new accounts use the official server and the login dialog fits wide and na
   await expect(page.locator('[data-cloud-origin]')).toBeHidden();
   await expect(page.locator('[data-cloud-origin]')).toBeDisabled();
   await expect(page.locator('[data-cloud-official-address]')).toHaveCount(0);
-  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.waken.cloudns.be');
+  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.apijr.xyz');
   await expect(page.locator('[data-cloud-server]')).toBeFocused();
   await language(page,'en');
   await expect(page.getByRole('dialog')).toHaveAccessibleName('Sign In to Cloud');
@@ -649,7 +649,7 @@ test('closing or dismissing login clears only the password and never submits set
 test('login submits once to the selected server and closes only after the account is confirmed',async({page})=>{
   await page.evaluate(()=>{
     window.cloudStatus={configured:false,enabled:false};window.CloudPanel.update(window.cloudStatus);
-    window.cloudResponses.login={configured:true,enabled:false,origin:'https://bridge.waken.cloudns.be:8787',account_id:'new-account',login:'new-user',gateway_id:'new-gateway',entitlement:{required:true,active:false,expires_at:null,server_time:new Date(window.cloudNow).toISOString()},runtime:{state:'disabled'},bindings:[]};
+    window.cloudResponses.login={configured:true,enabled:false,origin:'https://bridge.apijr.xyz',account_id:'new-account',login:'new-user',gateway_id:'new-gateway',entitlement:{required:true,active:false,expires_at:null,server_time:new Date(window.cloudNow).toISOString()},runtime:{state:'disabled'},bindings:[]};
   });
   await openLogin(page);
   await page.locator('[data-cloud-login]').fill('new-user');
@@ -658,7 +658,7 @@ test('login submits once to the selected server and closes only after the accoun
   await expect(page.locator('#cloud-login-dialog')).toBeHidden();
   await expect(page.locator('[data-cloud-identity]')).toContainText('new-user');
   await expect(page.locator('[data-cloud-identity]')).toContainText(chinese);
-  await expect(page.locator('#cloud-account')).not.toContainText('bridge.waken.cloudns.be');
+  await expect(page.locator('#cloud-account')).not.toContainText('bridge.apijr.xyz');
   await language(page,'en');
   await expect(page.locator('[data-cloud-identity]')).toHaveText('Official Cloud / new-user / Gateway ID: new-gateway');
   await language(page,'zh');
@@ -666,11 +666,44 @@ test('login submits once to the selected server and closes only after the accoun
   await expect(page.locator('[data-cloud-password]')).toHaveValue('');
   await expect(page.locator('[data-cloud-action="pairing"]')).toHaveCount(0);
   expect(await page.evaluate(()=>window.cloudCalls)).toEqual([
-    {action:'login',origin:'https://bridge.waken.cloudns.be:8787',login:'new-user',password:'synthetic-test-password'},
+    {action:'login',origin:'https://bridge.apijr.xyz',login:'new-user',password:'synthetic-test-password'},
     {action:'status'}
   ]);
   expect(await page.evaluate(()=>window.settingsSubmissions)).toBe(0);
   expect(await page.evaluate(()=>window.cloudStatus.enabled)).toBe(false);
+});
+
+test('a retired official account uses the standard logout and sign-in controls',async({page})=>{
+  await page.evaluate(()=>{
+    window.cloudStatus={...window.cloudOriginalAccount,origin:'https://bridge.waken.cloudns.be:8787'};
+    window.cloudResponses.login={...window.cloudOriginalAccount,origin:'https://bridge.apijr.xyz',gateway_id:'new-gateway',bindings:[]};
+    window.cloudResponses.logout={remote_logout_confirmed:false,logout_error:'network_or_certificate_error'};
+    window.CloudPanel.update(window.cloudStatus);
+  });
+  const entry=page.locator('[data-cloud-open-login]'),modal=page.locator('#cloud-login-dialog');
+  await expect(entry).toBeHidden();
+  await expect(page.getByRole('button',{name:'重新登录',exact:true})).toHaveCount(0);
+  await expect(page.locator('[data-cloud-account]')).toBeVisible();
+  expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([]);
+  await language(page,'en');
+  await page.locator('[data-cloud-action="logout"]').click();
+  await expect(page.locator('[data-cloud-result]')).toContainText('Signed out locally.');
+  await expect(entry).toHaveText('Sign In to Cloud');
+  await entry.click();
+  await expect(page.locator('[data-cloud-server]')).toHaveValue('official');
+  await expect(page.locator('[data-cloud-server]')).toBeEnabled();
+  await expect(page.locator('[data-cloud-login]')).toHaveValue('original-user');
+  await page.locator('[data-cloud-password]').fill('synthetic-test-password');
+  await page.locator('[data-cloud-password]').press('Enter');
+  await expect(modal).toBeHidden();
+  await expect(page.locator('[data-cloud-identity]')).toHaveText('Official Cloud / original-user / Gateway ID: new-gateway');
+  await expect(page.locator('[data-cloud-web-allow]')).not.toBeChecked();
+  expect(await page.evaluate(()=>window.cloudAllCalls)).toEqual([
+    {action:'logout'},
+    {action:'login',origin:'https://bridge.apijr.xyz',login:'original-user',password:'synthetic-test-password'},
+    {action:'status'}
+  ]);
+  expect(await page.evaluate(()=>window.settingsSubmissions)).toBe(0);
 });
 
 test('pending login blocks dismissal and server changes without replaying an unknown write',async({page})=>{
@@ -811,7 +844,7 @@ test('registration verifies the email before displaying passwords or creating an
   await expect(page.locator('[data-cloud-email-code]')).toBeFocused();
   await expect(page.locator('[data-cloud-login]')).toHaveJSProperty('readOnly',false);
   await expect(page.locator('[data-cloud-resend-code]')).toBeDisabled();
-  expect(await page.evaluate(()=>window.cloudCalls)).toEqual([{action:'signup-code',origin:'https://bridge.waken.cloudns.be:8787',login:'signup@example.test'}]);
+  expect(await page.evaluate(()=>window.cloudCalls)).toEqual([{action:'signup-code',origin:'https://bridge.apijr.xyz',login:'signup@example.test'}]);
   await page.locator('[data-cloud-email-code]').fill('012345');
   await page.locator('[data-cloud-email-code]').press('Enter');
   await expect(page.locator('#cloud-login-dialog')).toHaveAttribute('data-view','password');
@@ -839,9 +872,9 @@ test('registration verifies the email before displaying passwords or creating an
   await expect(page.locator('[data-cloud-password]')).toHaveValue('');
   await expect(page.locator('[data-cloud-password-confirm]')).toHaveValue('');
   expect(await page.evaluate(()=>window.cloudCalls)).toEqual([
-    {action:'signup-code',origin:'https://bridge.waken.cloudns.be:8787',login:'signup@example.test'},
-    {action:'signup-verify',origin:'https://bridge.waken.cloudns.be:8787',login:'signup@example.test',verification_code:'012345'},
-    {action:'register',origin:'https://bridge.waken.cloudns.be:8787',login:'signup@example.test',registration_token:'t'.repeat(43),password:'synthetic-password'}
+    {action:'signup-code',origin:'https://bridge.apijr.xyz',login:'signup@example.test'},
+    {action:'signup-verify',origin:'https://bridge.apijr.xyz',login:'signup@example.test',verification_code:'012345'},
+    {action:'register',origin:'https://bridge.apijr.xyz',login:'signup@example.test',registration_token:'t'.repeat(43),password:'synthetic-password'}
   ]);
   expect(await page.evaluate(()=>window.cloudStatus.configured)).toBe(false);
   expect(await page.evaluate(()=>window.settingsSubmissions)).toBe(0);
@@ -952,7 +985,7 @@ test('changing the server or closing registration discards the email code withou
   await page.locator('[data-cloud-server]').selectOption('official');
   await expect(page.locator('#cloud-login-dialog')).toHaveAttribute('data-view','register');
   await expect(page.locator('[data-cloud-email-code]')).toHaveValue('');
-  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.waken.cloudns.be');
+  await expect(page.locator('#cloud-login-dialog')).not.toContainText('bridge.apijr.xyz');
   await authView(page,'register');
   await page.locator('[data-cloud-email-code]').fill('654321');
   await closeLogin(page);

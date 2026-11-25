@@ -8,9 +8,11 @@ Status: implemented
 
 ## Decision
 
-面板通过 `Sign In to Cloud` 打开原生 modal。官方服务为首项，新配置默认选择 `https://bridge.waken.cloudns.be:8787`，已有自建 origin 优先；选择自建才显示可编辑 HTTPS 地址。官方 hostname/端口只在内部使用，界面显示名称。
+面板通过 `Sign In to Cloud` 打开原生 modal。官方服务为首项，新配置默认选择 `https://bridge.apijr.xyz`，已有自建 origin 优先；选择自建才显示可编辑 HTTPS 地址。官方 hostname 只在内部使用，界面显示名称。
 
 打开、换服或换语言不调用云 API。有效 origin 改变时清除未发密码，保留其他草稿、已保存作用域、公钥和授权。独立 form 使 Enter 只提交一次登录；按钮、Escape、背景关闭都会清密码，等待操作禁止换服和关闭，未知响应不重试。登录回执与当前账号一致才关闭对话框，业务授权与服务资格仍分别判断。静态和动态文案使用共享词典，TLS、精确 origin 和 IPC 白名单不改变。
+
+[标准登录流程](../simplification/2026-11-25-desktop-cloud-standard-signin.md)在已登录时隐藏本表单入口，不为旧官方地址增加专用入口。
 
 [网关默认名称](../bug-fix/2026-11-14-cloud-gateway-hostname.md)使未提供可选 name 的登录登记采用本机 hostname，避免多台电脑都叫 Desktop；显式名称、原网关身份及本篇的登录边界继续保留。
 

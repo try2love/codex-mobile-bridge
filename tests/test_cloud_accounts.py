@@ -467,6 +467,51 @@ class CloudAccountsTests(unittest.TestCase):
                 self.assertEqual(self.controller.secret()['control_private'], self.secret['control_private'])
                 self.assertFalse((self.directory / 'cloud-bindings.json').exists())
 
+    def test_login_on_new_origin_does_not_reuse_old_credentials_or_permissions(self):
+        self.controller.control(self.web_change(True))
+        old_scope = scope(self.config['origin'], self.config['account_id'])
+        bindings = {old_scope: {str(uuid.uuid4()): {'gateway_id': self.config['gateway_id']}}}
+        bindings_path = self.directory / 'cloud-bindings.json'
+        write_json(bindings_path, bindings)
+        self.assertTrue(self.controller.status()['bindings'])
+        origin = 'https://new-cloud.example.test'
+
+        def request(server, path, method='GET', value=None, token=''):
+            self.assertEqual(server, origin)
+            if path == '/v1/capabilities':
+                self.assertEqual(token, '')
+                return {}
+            if path == '/v1/auth/login':
+                self.assertEqual(token, '')
+                self.assertEqual(value, {'login': self.config['login'], 'password': 'synthetic-password'})
+                return {'account': {'id': self.config['account_id'], 'login': self.config['login']},
+                        'access_token': 'new-access', 'refresh_token': 'new-refresh', 'expires_in': 600}
+            self.assertEqual(token, 'new-access')
+            if path == '/v1/gateways/enroll':
+                self.assertNotEqual(value['id'], self.config['gateway_id'])
+                return {'account_id': self.config['account_id'], 'control_public_key': value['control_public_key'],
+                        'device_token': 'new-device'}
+            self.assertEqual(path, '/v1/account/entitlement')
+            return self.entitlement()
+
+        self.controller.request = Mock(side_effect=request)
+        result = self.controller.control({'action': 'login', 'origin': origin, 'login': self.config['login'],
+                                          'password': 'synthetic-password'})
+        self.assertEqual([item.args[1] for item in self.controller.request.call_args_list],
+                         ['/v1/capabilities', '/v1/auth/login', '/v1/gateways/enroll', '/v1/account/entitlement'])
+        self.assertEqual(result['origin'], origin)
+        self.assertEqual(result['account_id'], self.config['account_id'])
+        self.assertTrue(result['entitlement']['active'])
+        self.assertEqual(result['bindings'], [])
+        self.assertFalse(result['web_access']['allowed'])
+        secret = self.controller.secret()
+        self.assertEqual(secret['device_token'], 'new-device')
+        self.assertNotEqual(secret['control_private'], self.secret['control_private'])
+        self.assertNotEqual(secret['preview_private'], self.secret['preview_private'])
+        self.assertEqual(self.controller.secret(self.config), self.secret)
+        self.assertTrue(self.controller.web_access_state(self.config)['allowed'])
+        self.assertEqual(read_json(bindings_path, {}), bindings)
+
     def test_gateway_default_name_is_the_local_hostname_with_bounded_utf8(self):
         for hostname in ['OFFICE-PC', 'Studio-Mac.local', 'build-host', '\u5de5\u4f5c\u7535\u8111' * 20, '  office\n\x00 ']:
             with self.subTest(hostname=hostname), patch('bridge.features.network.cloud_account.socket.gethostname', return_value=hostname):

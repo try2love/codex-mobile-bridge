@@ -86,6 +86,73 @@ function fixture(){
 
 async function signedIn(ui,value=account){ui.update(value);await ui.flush();ui.calls.length=0;}
 
+const retiredAccount={...account,origin:'https://bridge.waken.cloudns.be:8787'};
+const officialAccount={...account,origin:'https://bridge.apijr.xyz',gateway_id:'gateway-official'};
+
+function submitLogin(ui){
+  ui.node('login').value=officialAccount.login;
+  ui.node('password').value='synthetic-password';
+  ui.node('login-form').onsubmit({preventDefault(){},stopPropagation(){}});
+  return ui.flush();
+}
+
+test('a retired account uses the standard logout and sign-in controls even when remote logout is unconfirmed',async()=>{
+  const ui=fixture();ui.language('en');
+  await signedIn(ui,retiredAccount);
+  assert.equal(ui.node('account').hidden,false);
+  assert.equal(ui.node('open-login').hidden,true);
+  assert.equal(ui.node('retired-logout'),null);
+  ui.node('open-login').onclick();
+  assert.equal(ui.dialog().open,false);
+  assert.deepEqual(ui.calls,[]);
+  assert.equal(ui.respond({action:'status'}).origin,retiredAccount.origin);
+
+  ui.responses.logout={remote_logout_confirmed:false,logout_error:'network_or_certificate_error'};
+  await ui.action('logout');
+  assert.deepEqual(ui.calls,[{action:'logout'}]);
+  assert.equal(ui.node('open-login').hidden,false);
+  assert.match(ui.node('result').textContent,/Signed out locally/);
+  ui.responses.login=officialAccount;
+  ui.node('open-login').onclick();
+  assert.equal(ui.node('server').value,'official');
+  assert.equal(ui.node('server').disabled,false);
+  assert.equal(ui.node('password').value,'');
+  await submitLogin(ui);
+  const login={action:'login',origin:officialAccount.origin,login:retiredAccount.login,password:'synthetic-password'};
+  assert.deepEqual(ui.calls,[{action:'logout'},login,{action:'status'}]);
+  assert.equal(ui.dialog().open,false);
+  assert.equal(ui.node('open-login').hidden,true);
+  assert.equal(ui.node('web-allow').checked,false);
+  assert.match(ui.node('identity').textContent,/Official Cloud/);
+});
+
+test('late login receipts and status reads cannot repaint a different selected account',async()=>{
+  for(const action of ['login','status']){
+    const ui=fixture();
+    let complete;
+    ui.setRequest(request=>request.action===action?new Promise(resolve=>complete=resolve):officialAccount);
+    ui.node('open-login').onclick();await submitLogin(ui);
+    assert.equal(typeof complete,'function');
+    ui.update({...account,login:'different-user'});
+    complete(officialAccount);await ui.flush();
+    assert.equal(ui.node('open-login').hidden,true);
+    assert.match(ui.node('identity').textContent,/different-user/);
+    assert.equal(ui.node('result').textContent,'');
+    assert.deepEqual(ui.calls.map(call=>call.action),action==='login'?['login']:['login','status']);
+  }
+});
+
+test('a sign-in receipt that disagrees with the current gateway is not accepted',async()=>{
+  const ui=fixture();ui.language('en');
+  ui.setRequest(request=>request.action==='login'?officialAccount:{...officialAccount,gateway_id:'different-gateway'});
+  ui.node('open-login').onclick();await submitLogin(ui);
+  assert.equal(ui.dialog().open,true);
+  assert.equal(ui.node('open-login').hidden,false);
+  assert.equal(ui.node('password').value,'');
+  assert.match(ui.node('login-result').textContent,/could not be confirmed/);
+  assert.deepEqual(ui.calls.map(call=>call.action),['login','status']);
+});
+
 test('cloud device presence uses the selected language for both states',async()=>{
   const ui=fixture();await signedIn(ui);
   ui.responses.devices={devices:[true,false].map(online=>({
@@ -154,8 +221,8 @@ test('web address rejects invalid server origins and only retries after an expli
     assert.equal(ui.node('web-address').value,'',origin);assert.equal(ui.node('web-address-field').hidden,true);
     assert.equal(ui.node('web-address-refresh').hidden,false);
     ui.language('en');ui.update(enabled);await ui.flush();assert.equal(ui.calls.length,1);
-    ui.responses.capabilities={web_client:{enabled:true,origin:'https://bridge.waken.cloudns.be:18787'}};
-    await ui.node('web-address-refresh').onclick();assert.equal(ui.node('web-address').value,'https://bridge.waken.cloudns.be:18787');
+    ui.responses.capabilities={web_client:{enabled:true,origin:'https://bridge.apijr.xyz'}};
+    await ui.node('web-address-refresh').onclick();assert.equal(ui.node('web-address').value,'https://bridge.apijr.xyz');
   }
 });
 

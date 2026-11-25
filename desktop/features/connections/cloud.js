@@ -1,7 +1,7 @@
 'use strict';
 
 (() => {
-  const officialOrigin='https://bridge.waken.cloudns.be:8787';
+  const officialOrigin='https://bridge.apijr.xyz';
   const api=window.bridgeDesktop,t=BridgeI18n.t,root=document.createElement('article'),dialog=document.createElement('dialog'),sponsorDialog=document.createElement('dialog');
   root.id='cloud-account';
   root.innerHTML=`<div class="section-head"><h2 data-i18n="Cloud Relay">Cloud Relay</h2><button type="button" class="primary" data-cloud-open-login data-i18n="Sign In to Cloud">Sign In to Cloud</button></div>
@@ -135,6 +135,7 @@
   const serviceMessages={
     login:'Cloud sign-in completed. Phones on this account appear automatically; allow connections on this desktop.',
     loginRefreshFailed:'Cloud sign-in completed, but service status could not be refreshed. Refresh the service status.',
+    loginUnconfirmed:'The cloud sign-in result could not be confirmed. Refresh status before trying again.',
     logout:'Signed out of the cloud account.',
     logoutRemoteUnconfirmed:'Signed out locally. Cloud session revocation could not be confirmed; direct connections are unchanged.',
     logoutCredentialsUncleared:'Signed out locally, but saved cloud credentials could not be cleared. Check the system credential vault.',
@@ -181,7 +182,7 @@
     if(accountScope()!==accountScope(value))resetDirectory();
     state=value;
     // A saved custom origin takes precedence until the user edits the address.
-    if(!originEdited){$('server').value=value.origin&&value.origin!==officialOrigin?'custom':'official';$('origin').value=value.origin&&value.origin!==officialOrigin?value.origin:'';draftOrigin=selectedOrigin();}
+    if(!originEdited){const custom=value.origin&&value.origin!==officialOrigin;$('server').value=custom?'custom':'official';$('origin').value=custom?value.origin:'';draftOrigin=selectedOrigin();}
     if(!dialog.open){
       if(!$('login').value)$('login').value=value.login||'';
     }
@@ -191,6 +192,7 @@
   // Language changes only repaint cached state; they never replay cloud operations.
   function render(){
     BridgeI18n.apply(root);BridgeI18n.apply(dialog);BridgeI18n.apply(sponsorDialog);
+    const value=state;
     const runtimeState=state.runtime?.state||'stopped';
     const runtimeText=state.enabled&&runtimeState==='stopped'?runtimeMessages.automatic:state.enabled&&runtimeState==='disabled'?runtimeMessages.connecting:Object.hasOwn(runtimeMessages,runtimeState)?runtimeMessages[runtimeState]:runtimeState;
     $('state').textContent=t(runtimeText)+(state.runtime?.code?' / '+codeText(state.runtime.code):'');
@@ -198,7 +200,6 @@
     $('server').disabled=busy;$('login').disabled=busy;
     const custom=$('server').value==='custom';
     $('custom-origin').hidden=!custom;$('origin').disabled=busy||!custom;
-    const value=state;
     $('sponsor').hidden=!value.configured||value.origin!==officialOrigin;
     if($('sponsor').hidden&&sponsorDialog.open)sponsorDialog.close();
     renderSponsorQR();
@@ -346,8 +347,9 @@
       if(authView!=='password'||!canRegister()){clearRegistration();authView='register';setResult(errors.invalid_registration_token,true);render();return;}
       if(!$('login-form').reportValidity())return;
     }
-    let signedIn=false,redeemed=false,refreshError='';
+    let confirmedLogin='',signedIn=false,redeemed=false,refreshError='';
     const expectedAccount=accountScope(),deleting=action==='delete-device';
+    const loginScopeIsCurrent=()=>accountScope()===expectedAccount||!!confirmedLogin&&accountScope()===confirmedLogin;
     if(action==='access'||deleting)directoryRevision++;
     const expectedDirectory=directoryRevision;
     if(action==='access'){
@@ -365,7 +367,18 @@
       if(['login','register'].includes(action)){payload.password=$('password').value;$('password').value='';$('password-confirm').value='';}
       if(action==='redeem'){payload.code=$('code').value.trim();$('code').value='';}
       const result=await api.cloud(payload);
-      if(expectedAccount&&action!=='login'&&expectedAccount!==accountScope()&&(action!=='logout'||state.configured))return;
+      if(action==='login'){
+        if(!result?.configured||result.origin!==origin||!result.account_id||!result.gateway_id)throw Error(serviceMessages.loginUnconfirmed);
+        confirmedLogin=accountScope(result);
+        if(!loginScopeIsCurrent())return;
+        const current=await api.cloud({action:'status'});
+        if(!loginScopeIsCurrent())return;
+        if(!current||accountScope(current)!==confirmedLogin)throw Error(serviceMessages.loginUnconfirmed);
+        update(current);signedIn=true;
+        refreshError=current.entitlement_error||'';
+        setResult(refreshError?serviceMessages.loginRefreshFailed:serviceMessages.login,!!refreshError);return;
+      }
+      if(expectedAccount&&expectedAccount!==accountScope()&&(action!=='logout'||state.configured))return;
       if(deleting){
         if(expectedDirectory!==directoryRevision)return;
         if(result?.deleted_binding_id!==extra.binding_id)throw Error(errors.device_delete_unconfirmed);
@@ -380,8 +393,6 @@
         if(result?.configured!==false)throw Error('The cloud sign-out result could not be confirmed. Refresh status before trying again.');
         completeLogout(result);return;
       }
-      if(action==='login'&&(!result.configured||result.origin!==origin||!result.account_id))throw Error('The cloud sign-in result could not be confirmed. Refresh status before trying again.');
-      if(action==='login'){signedIn=true;refreshError=result.entitlement_error||'';}
       if(action==='redeem'){
         if(result.redeemed!==true)throw Error('The redemption result could not be confirmed. Refresh service status before submitting again.');
         redeemed=true;refreshError=result.refresh_error||'';
@@ -407,17 +418,19 @@
       if(action==='register')authView='login';
       if(!['signup-code','signup-verify','register'].includes(action)){
         const current=await api.cloud({action:'status'});
-        if(expectedAccount&&action!=='login'&&expectedAccount!==accountScope(current)){update(current);return;}
+        if(expectedAccount&&expectedAccount!==accountScope(current)){update(current);return;}
         update(current);
       }
       if(action==='access'&&expectedAccount===accountScope()){
         const current=await api.cloud({action:'devices'});
         if(expectedAccount===accountScope()){devices=current.devices||[];directoryError='';}
       }
-      if(action==='login')signedIn=state.configured&&state.origin===origin&&state.account_id===result.account_id;
-      if(action==='login'&&!signedIn)throw Error('The cloud sign-in result could not be confirmed. Refresh status before trying again.');
-      setResult(action==='access'?refreshError?errors.device_access_unconfirmed:extra.allowed?'Connection allowed on this desktop.':'Connection disabled. Verified keys are kept for a later restore.':action==='signup-verify'?'':action==='register'?'Account created. Sign in to continue.':Object.hasOwn(completionMessages,action)?completionMessages[action]:action==='redeem'&&refreshError?serviceMessages.redeemRefreshFailed:action==='login'&&refreshError?serviceMessages.loginRefreshFailed:Object.hasOwn(serviceMessages,action)?serviceMessages[action]:'Done. If a write times out, refresh status; do not blindly replay it.',!!refreshError);
+      setResult(action==='access'?refreshError?errors.device_access_unconfirmed:extra.allowed?'Connection allowed on this desktop.':'Connection disabled. Verified keys are kept for a later restore.':action==='signup-verify'?'':action==='register'?'Account created. Sign in to continue.':Object.hasOwn(completionMessages,action)?completionMessages[action]:action==='redeem'&&refreshError?serviceMessages.redeemRefreshFailed:Object.hasOwn(serviceMessages,action)?serviceMessages[action]:'Done. If a write times out, refresh status; do not blindly replay it.',!!refreshError);
     }catch(error){
+      if(action==='login'){
+        if(loginScopeIsCurrent())setResult(confirmedLogin?serviceMessages.loginUnconfirmed:error.message,true);
+        return;
+      }
       if(deleting&&expectedDirectory!==directoryRevision)return;
       if(action==='register'){clearRegistration();authView='login';}
       if(action==='logout')try{
@@ -432,7 +445,7 @@
         try{const current=await api.cloud({action:'status'});if(expectedAccount===accountScope()&&expectedAccount===accountScope(current))update(current);}catch{}
         if(expectedAccount!==accountScope())return;
       }
-      setResult(action==='access'?/device_access_storage_error/.test(error.message)?errors.device_access_storage_error:errors.device_access_unconfirmed:redeemed?serviceMessages.redeemRefreshFailed:signedIn?serviceMessages.loginRefreshFailed:action==='register'&&/network_or_certificate_error/.test(error.message)?'The registration result could not be confirmed. Try signing in or resetting your password before registering again.':error.message,true);
+      setResult(action==='access'?/device_access_storage_error/.test(error.message)?errors.device_access_storage_error:errors.device_access_unconfirmed:redeemed?serviceMessages.redeemRefreshFailed:action==='register'&&/network_or_certificate_error/.test(error.message)?'The registration result could not be confirmed. Try signing in or resetting your password before registering again.':error.message,true);
     }
     finally{busy=false;render();if(signedIn&&dialog.open)dialog.close();else if(dialog.open&&['register','signup-code','signup-verify'].includes(action))$(authView==='password'?'password':authView==='register'?'email-code':'login').focus();}
   }
@@ -507,7 +520,7 @@
   $('close-login').onclick=()=>{if(!busy)dialog.close();};
   $('restart-registration').onclick=()=>showView('register');
   dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
-  dialog.addEventListener('close',()=>{clearRegistration();if(!$('open-login').hidden&&!$('open-login').disabled)$('open-login').focus();});
+  dialog.addEventListener('close',()=>{if(dialog.open)return;clearRegistration();if(!$('open-login').hidden&&!$('open-login').disabled)$('open-login').focus();});
   $('login').addEventListener('input',()=>{if(busy)return;clearRegistration();if(authView==='password')authView='register';setResult('');renderAuth();});
   $('email-code').addEventListener('input',renderAuth);
   $('password').addEventListener('input',renderAuth);$('password-confirm').addEventListener('input',renderAuth);

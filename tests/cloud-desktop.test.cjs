@@ -86,13 +86,13 @@ test('registration sends no password until a scoped email proof is provided',()=
   assert.throws(()=>validateCloud({...verify,verification_code:'12345a'}));
 });
 
-test('official cloud preset is an exact HTTPS origin with its explicit service port',()=>{
+test('official cloud preset is an exact HTTPS origin on the default port',()=>{
   const fs=require('node:fs'),path=require('node:path');
   const source=fs.readFileSync(path.join(__dirname,'../desktop/features/connections/cloud.js'),'utf8');
   const origin=source.match(/const officialOrigin='([^']+)'/)[1];
-  assert.equal(origin,'https://bridge.waken.cloudns.be:8787');
+  assert.equal(origin,'https://bridge.apijr.xyz');
   assert.deepEqual(validateCloud({action:'capabilities',origin}),{action:'capabilities',origin});
-  assert.throws(()=>validateCloud({action:'capabilities',origin:'http://bridge.waken.cloudns.be:8787'}));
+  assert.throws(()=>validateCloud({action:'capabilities',origin:'http://bridge.apijr.xyz'}));
 });
 
 test('entitlement refresh participates in the application update write guard',()=>{

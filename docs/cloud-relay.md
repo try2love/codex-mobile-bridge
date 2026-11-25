@@ -33,7 +33,7 @@ point, not a claim that the gateway is connected or the account is entitled.
 
 1. Click **Sign In to Cloud** to open the login dialog. **Official Cloud** is
    the first server option and the default for a new account, using
-   `https://bridge.waken.cloudns.be:8787`. Select **Custom Server** to enter a
+   `https://bridge.apijr.xyz`. Select **Custom Server** to enter a
    self-hosted exact canonical HTTPS origin, without a path, query, fragment,
    credentials, or explicit default `:443` port. Existing custom origins remain
    selected for an already configured account. Opening the dialog or changing
@@ -123,6 +123,15 @@ Server migration `007_explicit_pairing.sql` retires only unapproved legacy rows;
 existing approved keys, accounts and app data do not need a reset. Closing the
 existing access switch is reversible. A permanent revocation is different: the old
 binding never regains authority, and its connections and queued notifications stop.
+
+If the desktop is still signed in to the retired Official Cloud origin, use
+**Log Out** under **Network access → Cloud Relay**, then **Sign In to Cloud**
+with **Official Cloud** selected. Local sign-out works even when the retired
+server is offline. Use the same account at `https://bridge.apijr.xyz`; if already
+signed in there, no action is needed. On the updated phone app, sign in to
+**Official Cloud**, scan the new desktop QR and approve it. Credentials, phone
+permissions, and web access grants do not cross origins. Account days and local
+files stay in place. Unchanged self-hosted origins do not require re-pairing.
 
 The cloud API verifies TLS and does not follow redirects. Similar hosts, another
 account or a changed origin cannot reuse stored credentials or local approval.
