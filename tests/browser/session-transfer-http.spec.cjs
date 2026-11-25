@@ -18,6 +18,23 @@ const syncResponse=(page,mode)=>page.waitForResponse(response=>{
   return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')===mode;
 });
 
+async function readCommittedSession(page,provider,id){
+  return page.evaluate(async({provider,id})=>{
+    const cache=BridgeChatSyncCache,scope=cache.scope(provider,'local',id);
+    await cache.disk.open();
+    const recent=await cache.read(scope,'recent',{}),process=[];
+    for(const manifest of await cache.disk.list('page',scope)){
+      const [mode,...pairs]=JSON.parse(manifest.key);
+      if(mode==='process'){
+        const saved=await cache.read(scope,mode,Object.fromEntries(pairs));
+        if(!saved)throw Error('Committed process cache is unavailable');
+        process.push(...saved.rows);
+      }
+    }
+    return {recent:recent?.rows||[],process:[...new Map(process.map(row=>[row.key,row])).values()]};
+  },{provider,id});
+}
+
 test('an Android foreground chat recovers a changed process cursor without reloading the page',async({page,context})=>{
   const root=path.resolve(__dirname,'../..');
   const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
@@ -274,9 +291,15 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
 
       await longBody();
       const coldBytes=await mappedBytes(pages);
+      // Zero retransmission applies to committed records. Rendering is allowed
+      // to finish before the independent persistence lane.
+      await page.evaluate(async()=>{await Promise.all(BridgeChatSyncCache.pending.values());});
       await page.goto(origin+'/?round=warm');
       await selectProvider();
       await expect(entry).toBeVisible();
+      const saved=await readCommittedSession(page,provider,await entry.getAttribute('data-id'));
+      expect(saved.recent.some(row=>row.text==='Answer 89')).toBe(true);
+      expect(saved.process).toHaveLength(24);
       pages.length=0;
       const watchReply=syncResponse(page,'watch');
       const warm=await recent();
@@ -452,6 +475,8 @@ test('the foreground session watches external rollout turns without watching oth
     const epoch=await page.evaluate(()=>BridgeChatSyncCache.epoch);
     await page.goto(origin+'/?phase=watch-reload');
     await page.waitForFunction(()=>!!window.BridgeChatSyncCache);
+    const saved=await readCommittedSession(page,'codex',other);
+    expect(saved.recent.some(row=>row.text==='Other session answer')).toBe(true);
     expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch);
     let release;
     const hold=new Promise(resolve=>{release=resolve;});
@@ -475,7 +500,10 @@ test('the foreground session watches external rollout turns without watching oth
       await page.unroute(recent);
     }
     await page.evaluate(()=>window.dispatchEvent(new Event('offline')));
-    expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch+1);
+    // The cache invalidates offline access and the hot reader starts a separate
+    // validation generation before retaining the current screen.
+    expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch+2);
+    expect(await page.evaluate(()=>OfflineChatReader.enabled)).toBe(true);
 
     await info.attach('external-write-to-readable-ms',{contentType:'application/json',body:JSON.stringify(samples)});
   }finally{
@@ -556,6 +584,9 @@ test('a reopened running turn reuses 100 cached steps and automatically reads ac
     let offset=payloads.length;
     await append(appendSteps(101,120));
     await page.goto(origin+'/?process=reopen');
+    await page.waitForFunction(()=>!!window.BridgeChatSyncCache?.owner);
+    const saved=await readCommittedSession(page,'codex',transferId);
+    expect(saved.process.filter(row=>/^Step \d{3}$/.test(row.text||''))).toHaveLength(100);
     await open('Transfer HTTP fixture');
     await expect(contents).toHaveText(steps(1,120));
     const onePage=await Promise.all(payloads.slice(offset));
