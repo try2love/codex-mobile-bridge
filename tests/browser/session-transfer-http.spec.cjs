@@ -548,9 +548,10 @@ test('the foreground session watches external rollout turns without watching oth
     await append(source.other,event('task_complete','paused'));
     await expect(page.locator('#status')).toHaveText('已连接');
     await expect.poll(()=>page.evaluate(()=>Boolean(chatTimeline.sync?.watch&&!chatTimeline.sync.watch.signal.aborted))).toBe(true);
+    await page.evaluate(async()=>{await BridgeChatSyncCache.pending.get(chatTimeline.syncTarget.scope);});
     const epoch=await page.evaluate(()=>BridgeChatSyncCache.epoch);
     await page.goto(origin+'/?phase=watch-reload');
-    await page.waitForFunction(()=>!!window.BridgeChatSyncCache);
+    await page.waitForFunction(()=>!!window.BridgeChatSyncCache?.owner);
     const saved=await readCommittedSession(page,'codex',other);
     expect(saved.recent.some(row=>row.text==='Other session answer')).toBe(true);
     expect(await page.evaluate(()=>BridgeChatSyncCache.epoch)).toBe(epoch);
