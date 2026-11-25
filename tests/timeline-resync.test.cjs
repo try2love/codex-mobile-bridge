@@ -40,6 +40,14 @@ test('opening process disclosure drains every page and closing cancels further r
  sync.disclosure('turn',true);await new Promise(setImmediate);
  assert.equal(calls.length,1);
 });
+test('a visible running process drains its older pages without waiting for a disclosure click',async()=>{
+ const {ChatTimelineSync}=syncProjection(),calls=[];
+ const group={cursor:'process',version:'v1',rows:[],turnId:'turn'};
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{abort:new AbortController(),target:{},host:{},files:new Map(),turns:new Map([['turn',{status:'inProgress'}]]),processes:new Map([['process',group]]),active:()=>true,paint(){},
+  read:async(_mode,query)=>{calls.push(query);return query.after==='latest'?{rows:[{key:'recent',order:2}],previous:'recent',next:null}:{rows:[{key:'earlier',order:1}],previous:null,next:'recent'};}});
+ sync.refreshRunning();await new Promise(setImmediate);
+ assert.equal(group.open,true);assert.equal(calls.length,2);assert.deepEqual(Array.from(group.rows,row=>row.key),['earlier','recent']);assert.equal(group.previous,null);
+});
 
 test('native range order updates older rows without crossing the current turn',()=>{
  const {mergeChatSyncRows:merge}=syncProjection();

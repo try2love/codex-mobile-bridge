@@ -202,9 +202,10 @@ class ChatTimelineSync {
       const group=this.processes.get(row.key);
       if(!group)continue;
       const marker={...row,role:'activity',kind:'syncProcessPage',id:undefined,processKey:row.key};
-      append({...marker,key:'process-earlier:'+row.key,pageDirection:'earlier',pageVisible:!!group.previous});
+      const filling=group.open&&!group.error&&(group.loading||group.filling)&&!!(group.previous||group.next);
+      append({...marker,key:'process-earlier:'+row.key,pageDirection:'earlier',pageVisible:!!group.previous&&!filling});
       for(const step of group.rows)append(step);
-      append({...marker,key:'process-later:'+row.key,pageDirection:'later',pageVisible:!!group.next||!!group.error,pageError:!!group.error});
+      append({...marker,key:'process-later:'+row.key,pageDirection:'later',pageVisible:!!group.next||!!group.error||!!filling,pageError:!!group.error,pageLoading:!!filling});
     }
     return rows;
   }
@@ -214,6 +215,7 @@ class ChatTimelineSync {
   refreshRunning(){
     for(const [key,group] of this.processes){
       const turn=this.turns.get(group.turnId),status=turn?.completionKnown===false&&turn.status==='completed'?undefined:turn?.status;
+      if(status==='inProgress')group.open=true;
       if((status==='inProgress'||chatTurnStopped(status)&&group.runningWindow)&&group.loadedVersion!==group.version){
         this.readProcess(key,'recent',this.target.offline?'manual':'live');
       }else if(status!=='inProgress'&&!group.loadedVersion&&(status!=='completed'||!this.rows.some(row=>

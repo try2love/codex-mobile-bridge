@@ -154,13 +154,15 @@ class Timeline:
                 timestamp = message.get('timestamp')
                 if timestamp is None and first_user:
                     timestamp = turn.get('startedAt')
-                if timestamp is not None and message['role'] in ('user', 'assistant'):
+                if timestamp is not None:
                     row['timestamp'] = timestamp
+                if message['role'] == 'user':
+                    row['originalQuestion'] = first_user
                 if message.get('fileSummary'):
                     row['fileSummary'] = message['fileSummary']
                     row['text'] = ''
                     row['truncated'] = False
-                if assistant_output(message):
+                if assistant_output(message) or process_row(message) or message['role'] == 'user' and not first_user:
                     recorded = turn.get('_recordedReplyLabel', turn)
                     label = message if message.get('model') else recorded
                     model = label.get('model')
@@ -252,7 +254,8 @@ class Timeline:
             self.process_groups[key].append(row)
         for row in self.conversation_rows:
             if row.get('processCursor'):
-                entries = [(r['key'], r['version'], r.get('status'), r.get('title'), r.get('toolName'))
+                entries = [(r['key'], r['version'], r.get('status'), r.get('title'), r.get('toolName'),
+                            r.get('timestamp'), r.get('model'), r.get('effort'))
                            for r in self.process_groups[row['key']]]
                 row['version'] = hashlib.sha256(encoded(entries)).hexdigest()[:24]
         self.conversation_positions = {row['key']: i for i, row in enumerate(self.conversation_rows)}
@@ -373,7 +376,7 @@ class Timeline:
         candidates = reversed(rows[max(0, end - limit):end]) if backward else rows[start:start + limit]
         selected, size = [], 0
         for row in candidates:
-            entry = {field: row[field] for field in ('key', 'version', 'role', 'kind', 'title', 'toolName', 'status', 'turnId', 'turnStatus', 'timestamp', 'interaction') if field in row}
+            entry = {field: row[field] for field in ('key', 'version', 'role', 'kind', 'title', 'toolName', 'status', 'turnId', 'turnStatus', 'timestamp', 'interaction', 'phase', 'originalQuestion', 'model', 'effort', 'turnStartedAt', 'turnCompletedAt', 'turnCompletionKnown') if field in row}
             entry['detailCursor'] = self.cursor(row['key'])
             key = row['key']
             entry['hasDetail'] = bool(self.details.get(key) or key in self.detail_sources or row.get('attachments'))

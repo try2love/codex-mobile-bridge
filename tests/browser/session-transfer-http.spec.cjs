@@ -55,6 +55,43 @@ test('an Android foreground chat recovers a changed process cursor without reloa
   }finally{lines.close();server.kill();}
 });
 
+test('process metadata remains visible and native read-only status stays below chat tabs',async({page,context},info)=>{
+  const root=path.resolve(__dirname,'../..');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  try{
+    const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);});
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    await page.addInitScript(()=>{
+      Object.defineProperty(navigator,'userAgent',{value:navigator.userAgent+' BridgeMobile/0.1-Android'});
+      window.CodexBridgeNativeOffline={request:async event=>{
+        if(event.type==='list')return {sessions:[{id:JSON.stringify(['codex','local',currentId]),title:'Saved fixture',syncedAt:1700000000000}]};
+        if(event.type==='session')return {recordPage:1,id:event.sessionId,rows:[],turns:[],hasMore:false,syncedAt:1700000000000};
+        return {recordPages:1,foreground:true,clearRevision:'0',turns:[]};
+      }};
+    });
+    await page.goto(origin);await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+    await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).click();await expect(page.locator('#messages')).toContainText('Answer 89');
+    await page.evaluate(()=>{
+      const rows=[{role:'assistant',phase:'commentary'},{role:'user',interaction:'steer',originalQuestion:false},{role:'reasoning',kind:'reasoning'},{role:'activity',kind:'commandExecution'}];
+      const holder=document.createElement('div');holder.id='metadata-fixture';
+      for(const [index,row] of rows.entries())holder.append(chatTimeline.renderRow({...row,key:'metadata-'+index,model:'recorded-model',effort:'high',timestamp:1700000000000,text:'Intermediate '+index,turnStatus:'completed'}));
+      document.getElementById('messages').append(holder);
+    });
+    const metadata=page.locator('#metadata-fixture .chat-process-meta');await expect(metadata).toHaveCount(4);
+    for(const item of await metadata.all()){
+      await expect(item).toBeVisible();await expect(item).toContainText('recorded-model · high');await expect(item.locator('time')).toHaveAttribute('datetime',new Date(1700000000000).toISOString());
+    }
+    await page.evaluate(()=>window.dispatchEvent(new Event('offline')));
+    const notice=page.locator('#notice');await expect(notice).toContainText('只读');await expect(notice).toHaveClass(/offline-readonly-notice/);
+    await expect(page.locator('#composer #notice')).toHaveCount(0);await expect(page.locator('#composer')).toBeVisible();await expect(page.locator('#message')).toHaveCSS('visibility','visible');
+    const bounds=await page.evaluate(()=>({tabs:document.getElementById('timeline').closest('.wb-layout').previousElementSibling.getBoundingClientRect().bottom,
+      notice:document.getElementById('notice').getBoundingClientRect().toJSON(),timeline:document.getElementById('timeline').getBoundingClientRect().top}));
+    expect(bounds.notice.y).toBeGreaterThanOrEqual(bounds.tabs-1);expect(bounds.notice.bottom).toBeLessThanOrEqual(bounds.timeline+1);
+    const screenshot=info.outputPath('readonly-banner.png');await page.screenshot({path:screenshot});await info.attach('readonly-banner',{path:screenshot,contentType:'image/png'});
+  }finally{lines.close();server.kill();}
+});
+
 test('opening a native chat with an earlier cache cleanup loads without returning to latest',async({page,context},info)=>{
   const root=path.resolve(__dirname,'../..');
   const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
@@ -437,7 +474,7 @@ test('the foreground session watches external rollout turns without watching oth
   }
 });
 
-test('a reopened running turn reuses exactly 100 cached steps and reads across a larger gap on demand',async({page,context},info)=>{
+test('a reopened running turn reuses 100 cached steps and automatically reads across a larger gap',async({page,context},info)=>{
   const root=path.resolve(__dirname,'../..'),{appendFile}=require('node:fs/promises');
   const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py','--live-watch'],{cwd:root});
   const lines=createInterface({input:server.stdout}),payloads=[];
@@ -475,19 +512,13 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     };
     const messages=page.locator('#messages');
     const contents=messages.locator('.message-body').filter({hasText:/^Step \d{3}$/});
-    const earlier=messages.getByRole('button',{name:'加载更早过程'}).last();
-    const older=async(first,last)=>{
-      await earlier.click();
-      await expect(contents).toHaveText(steps(first,last));
-    };
     await open('Transfer HTTP fixture');
-    await expect(contents).toHaveText(steps(81,100));
+    await expect(contents).toHaveText(steps(1,100));
     const contextBadge=page.locator('#composer .context-usage');
     await expect(contextBadge).toHaveAttribute('aria-label',/25%$/);
     await append([usage(768)]);
     await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
     await expect(messages.locator('.sync-process')).toHaveCount(0);
-    await older(1,100);
     // Read the actual IndexedDB records, not merely the rendered rows.
     const diskCount=await page.evaluate(async()=>{
       const {scope}=chatTimeline.syncTarget,cache=BridgeChatSyncCache;
@@ -522,8 +553,7 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     offset=payloads.length;
     await append(appendSteps(121,165));
     await open('Transfer HTTP fixture');
-    await expect(contents).toHaveText(steps(146,165));
-    await older(1,165);
+    await expect(contents).toHaveText(steps(1,165));
     const acrossGap=(await Promise.all(payloads.slice(offset))).flatMap(({mode,body})=>mode==='body'?[body.text]:body.rows.map(row=>row.text));
     expect([...acrossGap].sort()).toEqual(steps(121,165));
 
@@ -535,8 +565,8 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     await expect.poll(()=>page.evaluate(()=>chatTimeline.following)).toBe(false);
     const y=await anchor.evaluate(node=>node.getBoundingClientRect().top);
     const finalText='Final answer after the process';
-    const pendingLabel='用时 1 小时 3 分钟 17 秒',doneLabel='已完成，用时 1 小时 3 分钟 19 秒';
-    await page.evaluate(({finalText,pendingLabel})=>{
+    const doneLabel='已完成，用时 1 小时 3 分钟 19 秒';
+    await page.evaluate(({finalText})=>{
       const messages=document.getElementById('messages');
       window.firstAnswerFrame=null;
       const observer=new MutationObserver(()=>{
@@ -544,21 +574,21 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
         observer.disconnect();
         requestAnimationFrame(()=>{
           const answer=[...messages.querySelectorAll('.message.assistant')].find(node=>node.textContent.includes(finalText));
-          const samples=[...messages.querySelectorAll('.chat-turn-completion')].filter(node=>node.getAttribute('aria-label')===pendingLabel);
+          const samples=[...messages.querySelectorAll('.chat-turn-completion')].filter(node=>/^用时 /.test(node.getAttribute('aria-label')||''));
           const control=samples[0],firstStep=control?.nextElementSibling;
-          window.firstAnswerFrame={label:control?.getAttribute('aria-label'),count:samples.length,
+          window.firstAnswerFrame={running:control?.__chatTurn?.status==='inProgress',count:samples.length,
             beforeSteps:firstStep?.classList.contains('chat-process-page')&&firstStep.dataset.key.startsWith('process-earlier:'),
             clickable:!!answer&&!!control&&!control.disabled};
           window.answerDurationControl=control;
         });
       });
       observer.observe(messages,{childList:true,subtree:true,characterData:true});
-    },{finalText,pendingLabel});
+    },{finalText});
     await append([message('assistant',finalText,'final_answer',3797000)]);
     const final=page.locator('#messages .message-body').getByText(finalText,{exact:true});
     await expect(final).toHaveCount(1);
-    await expect.poll(()=>page.evaluate(()=>window.firstAnswerFrame)).toEqual({label:pendingLabel,count:1,beforeSteps:true,clickable:true});
-    const control=page.getByRole('button',{name:pendingLabel,exact:true});
+    await expect.poll(()=>page.evaluate(()=>window.firstAnswerFrame)).toEqual({running:true,count:1,beforeSteps:true,clickable:true});
+    const control=page.getByRole('button',{name:/^用时 /});
     await expect(control).toBeEnabled();
     await expect(contents.last()).toBeVisible();
     await expect(page.locator('#status')).toHaveText('运行中');
@@ -611,7 +641,7 @@ test('a reopened running turn reuses exactly 100 cached steps and reads across a
     await expect(followContents).toHaveText(followSteps);
     await expect(page.getByRole('button',{name:'回到本轮输入'})).toHaveCount(0);
     await append([message('assistant','Final while following','final_answer',3807000)]);
-    const followLabel=page.getByRole('button',{name:'用时 7 秒',exact:true});
+    const followLabel=page.getByRole('button',{name:/^用时 /});
     await expect(followLabel).toBeInViewport();
     await expect(messages.getByText('Final while following',{exact:true})).toBeInViewport();
     const firstAnswerImage=info.outputPath('22bce-first-answer.png');

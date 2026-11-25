@@ -75,12 +75,12 @@ class TimelineSyncTests(unittest.TestCase):
         old_group, = old.process_groups
         old_process = sync.process(old, key=old_group)
         messages[0].update(model='recorded-first', effort='max')
-        messages[1].update(model='recorded-note', effort='low')
+        messages[1].update(model='recorded-note', effort='low', timestamp=1700000000000)
         messages[2].update(model='recorded-next', effort='off')
         current = projection(DesktopSessions._history_turns(messages, session))
         known = {row['key']: row['version'] for row in old_page['index']}
         page = sync.page(current, 'recent', known=known, ifVersion=old_page['version'])
-        self.assertEqual(page['rows'], [])
+        self.assertTrue(all(row.get('kind') == 'processPage' for row in page['rows']))
         self.assertFalse(page['notModified'])
         self.assertEqual([(row['model'], row['effort']) for row in page['index'] if row['role'] == 'assistant'],
                          [('recorded-first', 'max'), ('recorded-next', None)])
@@ -88,8 +88,17 @@ class TimelineSyncTests(unittest.TestCase):
         process = sync.process(current, key=old_group, known=known_process)
         self.assertEqual(process['rows'], [])
         self.assertEqual([(row['model'], row['effort']) for row in process['index']], [('recorded-note', 'low')])
+        self.assertEqual(process['index'][0]['timestamp'], 1700000000000)
+        self.assertNotEqual(current.conversation_rows[1]['version'], old.conversation_rows[1]['version'])
         self.assertNotEqual(sync.watch(current)['version'], sync.watch(old)['version'])
         self.assertEqual(sync.body(current, key=page['index'][0]['key'], ifVersion=page['index'][0]['version'])['notModified'], True)
+        messages[1]['timestamp'] += 1000
+        clock_update = projection(DesktopSessions._history_turns(messages, session))
+        self.assertNotEqual(sync.watch(clock_update)['version'], sync.watch(current)['version'])
+        self.assertNotEqual(clock_update.conversation_rows[1]['version'], current.conversation_rows[1]['version'])
+        updated_process = sync.process(clock_update, key=old_group, known={row['key']: row['version'] for row in process['index']})
+        self.assertEqual(updated_process['rows'], [])
+        self.assertEqual(updated_process['index'][0]['timestamp'], 1700000001000)
 
     def test_recent_counts_primary_and_adds_initial_input_through_long_process(self):
         turn = {'id': 'long', 'status': 'inProgress', 'messages': [

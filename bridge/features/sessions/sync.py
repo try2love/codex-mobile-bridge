@@ -265,7 +265,7 @@ def process(timeline, *, key, before=None, after=None, limit=20, known=None, ifV
             row = group[first - 1]
             item = {field: row[field] for field in
                     ('key', 'version', 'role', 'kind', 'title', 'toolName', 'status', 'turnId', 'turnStatus',
-                     'phase', 'timestamp', 'interaction', 'turnStartedAt', 'turnCompletedAt', 'turnCompletionKnown', 'model', 'effort') if field in row}
+                     'phase', 'timestamp', 'interaction', 'originalQuestion', 'turnStartedAt', 'turnCompletedAt', 'turnCompletionKnown', 'model', 'effort') if field in row}
             if assistant_output(row):
                 item.update(model=row.get('model'), effort=row.get('effort'))
             item.update(order=row['order'] - group[0]['order'], detailCursor=row['key'])
@@ -324,7 +324,7 @@ def watch(timeline, *, ifVersion=None):
     control = timeline.meta.get('syncControl', {key: timeline.meta.get(key) for key in
         ('status', 'connected', 'connecting', 'requests', 'goal', 'access', 'permissionMode', *CONTEXT_FIELDS)})
     version = digest([timeline.meta.get('syncSourceRevision'), control,
-                      [(row['key'], row['version'], row.get('turnStatus'), row.get('status'), row.get('model'), row.get('effort'))
+                      [(row['key'], row['version'], row.get('turnStatus'), row.get('status'), row.get('timestamp'), row.get('model'), row.get('effort'))
                        for row in timeline.rows[-20:]]])
     return {'version': version, 'notModified': version == ifVersion}
 

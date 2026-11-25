@@ -2,6 +2,10 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"模型未记录":"Model not recorded",
+"思考强度未记录":"Reasoning effort not recorded",
+"时间未记录":"Time not recorded",
+"正在读取中间过程…":"Loading intermediate steps…",
 "本地数据传输":"Local data transfer",
 "手机 App":"Mobile app",
 "设备名称":"Device name",

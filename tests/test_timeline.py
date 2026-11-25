@@ -312,6 +312,29 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual((rows[1]['model'],rows[1]['effort']),('gemini-fixture','high'))
         self.assertNotIn('model',rows[2]);self.assertNotIn('effort',rows[2])
 
+    def test_every_process_row_keeps_native_clock_and_recorded_turn_model(self):
+        state = {'latestModel': 'current-setting', 'turns': [{
+            'turnId': 'saved', 'status': 'completed',
+            'params': {'model': 'recorded-model', 'effort': 'high'},
+            'items': [
+                {'id': 'u', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Question'}], 'timestamp': 1000},
+                {'id': 'a', 'type': 'agentMessage', 'text': 'Interim', 'phase': 'commentary', 'timestamp': 2000},
+                {'id': 's', 'type': 'steeringUserMessage', 'input': [{'type': 'text', 'text': 'Supplement'}], 'timestamp': 3000},
+                {'id': 'r', 'type': 'reasoning', 'summary': [{'text': 'Reasoning'}], 'timestamp': 4000},
+                {'id': 'c', 'type': 'commandExecution', 'command': 'fixture', 'timestamp': 5000},
+            ]}]}
+        timeline = Timeline(); timeline.update({**normalize_state(state), 'sequence': 1})
+        rows = timeline.rows[1:]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row.get('timestamp') for row in rows], [2000, 3000, 4000, 5000])
+        self.assertTrue(all((row.get('model'), row.get('effort')) == ('recorded-model', 'high') for row in rows))
+        self.assertNotIn('model', timeline.rows[0], 'the opening user prompt keeps its existing presentation')
+        for sync in (False, True):
+            exposed = [row for key in timeline.process_groups
+                       for row in timeline.process(timeline.cursor(key), sync=sync)['rows']]
+            self.assertEqual([row.get('timestamp') for row in exposed], [2000, 4000, 5000])
+            self.assertTrue(all((row.get('model'), row.get('effort')) == ('recorded-model', 'high') for row in exposed))
+
     def test_saved_native_file_footer_survives_partial_live_turn_outside_saved_text_window(self):
         # Production API shape: the completed turn's tail is native-loaded while
         # its complete rollout patch evidence predates the saved text window.

@@ -21,24 +21,16 @@
     const form=codex?document.getElementById('composer'):desktopSessions.form;
     const notice=codex?document.getElementById('notice'):desktopSessions.notice;
     if(!form?.offsetHeight||!notice)return;
-    const placeholder=document.createElement('div'),hidden=notice.hidden;
-    const height=notice.getBoundingClientRect().height;
-    if(height){
-      placeholder.style.height=height+'px';
-      placeholder.style.marginBlock=getComputedStyle(notice).marginBlock;
-    }else placeholder.hidden=true;
+    const hidden=notice.hidden;
     const controls=[...form.children].filter(node=>!node.inert);
     controls.forEach(node=>node.inert=true);
     form.dataset.offlineInPlace='';
-    notice.before(placeholder);
-    form.append(notice);
-    notice.classList.add('offline-composer-notice');
+    notice.classList.add('offline-readonly-notice');
     const reconnect=codex?document.getElementById('reconnect'):null;
     const reconnectHidden=reconnect?.hidden;
     if(reconnect)reconnect.hidden=false;
     return (restoreNotice=true)=>{
-      placeholder.replaceWith(notice);
-      notice.classList.remove('offline-composer-notice');
+      notice.classList.remove('offline-readonly-notice');
       if(restoreNotice){
         notice.hidden=hidden;
         if(reconnect)reconnect.hidden=reconnectHidden;

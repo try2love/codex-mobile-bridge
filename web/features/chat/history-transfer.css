@@ -10,9 +10,8 @@
 .transfer-usage-scroll th{position:sticky;top:0;background:var(--surface,#f6f7f9);z-index:1}.transfer-usage-scroll th:first-child{width:35%}.transfer-usage-scroll th:nth-child(2){width:27%}.transfer-usage-scroll :is(th,td):nth-child(2){text-align:right;font-variant-numeric:tabular-nums}
 .transfer-choice{display:flex;align-items:center;gap:.6em;padding-block:.3em}
 [data-offline-reader] :is(.composer:not([data-offline-in-place]),#new-chat,.ds-new-chat){display:none!important}
-.composer[data-offline-in-place]{position:relative}.composer[data-offline-in-place]>:not(.offline-composer-notice){visibility:hidden!important;pointer-events:none}
-.composer .offline-composer-notice:not([hidden]){position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;align-content:center;gap:6px 12px;margin:0;padding:10px 14px;text-align:center}
-.offline-composer-notice .recovery-actions>button:not(#reconnect){display:none!important}.offline-list-status{font-size:12px;line-height:1.5;flex:none;margin:2px 0 6px}
+.offline-readonly-notice:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px}
+.offline-readonly-notice .recovery-actions>button:not(#reconnect){display:none!important}.offline-list-status{font-size:12px;line-height:1.5;flex:none;margin:2px 0 6px}
 
 .local-transfer-tabs{display:flex;gap:6px;overflow:auto;padding-block:8px}.local-transfer-tabs button{flex:none;padding:7px 10px}.local-transfer-tabs [aria-selected="true"]{color:var(--accent);background:var(--accent-soft,#4477ee12)}.local-transfer-count{font-variant-numeric:tabular-nums;margin:8px 0}
 
