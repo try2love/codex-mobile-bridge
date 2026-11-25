@@ -20,9 +20,11 @@ ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-publ
                     'tests/test_ci_test_scope.py', 'tests/test_bridge.py', 'tests/test_hosted_desktop.py',
                     'tests/test_antigravity_reading.py', 'tests/test_retained_index_history.py',
                     'tests/test_history_control_separation.py', 'tests/test_progressive_loading.py',
+                    'tests/browser/session-transfer-http.spec.cjs',
                     'tests/test_wsl_manual_profiles.py', 'tests/test_cli_network_recovery.py',
                     'scripts/reuse-desktop-artifacts.py', 'tests/test_desktop_reuse.py', 'tests/test_desktop_idle.py',
                     'tests/release-assets.test.cjs',
+                    '.agents/notes/implemented/testing/2026-10-28-regression-and-dependency-gates.md',
                     '.agents/notes/implemented/testing/2026-11-18-published-package-upgrade.md'}
 
 

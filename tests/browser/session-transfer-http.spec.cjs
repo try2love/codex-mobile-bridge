@@ -18,8 +18,8 @@ const syncResponse=(page,mode)=>page.waitForResponse(response=>{
   return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')===mode;
 });
 
-async function readCommittedSession(page,provider,id){
-  return page.evaluate(async({provider,id})=>{
+async function readCommittedSession(page,provider,id,deterministic=false){
+  return page.evaluate(async({provider,id,deterministic})=>{
     const cache=BridgeChatSyncCache,scope=cache.scope(provider,'local',id);
     await cache.disk.open();
     const recent=await cache.read(scope,'recent',{}),process=[];
@@ -31,9 +31,81 @@ async function readCommittedSession(page,provider,id){
         process.push(...saved.rows);
       }
     }
+    if(deterministic){
+      // Verify real IndexedDB durability first, then isolate byte-reuse checks
+      // from OS storage latency using the same production volatile backend.
+      const original=cache.disk,db=await original.open();
+      if(!db)throw Error('Committed IndexedDB is unavailable');
+      const records=await new Promise((resolve,reject)=>{
+        const request=db.transaction('records').objectStore('records').getAll();
+        request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+      });
+      const memory=new original.constructor(null);
+      for(const record of records)memory.volatile.set(record.id,record);
+      window.transferPersistedDisk=original;cache.disk=memory;
+    }
     return {recent:recent?.rows||[],process:[...new Map(process.map(row=>[row.key,row])).values()]};
-  },{provider,id});
+  },{provider,id,deterministic});
 }
+
+test('a slow IndexedDB lookup falls back twice before storage resumes and preserves committed bytes',async({page,context},info)=>{
+  const root=path.resolve(__dirname,'../..');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  try{
+    const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);});
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    await page.goto(origin);await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+    const entry=page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'});
+    await entry.click();await expect(page.locator('#messages')).toContainText('Answer 89');
+    const id=await entry.getAttribute('data-id');
+    await page.evaluate(async()=>{await Promise.all(BridgeChatSyncCache.pending.values());});
+    await page.goto(origin+'/?storage=slow');await expect(entry).toBeVisible();
+    const saved=await readCommittedSession(page,'codex',id);
+    expect(saved.recent.some(row=>row.text==='Answer 89')).toBe(true);
+    const evidence=await page.evaluate(async id=>{
+      const cache=BridgeChatSyncCache,scope=cache.scope('codex','local',id),disk=cache.disk;
+      const prewarmed=await cache.known(scope,'recent',{}),before=await cache.read(scope,'recent',{});
+      let release,released=false;const gate=new Promise(resolve=>{release=()=>{released=true;resolve();};});
+      const readRefs=disk.readRefs,methods={},stages=[],requests=[];
+      disk.readRefs=async function(...args){await gate;return Reflect.apply(readRefs,this,args);};
+      for(const name of ['known','afterProbe','hydrateOnline']){
+        methods[name]=cache[name];
+        cache[name]=async function(...args){
+          const stage={name,complete:false};stages.push(stage);
+          const value=await Reflect.apply(methods[name],this,args);stage.complete=true;return value;
+        };
+      }
+      const target={scope,url:sessionUrl(id,'sync','local'),authorized:()=>cache.active(scope),request:async(url,...args)=>{
+        const known=new URL(url,location.href).searchParams.getAll('known').length;
+        const wire=await api(url,...args);
+        requests.push({known,rows:wire.rows.length,released,pendingStages:stages.filter(row=>!row.complete).map(row=>row.name)});
+        return wire;
+      }};
+      try{
+        for(let attempt=0;attempt<2;attempt++){
+          cache.resident.clear();
+          const value=await BridgeChatSync.read(target,'recent',{},'manual',()=>true);
+          if(!value.rows.some(row=>row.text==='Answer 89'))throw Error('Authenticated network content was not returned');
+        }
+      }finally{
+        release();disk.readRefs=readRefs;Object.assign(cache,methods);
+        await Promise.all(cache.pending.values());
+      }
+      const after=await cache.read(scope,'recent',{});
+      return {prewarmKnown:prewarmed.getAll('known').length,requests,
+        committedRowsUnchanged:JSON.stringify(before.rows)===JSON.stringify(after.rows)};
+    },id);
+    expect(evidence.prewarmKnown).toBeGreaterThan(0);
+    expect(evidence.requests).toHaveLength(2);
+    for(const request of evidence.requests){
+      expect(request.known).toBe(0);expect(request.rows).toBe(21);expect(request.released).toBe(false);
+      expect(request.pendingStages.length).toBeGreaterThan(0);expect(request.pendingStages.every(name=>name==='known')).toBe(true);
+    }
+    expect(evidence.committedRowsUnchanged).toBe(true);
+    await info.attach('slow-indexeddb-budget',{contentType:'application/json',body:JSON.stringify(evidence)});
+  }finally{lines.close();server.kill('SIGINT');if(server.exitCode===null&&server.signalCode===null)await new Promise(resolve=>server.once('exit',resolve));}
+});
 
 test('an Android foreground chat recovers a changed process cursor without reloading the page',async({page,context})=>{
   const root=path.resolve(__dirname,'../..');
@@ -164,7 +236,7 @@ test('opening a native chat with an earlier cache cleanup loads without returnin
 for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-codex','legacy-claude']){
   const legacy=name.startsWith('legacy-'),provider=name.replace(/^legacy-/,'');
   const title=legacy?'normal '+provider+' history opens when the gateway does not advertise sync':
-    'production HTTP and IndexedDB reuse '+provider+' history and details after reload';
+    'production HTTP reuses '+provider+' history from committed IndexedDB records with deterministic cache latency';
   test(title,async({page,context},info)=>{
     const root=path.resolve(__dirname,'../..');
     const args=['-B','tests/browser/session-transfer-http-fixture.py','--provider',provider];
@@ -297,7 +369,7 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
       await page.goto(origin+'/?round=warm');
       await selectProvider();
       await expect(entry).toBeVisible();
-      const saved=await readCommittedSession(page,provider,await entry.getAttribute('data-id'));
+      const saved=await readCommittedSession(page,provider,await entry.getAttribute('data-id'),true);
       expect(saved.recent.some(row=>row.text==='Answer 89')).toBe(true);
       expect(saved.process).toHaveLength(24);
       pages.length=0;
@@ -331,6 +403,10 @@ for(const name of ['codex','claude','deepseek','zcode','antigravity','legacy-cod
         process:{cold:coldProcesses.map(result=>result.rows.length),warm:warmProcesses.map(result=>result.rows.length)},
         bodyRequests:{cold:4,warm:0},
       })});
+      await page.evaluate(async()=>{
+        await Promise.all(BridgeChatSyncCache.pending.values());
+        BridgeChatSyncCache.disk=window.transferPersistedDisk;delete window.transferPersistedDisk;
+      });
       if(codex){
         await page.evaluate(async()=>{
           const [group]=await BridgeChatSyncCache.inventory();
@@ -513,7 +589,7 @@ test('the foreground session watches external rollout turns without watching oth
   }
 });
 
-test('a reopened running turn reuses 100 cached steps and automatically reads across a larger gap',async({page,context},info)=>{
+test('a reopened running turn reuses 100 committed steps with deterministic cache latency across a larger gap',async({page,context},info)=>{
   const root=path.resolve(__dirname,'../..'),{appendFile}=require('node:fs/promises');
   const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py','--live-watch'],{cwd:root});
   const lines=createInterface({input:server.stdout}),payloads=[];
@@ -585,7 +661,7 @@ test('a reopened running turn reuses 100 cached steps and automatically reads ac
     await append(appendSteps(101,120));
     await page.goto(origin+'/?process=reopen');
     await page.waitForFunction(()=>!!window.BridgeChatSyncCache?.owner);
-    const saved=await readCommittedSession(page,'codex',transferId);
+    const saved=await readCommittedSession(page,'codex',transferId,true);
     expect(saved.process.filter(row=>/^Step \d{3}$/.test(row.text||''))).toHaveLength(100);
     await open('Transfer HTTP fixture');
     await expect(contents).toHaveText(steps(1,120));
@@ -754,6 +830,10 @@ test('a reopened running turn reuses 100 cached steps and automatically reads ac
     await stopControl.click();
     await expect(lastStep).toBeVisible();
     await expect(outcome).toBeVisible();
+    await page.evaluate(async()=>{
+      await Promise.all(BridgeChatSyncCache.pending.values());
+      BridgeChatSyncCache.disk=window.transferPersistedDisk;delete window.transferPersistedDisk;
+    });
     await info.attach('process-reopen-receipts',{contentType:'application/json',body:JSON.stringify({
       cachedSteps:diskCount,adjacentNewBodies:bodyText.length,oldBodyBytes,largeGapNewBodies:acrossGap.length,
       anchorDeltaPx
