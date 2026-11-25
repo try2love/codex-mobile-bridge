@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location('prepare', Path(__file__).with_nam
 prepare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prepare)
 PLATFORMS = {
+    'desktop-Windows-x64': ('package (windows-latest, x64)', ('Windows-x64-Setup.exe', 'Windows-x64.zip')),
     'desktop-macOS-arm64': ('package (macos-15, arm64, mac-arm64)', ('macOS-arm64.dmg', 'macOS-arm64.zip')),
     'desktop-macOS-x64': ('package (macos-15-intel, x64, mac)', ('macOS-x64.dmg', 'macOS-x64.zip')),
     'desktop-Linux-x64': ('linux (ubuntu-22.04, x64, amd64, x86_64)', ('Linux-amd64.deb', 'Linux-x86_64.AppImage')),

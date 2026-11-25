@@ -52,9 +52,9 @@ on:
         options: [all, Windows]
         default: all
       build_target:
-        description: Build all, Intel only, or Mac ARM and Windows with verified reuse
+        description: Build all or selected platforms with verified reuse of unaffected packages
         type: choice
-        options: [all, intel, mac-windows-reuse, windows-reuse]
+        options: [all, intel, mac-windows-reuse, windows-reuse, mac-arm-reuse]
         default: all
       reuse_run_id:
         description: Completed upstream Desktop run with successful Intel and Linux jobs
@@ -94,14 +94,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.build_target == 'windows-reuse' && '[{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'mac-windows-reuse' && '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
+        include: ${{ fromJSON(inputs.build_target == 'mac-arm-reuse' && '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"}]' || inputs.build_target == 'windows-reuse' && '[{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'mac-windows-reuse' && '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
       - name: Verify exact selected rebuild source
-        if: inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse'
+        if: inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse'
         env:
           SOURCE_REF: ${{ inputs.source_ref || github.sha }}
         shell: bash
@@ -209,7 +209,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
-    if: inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse'
+    if: inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'
     strategy:
       fail-fast: false
       matrix:
@@ -285,12 +285,12 @@ jobs:
           path: .tmp/linux-app-*/desktop-*.png
 
   reuse:
-    if: inputs.acceptance_only != true && (inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse')
+    if: inputs.acceptance_only != true && (inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        artifact: ${{ fromJSON(inputs.build_target == 'windows-reuse' && '["desktop-macOS-arm64","desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]' || '["desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]') }}
+        artifact: ${{ fromJSON(inputs.build_target == 'mac-arm-reuse' && '["desktop-Windows-x64","desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]' || inputs.build_target == 'windows-reuse' && '["desktop-macOS-arm64","desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]' || '["desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]') }}
     steps:
       - uses: actions/checkout@v4
         with:

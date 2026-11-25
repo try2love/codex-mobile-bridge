@@ -638,8 +638,10 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(changes['rows'], [])
 
     def test_timeline_meta_refreshes_draft_identity_without_sequence_change(self):
+        # Complete message metadata avoids unrelated saved-history backfill.
         self.fixture.state['turns'] = [{'turnId': 'turn', 'items': [
-            {'id': str(i), 'type': 'agentMessage', 'text': 'row '+str(i)} for i in range(150)]}]
+            {'id': str(i), 'type': 'agentMessage', 'text': 'row '+str(i),
+             'timestamp': 1_700_000_000, 'model': 'same-model'} for i in range(150)]}]
         session = self.bridge.session(THREAD)
         account = ['']
 
@@ -647,7 +649,8 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(session.condition._is_owned())
             return account[0]
 
-        with patch.object(self.bridge, '_draft_account_identity', side_effect=draft_identity):
+        with patch.object(self.bridge, '_saved_history', wraps=self.bridge._saved_history) as saved_history, \
+                patch.object(self.bridge, '_draft_account_identity', side_effect=draft_identity):
             page = self.bridge.timeline_read(THREAD)
             self.assertEqual(page['meta']['draftAccountIdentity'], '')
             account[0] = 'account-a'
@@ -660,6 +663,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(changes['meta']['draftAccountIdentity'], 'account-b')
             self.assertEqual(changes['sequence'], page['sequence'])
             self.assertEqual(changes['rows'], [])
+            saved_history.assert_not_called()
         self.assertFalse(any(request['method'] == 'thread-follower-start-turn'
                              for request in self.fixture.requests))
 

@@ -33,11 +33,11 @@ class DesktopReuseTests(unittest.TestCase):
 
     def test_workflow_scopes_rebuild_and_keeps_default_all(self):
         workflow = (ROOT/'.github/workflows/desktop.yml').read_text()
-        self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse]', workflow)
+        self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse, mac-arm-reuse]', workflow)
         self.assertIn('default: all', workflow)
         self.assertIn('jobs?filter=all', (ROOT/'scripts/reuse-desktop-artifacts.py').read_text())
         self.assertIn('Verify exact selected rebuild source', workflow)
-        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})
+        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64', 'desktop-Windows-x64'})
         self.assertIn('inputs.reuse_mac_arm_source_ref', workflow)
         self.assertIn('name: reuse-provenance-${{ matrix.artifact }}', workflow)
 
