@@ -4,6 +4,7 @@
 body,.chat-head,.composer,.picker{background:var(--page);color:var(--text)}
 button,input,textarea,select{color:inherit}
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline-color:var(--green)}
+[data-touch-focus]:focus{outline-style:none!important}
 input:not([type=checkbox]),textarea,.picker select,.approval select{background:var(--raised);border-color:var(--line)}
 input[type=checkbox],input[type=range]{accent-color:var(--accent)}
 .primary{background:var(--accent);color:var(--accent-ink)}

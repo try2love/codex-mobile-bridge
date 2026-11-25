@@ -32,7 +32,7 @@
   margin: 0;
 }
 .custom-composer .toolbar-bottom {
-  padding-top: 0;
+  padding-top: 4px;
 }
 .custom-composer .toolbar-pin {
   display: flex;
@@ -251,7 +251,7 @@
   outline: none;
   box-shadow: none;
 }
-.custom-composer .toolbar-tool[data-tool='sendMode']:has(> select:focus-visible) {
+.custom-composer .toolbar-tool[data-tool='sendMode']:has(> select:focus-visible:not([data-touch-focus])) {
   background: var(--soft);
 }
 .custom-composer .toolbar-tool[data-tool='sendMode']::after {
@@ -345,19 +345,20 @@
 .custom-composer .composer-submit::before {
   content: '';
   position: absolute;
-  inset: 2px 0;
+  inset: 6px 0;
   z-index: -1;
   border-radius: 12px;
   background: var(--accent);
   pointer-events: none;
 }
 .custom-composer .composer-submit > button {
+  position: relative;
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
   justify-content: center;
   min-height: 44px;
-  padding: 9px 12px;
+  padding: 6px 8px;
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -370,19 +371,22 @@
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
-.custom-composer .composer-submit:has(> button:focus-visible) {
-  outline: 1px solid var(--muted);
-  outline-offset: 3px;
-}
 .custom-composer .composer-submit > button:focus-visible {
-  outline: none;
-  box-shadow: none;
+  outline: 2px solid currentColor;
+  outline-offset: -7px;
 }
-.custom-composer .composer-submit > button:enabled:not([aria-disabled='true']):active {
+.custom-composer .composer-submit > button::after {
+  content: '';
+  position: absolute;
+  inset: 6px 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.custom-composer .composer-submit > button:enabled:not([aria-disabled='true']):active::after {
   background: color-mix(in srgb, currentColor 16%, transparent);
 }
 @media (hover: hover) and (pointer: fine) {
-  .custom-composer .composer-submit > button:enabled:not([aria-disabled='true']):hover {
+  .custom-composer .composer-submit > button:enabled:not([aria-disabled='true']):hover::after {
     background: color-mix(in srgb, currentColor 10%, transparent);
   }
 }
@@ -414,7 +418,6 @@
   background: var(--soft);
 }
 .custom-composer .composer-submit .composer-submit-caret {
-  position: relative;
   flex: none;
   min-width: 44px;
   width: 44px;
@@ -425,7 +428,7 @@
 .custom-composer .composer-submit-caret::before {
   content: '';
   position: absolute;
-  inset: 10px auto 10px 0;
+  inset: 12px auto 12px 0;
   width: 1px;
   background: currentColor;
   opacity: 0.18;

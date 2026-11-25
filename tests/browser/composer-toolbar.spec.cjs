@@ -638,3 +638,76 @@ test('send mode draws one arrow for text and both, and none for icon only', asyn
     expect(styles.arrow === 'none').toBe(display === 'icon');
   }
 });
+
+test.describe('touch composer controls', () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  for (const nativeHost of [false, true]) {
+    test(`touch focus and independent submit targets in ${nativeHost ? 'the mobile host layout' : 'a mobile browser'}`, async ({ page, browserName }) => {
+      test.skip(browserName !== 'webkit', 'Exercises the WebKit text-field focus transfer.');
+      await page.setViewportSize({ width: 320, height: 680 });
+      await page.evaluate((nativeHost) => {
+        document.documentElement.classList.toggle('bridge-mobile', nativeHost);
+        const toolbar = composerToolbar;
+        toolbar.submitControl.getState = () => ({ running: true, hasDraft: true });
+        toolbar.submitControl.send.disabled = false;
+        toolbar.controls.sendMode.disabled = false;
+        for (const option of toolbar.controls.sendMode.options) option.disabled = false;
+        toolbar.preferences.update({ followUpMode: 'steer' });
+        contextUsageControl.update({ id: 'fixture', connected: true });
+        toolbar.sync();
+      }, nativeHost);
+      const input = page.locator('#message');
+      const caret = page.locator('#composer .composer-submit-caret');
+      const send = page.locator('#send');
+      const menu = page.locator('.composer-submit-menu[open]');
+      await input.tap();
+      await caret.tap();
+      await expect(menu).toBeVisible();
+      await expect(caret).toBeFocused();
+      await expect(caret).toHaveCSS('outline-style', 'none');
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(caret).toBeFocused();
+      await expect(caret).toHaveCSS('outline-style', 'solid');
+      await page.keyboard.press('Home');
+      await expect(menu.locator('[data-send-mode=queue]')).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(input).toHaveValue('保留草稿与光标');
+
+      await input.tap();
+      await page.locator('#composer .context-usage').tap();
+      const context = page.locator('dialog[open]').filter({ hasText: '上下文使用量' });
+      const close = context.getByRole('button', { name: '关闭' });
+      await expect(close).toBeFocused();
+      await expect(close).toHaveCSS('outline-style', 'none');
+      await close.tap();
+      await expect(context).toHaveCount(0);
+
+      const assertTarget = async (button) => {
+        const bounds = await button.boundingBox();
+        const inputBounds = await input.boundingBox();
+        expect(bounds.width).toBeGreaterThanOrEqual(44);
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(bounds.y - (inputBounds.y + inputBounds.height)).toBeGreaterThanOrEqual(4);
+        expect(await button.evaluate((node) => {
+          const bounds = node.getBoundingClientRect();
+          return node.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + 1));
+        })).toBe(true);
+      };
+      await assertTarget(send);
+      await assertTarget(caret);
+      await page.evaluate(() => {
+        composerToolbar.submitControl.getState = () => ({ running: true, hasDraft: false });
+        composerToolbar.submitControl.stop.hidden = false;
+        composerToolbar.submitControl.stop.disabled = false;
+        composerToolbar.sync();
+      });
+      await assertTarget(page.locator('#composer .composer-submit-stop'));
+      expect(await page.locator('#composer .composer-submit').evaluate((node) => {
+        const paint = getComputedStyle(node, '::before');
+        return node.offsetHeight - parseFloat(paint.top) - parseFloat(paint.bottom);
+      })).toBe(32);
+    });
+  }
+});

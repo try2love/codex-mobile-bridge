@@ -1,4 +1,53 @@
 'use strict';
+// WebKit can carry a text field's focus ring to a button focused by a tap.
+// Mark that focus only for the lifetime of the focused element.
+(function () {
+  let touchPointer = false;
+  let touchClick = null;
+  let touchFocus = null;
+  function clearFocus() {
+    touchFocus?.removeAttribute('data-touch-focus');
+    touchFocus = null;
+  }
+  function markFocus(element) {
+    if (element === document.body || element === document.documentElement || element.closest('.xterm')) return;
+    touchFocus = element;
+    touchFocus.setAttribute('data-touch-focus', '');
+  }
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.isTrusted) return;
+    touchPointer = event.pointerType === 'touch';
+    touchClick = null;
+    if (!touchPointer) clearFocus();
+  }, true);
+  document.addEventListener('pointercancel', () => { touchPointer = false; }, true);
+  document.addEventListener('contextmenu', () => { touchPointer = false; }, true);
+  document.addEventListener('keydown', (event) => {
+    if (!event.isTrusted) return;
+    touchPointer = false;
+    touchClick = null;
+    clearFocus();
+  }, true);
+  document.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    // WebKit can report a compatibility click as a mouse click after a touch.
+    const fromTouch = touchPointer && event.detail > 0;
+    touchPointer = false;
+    touchClick = fromTouch ? event : null;
+    if (!fromTouch) {
+      clearFocus();
+      return;
+    }
+    const active = document.activeElement;
+    if (active?.contains(event.target)) markFocus(active);
+    setTimeout(() => { if (touchClick === event) touchClick = null; }, 0);
+  }, true);
+  document.addEventListener('focusin', (event) => {
+    clearFocus();
+    if (touchClick) markFocus(event.target);
+  }, true);
+  document.addEventListener('focusout', clearFocus, true);
+})();
 // Apply the saved/system palette before any visible startup content is painted.
 (function () {
   var saved;
