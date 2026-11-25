@@ -75,7 +75,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Verify source and download official stable and preview1 packages
+      - name: Verify source and download official stable and preview1 through preview3 packages
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REF: ${{ inputs.source_ref }}

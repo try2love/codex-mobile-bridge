@@ -40,7 +40,7 @@ jobs:
           if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
               raise SystemExit('Intel supplement checkout does not match the requested source.')
           with open('package.json') as package:
-              if json.load(package)['version'] != '2.2.2-preview.3':
+              if json.load(package)['version'] != '2.2.2-preview.4':
                   raise SystemExit('Unexpected frozen release version.')
           PY
       - uses: actions/setup-python@v5
@@ -86,7 +86,7 @@ jobs:
           if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
               raise SystemExit('Intel supplement checkout does not match the requested source.')
           with open('package.json') as package:
-              if json.load(package)['version'] != '2.2.2-preview.3':
+              if json.load(package)['version'] != '2.2.2-preview.4':
                   raise SystemExit('Unexpected frozen release version.')
           PY
       - uses: actions/setup-java@v4

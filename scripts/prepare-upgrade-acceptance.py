@@ -8,9 +8,10 @@ import re
 import subprocess
 import urllib.request
 
-BASE = '7672f49605a972c3d6b2e79dcde780ede1ee1642'
-VERSION = '2.2.2-preview.3'
-BASELINES = (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True), ('2.2.2-preview.2', 'preview2', True))
+BASE = 'd79a89c0b58f212323dac2a28b8d99baa32bd281'
+VERSION = '2.2.2-preview.4'
+BASELINES = (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True),
+             ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True))
 ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
                     'scripts/smoke-macos.cjs', 'tests/macos-smoke-readiness.test.cjs',
                     '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
@@ -93,7 +94,7 @@ def main():
         'baselines': baselines, 'acceptanceOnlyChanges': changed,
         'mode': 'manual-bootstrap-then-production-updater-return-stable',
         'catalogue': 'fixture release directory; original official signed manifests and packages'}, indent=2) + '\n')
-    print('Verified official stable/preview1/preview2 packages and exact candidate build provenance')
+    print('Verified official stable/preview1/preview2/preview3 packages and exact candidate build provenance')
 
 
 if __name__ == '__main__':

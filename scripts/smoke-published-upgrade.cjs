@@ -5,11 +5,11 @@ const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=r
 const {spawn,execFileSync}=require('node:child_process'),net=require('node:net');
 const {createHash,randomUUID}=require('node:crypto');
 const {runWorker}=require('../desktop/shared/controller.cjs');
-const oldVersion='2.2.1',candidateVersion='2.2.2-preview.3';
+const oldVersion='2.2.1',candidateVersion='2.2.2-preview.4';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function baselinePolicy(version,platform=process.platform){
-  assert.ok([oldVersion,'2.2.2-preview.1','2.2.2-preview.2'].includes(version),'Unknown official baseline');
-  if(version==='2.2.2-preview.2')return {state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true};
+  assert.ok([oldVersion,'2.2.2-preview.1','2.2.2-preview.2','2.2.2-preview.3'].includes(version),'Unknown official baseline');
+  if(['2.2.2-preview.2','2.2.2-preview.3'].includes(version))return {state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true};
   return {state:platform==='linux'?'unsupported':'current',includeCandidate:platform!=='linux'&&version===oldVersion,
     previewDiscoveryTested:platform!=='linux'&&version===oldVersion};
 }
@@ -107,19 +107,19 @@ async function inspectDesktop(executable,data,version,work,phase,exercise){
     return result;
   }finally{ui?.close();main?.close();await stopOwnedGui(child);console.log(`${phase} GUI exited: code=${child.exitCode} signal=${child.signalCode}`);}
 }
-function transportScript(directory,includeCandidate=false,includePreview2=false){
+function transportScript(directory,includeCandidate=false,includePreview2=false,includePreview3=false){
   // No signature, key, selection, install or helper logic is replaced. The
   // synthetic release directory cannot supply bytes outside this exact map.
   return `(()=>{const req=process.getBuiltinModule('module').createRequire(process.resourcesPath+'/app.asar/package.json');
     const fs=req('node:fs'),path=req('node:path'),{Readable}=req('node:stream'),electron=req('electron');
     const module=req('./desktop/features/updates/updater.cjs'),directory=${JSON.stringify(directory)};
-    const releases=new Map(),files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
+    const releases=new Map(),files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3']]){
       const release=JSON.parse(fs.readFileSync(path.join(directory,folder,'release.json'),'utf8'));
       if(release.tag_name!=='v'+version||release.draft||release.prerelease!==version.includes('-'))throw Error('Unexpected official acceptance release');
       releases.set(version,release);
       for(const name of fs.readdirSync(path.join(directory,folder)))if(!['SHA256SUMS.txt','release.json'].includes(name))files.set(module.releaseUrl(version,name),path.join(directory,folder,name));
     }
-    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[])])}.map(version=>releases.get(version));
+    const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[]),...(includePreview3?['2.2.2-preview.3']:[])])}.map(version=>releases.get(version));
     ${includeCandidate?`catalogue.push({tag_name:'v${candidateVersion}',draft:false,prerelease:true,assets:[{name:'bridge-update.json'}]});`:''}
     const fetch=async(url,{signal}={})=>{if(signal?.aborted)throw signal.reason;
       acceptance.requests.push(url);
@@ -274,7 +274,7 @@ async function downloadHistoryPackage(ui,main,files,data){
 async function returnThroughUpdater(files,data,work,phase,directory,{failure=false,native=false,manual=false,retryCache}={}){
   let planFile;
   const evidence=await inspectDesktop(files.app,data,candidateVersion,work,phase,async({ui,main,child})=>{
-    await main.evaluate(transportScript(directory,false,true));
+    await main.evaluate(transportScript(directory,false,true,true));
     const candidate=await selectStable(ui);
     const download=await downloadHistoryPackage(ui,main,files,data);
     if(retryCache){assert.equal(download.cache.archive,retryCache.archive);assert.equal(download.cache.sha256,retryCache.sha256);assert.equal(download.cache.downloads,0);}
@@ -331,6 +331,29 @@ async function returnThroughUpdater(files,data,work,phase,directory,{failure=fal
   const cache=failure?{...evidence.cache,retainedAfterFailure:true}:await stableReturnCacheProof(evidence.cache,evidence.package);
   return {...evidence,cache,helper:{state:result.state,recovered:result.recovered,configurationBackupRetained:true}};
 }
+async function credentialBoundaryProof(files,work,worker=runWorker){
+  // This separate profile contains synthetic CMB1 headers, not real credentials.
+  // The normal account/pairing/draft fixture deliberately remains legacy-readable.
+  const dataDir=path.join(work,'credential-boundary'),vault=path.join(dataDir,'.credential-vault');
+  await fs.mkdir(vault,{recursive:true,mode:0o700});
+  const records={'config.json':Buffer.from(JSON.stringify({auth:{mode:'none'}})),
+    '.credential-vault/key':Buffer.alloc(32,7),'.credential-vault/connections.enc':Buffer.from('CMB1synthetic-acceptance-ciphertext'),
+    'desktop-sessions/settings.user.json':Buffer.from('{"synthetic":"preserve"}\n')};
+  for(const [name,bytes] of Object.entries(records)){
+    await fs.mkdir(path.dirname(path.join(dataDir,name)),{recursive:true});
+    await fs.writeFile(path.join(dataDir,name),bytes,{flag:'wx',mode:0o600});
+  }
+  const target=process.platform==='darwin'?path.dirname(path.dirname(path.dirname(files.app))):path.dirname(files.app),blocked=[];
+  for(const version of [oldVersion,'2.2.2-preview.3'])for(const manualInstall of [false,true]){
+    const transition={intent:version===oldVersion?'return-stable':'switch-version',from:candidateVersion,to:version,dataFormat:'bridge-data-v1'};
+    await assert.rejects(worker({executable:files.runtime,dataDir},'update-backup',{target,version,transition,manualInstall}),/凭据/);
+    await assert.rejects(fs.access(path.join(dataDir,'update-backups')),error=>error.code==='ENOENT');
+    for(const [name,bytes] of Object.entries(records))assert.deepEqual(await fs.readFile(path.join(dataDir,name)),bytes,'blocked credential switch preserves '+name);
+    blocked.push({version,manualInstall});
+  }
+  return {syntheticCmb1:true,blocked,configurationBytesUnchanged:true,backupCreated:false,
+    legacyReturnFixtureHasCmb1:false,decryptionTested:false};
+}
 async function main(){
   assert.equal(process.env.GITHUB_ACTIONS,'true','Only run against an ephemeral GitHub-hosted runner');
   assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted','Self-hosted/daily machines are excluded');
@@ -339,7 +362,7 @@ async function main(){
   const {chromium}=require('@playwright/test'),directory=path.resolve('.tmp/published-upgrade'),results=[];
   let native=process.platform!=='linux',nativeLimit;
   try{
-    for(const [baseline,folder] of [[oldVersion,'old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2']]){
+    for(const [baseline,folder] of [[oldVersion,'old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3']]){
       const work=path.join(directory,folder+'-bootstrap'),data=path.join(work,'data'),profile=path.join(work,'browser');
       await fs.mkdir(data,{recursive:true});assert.deepEqual(await fs.readdir(data),[],'Never reuse earlier fixture data');
       const target=process.platform==='linux'?'/opt/Codex Mobile Bridge':path.join(work,process.platform==='darwin'?'Codex Mobile Bridge.app':'installed');
@@ -413,7 +436,7 @@ async function main(){
             assert.equal(await ui.evaluate("document.getElementById('check-update').disabled"),true);
             return;
           }
-          await main.evaluate(transportScript(directory,policy.includeCandidate,policy.channelDiscoveryTested));
+          await main.evaluate(transportScript(directory,policy.includeCandidate,policy.channelDiscoveryTested,baseline==='2.2.2-preview.3'));
           await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','baseline background check completion');
           await click(ui,'check-update');
           const value=await until(async()=>{const value=await ui.evaluate('snapshot.update');return !['idle','checking'].includes(value.state)&&value;},'legacy stable filtering');
@@ -421,19 +444,20 @@ async function main(){
           if(policy.channelDiscoveryTested){
             assert.equal(value.currentChannel,'preview');assert.equal(value.channel,'preview');
             await ui.evaluate("document.getElementById('update-channel').value='stable';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));");
-            const stable=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value;},'preview2 signed stable discovery');
+            const stable=await until(async()=>{const value=await ui.evaluate('snapshot.update');if(value.state==='error')throw Error(value.message);return value.state==='available'&&value;},baseline+' signed stable discovery');
             assert.equal(stable.version,oldVersion);assert.equal(stable.intent,'return-stable');assert.equal(stable.requiresConfirmation,true);assert.ok(stable.candidateId);
             await ui.evaluate("document.getElementById('update-channel').value='preview';document.getElementById('update-channel').dispatchEvent(new Event('change',{bubbles:true}));");
-            await until(async()=>{const value=await ui.evaluate('snapshot.update');return value.channel==='preview'&&value.state==='current';},'preview2 channel restored');
+            await until(async()=>{const value=await ui.evaluate('snapshot.update');return value.channel==='preview'&&value.state==='current';},baseline+' channel restored');
           }
         });
         await verifyData('baseline',{seed:true});await worker('stop');
         await install(candidateArchive,target,work,'candidate');await useRuntime();await verifyVersion(candidateVersion);
         await inspectDesktop(files.app,data,candidateVersion,work,'candidate');await verifyData('candidate',{preview:true});
+        const credentialBoundary=await credentialBoundaryProof(files,work);
         // First prove cancel leaves the verified candidate and live data intact.
         let cancellation;
         const cancel=()=>inspectDesktop(files.app,data,candidateVersion,work,'cancel-return',async({ui,main,child})=>{
-          await main.evaluate(transportScript(directory,false,true));await selectStable(ui);
+          await main.evaluate(transportScript(directory,false,true,true));await selectStable(ui);
           const download=await downloadHistoryPackage(ui,main,files,data);
           const dialog=await confirmation(main,ui,child,0,native);
           await delay(300);assert.equal((await ui.evaluate('snapshot.update')).state,'downloaded');await verifyVersion(candidateVersion);return {...dialog,...download};
@@ -454,7 +478,7 @@ async function main(){
           returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native,retryCache:failure.cache});await useRuntime();
         }
         await verifyVersion(oldVersion);await inspectDesktop(files.app,data,oldVersion,work,'returned-stable');await verifyData('returned-stable');
-        const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,checks,
+        const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,credentialBoundary,checks,
           transport:'fixture release directory; original official manifests/packages and API digests; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
         results.push(result);await fs.writeFile(path.join(work,'result.json'),JSON.stringify(result,null,2)+'\n');console.log('PASS official '+baseline+' bootstrap and stable return');
       }finally{if(worker)await worker('stop').catch(error=>console.error('Owned gateway cleanup: '+error.message));}
@@ -462,5 +486,5 @@ async function main(){
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={installerHandoffEvidence,click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine};
+module.exports={installerHandoffEvidence,click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine,credentialBoundaryProof};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
