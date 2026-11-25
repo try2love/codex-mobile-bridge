@@ -16,10 +16,9 @@ from bridge.resources import project_root
 
 from bridge.features.auth.auth import Auth, password_record, session_hours, session_file_lock
 from bridge.app.lifecycle import read_record, request_stop, request_pairing
-from bridge.features.notifications.channels import Notifications, read_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
+from bridge.features.notifications.channels import Notifications, read_json, read_status_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.clients.codex.remote import AppHosts
-from bridge.clients.codex.catalog import Catalog
 import bridge.features.network.access as access
 import bridge.features.network.addresses as network
 import bridge.features.network.interfaces as interfaces
@@ -56,22 +55,24 @@ class Desktop:
             raise ValueError('网关正在启动，请稍后重试')
         if self.local_bridge is None:
             from bridge.app.service import Bridge
-            from bridge.clients.manager import DesktopSessions
+            from bridge.clients.manager import DesktopSessions, read_client_settings, settings_path
             from bridge.clients.discovery import discover_clients, inventory_current
             p = self.preferences()
-            saved = read_json(self.data_dir/'desktop-sessions/settings.json', {})
+            saved = read_client_settings(settings_path(self.data_dir/'desktop-sessions')) or {}
             inputs = {**p, **{key: value for key, value in saved.items()
                                if key.endswith(('Home', 'Application', 'Applications'))}}
             if saved.get('discoveryPreferences', {}).get('desktopExecutable'):
                 inputs['desktopExecutable'] = saved['discoveryPreferences']['desktopExecutable']
             discovered = saved['discovered'] if inventory_current(saved, inputs) else discover_clients(inputs)
             runtime = p.get('codexBin')
-            # Keep ordinary Windows installations automatic across App updates.
-            # Preserve discovery's fallback for nonstandard desktop bundles.
-            if not runtime and (os.name != 'nt' or not Catalog.find_runtime()):
-                runtime = discovered['codex'].get('runtime')
             self.local_bridge = Bridge(Path(p['codexHome']).expanduser(), self.data_dir,
                                        ipc_path=p.get('ipcPath') or None, codex_bin=runtime or None)
+            if not runtime:
+                reader = self.local_bridge.catalog_reader
+                current = reader.executable
+                # Keep Windows' cached CLI preference and nonstandard bundle fallback.
+                if os.name != 'nt' or not current:
+                    reader.follow_runtime(current, discovered['codex'].get('runtime'))
             self.local_sessions = DesktopSessions(self.data_dir, self.local_bridge)
         return self.local_bridge, self.local_sessions
 
@@ -92,6 +93,18 @@ class Desktop:
         if action == 'cli-access':
             return bridge.cli_access_control(value)
         return bridge.accounts_control(value) if action == 'accounts' else bridge.accounts.account(value)
+
+    def cloud(self, value):
+        from bridge.features.network.cloud_account import Controller
+        if not isinstance(value, dict):
+            raise ValueError('Invalid cloud operation')
+        record = read_record(self.data_dir/'gateway-control.json')
+        if record:
+            if not self.status()['running'] or not record.get('cloudManagement'):
+                raise ValueError('Restart the gateway to enable cloud management')
+            return request_pairing(self.data_dir, {'action': 'cloud', 'value': value}, timeout=90)
+        # Cloud account management must never initialize an agent/runtime service.
+        return Controller(self.data_dir).control(value)
 
     def config(self):
         if not self.config_path.exists():
@@ -172,7 +185,7 @@ class Desktop:
         selected = interfaces.selected_interfaces(preferences.get('lanInterfaces'))
         network_status = {}
         if runtime['running']:
-            value = read_json(self.data_dir/'network-status.json', {})
+            value = read_status_json(self.data_dir/'network-status.json', {})
             if (value.get('pid') == runtime.get('pid') and
                     value.get('instanceId') == runtime.get('instanceId') and
                     value.get('mode') == ('off' if not preferences['lan'] else
@@ -189,7 +202,7 @@ class Desktop:
         hosts = ['127.0.0.1', 'localhost'] + static_addresses if preferences['lan'] else ['127.0.0.1', 'localhost']
         if not preferences['localAccess']:
             hosts = [host for host in hosts if host not in ('127.0.0.1', 'localhost')]
-        quick = read_json(self.data_dir/'cloudflare-status.json', {})
+        quick = read_status_json(self.data_dir/'cloudflare-status.json', {})
         if not runtime['running'] or quick.get('pid') != runtime.get('pid'):
             quick = {}
         quick_url = ''
@@ -203,7 +216,7 @@ class Desktop:
         urls = [url if url == quick_url else url+'/' for url in access.phone_urls(preferences, hosts, quick_url)]
         external = {}
         for entry in preferences['connections']:
-            status = read_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
+            status = read_status_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
             if runtime['running'] and status.get('pid') == runtime.get('pid'):
                 external[entry['id']] = status
         executable = preferences['cloudflared']
@@ -216,14 +229,29 @@ class Desktop:
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken']), **visible_webhook(notifications)},
                 'watches': self.notification_watches({'action': 'list'}, preferences=preferences)['watches'],
                 'notificationUrls': notification_urls,
-                'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
-                'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
-                'notificationStatus': read_json(self.data_dir/'notification-status.json', {}),
+                'securityNotificationStatus': read_status_json(self.data_dir/'security-notifications.json', {}),
+                'addressNotificationStatus': read_status_json(self.data_dir/'address-notifications.json', {}),
+                'notificationStatus': read_status_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
                 'networkInterfaces': rows, 'networkStatus': network_status,
                 'networkAdaptation': {**adaptation_settings(self.data_dir),
                                       'running': runtime['running']},
-                'runtime': runtime, 'urls': urls, 'externalStatus': external, 'cloudflared': cloudflared, 'quickTunnel': quick}
+                'runtime': runtime, 'urls': urls, 'externalStatus': external, 'cloudflared': cloudflared, 'quickTunnel': quick,
+                'cloud': self.cloud_status(runtime)}
+
+    def cloud_status(self, runtime):
+        from bridge.features.network.cloud_account import Controller
+        value = Controller(self.data_dir).status()
+        if not runtime['running'] or value['runtime'].get('pid') != runtime.get('pid'):
+            value['runtime'] = {'state': 'stopped'}
+        elif value['configured']:
+            try:
+                current = request_pairing(self.data_dir, {'action': 'cloud', 'value': {'action': 'status'}}, timeout=2)
+                if all(current.get(key) == value.get(key) for key in ('origin', 'account_id', 'gateway_id')):
+                    value['web_access'] = current.get('web_access', {'allowed': False, 'revision': 0, 'error': 'web_access_unavailable'})
+            except (OSError, ValueError, TimeoutError):
+                value['web_access'] = {'allowed': False, 'revision': 0, 'error': 'web_access_unavailable'}
+        return value
 
     def network_adaptation(self, value):
         if not isinstance(value, dict) or not (value == {'action': 'status'} or
@@ -298,7 +326,12 @@ class Desktop:
         if not isinstance(origins, list):
             raise FieldError('额外 HTTPS 源格式不正确', 'origins')
         origins = list(dict.fromkeys(at_field('origins', access.origin, origin) for origin in origins))
-        old_fixed = access.public_urls(old_preferences)
+        old_fixed = set()
+        for old_origin in access.public_urls(old_preferences):
+            try:
+                old_fixed.add(access.origin(old_origin))
+            except ValueError:
+                continue
         origins = [origin for origin in origins if origin not in old_fixed]
         for fixed in access.public_urls(preferences):
             if fixed not in origins:

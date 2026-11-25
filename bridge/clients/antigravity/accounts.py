@@ -76,9 +76,16 @@ class AntigravityAccounts:
 
     def _index(self):
         raw = read(self.directory/'index.json')
-        rows = json.loads(raw)['accounts'] if raw is not None else []
+        if raw is None:
+            return []
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            raise ValueError('已保存的 Antigravity 账号索引无效') from None
+        rows = data.get('accounts') if isinstance(data, dict) else None
         if not isinstance(rows, list) or any(not isinstance(row, dict) or
-                not isinstance(row.get('id'), str) or not re.fullmatch('[0-9a-f]{32}', row['id']) for row in rows):
+                not isinstance(row.get('id'), str) or not re.fullmatch('[0-9a-f]{32}', row['id']) or
+                not isinstance(row.get('name'), str) or not isinstance(row.get('email'), str) for row in rows):
             raise ValueError('已保存的 Antigravity 账号索引无效')
         return rows
 

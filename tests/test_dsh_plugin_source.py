@@ -40,3 +40,17 @@ class SourceLockTests(unittest.TestCase):
             (plugin/'package.json').write_text('{"version":"0.3.0"}')
             with self.assertRaisesRegex(ValueError, 'manifest drift'):
                 checker.verify(upstream, root)
+            lock_path = plugin.parent/'plugin-source.json'
+            lock = json.loads(lock_path.read_text())
+            lock['manifestOverrides'] = {'engines': {'upstream': None, 'bundled': {'dsh': '*'}}}
+            lock_path.write_text(json.dumps(lock))
+            (plugin/'package.json').write_text('{"version":"0.2.0","engines":{"dsh":"*"}}')
+            self.assertEqual(checker.verify(upstream, root), commit)
+            (plugin/'package.json').write_text('{"version":"0.2.0","engines":{"dsh":"1.0.0"}}')
+            with self.assertRaisesRegex(ValueError, 'override drift'):
+                checker.verify(upstream, root)
+            (plugin/'package.json').write_text('{"version":"0.2.0","engines":{"dsh":"*"}}')
+            lock['manifestOverrides']['engines']['upstream'] = {'dsh': 'invented-origin'}
+            lock_path.write_text(json.dumps(lock))
+            with self.assertRaisesRegex(ValueError, 'override drift'):
+                checker.verify(upstream, root)

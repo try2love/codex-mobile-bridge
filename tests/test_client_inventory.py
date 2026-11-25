@@ -107,7 +107,7 @@ class ClientInventoryTests(unittest.TestCase):
                 self.name = str(pid); self.executable = executable; self.command = command; self.uid = uid; self.reads = 0
             def stat(self): return SimpleNamespace(st_uid=self.uid)
             def __truediv__(self, part):
-                if part == 'exe': return SimpleNamespace(resolve=lambda strict: Path(self.executable))
+                if part == 'exe': return SimpleNamespace(executable=self.executable)
                 def read():
                     self.reads += 1
                     if isinstance(self.command, Exception): raise self.command
@@ -117,9 +117,11 @@ class ClientInventoryTests(unittest.TestCase):
         entries += [Entry(21, self.executables['codex'], 'other user', os.getuid()+1),
                     Entry(22, self.executables['claude'], PermissionError('unreadable'))]
         proc = Mock(); proc.iterdir.return_value = entries
+        readlink = os.readlink
         with patch('bridge.clients.desktop_app.sys.platform', 'linux'), \
                 patch('bridge.clients.desktop_app.os.path.normcase', side_effect=lambda value: str(value)), \
                 patch('bridge.platforms.linux.desktop.Path', side_effect=lambda value: proc if str(value) == '/proc' else Path(value)), \
+                patch('bridge.platforms.linux.desktop.os.readlink', side_effect=lambda path: path.executable if isinstance(path, SimpleNamespace) else readlink(path)), \
                 patch('bridge.clients.desktop_app.subprocess.run') as run:
             with patch('bridge.clients.lifecycle._commands', side_effect=lambda app, pids: {pid: cmd for pid, _, cmd in self.records if pid in pids}):
                 before = {row['id']: inspect_client(row) for row in [self.descriptors[0], *self.descriptors]}

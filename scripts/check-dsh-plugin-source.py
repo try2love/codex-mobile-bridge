@@ -20,6 +20,10 @@ def verify(source, root=ROOT):
     for field in lock['manifestFields']:
         if upstream.get(field) != bundled.get(field):
             raise ValueError('DSH plugin manifest drift: '+field)
+    for field, change in lock.get('manifestOverrides', {}).items():
+        if (field in lock['manifestFields'] or upstream.get(field) != change['upstream'] or
+                bundled.get(field) != change['bundled']):
+            raise ValueError('DSH plugin reviewed manifest override drift: '+field)
     return commit
 
 

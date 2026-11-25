@@ -735,8 +735,6 @@ class CliSessions:
             self._queue_refresh(thread_id)
             return {'applied': True}
         if desktop_method == 'thread-follower-steer-turn':
-            if params.get('attachments') or (params.get('restoreMessage') or {}).get('context', {}).get('fileAttachments'):
-                raise AppServerUnsupported('CLI steering with files is unavailable')
             with self.lock:
                 active = next((t for t in reversed(self.states[thread_id]['turns'])
                                if t.get('status') == 'inProgress'), None)
@@ -744,7 +742,7 @@ class CliSessions:
                 raise AppServerUnavailable('No active CLI turn to steer')
             result = self.client.request('turn/steer', {
                 'threadId': thread_id, 'expectedTurnId': active['turnId'],
-                'input': self._inputs(params.get('input', []), {}),
+                'input': self._inputs(params.get('input', []), (params.get('restoreMessage') or {}).get('context') or {}),
                 'clientUserMessageId': params.get('clientUserMessageId')}, timeout=timeout)
             self._queue_refresh(thread_id)
             return result
@@ -1071,6 +1069,8 @@ class CliSessions:
             row = {'turnId': turn.get('id'), 'status': turn.get('status'),
                           'turnStartedAtMs': (turn.get('startedAt') or 0) * 1000,
                           'items': turn.get('items') or [], 'error': turn.get('error')}
+            if turn.get('completedAt') is not None:
+                row['turnCompletedAtMs'] = turn['completedAt'] * 1000
             if turn.get('model'):
                 row['params'] = {'model': turn['model'], 'effort': turn.get('reasoningEffort')}
             turns.append(row)
@@ -1116,7 +1116,26 @@ class CliSessions:
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
 
-    def _event(self, event):
+    @staticmethod
+    def _merge_streamed_item(previous, incoming):
+        """Keep deltas when a native replacement omits an already streamed field."""
+        if not isinstance(previous, dict) or not isinstance(incoming, dict):
+            return incoming
+        if previous.get('id') != incoming.get('id') or previous.get('type') != incoming.get('type'):
+            return incoming
+        item = dict(incoming)
+        for field in ('text', 'aggregatedOutput'):
+            prior = previous.get(field)
+            if isinstance(prior, str) and prior and not item.get(field):
+                item[field] = prior
+        if incoming.get('type') == 'reasoning' and not item.get('summary') and not item.get('content'):
+            for field in ('summary', 'content'):
+                prior = previous.get(field)
+                if isinstance(prior, list) and not item.get(field):
+                    item[field] = copy.deepcopy(prior)
+        return item
+
+    def _event(self, event, *, publish=True):
         method = event.get('method')
         params = event.get('params') or {}
         thread_id = params.get('threadId')
@@ -1175,6 +1194,7 @@ class CliSessions:
                     row = {'turnId': turn.get('id'), 'items': []}
                     state['turns'].append(row)
                 if method == 'turn/started':
+                    row.pop('turnCompletedAtMs', None)
                     model = turn.get('model') or state.get('latestModel')
                     effort = turn.get('reasoningEffort') or state.get('latestReasoningEffort')
                     if model:
@@ -1184,12 +1204,15 @@ class CliSessions:
                 row.update(status=turn.get('status'), error=turn.get('error'))
                 if turn.get('startedAt') is not None:
                     row['turnStartedAtMs'] = turn['startedAt'] * 1000
+                if turn.get('completedAt') is not None:
+                    row['turnCompletedAtMs'] = turn['completedAt'] * 1000
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):
-                    items = turn['items']
                     previous_times = {item.get('id'): item['timestamp'] for item in row['items'] if item.get('timestamp') is not None}
-                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in items]
+                    previous_items = {item.get('id'): item for item in row['items'] if item.get('id') is not None}
+                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in turn['items']]
+                    items = [self._merge_streamed_item(previous_items.get(item.get('id')), item) for item in items]
                     if method == 'turn/completed':
                         incoming_ids = {item.get('id') for item in items}
                         # Completed event items can omit user messages still present in thread/read.
@@ -1211,10 +1234,7 @@ class CliSessions:
                         if existing.get('id') == item.get('id'):
                             if item.get('timestamp') is None and existing.get('timestamp') is not None:
                                 item = {**item, 'timestamp': existing['timestamp']}
-                            if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
-                                # A late start must not erase deltas already received.
-                                item = {**item, **{field: existing[field] for field in ('summary', 'content')
-                                                  if not item.get(field) and isinstance(existing.get(field), list)}}
+                            item = self._merge_streamed_item(existing, item)
                             items[index] = item
                             break
                     else:
@@ -1261,10 +1281,12 @@ class CliSessions:
                     parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
+            if not publish:
+                return
             snapshot = copy.deepcopy(state)
         self.on_state(thread_id, snapshot)
 
-    def _server_request(self, request):
+    def _server_request(self, request, *, publish=True):
         thread_id = (request.get('params') or {}).get('threadId')
         with self.lock:
             if thread_id not in self.joined and thread_id not in self.attaching:
@@ -1275,6 +1297,8 @@ class CliSessions:
             state = self.states.get(thread_id)
             if state is not None:
                 state['requests'] = list(self.requests[thread_id].values())
+                if not publish:
+                    return
                 snapshot = copy.deepcopy(state)
             else:
                 snapshot = None
@@ -1347,7 +1371,7 @@ class CliSessions:
             self.refresh_pending.clear()
         self.on_disconnect()
 
-    def _invalidate(self, thread_id, expected_process=None):
+    def _invalidate(self, thread_id, expected_process=None, *, notify=True):
         with self.lock:
             if expected_process is not None and self.joined.get(thread_id) is not expected_process:
                 return
@@ -1362,7 +1386,8 @@ class CliSessions:
             self.states.pop(thread_id, None)
             self.requests.pop(thread_id, None)
             self.consumed_requests.pop(thread_id, None)
-        self.on_disconnect(thread_id)
+        if notify:
+            self.on_disconnect(thread_id)
 
     def close(self):
         self.client.close()

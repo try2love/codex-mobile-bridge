@@ -1,2 +1,3 @@
-# Optional source dependency; bundled in desktop builds for shared relay access.
+# Source cloud/shared relay transport and E2EE; bundled in desktop builds.
 aiohttp==3.13.3
+noiseprotocol==0.3.1

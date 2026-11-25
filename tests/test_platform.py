@@ -186,9 +186,16 @@ class LifecycleTests(unittest.TestCase):
                     reads += 1
                     return record if reads == 1 else None
                 return record
-            with patch('bridge.app.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', side_effect=PermissionError('Windows delete pending')) as unlink:
+            unlink = Path.unlink
+            attempted = []
+            def remove(target, *args, **kwargs):
+                if target == request:
+                    attempted.append(target)
+                    raise PermissionError('Windows delete pending')
+                return unlink(target, *args, **kwargs)
+            with patch('bridge.app.lifecycle.read_record', side_effect=read), patch.object(Path, 'unlink', autospec=True, side_effect=remove):
                 request_stop(folder)
-                unlink.assert_not_called()
+                self.assertEqual(attempted, [])
             self.assertEqual(json.loads(request.read_text()), record)
 
     def test_stop_acknowledgement_follows_request_cleanup(self):

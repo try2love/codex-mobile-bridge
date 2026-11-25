@@ -160,3 +160,24 @@ test('opening new CLI chat from an SSH conversation completes its selected proje
  await ui.$('new-chat').onclick();assert.equal(ui.$('new-chat-project').value,'first-ssh-project');
  assert.deepEqual(ui.calls.map(row=>row.url),['/api/projects','/api/projects?host=ssh']);
 });
+test('creating a new chat unchecks archived filter and renderQueue tolerates missing row text',async()=>{
+ const ui=fixture({listSource:'desktop'});
+ ui.$('search').value='old-query';ui.$('archived').checked=true;
+ await ui.$('new-chat').onclick();
+ await ui.$('new-chat-form').onsubmit({preventDefault(){}});
+ assert.equal(ui.$('search').value,'');assert.equal(ui.$('archived').checked,false);
+
+ const queued={children:[],replaceChildren(...nodes){this.children=nodes;},append(...nodes){this.children.push(...nodes);}};
+ const mkNode=(tag,cls='',text='')=>({tagName:tag.toUpperCase(),className:cls,textContent:text,children:[],append(...nodes){this.children.push(...nodes);}});
+ const queueCtx=vm.createContext({
+  $:(id)=>{assert.equal(id,'queued');return queued;},
+  el:mkNode,t:value=>value,codexDraftScope:null,composerDrafts:null,sessionStorage:null,chatKey:()=> 'local|t',
+  currentId:'t',currentHost:'local',openMessageManagement(){},api:async()=>{},sessionUrl:()=> '',toast(){},
+  state:{},window:{BridgeSharedRelay:false,confirm:()=>true},accountsPanel:null,ignoreSubmission:async()=>{},
+ });
+ vm.runInContext(section('function renderQueue(rows){','function uuid(){'),queueCtx);
+ queueCtx.renderQueue([{id:'missing-text',status:'unknown'},{id:'reply-row',status:'queued',text:'<send_user_message_question_reply>ok'}]);
+ assert.equal(queued.children.length,3);
+ assert.equal(queued.children[1].children[1].textContent,'');
+ assert.equal(queued.children[2].children[1].textContent,'问题回复');
+});

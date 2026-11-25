@@ -73,7 +73,9 @@ class SelectChecks(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/tests.yml').read_text()
         backend = workflow.split('  test:\n', 1)[1].split('  ui-tests:', 1)[0]
         self.assertIn('if: always()', backend)
-        self.assertIn("outputs.backend == 'true' && matrix.os || 'ubuntu-latest'", backend)
+        self.assertIn("outputs.backend == 'true' && matrix.os || 'ubuntu-24.04'", backend)
+        self.assertIn('os: [windows-latest, ubuntu-24.04]', backend)
+        self.assertIn("python: ['3.9', '3.13']", backend)
         steps = backend.split('    steps:\n', 1)[1].split('      - ')[2:]  # first step only validates selection
         self.assertGreater(len(steps), 4)
         for step in steps:

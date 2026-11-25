@@ -1,4 +1,5 @@
 """Attach to the existing Harness Desktop host; never start another runtime."""
+import http.client
 import json
 import os
 import re
@@ -221,12 +222,17 @@ class DeepSeek:
             value = json.loads(raw)
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read(4096)).get('error', 'Harness 拒绝了操作')
-            except ValueError:
+                payload = json.loads(exc.read(4096))
+                message = payload.get('error', 'Harness 拒绝了操作') if isinstance(payload, dict) else 'Harness 拒绝了操作'
+            except (OSError, http.client.HTTPException, ValueError):
                 message = 'Harness 拒绝了操作'
             raise BridgeUnavailable(message) from exc
-        except (OSError, KeyError) as exc:
+        except (OSError, KeyError, http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # 捕获 HTTPException（如 IncompleteRead）及响应体解码异常，避免泄漏 500 或原始英文错误，
+            # 同时保留上方的明确端口 ValueError 校验。
             raise BridgeUnavailable(self.connection_error()) from exc
+        if not isinstance(value, dict):
+            raise BridgeUnavailable(self.connection_error())
         if action == 'archive' and value.get('archiveNotSent') is True:
             raise ArchiveNotSent(value.get('message') or '原生客户端拒绝归档，操作未发送')
         if action == 'detail':
@@ -296,10 +302,24 @@ def turns(records):
 def messages(records):
     result = []
     final_assistant = None
+    current_turn = None
+    states = {turn['turnId']: turn['status'] for turn in turns(records)}
+    clocks = {}
+    for record in records:
+        event = record.get('event', {})
+        turn = (event.get('data') or {}).get('turn')
+        if type(turn) is int and turn >= 0 and event.get('time') is not None:
+            name = {'turn/start': 'turnStartedAt', 'turn/end': 'turnCompletedAt'}.get(event.get('type'))
+            if name:
+                clocks.setdefault(str(turn), {})[name] = event['time']
     for item in records:
         event = item.get('event', {})
         data = event.get('data') or {}
         kind = event.get('type')
+        native_turn = data.get('turn')
+        if type(native_turn) is int and native_turn >= 0:
+            current_turn = str(native_turn)
+        first_row = len(result)
         if kind == 'turn/start':
             final_assistant = None
         if kind == 'turn/end':
@@ -307,7 +327,9 @@ def messages(records):
                     and data['reason'].get('kind') == 'completed'
                     and type(event.get('seq')) is int and event['seq'] >= 0):
                 final_assistant['forkMessageId'] = str(event['seq'])
+                final_assistant['phase'] = 'final_answer'
             final_assistant = None
+            current_turn = None
         if kind in ('user/message', 'assistant/message'):
             message = data.get('message', data)
             metadata = {}
@@ -347,7 +369,20 @@ def messages(records):
                 else:
                     visible = True
         elif kind in ('tool/call', 'tool/result', 'todo/write'):
-            result.append({'id': str(event.get('seq')), 'role': 'activity', 'title': data.get('name') or data.get('toolName') or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2)})
+            tool = data.get('name') or data.get('toolName')
+            result.append({'id': str(event.get('seq')), 'role': 'activity', 'kind': kind,
+                           'title': tool or kind, 'text': json.dumps(data, ensure_ascii=False, indent=2),
+                           **({'toolName': tool[:160]} if isinstance(tool, str) and tool else {})})
+        # Presentation metadata follows native boundaries, including a user
+        # supplement inside a turn. It does not change write/approval routing.
+        for row in result[first_row:]:
+            if current_turn is not None:
+                row['turnId'] = current_turn
+                row.update(clocks.get(current_turn, {}))
+                if current_turn in states:
+                    row['turnStatus'] = states[current_turn]
+                if row['role'] == 'assistant' and current_turn in states:
+                    row['phase'] = 'commentary'
     for message in result:
         display_file_mentions(message)
     return result

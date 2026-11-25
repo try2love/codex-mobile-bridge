@@ -1,0 +1,12 @@
+[package]
+name = "thunk-rs"
+version = "0.3.5"
+edition = "2021"
+license = "MIT"
+description = "Bridge build adapter: use the supported Windows toolchain without legacy Windows 7 thunks"
+
+[lib]
+name = "thunk"
+
+[features]
+win7 = []

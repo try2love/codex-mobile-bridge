@@ -25,7 +25,7 @@ function timelineFilePath(path,cwd){
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  static clearCache(key){if(key)recentTimelinePages.delete(key);else recentTimelinePages.clear();}
+  static clearCache(key){if(key)recentTimelinePages.delete(key);else recentTimelinePages.clear();window.BridgeChatHistoryCache?.forget(key);}
   constructor({url, request, renderMeta, renderText, status, onAction, onFile, onReady, canEdit = () => true, elements = {}, active = () => true, cacheKey = ''}) {
     Object.assign(this,{url,request,renderMeta,renderText,status,onAction,onFile,onReady,active,cacheKey});
     this.canEdit=()=>!this.cached&&canEdit();
@@ -40,19 +40,30 @@ class ChatTimeline {
     this.showReasoning=document.documentElement.dataset.showReasoning!=='false';
     this.showProcess=document.documentElement.dataset.showProcess!=='false';
     this.showToolImages=document.documentElement.dataset.showToolImages!=='false';
+    this.lastViewportHeight=this.viewport.clientHeight;
     this.onScroll=()=>{
       if(this.suppress||!this.viewport.clientHeight)return;
       const upward=this.viewport.scrollTop<this.lastTop;
-      this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
+      // A viewport resize can clamp scrollTop upward while it remains at bottom.
+      const resized=this.viewport.clientHeight!==this.lastViewportHeight;this.lastViewportHeight=this.viewport.clientHeight;
+      this.lastTop=this.viewport.scrollTop;this.following=resized&&this.following&&this.atBottom()||!upward&&this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
     this.viewport.addEventListener('scroll',this.onScroll,{passive:true});
+    this.onActivityClick=event=>{
+      const activity=event.target?.closest?.('summary')?.closest?.('.activity');
+      const row=activity?.closest?.('[data-key]');
+      if(!row||this.nodes.get(row.dataset.key)?.node!==row)return;
+      this.following=false;
+      this.anchor={key:row.dataset.key,offset:row.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top};
+    };
+    this.viewport.addEventListener('click',this.onActivityClick,true);
     // At the scroll boundary wheel/touch intent produces no scroll event.
     this.atHistoryEdge=()=>!this.suppress&&this.viewport.clientHeight&&this.viewport.scrollTop<=1&&!this.retryCount;
-    this.onWheel=event=>{if(event.deltaY<0&&this.atHistoryEdge())this.loadOlder(100);};
-    this.onTouchStart=event=>{this.touchY=event.touches.length===1?event.touches[0].clientY:null;};
-    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1)return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
+    this.onWheel=event=>{if(event.deltaY<0&&!event.target?.closest?.('.activity-body')&&this.atHistoryEdge())this.loadOlder(100);};
+    this.onTouchStart=event=>{this.touchY=event.touches.length===1&&!event.target?.closest?.('.activity-body')?event.touches[0].clientY:null;};
+    this.onTouchMove=event=>{if(this.touchY===null||event.touches.length!==1||event.target?.closest?.('.activity-body'))return;const y=event.touches[0].clientY;if(y-this.touchY>12&&this.atHistoryEdge()){this.touchY=y;this.loadOlder(100);}};
     this.viewport.addEventListener('wheel',this.onWheel,{passive:true});
     this.viewport.addEventListener('touchstart',this.onTouchStart,{passive:true});
     this.viewport.addEventListener('touchmove',this.onTouchMove,{passive:true});
@@ -60,10 +71,12 @@ class ChatTimeline {
     this.newer.onclick=()=>{this.jumpBottom();this.anchor=this.capture();};
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
+    // The keyboard and composer can resize the viewport without changing message content.
+    this.resize.observe(this.viewport);
   }
-  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
+  dispose(){this.abort.abort();window.BridgeMermaidCards?.clearScope(this.mermaidScope);clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.viewport.removeEventListener('click',this.onActivityClick,true);this.viewport.removeEventListener('wheel',this.onWheel);this.viewport.removeEventListener('touchstart',this.onTouchStart);this.viewport.removeEventListener('touchmove',this.onTouchMove);this.newer.hidden=true;}
   atBottom(){return chatFollowsLatest(this.viewport);}
-  nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
+  nearTop(){return this.viewport.scrollTop<=160;}
   capture(accept){return this.viewport.clientHeight?captureChatScrollAnchor(this.viewport,this.container,accept):this.anchor;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
@@ -85,7 +98,10 @@ class ChatTimeline {
         entry.node.replaceWith(node);entry.node=node;restoreChatActivityState(node,reading);
       }
       entry.node.hidden=!this.rowVisible(row);
+      if(entry.node.hidden)entry.node.__cancelProcessReads?.();
     }
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     this.refreshActions();
     this.restore(anchor,bottom);
   }
@@ -98,7 +114,7 @@ class ChatTimeline {
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
     else restoreChatScrollAnchor(this.viewport,node,anchor);
-    this.lastTop=this.viewport.scrollTop;
+    this.lastTop=this.viewport.scrollTop;this.lastViewportHeight=this.viewport.clientHeight;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
   }
@@ -109,11 +125,15 @@ class ChatTimeline {
     if(this.sequence<0&&this.cacheKey&&recentTimelinePages.has(this.cacheKey)){
       this.apply(recentTimelinePages.get(this.cacheKey),true,false,true);
     }
+    if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey,'timeline-recent-v1').then(page=>{
+      if(page&&!this.receivedFreshPage&&this.sequence<0&&!this.abort.signal.aborted)this.apply(page,true,false,true);
+    });
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
       const page=await this.read('timeline',{limit:20});
       if(this.abort.signal.aborted)return;
       this.apply(page,true);this.updates();
+      if(this.hasMore&&page.rows.length&&page.rows.every(row=>chatActivityKind(row)))this.loadOlder(100);
     }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
     finally{this.starting=false;}
   }
@@ -126,19 +146,30 @@ class ChatTimeline {
       // of hidden tool activity may otherwise leave scrollTop stuck at zero.
       for(let attempt=0;attempt<3;attempt++){
         const generation=this.generation,before=this.before;
-        const page=await this.read('timeline',{before,limit:count});
+        const result=await readChatHistoryBatch(cursor=>this.read('timeline',{before:cursor,limit:count}),before,{
+          known:new Set(this.rows.keys()),current:()=>!this.abort.signal.aborted&&generation===this.generation});
         if(this.abort.signal.aborted)return;
-        if(generation!==this.generation)continue;
-        if(page.reset||page.epoch!==this.epoch){this.apply(page,true);if(!this.hasMore)return;continue;}
-        if(page.hasMore&&(!page.rows.length||page.before===before)){this.retryCount=count;return;}
-        const visible=page.rows.some(row=>!this.rows.has(row.key)&&this.rowVisible(row));
-        this.apply(page,false,true);
-        if(visible||!this.hasMore||!this.active()||!this.nearTop())return;
+        if(result.cancelled)continue;
+        const reset=result.reset||result.pages.find(page=>page.epoch!==this.epoch);
+        if(reset){this.apply(reset,true);if(!this.hasMore)return;continue;}
+        if(result.pages.length){
+          const pages=result.pages,last=pages.at(-1),rows=new Map(),files=new Map();
+          for(const page of [...pages].reverse()){
+            for(const row of page.rows)rows.set(row.key,row);
+            for(const file of page.files||[])files.set(file.id,file);
+          }
+          // Commit one visual change for one history intent, even when several
+          // native pages contained only intermediate activity records.
+          this.apply({...last,sequence:Math.min(...pages.map(page=>page.sequence)),rows:[...rows.values()],files:[...files.values()]},false,true);
+        }
+        if(result.error||result.stalled)this.retryCount=count;
+        return;
       }
     }catch(e){if(this.abort.signal.aborted)return;this.retryCount=count;}
     finally{this.busy=false;if(!this.abort.signal.aborted)this.historyStatus();}
   }
   apply(page,reset=false,history=false,cached=false){
+    if(!cached&&!history&&!page.meta.loadingHistory)this.receivedFreshPage=true;
     if(this.cached&&!cached){
       // An empty owner-discovery response is not an empty conversation.
       if(!page.rows.length&&page.meta.loadingHistory){
@@ -166,25 +197,32 @@ class ChatTimeline {
         if(actions&&JSON.stringify(before)===JSON.stringify(after)){
           // Late native clocks must not replace text selection or a player.
           actions.querySelector('.message-time')?.remove();renderChatMessageTime(actions,timestamp);
-          old.stamp=stamp;continue;
+          old.node.__chatMessage=row;old.stamp=stamp;continue;
         }
       }
       const node=this.renderRow(row);node.dataset.key=row.key;
       node.hidden=!this.rowVisible(row);changed=changed||!node.hidden;
       this.nodes.set(row.key,{node,stamp});
     }
-    const ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
-    syncChatMessageNodes(this.container,ordered.map(row=>this.nodes.get(row.key).node));
+    let ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
+    if(!reset&&!history&&!this.busy&&chatShouldSlideHistory(ordered.length,bottom)){
+      // The original epoch/cursor can still fetch omitted rows on demand.
+      // Do not move a reader's history window or an in-flight backfill.
+      for(const row of ordered.slice(0,-160)){this.rows.delete(row.key);this.nodes.delete(row.key);this.details.delete(row.key);}
+      ordered=ordered.slice(-160);this.before=this.epoch+'.'+ordered[0].key;this.hasMore=true;this.windowRevision++;
+    }
+    syncChatMessageNodes(this.container,chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered));
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(!cached&&!history&&this.cacheKey){
       const rows=ordered.slice(-20);
-      // Memory-only, bounded and gateway/auth/host/thread scoped by the caller.
+      // Bounded and gateway/auth/host/thread scoped by the caller.
       // Cached approvals and access permissions never become actionable state.
       recentTimelinePages.delete(this.cacheKey);
       if(rows.length)recentTimelinePages.set(this.cacheKey,JSON.parse(JSON.stringify({rows,sequence:this.sequence,epoch:this.epoch,
         before:this.epoch+'.'+rows[0].key,hasMore:this.hasMore||ordered.length>20,meta:{requests:[]},files:page.files||[]})));
+      if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'timeline-recent-v1',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
       while(recentTimelinePages.size>8)recentTimelinePages.delete(recentTimelinePages.keys().next().value);
     }
     if(!cached&&!history&&!this.abort.signal.aborted&&!page.meta.loadingHistory)this.onReady?.();
@@ -192,31 +230,15 @@ class ChatTimeline {
   renderRow(row,open){
     const activity=row.role==='activity'||row.role==='fileChanges',toolImages=activity&&row.attachments?.some(item=>item.type==='toolImage');
     const node=document.createElement(activity&&!toolImages?'details':'div');
+    node.__chatMessage=row;
     node.className=toolImages?'tool-images timeline-row':activity?'activity timeline-row':'message timeline-row '+row.role;
     const content=toolImages?document.createElement('details'):node;
     if(toolImages){content.className='activity';node.append(content);}
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
-    heading.textContent=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');content.append(heading);
+    heading.textContent=activity?chatActivityLabel(row):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');content.append(heading);
+    if(activity&&!row.fileSummary)renderChatActivityLabel(heading,row);
     if(row.fileSummary){
-      node.classList.add('edited-files-card');
-      heading.replaceChildren();
-      const label=document.createElement('span');label.className='edited-files-label';label.textContent=fileChangeLabel(row);
-      const stats=document.createElement('span');stats.className='edited-files-stats';
-      const added=document.createElement('span');added.className='edited-files-added';added.textContent='+'+row.fileSummary.added;
-      const removed=document.createElement('span');removed.className='edited-files-removed';removed.textContent='−'+row.fileSummary.removed;
-      stats.append(added,removed);heading.append(label);
-      if(row.fileSummary.basis==='recorded'){
-        const basis=document.createElement('small');basis.className='edited-files-basis';basis.textContent=timelineText('累计修改');heading.append(basis);
-      }
-      heading.append(stats);
-      const list=document.createElement('ul');list.className='edited-files-list';
-      for(const file of row.fileSummary.files){
-        const item=document.createElement('li'),path=document.createElement(this.onFile?'button':'span'),counts=document.createElement('span');
-        if(this.onFile){path.type='button';path.onclick=()=>this.onFile(file.path);}
-        path.textContent=file.path;path.className='edited-files-path';counts.textContent='+'+file.added+' −'+file.removed;counts.className='edited-files-stats';item.append(path,counts);list.append(item);
-        if(this.onFile)path.classList.add('plain');
-      }
-      content.append(list);
+      renderChatFileSummary(content,row,this.onFile);
       // File cards expand the supplied summary only, including old cached rows
       // which may still advertise a patch body. Never request their details.
       content.open=!!open;
@@ -251,7 +273,7 @@ class ChatTimeline {
       finally{more.disabled=false;}
     };
     more.onclick=load;content.append(body,more);paint();
-    if(row.role==='user'||row.role==='assistant'){
+    if(!activity&&(row.role==='user'||row.role==='assistant')){
       const actions=document.createElement('div');actions.className='message-actions';
       const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
       const quote=document.createElement('button');quote.type='button';quote.className='plain message-quote';quote.textContent=timelineText('引用');quote.onclick=()=>node.dispatchEvent(new CustomEvent('bridge-compose-quote',{bubbles:true,detail:{getText:()=>this.fullText(row),source:row.key}}));actions.append(quote);
@@ -305,28 +327,38 @@ class ChatTimeline {
     this.historyStatus();
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
-      const node=entry.node,heading=(row.role==='activity'||row.role==='fileChanges')?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
+      const node=entry.node,activity=row.role==='activity'||row.role==='fileChanges',heading=activity?(node.tagName==='DETAILS'?node.firstElementChild:node.querySelector('details.activity > summary')):node.firstElementChild;
       if(row.fileSummary){const label=node.querySelector('.edited-files-label');if(label)label.textContent=fileChangeLabel(row);const basis=node.querySelector('.edited-files-basis');if(basis)basis.textContent=timelineText('累计修改');}
-      else if(heading)heading.textContent=(row.role==='activity'||row.role==='fileChanges')?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+      else if(heading){if(activity)renderChatActivityLabel(heading,row);else heading.textContent=row.role==='user'?timelineText('你'):row.role==='error'?timelineText('执行错误'):['CODEX',row.model&&[row.model,row.effort].filter(Boolean).join(' ')].filter(Boolean).join(' · ');}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
+    const ordered=[...this.rows.values()].map(value=>value.row).sort((a,b)=>a.order-b.order);
+    chatNodesWithTurnCompletions(this.container,ordered.map(row=>this.nodes.get(row.key).node),ordered);
   }
   async updates(){
+    let after=this.sequence,through='',snapshot=null;
     while(!this.abort.signal.aborted){
       if(!this.active()){await this.pause(1000);continue;}
       try{
         const generation=this.generation,windowRevision=this.windowRevision;
-        const page=await this.read('changes',{after:this.sequence,epoch:this.epoch,start:this.before||''});
+        const page=await this.read('changes',{after,epoch:this.epoch,start:this.before||'',paged:1,through});
         if(this.abort.signal.aborted)return;
-        if(generation!==this.generation||windowRevision!==this.windowRevision)continue;
+        if(generation!==this.generation||windowRevision!==this.windowRevision){after=-1;through='';snapshot=null;continue;}
         // History may have expanded the window while this poll was in flight.
         // Polls never replace the oldest loaded cursor.
         this.apply(page,!!page.reset);
-        await this.pause(200);
+        if(page.reset){after=this.sequence;through='';snapshot=null;}
+        else{
+          snapshot=snapshot===null?page.sequence:Math.min(snapshot,page.sequence);
+          through=page.next||'';
+          // Revisit edits made during a multi-page resync on the next poll.
+          if(!through){after=snapshot;snapshot=null;}
+        }
+        await this.pause(through?0:200);
       }catch(e){if(this.abort.signal.aborted)return;this.status(timelineText('重新连接中'));await this.pause(3000);}
     }
   }

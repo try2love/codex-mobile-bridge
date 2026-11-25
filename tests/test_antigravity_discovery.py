@@ -2,8 +2,12 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import plistlib
+import shutil
+import struct
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -57,6 +61,15 @@ class AntigravityDiscoveryTests(unittest.TestCase):
                 mock.patch.object(native, '_listener', return_value=listener) as listeners:
             value = native.endpoint(surface, self.home)
             return value, listeners.call_args.args[1]
+
+    def test_darwin_identity_keeps_the_existing_native_signature(self):
+        identity = {'pid': 123, 'uid': 1000, 'image': '/Applications/Antigravity.app/Contents/MacOS/Antigravity', 'zombie': False}
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(native.os, 'getuid', return_value=1000, create=True), \
+                mock.patch('bridge.platforms.macos.force_exit.Native') as force_exit:
+            force_exit.return_value.identity.return_value = identity
+            self.assertIs(native._identity(123), identity)
+        force_exit.return_value.identity.assert_called_once_with(123)
 
     def test_official_app_and_ide_hub_use_their_native_ls_listener(self):
         _, image = self.bundle()
@@ -209,6 +222,37 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '停用'):
                 manager.register_antigravity_application(str(cli))
 
+    @unittest.skipUnless(os.name == 'posix', 'stable application symlink')
+    def test_registered_stable_symlink_follows_update_without_changing_the_configuration_home(self):
+        app, _ = self.bundle()
+        updated = self.home/'updated/Antigravity.app'
+        shutil.copytree(app, updated)
+        selected = self.home/'Stable Antigravity.app'; selected.symlink_to(app, target_is_directory=True)
+        manager = DesktopSessions(self.home/'gateway'); self.addCleanup(manager.close)
+        original_home = str(self.home/'existing-configuration'); manager.config['antigravityHome'] = original_home
+        original = discover_clients
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+             mock.patch.object(manager, '_discovery_preferences', side_effect=lambda: {
+                 'antigravityApplications': manager.config.get('antigravityApplications', {}),
+                 'antigravityHome': manager.config['antigravityHome']}), \
+             mock.patch('bridge.clients.discovery.discover_clients', side_effect=lambda preferences: original(
+                 preferences, platform='darwin', home=self.home, env={}, applications=[])), \
+             mock.patch.object(manager, 'clients', side_effect=lambda **_: {'clients': list(manager.config['discovered'].values())}), \
+             mock.patch('bridge.clients.desktop_app.process_inventory', side_effect=lambda paths: {
+                 Path(path): {'pids': [], 'commands': {}} for path in paths}), \
+             mock.patch('bridge.clients.lifecycle.launch_client', side_effect=AssertionError('launch')):
+            manager.register_antigravity_application(str(selected))
+            self.assertEqual(manager.config['discovered']['antigravity']['application'], str(app.resolve()))
+            original_directory = manager.config['discovered']['antigravity']['dataDirectory']
+            selected.unlink(); selected.symlink_to(updated, target_is_directory=True)
+            manager.scan(inventory_only=True)
+        row = manager.config['discovered']['antigravity']
+        self.assertEqual(row['application'], str(updated.resolve()))
+        self.assertEqual(row['installations']['app']['executable'], str(updated/'Contents/MacOS/Antigravity'))
+        self.assertEqual(row['dataDirectory'], original_directory)
+        self.assertEqual(manager.config['antigravityHome'], original_home)
+        self.assertEqual(json.loads(manager.config_path.read_text())['antigravityApplications']['app'], str(selected))
+
     def test_inventory_survives_restart_without_scanning_but_manual_scan_and_missing_path_refresh(self):
         binary = self.home/'native-app'
         binary.write_bytes(b'fixture')
@@ -233,6 +277,301 @@ class AntigravityDiscoveryTests(unittest.TestCase):
                         manager.scan(inventory_only=True)
                         self.assertEqual(discover.call_count, 3)
                 manager.close()
+
+    @unittest.skipUnless(os.name == 'posix', 'synthetic POSIX /proc ownership and symlinks')
+    @mock.patch('bridge.platforms.antigravity.sys.platform', 'linux')
+    def test_linux_appimage_installation_and_extract_runtime_verification(self):
+        from bridge.platforms.linux import appimage as linux_appimage
+        from bridge.platforms.linux import desktop as linux_desktop
+
+        appimage_file = self.home/'Antigravity.AppImage'
+        appimage_file.write_bytes(b'\x7fELF\x02\x01\x01\x00AI\x02fixture')
+        appimage_file.chmod(0o755)
+        desktop_entry = {
+            'name': 'Antigravity',
+            'exec': 'AppRun --no-sandbox %U',
+            'type': 'Application',
+            'startupwmclass': 'Antigravity',
+            'x-appimage-version': '2.33.0',
+        }
+        # 仅在 Type 2 且内置桌面元数据匹配官方 Antigravity 时才接受 AppImage 安装包
+        with mock.patch.object(linux_appimage, 'is_type2', return_value=True), \
+                mock.patch.object(linux_appimage, 'metadata', side_effect=lambda p, m: desktop_entry if m == 'antigravity.desktop' else None):
+            info = native.installation(appimage_file, platform='linux')
+            self.assertEqual(info['surface'], 'app')
+            self.assertEqual(info['version'], '2.33.0')
+            self.assertEqual(info['packageType'], 'appimage')
+
+            desktop_entry_spoof = {**desktop_entry, 'name': 'EvilTool'}
+            with mock.patch.object(linux_appimage, 'metadata', return_value=desktop_entry_spoof):
+                self.assertIsNone(native.installation(appimage_file, platform='linux'))
+
+        if sys.platform != 'linux':
+            return
+
+        # 构造模拟 /proc 进程树：10(AppImage) -> 11(extracted antigravity) -> 12(extracted language_server)，以及 13(伪造 APPIMAGE 环境变量)
+        proc = Path(self.temp.name)/'proc'
+        extract_dir = str(Path(self.temp.name)/'appimage_extracted_fixture123')
+        extracted = Path(extract_dir)
+        extracted.mkdir()
+        (extracted/'antigravity').write_bytes(b'fixture Antigravity binary')
+        (extracted/'resources').mkdir()
+        payload = json.dumps({'name':'antigravity','productName':'Antigravity','version':'2.33.0'}).encode()
+        index = json.dumps({'files':{'package.json':{'size':len(payload),'offset':'0'}}}).encode()
+        (extracted/'resources/app.asar').write_bytes(
+            struct.pack('<4I',4,8+len(index),4+len(index),len(index))+index+payload)
+        for pid, ppid, exe_target, env_bytes, cmdline in [
+            (10, 1, str(appimage_file), b'', f'{appimage_file}\0'),
+            (11, 10, f'{extract_dir}/antigravity (deleted)', b'', f'{extract_dir}/antigravity\0--ozone-platform=wayland\0'),
+            (12, 11, f'{extract_dir}/resources/bin/language_server (deleted)',
+             f'APPIMAGE={appimage_file}\x00APPDIR={extract_dir}\x00'.encode(),
+             f'{extract_dir}/resources/bin/language_server\0--standalone\0--app_data_dir\0antigravity\0--csrf_token\0fixturetoken123456\0'),
+            (13, 999, '/tmp/evil_extract/resources/bin/language_server (deleted)',
+             f'APPIMAGE={appimage_file}\x00APPDIR=/tmp/evil_extract\x00'.encode(),
+             '/tmp/evil_extract/resources/bin/language_server\0--standalone\0--app_data_dir\0antigravity\0--csrf_token\0fixturetoken123456\0'),
+            (999, 1, str(self.home/'unrelated'), b'', '/bin/sh\0'),
+        ]:
+            (self.home/'unrelated').write_bytes(b'x') if pid == 999 else None
+            pdir = proc/str(pid)
+            pdir.mkdir(parents=True, exist_ok=True)
+            (pdir/'stat').write_text(f'{pid} (proc) S {ppid} ' + ' '.join(['0'] * 17) + f' {pid}0 0')
+            (pdir/'exe').symlink_to(exe_target)
+            (pdir/'environ').write_bytes(env_bytes)
+            (pdir/'cmdline').write_bytes(cmdline.encode())
+
+        log = self.home/'.config/Antigravity/logs/language_server.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text('Language server listening on random port at 45678 for HTTP\n')
+
+        def map_proc(value):
+            value = str(value)
+            if value == '/proc':
+                return proc
+            if value.startswith('/proc/'):
+                return proc/value[len('/proc/'):]
+            return Path(value)
+        original_readlink = os.readlink
+        def map_readlink(value, *args):
+            return original_readlink(map_proc(value), *args) if str(value).startswith('/proc/') else original_readlink(value, *args)
+        with mock.patch.object(linux_appimage, 'is_type2', return_value=True), \
+                mock.patch.object(linux_appimage, 'metadata', side_effect=lambda p, m: desktop_entry if m == 'antigravity.desktop' else None), \
+                mock.patch('bridge.platforms.linux.desktop.Path', side_effect=map_proc), \
+                mock.patch('bridge.platforms.linux.force_exit.Path', side_effect=map_proc), \
+                mock.patch('bridge.platforms.linux.force_exit.os.readlink', side_effect=map_readlink), \
+                mock.patch.object(native, 'Path', side_effect=map_proc), \
+                mock.patch.object(native, '_identity', side_effect=lambda pid: {
+                    'pid': pid, 'parent': {10: 1, 11: 10, 12: 11, 13: 999, 14: 1}[pid],
+                    'uid': os.getuid(), 'ruid': os.getuid(), 'birth': [pid, 1],
+                    'image': {10: str(appimage_file), 11: f'{extract_dir}/antigravity (deleted)',
+                              12: f'{extract_dir}/resources/bin/language_server (deleted)',
+                              13: '/tmp/evil_extract/resources/bin/language_server (deleted)'}[pid],
+                    'zombie': False}), \
+                mock.patch('bridge.platforms.antigravity.Path.home', return_value=self.home), \
+                mock.patch.object(native, '_listener', side_effect=lambda pid, port, _img: pid == 12 and port == 45678):
+            # Shared inventory keeps the historical absolute image path but strips
+            # the kernel marker; only Antigravity's verifier receives that marker.
+            default_images = {int(p.name): str(image) for p, image in linux_desktop._process_rows()
+                              if int(p.name) in (11, 12, 13)}
+            self.assertEqual(default_images, {
+                11: f'{extract_dir}/antigravity',
+                12: f'{extract_dir}/resources/bin/language_server',
+                13: '/tmp/evil_extract/resources/bin/language_server',
+            })
+            self.assertTrue(native._trusted_image(f'{extract_dir}/resources/bin/language_server (deleted)', pid=12))
+            self.assertFalse(native._trusted_image('/tmp/evil_extract/resources/bin/language_server (deleted)', pid=13))
+            self.assertEqual([pid for pid, _ in native._candidates()], [12])
+
+            ep = native.endpoint('app', self.home)
+            self.assertEqual(ep['address'], 'http://127.0.0.1:45678')
+            self.assertEqual(ep['identity']['pid'], 12)
+            native.verify_endpoint(ep)
+
+            # 验证 FUSE 挂载模式下即使无直接 AppImage 父进程，也可通过 _mounts + runtime_candidates 核验
+            fuse_dir = extracted
+            fuse_proc = proc/'14'
+            fuse_proc.mkdir(parents=True, exist_ok=True)
+            (fuse_proc/'stat').write_text('14 (proc) S 1 ' + ' '.join(['0'] * 17) + ' 140 0')
+            (fuse_proc/'exe').symlink_to(f'{fuse_dir}/resources/bin/language_server')
+            (fuse_proc/'environ').write_bytes(f'APPIMAGE={appimage_file}\x00APPDIR={fuse_dir}\x00'.encode())
+            with mock.patch.object(linux_appimage, '_mounts', return_value={fuse_dir}), \
+                    mock.patch.object(linux_appimage, 'runtime_candidates', return_value=[{'executable': f'{fuse_dir}/antigravity'}]):
+                self.assertTrue(native._trusted_image(f'{fuse_dir}/resources/bin/language_server', pid=14))
+                self.assertFalse(native._trusted_image(f'{fuse_dir}/resources/bin/language_server', pid=13))
+
+    @unittest.skipUnless(os.name == 'posix', 'synthetic POSIX /proc ownership and symlinks')
+    @mock.patch('bridge.platforms.antigravity.sys.platform', 'linux')
+    def test_extract_and_run_without_unsquashfs_requires_bound_image_and_verified_payload(self):
+        from bridge.platforms.linux import appimage as linux_appimage
+        from bridge.platforms.linux import desktop as linux_desktop
+
+        image = self.home/'Applications/Antigravity.AppImage'
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b'fixture Type 2 Antigravity AppImage')
+        image.chmod(0o755)
+        appdir = Path(self.temp.name)/'appimage_extracted_fixture'
+        appdir.mkdir()
+        (appdir/'AppRun').write_text('#!/bin/sh\n')
+        (appdir/'AppRun').chmod(0o755)
+        binary = appdir/'antigravity'
+        binary.write_bytes(b'fixture Antigravity GUI')
+        binary.chmod(0o755)
+        meta = json.dumps({'name': 'antigravity', 'productName': 'Antigravity',
+                           'version': '2.33.0'}).encode()
+        index = json.dumps({'files': {'package.json': {'size': len(meta), 'offset': '0'}}}).encode()
+        (appdir/'resources').mkdir()
+        (appdir/'resources/app.asar').write_bytes(
+            struct.pack('<4I', 4, 8+len(index), 4+len(index), len(index)) + index + meta)
+        server = appdir/'resources/bin/language_server'
+        server.parent.mkdir(parents=True)
+        server.write_bytes(b'fixture server')
+        raw_server = str(server)+' (deleted)'
+
+        proc = Path(self.temp.name)/'extract-proc'
+        rows = {
+            30: (1, str(image)),
+            31: (30, str(appdir/'AppRun')),
+            32: (31, str(binary)+' (deleted)'),
+            33: (32, raw_server),
+            34: (32, str(server)+' (deleted)'),
+            35: (32, raw_server),
+        }
+        log = self.home/'.config/Antigravity/logs/language_server.log'
+        log.parent.mkdir(parents=True)
+        log.write_text('Language server listening on random port at 45678 for HTTP\n')
+        for pid, (parent, executable) in rows.items():
+            root = proc/str(pid)
+            root.mkdir(parents=True)
+            (root/'stat').write_text(f'{pid} (fixture) S {parent} '+' '.join(['0']*17)+f' {pid}0 0')
+            (root/'exe').symlink_to(executable)
+            app_env = f'APPIMAGE={image}\0APPDIR={appdir}\0'.encode()
+            spoof_env = f'APPIMAGE={image}\0APPDIR={Path(self.temp.name)/"unrelated"}\0'.encode()
+            wrong_image_env = f'APPIMAGE={self.home/"other.AppImage"}\0APPDIR={appdir}\0'.encode()
+            (root/'environ').write_bytes(app_env if pid == 33 else spoof_env if pid == 34 else wrong_image_env if pid == 35 else b'')
+            (root/'cmdline').write_bytes(
+                b'language_server\0--standalone\0--app_data_dir\0antigravity\0--csrf_token\0fixture-token-12345678\0')
+
+        def map_proc(value):
+            value = str(value)
+            if value == '/proc':
+                return proc
+            if value.startswith('/proc/'):
+                return proc/value[len('/proc/'):]
+            return Path(value)
+        with mock.patch.object(linux_appimage, 'is_type2', return_value=True), \
+                mock.patch.object(linux_appimage, '_parser', return_value=None), \
+                mock.patch.object(native, 'Path', side_effect=map_proc), \
+                mock.patch('bridge.platforms.linux.force_exit.Path', side_effect=map_proc), \
+                mock.patch('bridge.platforms.linux.desktop.Path', side_effect=map_proc), \
+                mock.patch.object(native, '_identity', side_effect=lambda pid: {
+                    'pid': pid, 'uid': os.getuid(), 'parent': rows[pid][0],
+                    'birth': [pid, 1], 'image': rows[pid][1], 'zombie': False}), \
+                mock.patch.object(native, '_listener', return_value=True), \
+                mock.patch.object(linux_desktop, '_process_rows', return_value=[
+                    (proc/'33', Path(raw_server)), (proc/'34', Path(rows[34][1]))]), \
+                mock.patch('bridge.platforms.antigravity.Path.home', return_value=self.home):
+            self.assertIsNone(native._appimage_metadata(image))
+            self.assertTrue(native._trusted_image(raw_server, pid=33))
+            self.assertFalse(native._trusted_image(rows[34][1], pid=34))
+            self.assertFalse(native._trusted_image(raw_server, pid=35))
+            discovered = native.installation(image, platform='linux')
+            self.assertEqual(discovered['packageType'], 'appimage')
+            self.assertEqual(discovered['surface'], 'app')
+            inventory = discover_clients(platform='linux', home=self.home, env={'PATH': ''})
+            self.assertIn('antigravity', inventory)
+            self.assertEqual(inventory['antigravity']['installations']['app']['executable'], str(image))
+            missing_appdir = appdir.with_name(appdir.name+'-removed')
+            appdir.rename(missing_appdir)
+            self.assertFalse(native._trusted_image(raw_server, pid=33))
+            self.assertIsNone(native.installation(image, platform='linux'))
+            missing_appdir.rename(appdir)
+            archive = appdir/'resources/app.asar'
+            verified_archive = archive.read_bytes()
+            archive.write_bytes(b'forged payload without an Antigravity manifest')
+            self.assertFalse(native._trusted_image(raw_server, pid=33))
+            archive.write_bytes(verified_archive)
+            (proc/'33'/'environ').write_bytes(spoof_env)
+            self.assertFalse(native._trusted_image(raw_server, pid=33))
+            self.assertIsNone(native.installation(image, platform='linux'))
+            (proc/'33'/'environ').write_bytes(app_env)
+            self.assertEqual(native.installation(image, platform='linux')['surface'], 'app')
+            self.assertIn('antigravity', discover_clients(platform='linux', home=self.home, env={'PATH': ''}))
+            endpoint = native.endpoint('app', self.home)
+            self.assertEqual(endpoint['identity']['pid'], 33)
+
+    @mock.patch('bridge.platforms.antigravity.sys.platform', 'linux')
+    def test_linux_unpacked_asar_and_fuse_without_unsquashfs_and_desktop_autodiscovery(self):
+        from bridge.platforms.linux import appimage as linux_appimage
+
+        def make_asar(folder, pkg_name='antigravity', product_name='Antigravity', version='2.33.0'):
+            folder.mkdir(parents=True, exist_ok=True)
+            exe = folder/'antigravity'
+            exe.write_bytes(b'\x7fELFfixture')
+            exe.chmod(0o755)
+            meta = json.dumps({'name': pkg_name, 'productName': product_name, 'version': version}).encode()
+            idx = json.dumps({'files': {'package.json': {'size': len(meta), 'offset': '0'}}}).encode()
+            (folder/'resources/bin').mkdir(parents=True, exist_ok=True)
+            (folder/'resources/app.asar').write_bytes(struct.pack('<4I', 4, 8+len(idx), 4+len(idx), len(idx)) + idx + meta)
+            ls = folder/'resources/bin/language_server'
+            ls.write_bytes(b'\x7fELFserver')
+            return exe, ls
+
+        # 1. 解压目录名称并非 "antigravity"（例如自定义压缩包目录）时，凭 app.asar + 主程序验证即可信任
+        custom_root = Path(self.temp.name)/'downloads/custom-unpack'
+        custom_exe, custom_ls = make_asar(custom_root)
+        info = native.installation(custom_exe, platform='linux')
+        self.assertEqual(info, {'application': str(custom_exe), 'executable': str(custom_exe), 'version': '2.33.0', 'surface': 'app'})
+        self.assertTrue(native._trusted_image(custom_ls))
+
+        fake_root = Path(self.temp.name)/'downloads/fake-unpack'
+        _, fake_ls = make_asar(fake_root, pkg_name='unrelated-app', product_name='Unrelated')
+        self.assertFalse(native._trusted_image(fake_ls))
+
+        if sys.platform != 'linux':
+            return
+
+        # 2. FUSE 挂载模式下即使系统缺少 unsquashfs（_parser=None），也能完成冷安装识别与运行时信任校验
+        fuse_mount = Path(self.temp.name)/'.mount_AntigFuse'
+        fuse_exe, fuse_ls = make_asar(fuse_mount, version='2.33.0')
+        (fuse_mount/'antigravity.desktop').write_text(
+            '[Desktop Entry]\nType=Application\nName=Antigravity\nStartupWMClass=Antigravity\nExec=AppRun %U\nX-AppImage-Version=2.33.0\n'
+        )
+        appimage_file = self.home/'Applications/Antigravity.AppImage'
+        appimage_file.parent.mkdir(parents=True, exist_ok=True)
+        appimage_file.write_bytes(b'\x7fELF\x02\x01\x01\x00AI\x02fuse')
+        appimage_file.chmod(0o755)
+        launcher = self.home/'Applications/antigravity-launcher.sh'
+        launcher.write_text('#!/bin/sh\nexit 88\n')
+        launcher.chmod(0o755)
+        entries = self.home/'.local/share/applications'
+        entries.mkdir(parents=True, exist_ok=True)
+        (entries/'antigravity.desktop').write_text(f'[Desktop Entry]\nName=Antigravity\nType=Application\nExec="{launcher}" %F\n')
+
+        proc = Path(self.temp.name)/'proc-fuse'
+        pdir = proc/'44'
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir/'stat').write_text('44 (language_server) S 1 ' + ' '.join(['0'] * 17) + ' 440 0')
+        (pdir/'environ').write_bytes(f'APPIMAGE={appimage_file}\x00APPDIR={fuse_mount}\x00'.encode())
+        map_proc = lambda value: proc if str(value) == '/proc' else Path(value)
+
+        with mock.patch.object(linux_appimage, '_parser', return_value=None), \
+                mock.patch.object(linux_appimage, 'is_type2', return_value=True), \
+                mock.patch.object(linux_appimage, '_mounts', return_value={fuse_mount}), \
+                mock.patch.object(linux_appimage, 'runtime_candidates', return_value=[{'executable': str(fuse_exe)}]), \
+                mock.patch.object(native, 'Path', side_effect=map_proc):
+            app_info = native.installation(appimage_file, platform='linux')
+            self.assertEqual(app_info['packageType'], 'appimage')
+            self.assertEqual(app_info['version'], '2.33.0')
+            self.assertTrue(native._trusted_image(fuse_ls, pid=44))
+
+            # 3. Linux 开箱自动发现通过 .desktop + 同级启动脚本找到 AppImage，且绝不执行启动脚本
+            discovered = discover_clients(
+                platform='linux',
+                home=self.home,
+                env={'PATH': '', 'XDG_DATA_HOME': str(self.home/'.local/share'), 'XDG_DATA_DIRS': str(self.home/'empty')},
+            )
+            self.assertIn('antigravity', discovered)
+            self.assertEqual(discovered['antigravity']['installations']['app']['executable'], str(appimage_file))
+            self.assertEqual(discovered['antigravity']['version'], '2.33.0')
 
 
 if __name__ == '__main__':

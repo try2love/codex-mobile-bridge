@@ -1,4 +1,5 @@
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import tempfile
@@ -54,6 +55,57 @@ class MessageManagementTests(unittest.TestCase):
     def action(self,b,action,**fields):
         return b.manage_messages(self.thread, {'action':action,'version':b.message_management(self.thread)['version'],
                                               'expectedAccount':'account-a',**fields})
+
+    def test_native_codex_queue_is_visible_without_becoming_a_gateway_submission(self):
+        import sqlite3
+        b = self.native()
+        b.codex_home = Path(self.temp.name)
+        live = b.live[self.thread]
+        live.origin_verified, live.owner = True, 'desktop-owner'
+        live.state.update(id=self.thread, modelProvider='openai')
+        b.store = Mock()
+        native_id = self.ids[3]
+        payload = json.dumps({'UserInput': {'content': [
+            {'type': 'text', 'text': 'queued in Codex'},
+            {'type': 'localImage', 'path': '/private/folder/photo.png'}], 'client_id': self.ids[4]}})
+        with closing(sqlite3.connect(b.codex_home / 'queue_1.sqlite')) as native, native:
+            native.execute('CREATE TABLE queued_items (id TEXT PRIMARY KEY, thread_id TEXT, payload_json TEXT, queue_order INTEGER, created_at_ms INTEGER)')
+            native.execute('INSERT INTO queued_items VALUES (?,?,?,?,?)', (native_id, self.thread, payload, 0, 1000))
+            native.execute('INSERT INTO queued_items VALUES (?,?,?,?,?)', (self.ids[4], str(uuid.uuid4()), payload, 0, 0))
+        before = copy.deepcopy(b.submissions)
+        result = b.message_management(self.thread, [native_id])
+        self.assertEqual(result['nativeQueue'], [{'id': native_id, 'text': 'queued in Codex',
+            'attachments': ['photo.png'], 'at': 1.0}])
+        self.assertEqual(result['receipts'], [{'id': native_id, 'status': 'notFound'}])
+        self.assertEqual(b.submissions, before)
+        b.session.assert_not_called(); b._dispatch.assert_not_called()
+        with self.assertRaises(ValueError):
+            self.action(b, 'withdraw', id=native_id)
+        live.connected = False
+        # A saved, verified local chat may read its durable native queue.
+        self.assertEqual(b.message_management(self.thread)['nativeQueue'], result['nativeQueue'])
+        live.origin = 'cli'
+        self.assertFalse(b.message_management(self.thread).get('nativeQueue'))
+
+    def test_native_queue_keeps_saved_order_and_does_not_show_already_sending_desktop_rows(self):
+        b = self.native()
+        b.codex_home = Path(self.temp.name)
+        live = b.live[self.thread]
+        live.origin_verified = True
+        state = b.codex_home / '.codex-global-state.json'
+        state.write_text(json.dumps({'queued-follow-ups': {self.thread: [
+            {'id': self.ids[4], 'text': 'first', 'createdAt': 2000},
+            {'id': self.ids[3], 'text': 'second', 'context': {'fileAttachments': [{'path': 'C:/private/file.pdf'}]}},
+            {'id': self.ids[1], 'text': 'sending', 'submission': {'status': 'sending'}},
+            {'id': self.ids[2], 'text': 'another host', 'submission': {'hostId': 'remote:other'}}
+        ]}}), encoding='utf-8')
+        queue = b.message_management(self.thread)['nativeQueue']
+        self.assertEqual([row['id'] for row in queue], [self.ids[4], self.ids[3]])
+        self.assertEqual(queue[1]['attachments'], ['file.pdf'])
+        state.write_text('{', encoding='utf-8')
+        result = b.message_management(self.thread)
+        self.assertIsNone(result['nativeQueue'])
+        self.assertEqual(len(result['queue']), 3)
 
     def test_receipts_are_exact_local_only_and_unknown_never_replayed(self):
         b=self.native();key=self.thread+':'+self.ids[0];b.submissions[key]['status']='unknown'

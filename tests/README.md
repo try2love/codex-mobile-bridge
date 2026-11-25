@@ -17,6 +17,8 @@ python -B scripts/test-backend.py --source-only -p 'test_resource_layout.py'
 
 HTTP、中继、IPC、mailbox 等测试使用本机隔离监听和合成数据，需要允许测试进程绑定 loopback/Unix socket。受限执行环境的 EPERM 不是功能通过，也不能隐藏为产品跳过。共享中继测试需要现有 `requirements-relay.txt` 环境；测试脚本自身不安装依赖。
 
+云中继与预览加密测试还需要其中的 `noiseprotocol`；云账号凭据库使用 `requirements-desktop.txt` 中的 `keyring`。云回归使用合成账号和隔离回环监听，不访问真实云账号。
+
 | 修改范围 | 主要测试文件前缀 |
 | --- | --- |
 | 账号、额度、模型 | `test_account*`、`test_api_catalog*`、`test_saved_account*`、`test_remote_catalog.py` |
@@ -25,6 +27,7 @@ HTTP、中继、IPC、mailbox 等测试使用本机隔离监听和合成数据�
 | 认证/配对/网络 | `test_auth*`、`test_pairing*`、`test_login_security*`、`test_shared_relay*`、`test_network*`、`test_http_proxy.py` |
 | 会话与发送/授权 | `test_bridge*`、`test_cli_bridge_integration.py`、`test_codex_app_server.py`、`test_codex_cli_session.py`、`test_desktop_*`、`test_goal_*`、`test_permissions*`、`test_timeline*` |
 | 文件/终端 | `test_workspace*`、`test_download_ranges*`、`test_*terminal*` |
+| 云账号、连接、通知与 HTTP 转发 | `test_cloud_*.py`、`test_http_forwarding.py` |
 | 目录与资源边界 | `test_platform_architecture.py`、`test_resource_layout.py`、`test_web_assets.py` |
 
 测试名仍保持在 `tests/` 顶层，方便按前缀发现并复用既有夹具。平台测试的模拟结果不能替代对应操作系统的实机结果。
@@ -42,6 +45,11 @@ npm run test:browser
 
 `test:desktop` 通过 `scripts/test-frontend.cjs` 自动递归发现 `tests/` 和 `mobile/tests/` 中 `*.test.js`、`*.test.cjs`、`*.test.mjs`。新增 Node 用例不需编辑长命令清单；资源路径检查包含在该入口。
 
+云服务面板可单独运行 `node --test tests/cloud-desktop.test.cjs tests/cloud-i18n.test.cjs tests/cloud-panel-ui.test.cjs`。
+后者在隔离的 Node 模拟 DOM 中执行生产脚本和翻译字典，覆盖登录按钮隐藏、自动服务状态刷新、兑换回执与失败提示、失效凭据下的本机退出、退出回执与旧运行时状态核验、语言切换和账号隔离；不会启动 Electron、浏览器或操作真实云账号。
+
+云面板浏览器回归使用 `npx playwright test -c tests/browser/cloud-panel.config.cjs`，复用上游合成 HTTP 夹具及浏览器配置，独立选择云测试。
+
 宿主与宽窄布局变更可先运行 `node --test tests/host-environment.test.cjs tests/layouts.test.cjs tests/frontend-assets.test.cjs mobile/tests/resources.test.cjs`。这些检查覆盖宿主识别与晚注入、容器分屏边界、样式顺序和原生资源清单，不启动或编译手机 App。布局的真实渲染和窗口变化后状态保留仍需浏览器夹具验证。
 
 [浏览器夹具](browser/README.md) 位于 `tests/browser/*.browser.js`，依赖真实 DOM 或隔离服务，应由相应驱动调用。其中有些文件只定义测试函数，单独加载不会执行断言。本轮将它们与 Node 分开，避免虚增通过计数。
@@ -55,6 +63,8 @@ npm run test:browser
 `test_module_boundaries.py` 自动运行 AST 依赖检查，也可用 `python3 -B scripts/check-boundaries.py` 单独运行（Windows 可用 `python`）。[历史例外](../docs/architecture/dependency-exceptions.json) 精确到文件和符号，禁止通配放行；移除旧依赖必须删除对应例外。检查不执行应用，无法推断变量拼接的动态 import；原有平台选择、资源路径及共享脚本测试继续保留。
 
 `scripts/smoke-*` 中部分入口启动真实应用或依赖打包产物；运行前先看其头部与 fixture，不把它们作为无副作用的常规单元测试。
+
+新版 Codex Desktop 接入的定向入口为 `test_hosted_desktop.py`。`python3 -B scripts/smoke-hosted-desktop.py --codex <已安装原生运行时绝对路径>` 在 `.tmp/` 新建私有配置，以真实原生执行器和 loopback 模型验证生产 Bridge 的历史读取、发送、中断、审批取消及同一执行器重连。该入口不连接用户的 App、账号或正式 daemon；原 App 启动握手、真实 GUI 同步与 Windows 成品另行验收。
 
 原生侧边聊天使用 `test_native_side_chat.py`、`test_store.py` 和浏览器的 `native-side-chat.spec.cjs` 验证持久化创建、父子归属、标准聊天路由与关闭视图不删除。旧 `test_side_chat.py` 中保留临时运行时回归，仅保护升级前已打开的旧页面；新增侧边聊天不再使用该运行时。独立侧边输入区和附件 UI 夹具已移除，现复用标准会话的相应用例。
 

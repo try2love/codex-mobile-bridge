@@ -6,14 +6,21 @@
   "/icon-favicon.png": "icon-favicon.png",
   "/icon-touch.png": "icon-touch.png",
   "/icon-192.png": "icon-192.png",
+  "/icon-dark.png": "icon-dark.png",
+  "/icon-ui-dark.png": "icon-ui-dark.png",
+  "/icon-favicon-dark.png": "icon-favicon-dark.png",
+  "/icon-touch-dark.png": "icon-touch-dark.png",
+  "/icon-192-dark.png": "icon-192-dark.png",
   "/client-icons/antigravity.png": "client-icons/antigravity.png",
   "/manifest.webmanifest": "manifest.webmanifest",
+  "/manifest-dark.webmanifest": "manifest-dark.webmanifest",
   "/app.js": [
     "shared/dialog-dismiss.js",
     "features/chat/session-menu.js",
     "shell/app.js"
   ],
-  "/bootstrap.js": "shared/bootstrap.js",
+  "/bootstrap.js": ["shared/bootstrap.js", "shared/brand-icons.js"],
+  "/cloud-web.js": "hosts/cloud-web.js",
   "/style.css": [
     "shell/style.css",
     "layouts/wide/shell.css",
@@ -28,8 +35,13 @@
     "features/chat/session-menu.css",
     "shared/visualize.css"
   ],
-  "/activity.js": "features/chat/activity.js",
+  "/activity.js": ["features/chat/history-cache.js", "features/chat/activity.js"],
   "/attachments.js": [
+    "features/chat/composer-state.js",
+    "features/chat/composer-preferences.js",
+    "features/chat/composer-ui.js",
+    "features/chat/composer-submit.js",
+    "features/chat/composer-toolbar.js",
     "features/chat/composer-drafts.js",
     "features/chat/composer-quotes.js",
     "features/chat/composer-commands.js",
@@ -41,7 +53,10 @@
   "/list-sync.js": "features/chat/list-sync.js",
   "/message-actions.js": "features/chat/message-actions.js",
   "/modes.js": "features/chat/modes.js",
-  "/permissions.js": "features/chat/permissions.js",
+  "/permissions.js": [
+    "shared/composer-icons.js",
+    "features/chat/permissions.js"
+  ],
   "/timeline.js": "features/chat/timeline.js",
   "/account.css": "features/accounts/account.css",
   "/account.js": "features/accounts/account.js",
@@ -116,7 +131,8 @@
     "layouts/compact/presentation.css",
     "shared/presentation-controls.css",
     "hosts/mobile-footer.css",
-    "hosts/mobile-controls.css"
+    "hosts/mobile-controls.css",
+    "features/chat/composer-toolbar.css"
   ],
   "/host.js": [
     "hosts/environment.js",
@@ -127,5 +143,10 @@
   "/pdf-preview.js": "features/workspace/pdf-preview.js",
   "/html-preview.js": "features/workspace/html-preview.js",
   "/vendor/pdfjs/pdf.min.mjs": "vendor/pdfjs/pdf.min.mjs",
-  "/vendor/pdfjs/pdf.worker.min.mjs": "vendor/pdfjs/pdf.worker.min.mjs"
+  "/vendor/pdfjs/pdf.worker.min.mjs": "vendor/pdfjs/pdf.worker.min.mjs",
+  "/composer-toolbar-editor.css": "features/chat/composer-toolbar-editor.css",
+  "/composer-toolbar-editor.js": [
+    "features/chat/composer-toolbar-drag.js",
+    "features/chat/composer-toolbar-editor.js"
+  ]
 }

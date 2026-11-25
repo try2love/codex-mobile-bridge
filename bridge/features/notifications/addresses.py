@@ -2,12 +2,16 @@
 import http.client
 import json
 import ipaddress
+import logging
+import math
+import os
+import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from bridge.features.notifications.channels import channels, publish, publish_bark, publish_pushplus, publish_webhook, read_json, settings, write_json, webhook_channel_config
+from bridge.features.notifications.channels import channels, publish, publish_bark, publish_pushplus, publish_webhook, settings, write_json, webhook_channel_config
 
 
 def gateway_ready(port, instance_id):
@@ -88,6 +92,31 @@ def send_address(config, channel, urls, first=False, test=False, event_id=''):
         {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel](config, title, body, urls[0])
 
 
+def _valid_state(state):
+    if not isinstance(state, dict):
+        return False
+    for field in ('instanceId', 'eventId'):
+        if field in state and not isinstance(state[field], str):
+            return False
+    if 'urls' in state and (not isinstance(state['urls'], list)
+            or not all(isinstance(url, str) for url in state['urls'])
+            or not isinstance(state.get('first'), bool)):
+        return False
+    records = state.get('deliveries', {})
+    if not isinstance(records, dict) or ('urls' in state and 'deliveries' not in state):
+        return False
+    for record in records.values():
+        if not isinstance(record, dict) or not isinstance(record.get('delivered', False), bool):
+            return False
+        if type(record.get('attempts', 0)) is not int or record.get('attempts', 0) < 0:
+            return False
+        for field in ('next', 'time'):
+            value = record.get(field, 0)
+            if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+                return False
+    return True
+
+
 class AddressNotifications:
     def __init__(self, data_dir, current_urls, instance_id):
         self.data_dir = Path(data_dir)
@@ -96,11 +125,49 @@ class AddressNotifications:
         self.instance_id = instance_id
         self.closed = threading.Event()
         self.worker = None
-        self.state = read_json(self.path, {})
+        self.state_unavailable = False
+        self.state = self._load_state()
         if self.state.get('instanceId') != instance_id:
             self.state = {}
 
+    def _load_state(self):
+        evidence = None
+        try:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            self.state_unavailable = True
+            logging.getLogger(__name__).warning('Address notifications disabled: cannot read %s', self.path)
+            return {}
+        try:
+            state = json.loads(raw.decode('utf-8'))
+            if _valid_state(state):
+                return state
+        except (ValueError, RecursionError):
+            pass
+        try:
+            # Preserve exactly the bytes we read; never move a newer writer's file.
+            with tempfile.NamedTemporaryFile(prefix=self.path.name + '.corrupt-', dir=self.data_dir, delete=False) as stream:
+                evidence = Path(stream.name)
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            self.state_unavailable = True
+            if evidence is not None:
+                try:
+                    evidence.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            logging.getLogger(__name__).warning('Address notifications disabled: cannot preserve invalid state at %s', self.path)
+            return {}
+        logging.getLogger(__name__).warning('Invalid address notification state; preserved snapshot at %s', evidence)
+        return {}
+
     def scan(self):
+        if self.state_unavailable:
+            return
         config = settings(self.data_dir)
         if self.closed.is_set() or not config['addressEnabled']:
             return

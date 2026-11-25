@@ -10,7 +10,7 @@ async function runPersistentDraftTests(){
     return old.fetch.call(window,url,options);
   };
   try{
-    check(typeof $('message').onkeydown==='function'&&typeof $('stop').onclick==='function'&&typeof $('history').onclick==='function','Existing composer keyboard, stop and history handlers remain bound');
+    check(typeof $('message').onkeydown==='function'&&typeof $('stop').onclick==='function'&&!$('history')&&!!$('older'),'Composer keyboard and stop remain bound with only the paged history entry');
     draftGateway=gateway;currentHost='local';currentId=a;codexDraftScope=null;codexDraftTouched=false;$('message').value='';selectedSkills=new Set();
     bindCodexDraft({draftAccountIdentity:'account-a'});
     $('message').value='draft A';$('message').setSelectionRange(3,3);$('message').dispatchEvent(new Event('input',{bubbles:true}));

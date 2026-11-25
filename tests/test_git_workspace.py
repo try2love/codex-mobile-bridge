@@ -210,6 +210,25 @@ class GitWorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError): work.commit_detail('--all')
         self.assertEqual(len(work.branches()['branches']), 2)
 
+    def test_history_remains_available_when_worktree_status_exceeds_output_limit(self):
+        self.baseline()
+        (self.root / 'hello.txt').write_text('second\n')
+        self.git('add', 'hello.txt'); self.git('commit', '-qm', 'second commit')
+        directory = self.root / 'untracked'
+        directory.mkdir()
+        for index in range(23000):
+            (directory / (f'{index:05d}-' + 'x' * 80)).write_text('untracked\n')
+
+        work = GitWorkspace(self.work)
+        code, _, truncated = work.run(['status', '--porcelain=v2', '--branch', '-z',
+                                       '--untracked-files=all', '--renames',
+                                       '--ignore-submodules=dirty', '--', '.'])
+        self.assertTrue(truncated, 'fixture reproduces the oversized change-list condition')
+        history = work.history(limit=1)
+        self.assertEqual(len(history['commits']), 1)
+        self.assertTrue(history['hasMore'])
+        self.assertEqual(work.commit_detail(history['commits'][0]['id'])['id'], history['commits'][0]['id'])
+
     def test_management_subdirectory_cannot_commit_other_project_files(self):
         self.baseline(); (self.root / 'nested').mkdir(); (self.root / 'nested/a.txt').write_text('nested')
         self.git('add', 'hello.txt'); (self.root / 'hello.txt').write_text('outside'); self.git('add', 'hello.txt')
@@ -252,6 +271,14 @@ class GitWorkspaceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '另一个 Git 操作'):
                 GitWorkspace(self.work).mutate('stage-all', state['version'])
         self.assertEqual(self.git('diff', '--cached').stdout, b'')
+
+    def test_stage_and_unstage_reject_case_variants_of_git_directory(self):
+        self.baseline(); owner = GitWorkspace(self.work); state = owner.require_repository()
+        for action in ('stage', 'unstage'):
+            for path in ('.git/config', '.GIT/hooks/pre-commit', 'nested/.Git/HEAD'):
+                with self.subTest(action=action, path=path):
+                    with self.assertRaisesRegex(ValueError, '请选择项目中的变更文件'):
+                        owner.mutate(action, state['version'], path)
 
 
 class GitHttpTests(unittest.TestCase):

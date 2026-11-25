@@ -16,11 +16,11 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
-def rollout_message_times(raw, thread_id):
-    """Native message identities only; text and rollout positions are not keys."""
-    times, turn_id = {}, None
+def rollout_message_times(raw, thread_id, include_turns=False):
+    """Native identities only; text and rollout positions are not clock evidence."""
+    times, completed_turns, turn_id = {}, {}, None
     for line in raw.splitlines():
-        if not any(token in line for token in (b'"task_started"', b'"response_item"', b'"item_completed"')):
+        if not any(token in line for token in (b'"task_started"', b'"response_item"', b'"item_completed"', b'"task_complete"', b'"turn_aborted"')):
             continue
         try:
             record = json.loads(line)
@@ -30,6 +30,11 @@ def rollout_message_times(raw, thread_id):
         kind = payload.get('type')
         if record.get('type') == 'event_msg' and kind == 'task_started':
             turn_id = payload.get('turn_id') if payload.get('thread_id', thread_id) == thread_id else None
+            continue
+        if record.get('type') == 'event_msg' and kind in ('task_complete', 'turn_aborted'):
+            identity, stamp = payload.get('turn_id') or turn_id, record.get('timestamp')
+            if payload.get('thread_id', thread_id) == thread_id and isinstance(identity, str) and identity and stamp is not None:
+                completed_turns.setdefault(identity, []).append(stamp)
             continue
         if record.get('type') == 'response_item' and payload.get('thread_id', thread_id) == thread_id:
             role = payload.get('role') if kind == 'message' else 'assistant' if kind in ('agent_message', 'agentMessage') else None
@@ -54,6 +59,8 @@ def rollout_message_times(raw, thread_id):
         if all(len(values) == 1 for values in sources.values()):
             source = 'rollout-item-completed' if 'rollout-item-completed' in sources else 'rollout-response-item'
             result[key] = (sources[source][0], source)
+    if include_turns:
+        return result, {identity: values[0] for identity, values in completed_turns.items() if len(values) == 1}
     return result
 
 
@@ -597,13 +604,22 @@ class SessionStore:
         return result
 
     @staticmethod
-    def _recent_lines(path, turn_limit):
+    def _recent_lines(path, turn_limit, end=None):
         """Read complete turns backwards without parsing the older rollout prefix."""
-        if turn_limit is None:
-            return path.read_bytes(), True
         with path.open('rb') as stream:
             stream.seek(0, 2)
             position = stream.tell()
+            if end is not None:
+                if not 0 <= end <= position:
+                    raise ValueError('聊天历史分界点无效')
+                if end:
+                    stream.seek(end - 1)
+                    if stream.read(1) != b'\n':
+                        raise ValueError('聊天历史分界点不在记录边界')
+                position = end
+            if turn_limit is None:
+                stream.seek(0)
+                return stream.read(position), True, 0
             parts, pending, starts = [], b'', 0
             while position:
                 size = min(position, 65536)
@@ -623,8 +639,115 @@ class SessionStore:
                     if record.get('type') == 'event_msg' and record.get('payload', {}).get('type') == 'task_started':
                         starts += 1
                         if starts >= turn_limit:
-                            return b''.join(reversed(parts)), position == 0 and len(parts) == len(lines)
-            return b''.join(reversed(parts)), True
+                            return b''.join(reversed(parts)), position == 0 and len(parts) == len(lines), starts
+            return b''.join(reversed(parts)), True, starts
+
+    @staticmethod
+    def _segment_header(path):
+        with path.open('rb') as stream:
+            line = stream.readline(1024 * 1024)
+        try:
+            record = json.loads(line)
+        except (ValueError, UnicodeError):
+            return {}
+        payload = record.get('payload') if isinstance(record, dict) and record.get('type') == 'session_meta' else None
+        return payload if isinstance(payload, dict) else {}
+
+    def _history_tail(self, path, thread_id, limit):
+        # An edit starts a new physical segment of the same logical thread.
+        # Only the parent's records before the recorded byte boundary survive.
+        parts, seen, end = [], set(), None
+        while True:
+            raw, complete, starts = self._recent_lines(path, limit, end)
+            parts.append(raw)
+            if not complete:
+                break
+            header = self._segment_header(path)
+            base = header.get('history_base')
+            if not base:
+                break
+            parent = base.get('thread_id') if isinstance(base, dict) else None
+            if (not isinstance(thread_id, str) or not re.fullmatch(r'[0-9a-f-]{36}', thread_id)
+                    or header.get('id') != thread_id or not isinstance(parent, str)
+                    or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', parent)
+                    or parent in seen or type(base.get('end_byte_offset')) is not int):
+                raise ValueError('无法核验聊天历史来源')
+            if limit is not None:
+                limit -= starts
+                if limit <= 0:
+                    complete = False
+                    break
+            seen.add(parent)
+            end = base['end_byte_offset']
+            if end == 0:
+                break
+            path = self._parent_rollout(thread_id, parent)
+            if path is None:
+                complete = False
+                break
+        return b''.join(reversed(parts)), complete
+
+    def _parent_rollout(self, thread_id, parent):
+        suffix = thread_id if parent == thread_id else thread_id + '_' + parent
+        matches = []
+        for directory in (self.home/'sessions', self.home/'archived_sessions'):
+            for path in directory.rglob('rollout-*-' + suffix + '.jsonl'):
+                resolved = path.resolve()
+                if resolved != path or not self._rollout_in_home(resolved):
+                    continue
+                meta = self._segment_header(resolved)
+                if meta.get('id') == thread_id and meta.get('session_id', thread_id) == thread_id:
+                    matches.append(path)
+        return matches[0] if len(matches) == 1 else None
+
+    def _index_tail(self, conn, rollout, thread_id, size, limit):
+        # Newer rollouts can be branches: their filename supplies the physical
+        # index key, while every segment's header identifies the logical chat.
+        segment = thread_id
+        header = self._segment_header(rollout)
+        if header.get('history_base'):
+            segment = rollout.stem.rsplit('_', 1)[-1]
+            if not (header.get('id') == thread_id and
+                    re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', segment)
+                    and rollout.name.endswith('-' + thread_id + '_' + segment + '.jsonl')):
+                return None
+        rows, seen, end = [], set(), None
+        while segment not in seen:
+            seen.add(segment)
+            projection = conn.execute('SELECT next_rollout_byte_offset FROM thread_history_projection_state '
+                                      'WHERE thread_id=?', (segment,)).fetchone()
+            if projection is None or (end is None and projection[0] != size):
+                return None
+            # Historical segments may have grown past the edit. Verify the exact
+            # excluded turn boundary before taking any rows from that segment.
+            if end is not None and not conn.execute(
+                    'SELECT 1 FROM thread_turns WHERE thread_id=? AND rollout_ordinal=? AND rollout_byte_offset=?',
+                    (segment, end, size)).fetchone():
+                return None
+            clause = '' if end is None else 'AND rollout_ordinal < ? AND COALESCE(updated_at_ordinal, rollout_ordinal) < ? '
+            args = (segment,) if end is None else (segment, end, end)
+            rows.extend(conn.execute('SELECT thread_id, turn_id, item_json FROM thread_items WHERE thread_id=? '
+                                     + clause + 'ORDER BY rollout_ordinal DESC LIMIT ?',
+                                     (*args, limit - len(rows))))
+            if len(rows) >= limit or not header.get('history_base'):
+                return rows
+            base = header['history_base']
+            if not isinstance(base, dict):
+                return None
+            segment, end, size = base.get('thread_id'), base.get('end_ordinal_exclusive'), base.get('end_byte_offset')
+            if (not isinstance(segment, str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', segment)
+                    or type(end) is not int or type(size) is not int or min(end, size) < 0):
+                return None
+            if size == 0:
+                return rows
+            if segment == thread_id:
+                header = {}  # Original physical index, possibly already compacted off disk.
+            else:
+                path = self._parent_rollout(thread_id, segment)
+                if path is None:
+                    return None
+                header = self._segment_header(path)
+        return None
 
     def history(self, thread_id, turn_limit=None, item_limit=None):
         meta = self.get(thread_id)
@@ -655,14 +778,7 @@ class SessionStore:
             with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=.2)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute('BEGIN')
-                projection = conn.execute('SELECT next_rollout_byte_offset FROM thread_history_projection_state '
-                                          'WHERE thread_id=?', (thread_id,)).fetchone()
-                # A fork may point at another rollout with the same thread ID;
-                # an index behind (or ahead of) that file is not a recent page.
-                if projection is None or projection[0] != rollout_stat.st_size:
-                    return None
-                rows = conn.execute('SELECT turn_id, item_json FROM thread_items WHERE thread_id=? '
-                                    'ORDER BY rollout_ordinal DESC LIMIT ?', (thread_id, item_limit + 1)).fetchall()
+                rows = self._index_tail(conn, rollout, thread_id, rollout_stat.st_size, item_limit + 1)
                 if not rows:
                     return None
                 more = len(rows) > item_limit
@@ -672,11 +788,13 @@ class SessionStore:
                     if row['turn_id'] not in turns:
                         header = conn.execute('SELECT turn_id, status, error_json, started_at, first_user_item_id '
                                               'FROM thread_turns WHERE thread_id=? AND turn_id=?',
-                                              (thread_id, row['turn_id'])).fetchone()
+                                              (row['thread_id'], row['turn_id'])).fetchone()
                         if header is None:
                             return None
+                        # Native index clocks use Unix seconds, like thread/read.
+                        # Normalize here before joining rollout ISO completion times.
                         turns[row['turn_id']] = {'turnId': row['turn_id'], 'status': header['status'],
-                                                'turnStartedAtMs': header['started_at'],
+                                                'turnStartedAtMs': header['started_at'] * 1000 if header['started_at'] else None,
                                                 '_firstUserItemId': header['first_user_item_id'],
                                                 '_itemsComplete': not (more and row['turn_id'] == rows[item_limit]['turn_id']),
                                                 'error': json.loads(header['error_json']) if header['error_json'] else None,
@@ -693,7 +811,11 @@ class SessionStore:
                         # Legacy raw items need their call to keep row identities
                         # stable. Fall back to a complete-turn tail at this edge.
                         return None
-            apply_rollout_message_times(turns.values(), self._indexed_message_times(thread_id, rollout, rollout_stat))
+            message_times, completed_turns = self._indexed_message_times(thread_id, rollout, rollout_stat, True)
+            apply_rollout_message_times(turns.values(), message_times)
+            for turn in turns.values():
+                if turn['status'] in ('completed', 'interrupted', 'failed') and turn['turnId'] in completed_turns:
+                    turn['completedAt'] = completed_turns[turn['turnId']]
             latest = rollout.stat()
             if (latest.st_ino, latest.st_size, latest.st_mtime_ns) != (rollout_stat.st_ino, rollout_stat.st_size, rollout_stat.st_mtime_ns):
                 return None
@@ -704,24 +826,25 @@ class SessionStore:
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
             return None
 
-    def _indexed_message_times(self, thread_id, rollout, stat):
+    def _indexed_message_times(self, thread_id, rollout, stat, include_turns=False):
         key = ('message-times', thread_id, str(rollout), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
         with self.history_lock:
             if key in self.history_cache:
                 self.history_cache.move_to_end(key)
-                return self.history_cache[key]
+                times = self.history_cache[key]
+                return times if include_turns else times[0]
         with rollout.open('rb') as stream:
             offset = max(0, stat.st_size - ROLLOUT_TIME_BYTES)
             stream.seek(offset)
             raw = stream.read(ROLLOUT_TIME_BYTES)
         if offset:
             raw = raw.partition(b'\n')[2]  # The first record may start before the bounded tail.
-        times = rollout_message_times(raw, thread_id)
+        times = rollout_message_times(raw, thread_id, True)
         with self.history_lock:
             self.history_cache[key] = times
             while len(self.history_cache) > 8:
                 self.history_cache.popitem(last=False)
-        return times
+        return times if include_turns else times[0]
 
     @staticmethod
     def _agent_source(meta):
@@ -786,7 +909,7 @@ class SessionStore:
                 if meta.get('model'):
                     result['latestModel'] = meta['model']
                 return result
-        raw, complete = self._recent_lines(resolved, turn_limit)
+        raw, complete = self._history_tail(resolved, thread_id, turn_limit)
         items, turns, current = [], [], None
         persisted_user_ids = []
         token_usage = None
@@ -811,8 +934,11 @@ class SessionStore:
                 current['params'] = {'model':payload.get('model') or settings.get('model'),
                                      'effort':payload.get('effort') or settings.get('reasoning_effort')}
             elif record.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
-                if current:
+                if (current and payload.get('thread_id', thread_id) == thread_id
+                        and payload.get('turn_id', current['turnId']) == current['turnId']):
                     current["status"] = "completed" if payload["type"] == "task_complete" else "interrupted"
+                    if record.get('timestamp') is not None:
+                        current['completedAt'] = record['timestamp']
             elif record.get("type") == "event_msg" and payload.get("type") == "item_completed":
                 item = payload.get("item", {})
                 if (isinstance(item, dict) and item.get('type') == 'UserMessage' and current is not None and

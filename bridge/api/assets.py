@@ -9,7 +9,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from bridge.resources import project_root
 
 STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-8"),
-"/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8"),
+          "/composer-toolbar-editor.css": ("features/chat/composer-toolbar-editor.css", "text/css; charset=utf-8"),
+          "/composer-toolbar-editor.js": ("features/chat/composer-toolbar-editor.js", "text/javascript; charset=utf-8"),
+          "/cloud-web.js": ("hosts/cloud-web.js", "text/javascript; charset=utf-8"),
+          "/host.js": ("hosts/environment.js", "text/javascript; charset=utf-8"),
           "/layout.js": ("layouts/viewport.js", "text/javascript; charset=utf-8"),
           "/permissions.js": ("permissions.js", "text/javascript; charset=utf-8"),
           "/downloads.js": ("downloads.js", "text/javascript; charset=utf-8"),
@@ -61,6 +64,11 @@ STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-
           "/icon-favicon.png": ("icon-favicon.png", "image/png"),
           "/icon-touch.png": ("icon-touch.png", "image/png"),
           "/icon-192.png": ("icon-192.png", "image/png"),
+          "/icon-dark.png": ("icon-dark.png", "image/png"),
+          "/icon-ui-dark.png": ("icon-ui-dark.png", "image/png"),
+          "/icon-favicon-dark.png": ("icon-favicon-dark.png", "image/png"),
+          "/icon-touch-dark.png": ("icon-touch-dark.png", "image/png"),
+          "/icon-192-dark.png": ("icon-192-dark.png", "image/png"),
           "/i18n.js": ("i18n.js", "text/javascript; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/bootstrap.js": ("bootstrap.js", "text/javascript; charset=utf-8"),
@@ -82,6 +90,7 @@ STATIC = {"/file-actions.js": ("file-actions.js", "text/javascript; charset=utf-
           "/vendor/katex/katex.min.css": ("vendor/katex/katex.min.css", "text/css; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+          "/manifest-dark.webmanifest": ("manifest-dark.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
 PDF_CMAP_ROUTE = re.compile(r"^/vendor/pdfjs/cmaps/([A-Za-z0-9_-]+\.bcmap)$")
@@ -118,7 +127,7 @@ def asset_bytes(web_dir, public_path):
 
 
 VERSION_KEY = 'v'
-_HTML_URL = re.compile(rb'(?P<prefix>\b(?:src|href|data-bridge-src|data-bridge-href)\s*=\s*["\'])(?P<url>/[^"\']+)(?P<suffix>["\'])')
+_HTML_URL = re.compile(rb'(?P<prefix>\b(?:src|href|data-bridge-src|data-bridge-href|data-icon-light|data-icon-dark)\s*=\s*["\'])(?P<url>/[^"\']+)(?P<suffix>["\'])')
 _MANIFEST_URL = re.compile(rb'(?P<prefix>"(?:src|href)"\s*:\s*")(?P<url>/[^" ]+)(?P<suffix>")')
 _JS_URL = re.compile(rb'(?P<prefix>["\'])(?P<url>/[^"\'\s]+\.(?:js|mjs|css|png|webmanifest)(?:\?[^"\']*)?)(?P<suffix>["\'])')
 _CSS_URL = re.compile(rb'url\((?P<quote>["\']?)(?P<url>[^)"\']+)(?P=quote)\)')
@@ -171,7 +180,7 @@ def served_asset_bytes(web_dir, public_path, seen=frozenset()):
     seen = seen | {public_path}
     if public_path == '/':
         pattern = _HTML_URL
-    elif public_path == '/manifest.webmanifest':
+    elif public_path in ('/manifest.webmanifest', '/manifest-dark.webmanifest'):
         pattern = _MANIFEST_URL
     elif public_path.endswith('.css'):
         pattern = _CSS_URL

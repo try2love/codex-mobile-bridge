@@ -1,4 +1,55 @@
 // Run only in the loopback bootstrap fixture. No real client/API is accessed.
+async function runDesktopSlidingWindowChecks(){
+  const checks=[],check=(value,label)=>{if(!value)throw Error(label);checks.push(label);};
+  document.getElementById('login').hidden=true;
+  const root=document.createElement('div');root.className='app';root.style.cssText='position:fixed;inset:0;z-index:20;background:var(--bg)';document.body.append(root);
+  const select=document.createElement('select');for(const name of ['codex','claude','deepseek','antigravity'])select.add(new Option(name,name));
+  const message=i=>({id:String(i),role:'assistant',text:'Synthetic continuous reply '+i});
+  const page=(from,to,paginated=true)=>({connected:true,session:{id:'sliding',title:'Synthetic sliding chat',status:'active',requests:[{id:'current-approval',tool:'Synthetic confirmation'}],capabilities:{send:true}},messages:Array.from({length:to-from},(_,i)=>message(from+i)),files:[],...(paginated?{history:{before:'native:'+from,hasMore:from>0}}:{})});
+  let resolveOlder;const requests=[];
+  const view=new DesktopSessionsView({root,select,notify:text=>{throw Error(text);},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{
+    if(body)throw Error('Unexpected write in sliding-window fixture');requests.push(new URL(url,location.href));
+    if(url.includes('historyBefore='))return new Promise(resolve=>resolveOlder=resolve);
+    if(url.includes('/detail'))return page(100,140);
+    if(url.includes('/workspace'))return {entries:[],total:0,project:'/fixture'};
+    return {sessions:[{id:'sliding',title:'Synthetic sliding chat',backend:'code'}]};
+  }});
+  const follow=()=>{view.messages.scrollTop=view.messages.scrollHeight;view.reading={following:true,top:view.messages.scrollTop};};
+  const seed=count=>{view.historyMessages=[];view.historyPage=null;follow();view.applyDetail({...page(0,count),history:{before:'native:0',hasMore:true}});follow();};
+  const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+  try{
+    const bounds=[];
+    for(const provider of ['claude','deepseek','antigravity']){
+      view.backToList();await view.choose(provider);await view.open('sliding');clearTimeout(view.timer);view.input.value='Unsent '+provider+' draft';let maxRows=0,maxDom=0;
+      for(let i=140;i<761;i++){
+        follow();view.applyDetail(page(i-39,i+1));maxRows=Math.max(maxRows,view.historyMessages.length);maxDom=Math.max(maxDom,[...view.messageList.children].filter(node=>node.dataset.key!==undefined).length);
+      }
+      check(maxRows<=240&&maxDom<=240&&view.historyMessages.at(-1).id==='760',provider+' 621 native updates bound retained rows and rendered messages');
+      check(!view.messageNodes.has('100')&&view.input.value==='Unsent '+provider+' draft'&&view.state.requests[0].id==='current-approval'&&view.requests.children.length===1,provider+' sliding preserves newest state, approval and draft');
+      bounds.push({provider,maxRows,maxDom});
+    }
+    seed(260);const selected=view.messageNodes.get('0').node.querySelector('.message-body'),range=document.createRange();range.selectNodeContents(selected);document.getSelection().removeAllRanges();document.getSelection().addRange(range);
+    view.applyDetail(page(221,262));check(view.historyMessages.length===262&&!document.getSelection().isCollapsed,'Shared desktop text selection protects the loaded prefix');document.getSelection().removeAllRanges();
+    follow();view.applyDetail(page(222,263));check(view.historyMessages.length===41&&view.historyPage.before==='native:222','Shared desktop resumes sliding using the exact newest native page cursor');
+    const cursor=view.historyPage.before;view.messages.querySelector('.ds-history-older').click();
+    check(view.historyBusy&&requests.at(-1).searchParams.get('historyBefore')===cursor,'Shared desktop older button reads the retained native cursor');
+    view.applyDetail(page(223,264));check(view.historyMessages.length===42,'Shared desktop live refresh does not trim an in-flight history window');
+    resolveOlder({...page(180,222),session:{id:'sliding',status:'idle',requests:[{id:'expired'}]}});await tick();
+    check(!view.historyBusy&&view.messageNodes.has('180')&&view.state.requests[0].id==='current-approval','Shared desktop retrieves omitted rows without replacing current approval metadata');
+    seed(260);view.messages.querySelector('.ds-history-older').click();view.applyDetail(page(221,262));
+    check(view.historyBusy&&view.historyMessages.length===262&&view.messageNodes.has('0'),'Shared desktop protects an over-limit prefix while the older page is in flight');
+    resolveOlder(page(-40,0));await tick();
+    check(view.historyMessages.length===302&&view.messageNodes.has('-40'),'Shared desktop in-flight backfill completes without losing its existing history');
+    seed(260);view.messages.scrollTop=100;view.rememberReading();const anchor=view.reading.anchor,top=view.messageNodes.get(anchor.key).node.getBoundingClientRect().top;
+    view.applyDetail(page(221,262));check(view.historyMessages.length===262&&view.messageNodes.has('0')&&Math.abs(view.messageNodes.get(anchor.key).node.getBoundingClientRect().top-top)<3,'Shared desktop live refresh retains the upward reader and visible anchor');
+    view.messages.querySelector('.ds-history-older').click();resolveOlder(page(-40,0));await tick();view.applyDetail(page(222,263));
+    check(view.messageNodes.has('-40')&&view.historyMessages.length===303&&view.historyPage.before==='native:-40','Shared desktop manually loaded history and its cursor survive later updates');
+    seed(260);follow();view.applyDetail(page(221,262,false));
+    check(view.historyMessages.length===262,'Unpaginated native snapshots never discard a loaded prefix or invent a recovery cursor');
+    return {passed:checks.length,checks,bounds};
+  }finally{document.getSelection().removeAllRanges();view.clear();root.remove();}
+}
+
 async function runDesktopHistoryBrowserChecks(){
   const checks=[],calls=[],notices=[];
   const check=(value,label)=>{if(!value)throw Error(label);checks.push(label);};

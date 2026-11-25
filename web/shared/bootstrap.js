@@ -56,9 +56,17 @@
         var nodes = Array.from(document.querySelectorAll('[data-bridge-feature]')).filter(function (node) { return node.dataset.bridgeFeature === name; });
         var scripts = nodes.filter(function (node) { return node.tagName === 'SCRIPT'; });
         var styles = nodes.filter(function (node) { return node.tagName === 'LINK'; });
+        // Fetch dependencies concurrently, but retain ordered execution and
+        // stop at a failed dependency. Slow links otherwise pay an RTT per file.
+        var downloads = scripts.map(function (node) {
+          var link = document.createElement('link');link.rel = 'preload';link.as = 'script';
+          link.href = node.getAttribute('data-bridge-src');link.fetchPriority = backgroundGroups.get(name) ? 'low' : 'auto';
+          document.head.appendChild(link);return link;
+        });
         var task = Promise.all(styles.map(function (node) { return resource(node, backgroundGroups.get(name)); })).then(function () {
           return scripts.reduce(function (previous, node) { return previous.then(function () { return resource(node, backgroundGroups.get(name)); }); }, Promise.resolve());
         });
+        task.then(function () { downloads.forEach(function (node) { node.remove(); }); }, function () { downloads.forEach(function (node) { node.remove(); }); });
         groups.set(name, task);
         task.catch(function () { groups.delete(name); });
       }
@@ -349,6 +357,28 @@
   function loadResources() {
     var styles = Array.from(document.querySelectorAll('link[data-bridge-href]')).filter(function (node) { return !node.dataset.bridgeFeature; }), next = 0, active = 0;
     var scripts = Array.from(document.querySelectorAll('script[data-bridge-src]')).filter(function (node) { return !node.dataset.bridgeFeature; });
+    var cloudPrefetch = window.BridgeCloudWeb === true, nextPreload = 0, activePreloads = 0;
+    var probe = document.createElement('link');
+    var canPreload = probe.relList && probe.relList.supports && probe.relList.supports('preload');
+    function preload(script) {
+      var link = document.createElement('link');
+      link.rel = 'preload'; link.as = 'script'; link.href = script.getAttribute('data-bridge-src');
+      if (cloudPrefetch) {
+        activePreloads++;
+        link.onload = link.onerror = function () {
+          link.onload = link.onerror = null;
+          activePreloads--;
+          pumpPreloads();
+        };
+      }
+      document.head.appendChild(link); preloads.push(link);
+    }
+    function pumpPreloads() {
+      if (!canPreload || stopped || complete) return;
+      while (nextPreload < scripts.length && (!cloudPrefetch || activePreloads < 4)) {
+        preload(scripts[nextPreload++]);
+      }
+    }
     function pumpStyles() {
       if (stopped) return;
       while (active < 4 && next < styles.length) {
@@ -361,6 +391,9 @@
       }
     }
     function loadScripts() {
+      // Account-Web has eight streams per session; leave room for execution,
+      // clipboard and icons, and avoid overlapping its hints with the styles.
+      if (cloudPrefetch) pumpPreloads();
       var index = 0;
       function advance() {
         if (stopped) return;
@@ -379,17 +412,9 @@
     try { shellReady = !!(shell && shell.sheet && shell.sheet.cssRules.length); } catch (_) {}
     if (shell && !shellReady) loadResource(shell, shell.href, false, pumpStyles, 1);
     else pumpStyles();
-    // Discover the required scripts while styles load. Let the browser schedule
-    // downloads instead of paying another network round trip per execution group.
-    // Keep the same destination and versioned URL so execution/reopens reuse cache.
-    var probe = document.createElement('link');
-    if (probe.relList && probe.relList.supports && probe.relList.supports('preload')) {
-      for (var i = 0; i < scripts.length; i++) {
-        var link = document.createElement('link');
-        link.rel = 'preload'; link.as = 'script'; link.href = scripts[i].getAttribute('data-bridge-src');
-        document.head.appendChild(link); preloads.push(link);
-      }
-    }
+    // Other hosts retain early discovery; URLs and script destinations still
+    // match execution requests so browsers can reuse the versioned downloads.
+    if (!cloudPrefetch) pumpPreloads();
   }
   function pairingSubmitted() {
     phase = 'pairing';

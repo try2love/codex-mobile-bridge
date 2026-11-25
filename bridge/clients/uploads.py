@@ -20,10 +20,6 @@ class DesktopUploads:
         rows = self.store.resolve(self.scope(provider, sid), identifiers)
         if any(not row.get('image') for row in rows) and not (provider == 'claude' and local_claude_cli or provider in ('zcode', 'antigravity') and native_files):
             raise ValueError('此应用的消息附件仅支持图片；其他文件请使用文件传输。')
-        if provider == 'antigravity' and native_files:
-            # Original server consumes local @file references. Keep every
-            # uploaded image/file as its verified gateway path, never drop it.
-            return [], [{'id': row['id'], 'path': row['localPath'], 'name': row['name']} for row in rows]
         images = [{'url': 'data:'+row['image']+';base64,'+base64.b64encode(Path(row['localPath']).read_bytes()).decode('ascii'),
                    'name': row['name']} for row in rows if row.get('image')]
         files = [{'id': row['id'], 'path': row['localPath'], 'name': row['name']} for row in rows if not row.get('image')]

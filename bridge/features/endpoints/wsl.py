@@ -91,9 +91,9 @@ class Session:
         self.sequence += 1
         self.condition.notify_all()
 
-    def view(self):
+    def view(self, process_bodies=True):
         with self.condition:
-            return {**normalize_state(self.state, self.connected), 'permissionMode': linux_permissions.current_mode(self.state), 'sequence': self.sequence,
+            return {**normalize_state(self.state, self.connected, process_bodies=process_bodies), 'permissionMode': linux_permissions.current_mode(self.state), 'sequence': self.sequence,
                     'loadingHistory': self.loading, 'activating': self.activating, 'error': self.error}
 
 
@@ -520,8 +520,9 @@ class WslEntry(WslFeatures):
             return None
 
     def view(self, identifier, **options):
+        process_bodies = options.pop('process_bodies', True)
         session = self.session(identifier, **options)
-        result = session.view()
+        result = session.view(process_bodies=process_bodies)
         result['draftAccountIdentity'] = self._management_identity(identifier, refresh=True)
         continuation = self._account_draft_continuation(identifier)
         if continuation is not None:
@@ -542,16 +543,21 @@ class WslEntry(WslFeatures):
 
     def timeline_read(self, identifier, mode='page', **options):
         session = self.session(identifier, background=True)
+        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        if mode == 'detail':
+            options.pop('projection', None)
         if options.get('before') and not session.view()['historyComplete']:
             with session.action_lock:
                 session.history_limit += 50
             self._refresh(session)
         # view() reads write receipts; do not take the entry write gate while
         # holding the session condition (writers acquire them in reverse order).
-        snapshot = self.view(identifier, attach=False)
+        snapshot = self.view(identifier, attach=False, process_bodies=not conversation)
         with session.condition:
             if snapshot['sequence'] >= session.timeline.sequence:
-                session.timeline.update(snapshot)
+                session.timeline.update(snapshot, conversation=conversation)
+            if mode == 'process':
+                return {**session.timeline.process(**options), 'files': []}
             if mode == 'detail':
                 result = session.timeline.detail(**options)
                 messages = [{'role': 'assistant', 'text': session.timeline.details[result['key']]}]

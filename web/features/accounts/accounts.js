@@ -261,9 +261,9 @@ class AccountsPanel {
     if(receipt?.operation==='cliAuth'&&receipt.phase==='authUnknown'&&receipt.targetId===row.id){
       await this.perform({action:'switch',id:row.id,requestId:receipt.requestId,confirmed:true,tasksConfirmed:true});this.refresh();return;
     }
-    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出并重启桌面运行时。')+'\n'+row.name))return;
+    if(!window.confirm(this.text(this.value?.scope==='profile'?'确认此配置中的所有任务（包括其他客户端的任务）已结束，并同步共享的 Codex 账号？切换完成前请勿从其他客户端发起任务；仅在需要时正常退出空闲服务。':'确认所有任务（包括未在网页显示的任务）已结束，并切换此电脑共享的 Codex 接入？切换时仅在需要时正常退出空闲的共享 CLI 服务，并在桌面应用运行时重启；切换完成前请勿从其他客户端发起任务。')+'\n'+row.name))return;
     try{await this.perform({action:'switch',id:row.id,requestId:this.requestId(),confirmed:true,tasksConfirmed:true,
-      syncLocalCli:true});this.refresh();}
+      syncLocalCli:true,sharedDaemonConfirmed:true});this.refresh();}
     catch(error){this.operationError=true;this.error.textContent=this.text('无法创建切换请求，请刷新页面后重试');}
   }
   renderTools(){
@@ -452,7 +452,7 @@ class AccountsPanel {
     const preparation=runtime.preparation||{};
     this.runtimeStatus.textContent=this.text(runtime.error||({ready:'原生侧聊连接已准备好',checking:'正在自动检查原生侧聊连接',preparing:'正在自动准备原生侧聊连接',waiting:'等待桌面空闲后自动准备；现有聊天可继续使用',failed:'自动准备未完成，请重新准备连接'}[preparation.state])||(runtime.configured?'已保存原生连接设置；由网关启动 App 时生效。':'网关启动时会自动准备原生侧聊连接。'))+(preparation.reason?' · '+this.text(preparation.reason):'');
     this.initializeRuntime.textContent=this.text('重新准备连接');
-    this.initializeRuntime.disabled=this.busy||switching||external||(!this.desktop&&value.canSwitch===false);
+    this.initializeRuntime.disabled=this.busy||switching||(!this.desktop&&value.canManageDesktop===false);
     this.forceInitializeRuntime.hidden=!(value.switch?.operation==='desktopRuntime'&&phase==='failed'&&value.switch?.taskStateUnavailable===true||preparation.state==='waiting'&&preparation.taskStateUnavailable===true);
     this.forceInitializeRuntime.disabled=this.initializeRuntime.disabled;
     const resetAccount=this.accountRows().find(row=>row.id===this.resetAccountId);

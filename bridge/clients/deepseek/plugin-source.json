@@ -17,8 +17,13 @@
     "license",
     "files",
     "dsh",
-    "engines",
     "dshBridge"
   ],
+  "manifestOverrides": {
+    "engines": {
+      "upstream": {"dsh": "0.2.1-rc.2"},
+      "bundled": {"dsh": "*"}
+    }
+  },
   "repository": "https://github.com/try2love/dsh-codex-mobile-bridge"
 }

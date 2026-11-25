@@ -1,5 +1,7 @@
 import http.server
 import json
+import os
+import stat
 import tempfile
 import threading
 import unittest
@@ -240,6 +242,79 @@ class AddressNotificationTests(unittest.TestCase):
         with patch('bridge.features.notifications.addresses.publish') as send:
             manager = AddressNotifications(self.directory, lambda: [A], 'new-run')
             manager.scan();send.assert_called_once()
+
+    def test_corrupt_state_is_preserved_and_startup_notice_recovers(self):
+        valid = {'instanceId': 'instance-1', 'urls': [A], 'first': True,
+                 'eventId': 'previous-event', 'deliveries': {}}
+        invalid_states = [b'\0' * 256, b'', b'{"instanceId":', b'\xff', b'[' * 2000 + b']' * 2000,
+                          b'null', b'[]', b'"state"', b'1',
+                          json.dumps({**valid, 'urls': A}).encode(),
+                          json.dumps({**valid, 'first': 'true'}).encode(),
+                          json.dumps({**valid, 'deliveries': []}).encode(),
+                          json.dumps({**valid, 'deliveries': {'target': None}}).encode(),
+                          json.dumps({**valid, 'deliveries': {'target': {'attempts': True}}}).encode(),
+                          json.dumps({**valid, 'deliveries': {'target': {'next': float('nan')}}}).encode(),
+                          json.dumps({**valid, 'deliveries': {'target': {'delivered': False, 'next': 'later'}}}).encode()]
+        for raw in invalid_states:
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
+                path = Path(directory)/'address-notifications.json'
+                path.write_bytes(raw)
+                save_settings(directory, {'enabled': True, 'topic': 'fixture', 'addressEnabled': True})
+                with self.assertLogs('bridge.features.notifications.addresses', level='WARNING') as logs:
+                    manager = AddressNotifications(directory, lambda: [A], 'instance-1')
+                evidence, = path.parent.glob(path.name + '.corrupt-*')
+                self.assertEqual(evidence.read_bytes(), raw)
+                if os.name != 'nt':
+                    self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o600)
+                self.assertIn(str(evidence), '\n'.join(logs.output))
+                with patch('bridge.features.notifications.addresses.publish') as send:
+                    manager.scan();manager.scan()
+                    send.assert_called_once()
+                self.assertEqual(read_json(path, {})['urls'], [A])
+                self.assertEqual(evidence.read_bytes(), raw)
+
+    def test_failed_corrupt_state_preservation_disables_only_address_delivery(self):
+        raw = b'\0' * 32
+        self.manager.path.write_bytes(raw)
+        with patch('bridge.features.notifications.addresses.tempfile.NamedTemporaryFile', side_effect=PermissionError('locked')), \
+             self.assertLogs('bridge.features.notifications.addresses', level='WARNING'):
+            manager = AddressNotifications(self.directory, lambda: [A], 'instance-1')
+        with patch('bridge.features.notifications.addresses.publish') as send:
+            manager.scan();manager.scan()
+            send.assert_not_called()
+        self.assertEqual(self.manager.path.read_bytes(), raw)
+
+    def test_evidence_snapshot_does_not_move_concurrently_replaced_state(self):
+        path = self.manager.path
+        raw = b'{"secret":"not-for-logs",'
+        path.write_bytes(raw)
+        newer = {'instanceId': 'newer-instance', 'urls': [B], 'first': True, 'deliveries': {}}
+        create = tempfile.NamedTemporaryFile
+        def replace_then_preserve(*args, **kwargs):
+            path.write_text(json.dumps(newer), encoding='utf-8')
+            return create(*args, **kwargs)
+        with patch('bridge.features.notifications.addresses.tempfile.NamedTemporaryFile', side_effect=replace_then_preserve), \
+             self.assertLogs('bridge.features.notifications.addresses', level='WARNING') as logs:
+            AddressNotifications(self.directory, lambda: [A], 'instance-1')
+        evidence, = self.directory.glob(path.name + '.corrupt-*')
+        self.assertEqual(evidence.read_bytes(), raw)
+        self.assertEqual(read_json(path, {}), newer)
+        self.assertNotIn('not-for-logs', '\n'.join(logs.output))
+
+    def test_unreadable_state_does_not_block_construction_or_send(self):
+        with patch.object(Path, 'read_bytes', side_effect=PermissionError('locked')), \
+             self.assertLogs('bridge.features.notifications.addresses', level='WARNING'):
+            manager = AddressNotifications(self.directory, lambda: [A], 'instance-1')
+        with patch('bridge.features.notifications.addresses.publish') as send:
+            manager.scan()
+            send.assert_not_called()
+
+    def test_shared_json_reader_still_rejects_corrupt_delivery_ledger(self):
+        path = self.directory/'notification-delivery.json'
+        path.write_bytes(b'\0' * 32)
+        with self.assertRaises(json.JSONDecodeError):
+            read_json(path, {})
+        self.assertEqual(path.read_bytes(), b'\0' * 32)
 
     def test_manual_lan_only_requires_running_gateway(self):
         desktop = Desktop(self.directory)

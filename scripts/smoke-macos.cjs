@@ -1,8 +1,44 @@
 // Launch the actual signed bundle with isolated data; do not start a gateway.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),net=require('node:net');
-const {spawn}=require('node:child_process');
+const {execFileSync,spawn}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let requestId=0;
+function evaluate(socket,expression,{timeout=15000,awaitPromise=true}={}){
+  return new Promise((resolve,reject)=>{
+    const id=++requestId;
+    const finish=(error,value)=>{
+      clearTimeout(timer);socket.removeEventListener('message',message);socket.removeEventListener('close',closed);
+      if(error)reject(error);else resolve(value);
+    };
+    const closed=()=>finish(Error('Packaged renderer disconnected'));
+    const message=event=>{
+      const value=JSON.parse(event.data);if(value.id!==id)return;
+      if(value.error)finish(Object.assign(Error(value.error.message),{code:value.error.code}));
+      else if(value.result.exceptionDetails)finish(Error(JSON.stringify(value.result.exceptionDetails)));
+      else finish(null,value.result.result.value);
+    };
+    const timer=setTimeout(()=>finish(Error('Packaged UI snapshot timed out')),timeout);
+    socket.addEventListener('message',message);socket.addEventListener('close',closed,{once:true});
+    try{socket.send(JSON.stringify({id,method:'Runtime.evaluate',params:{awaitPromise,returnByValue:true,expression}}));}
+    catch(error){finish(error);}
+  });
+}
+async function waitForRenderer(socket,url,{timeout=15000,interval=100}={}){
+  const deadline=Date.now()+timeout;
+  // URL discovery can precede the first document's execution-context replacement.
+  // Poll only reads; the subsequent device-policy write is never replayed.
+  while(Date.now()<deadline){
+    try{
+      if(await evaluate(socket,`location.href===${JSON.stringify(url)}&&document.readyState==='complete'&&typeof snapshot!=='undefined'&&!!snapshot`,
+        {timeout:Math.max(1,deadline-Date.now()),awaitPromise:false}))return;
+    }catch(error){
+      if(error.code!==-32000||!['Execution context was destroyed.','Cannot find default execution context'].includes(error.message))throw error;
+    }
+    await delay(Math.min(interval,Math.max(0,deadline-Date.now())));
+  }
+  throw Error('Packaged renderer document and snapshot did not become ready');
+}
 async function main(){
   assert.equal(process.platform,'darwin');
   assert.ok(process.argv[2],'Pass the packaged .app path');
@@ -10,7 +46,9 @@ async function main(){
   const data=await fs.mkdtemp(path.join(root,'.tmp','macos-launch-'));
   const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));
-  const executable=path.join(path.resolve(process.argv[2]),'Contents/MacOS/Codex Mobile Bridge');
+  const app=path.resolve(process.argv[2]);
+  const executableName=execFileSync('/usr/libexec/PlistBuddy',['-c','Print :CFBundleExecutable',path.join(app,'Contents/Info.plist')],{encoding:'utf8'}).trim();
+  const executable=path.join(app,'Contents/MacOS',executableName);
   const env={...process.env,CMB_DATA_DIR:data};
   for(const key of ['CMB_PYTHON','PYTHONPATH','PYTHONHOME','ELECTRON_RUN_AS_NODE'])delete env[key];
   const child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port],{env,stdio:['ignore','ignore','pipe']});
@@ -32,15 +70,8 @@ async function main(){
     assert.ok(target,'Packaged renderer failed to load: '+errors);
     socket=new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
-    const state=await new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>reject(Error('Packaged UI snapshot timed out')),15000);
-      socket.addEventListener('message',event=>{
-        const value=JSON.parse(event.data);if(value.id!==1)return;
-        clearTimeout(timer);
-        if(value.error||value.result.exceptionDetails)reject(Error(JSON.stringify(value)));
-        else resolve(value.result.result.value);
-      });
-      socket.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{awaitPromise:true,returnByValue:true,expression:`(async()=>{
+    await waitForRenderer(socket,target.url);
+    const state=await evaluate(socket,`(async()=>{
         const deadline=Date.now()+10000;
         while((typeof snapshot==='undefined'||!snapshot)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,100));
         if(typeof snapshot==='undefined'||!snapshot)throw Error('Bundled worker did not return a snapshot');
@@ -55,8 +86,7 @@ async function main(){
           barkKeyType:document.getElementById('bark-key').type,barkTest:!!document.getElementById('test-bark'),
           pushplusEnabled:snapshot.notifications.pushplusEnabled,pushplusToken:snapshot.notifications.pushplusToken,
           pushplusTokenType:document.getElementById('pushplus-token').type,pushplusTest:!!document.getElementById('test-pushplus'),node:typeof require};
-      })()`}}));
-    });
+      })()`);
     assert.equal(state.directory,data);assert.equal(state.running,false);assert.equal(state.notifications,false);assert.equal(state.node,'undefined');assert.equal(state.accounts,true);
     assert.equal(state.sessionHours,'12');assert.equal(state.devices.sessions.length,0);assert.equal(state.devices.policy.allowlistEnabled,true);assert.deepEqual(state.devices.policy.allowlist,['192.0.2.7']);assert.equal(state.deviceOverflow,false);
     assert.equal(state.barkEnabled,false);assert.equal(state.barkServer,'https://api.day.app');
@@ -70,4 +100,5 @@ async function main(){
     if(child.exitCode===null&&!launchError)child.kill('SIGKILL');
   }
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
+module.exports={evaluate,waitForRenderer};

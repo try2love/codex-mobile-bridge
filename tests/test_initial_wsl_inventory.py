@@ -25,7 +25,7 @@ class InitialWslInventoryTests(unittest.TestCase):
         self.addCleanup(self.manager.close)
         self.entries = Entries(self.root)
         self.entries.wsl = wsl
-        self.manager.bridge = SimpleNamespace(entries=self.entries, accounts=SimpleNamespace())
+        self.manager.bridge = SimpleNamespace(entries=self.entries, accounts=SimpleNamespace(index={}))
         self.manager.config['enabled'] = dict.fromkeys(('codex', 'claude', 'deepseek'), False)
         self.manager._discovery_preferences = Mock(return_value={})
         self.native = {family: {'id': family, 'installed': False, 'executable': '',
@@ -96,7 +96,7 @@ class InitialWslInventoryTests(unittest.TestCase):
         self.addCleanup(fresh.close)
         entries = Entries(self.root)
         entries.wsl = wsl
-        fresh.bridge = SimpleNamespace(entries=entries, accounts=SimpleNamespace())
+        fresh.bridge = SimpleNamespace(entries=entries, accounts=SimpleNamespace(index={}))
         fresh._discovery_preferences = Mock(return_value={})
         self.assertEqual(entries.candidates, {})
         self.assert_targets(fresh.control({'action': 'scan', 'inventoryOnly': True}))

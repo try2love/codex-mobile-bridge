@@ -40,15 +40,15 @@ if(typeof document!=='undefined')(()=>{
   const get=id=>document.getElementById(id),root=document.documentElement;
   const key='bridge-appearance',system=window.matchMedia('(prefers-color-scheme: dark)');
   let saved;try{saved=JSON.parse(localStorage.getItem(key));}catch{}
-  let settings=ChatAppearance.normalize(saved),collapsed=false;
-  const composer=get('composer'),body=get('composer-body'),toggle=get('composer-toggle'),message=get('message');
+  let settings=ChatAppearance.normalize(saved);
+  const composer=get('composer');
   function preserveReading(change){
     const timeline=typeof chatTimeline==='undefined'?null:chatTimeline;
     const anchor=timeline?.capture(),bottom=timeline?.following;
     change();
     requestAnimationFrame(()=>{if(timeline&&timeline===chatTimeline)timeline.restore(anchor,bottom);});
   }
-  function save(){try{localStorage.setItem(key,JSON.stringify(settings));}catch{}}
+  function save(notify=true){try{localStorage.setItem(key,JSON.stringify(settings));}catch{}if(notify)document.dispatchEvent(new CustomEvent('bridge-appearance-change',{detail:{...settings}}));}
   function apply(){
     const dark=settings.theme==='dark'||settings.theme==='system'&&(window.BridgeNativeTheme?.dark??system.matches);
     const colors=ChatAppearance.colors(settings.accent,dark);
@@ -80,29 +80,18 @@ if(typeof document!=='undefined')(()=>{
   function nativeTheme(){
     const value=window.BridgeNativeTheme;
     if(!value||!['system','light','dark'].includes(value.theme)||typeof value.dark!=='boolean')return;
-    preserveReading(()=>{settings=ChatAppearance.normalize({...settings,theme:value.theme});apply();save();});
+    preserveReading(()=>{settings=ChatAppearance.normalize({...settings,theme:value.theme});apply();save(false);});
   }
   document.addEventListener('bridge-native-theme',nativeTheme);
-  function relabel(){
-    const text=BridgeI18n.t(collapsed?'展开输入区':'收起输入区');
-    toggle.setAttribute('aria-label',text);toggle.title=text;
-    toggle.setAttribute('aria-expanded',String(!collapsed));
-  }
-  function resizeMessage(){
-    if(body.hidden)return;
-    preserveReading(()=>{message.style.height='auto';message.style.height=Math.min(160,Math.max(48,message.scrollHeight))+'px';});
-  }
-  function setCollapsed(value){
-    preserveReading(()=>{
-      if(value&&body.contains(document.activeElement))toggle.focus();
-      collapsed=value;body.hidden=value;composer.classList.toggle('is-collapsed',value);relabel();
-    });
-    if(!value)resizeMessage();
-  }
-  toggle.onclick=()=>setCollapsed(!collapsed);
-  message.addEventListener('input',resizeMessage);
-  const composerSize=new ResizeObserver(()=>get('chat').style.setProperty('--composer-height',Math.ceil(composer.getBoundingClientRect().height)+'px'));
-  composerSize.observe(composer);
+  document.addEventListener('bridge-appearance-restored',event=>{preserveReading(()=>{settings=ChatAppearance.normalize(event.detail);apply();});});
+  const resizeMessage=()=>composerToolbar.resizeInput();
+  const chatStyle=get('chat').style;
+  const composerSize=new ResizeObserver(([entry])=>{
+    const height=Math.ceil(entry.borderBoxSize?.[0]?.blockSize??composer.getBoundingClientRect().height);
+    const value=height+'px';
+    if(chatStyle.getPropertyValue('--composer-height')!==value)chatStyle.setProperty('--composer-height',value);
+  });
+  composerSize.observe(composer,{box:'border-box'});
   const pageState=new MutationObserver(()=>document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open')));
   pageState.observe(get('app'),{attributes:true,attributeFilter:['hidden','class']});
   document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();});
@@ -125,7 +114,8 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
-  window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};
-  apply();nativeTheme();relabel();resizeMessage();
+  const revealMessage=()=>composerToolbar.setCollapsed(false);
+  window.BridgePresentation={resizeMessage,openChat:()=>requestAnimationFrame(revealMessage),showError:revealMessage};
+  apply();nativeTheme();resizeMessage();
   document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open'));
 })();

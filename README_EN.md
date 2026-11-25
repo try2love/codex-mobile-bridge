@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
-> **v2.2.1:** [Stable release](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [Release notes](RELEASE_NOTES.md). Updating is recommended for native connections to the latest Codex App. Adds Antigravity and interactive charts, with improvements to long chats and model caching.
+> **v2.2.2-preview.3:** [Preview download](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.3) · [Release notes](RELEASE_NOTES.md). Support newer Codex native connections, add complete release selection and download cache management, preserve compatible settings during version switches, and improve Windows configuration permissions. Initial setup may require one Codex restart. Preview.1 users on macOS/Windows and preview.2 users can check for updates; Linux preview.1 requires manual installation; [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) remains the latest stable release.
 
 **Android installation:** The new **Bridge** app installs alongside the old v2.2.0 app and cannot replace it in place. Install Bridge, add your computers and verify the connections first. Preserve any drafts you need from the old app before uninstalling it; old bindings and drafts do not migrate automatically. Users of the separate v2.2.1-preview.1 **Bridge Preview** app can upgrade in place and retain that preview app’s connections and drafts.
 
@@ -615,9 +615,18 @@ On macOS, after building the gateway runtime, run `npm run build:mac -- --arm64`
 
 ```sh
 git switch main
+python -m pip install -r requirements-desktop.txt
 npm ci
 npm run desktop
 ```
+
+Install the Python dependencies in the same environment used by the source
+desktop runtime. Cloud access requires `aiohttp`, `noiseprotocol` and the native
+credential vault package `keyring`; Node dependencies alone are insufficient.
+If using `CMB_PYTHON`, point it at that interpreter. Restart the gateway after
+changing its environment; refreshing the window does not replace the running
+Python process. Desktop builds check and explicitly collect these modules, so
+packaged users do not install Python dependencies themselves.
 
 For packaging, use a project-local Python environment on the target OS:
 
@@ -641,6 +650,10 @@ Report the OS, App/runtime version, branch/commit and redacted reproduction step
 Thanks to the [LINUX DO](https://linux.do/) community and its members for their support.
 
 Thanks to [@qybgh (Luoran Yau)](https://github.com/qybgh) for contributing mobile Plan and Goal support, attachment previews and UI improvements in [PR #8](https://github.com/try2love/codex-mobile-bridge/pull/8). Version 1.3.1 builds on that contribution with Goal controls, notification preferences and interaction refinements.
+
+Thanks to [@heiqiu47](https://github.com/heiqiu47) for composer customization in [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201), [@mc373906408](https://github.com/mc373906408) for themed icons in [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182), [@hmho000](https://github.com/hmho000) for startup fixes in [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200), and [@windowmmk](https://github.com/windowmmk) for Antigravity, SSH, file and message-management improvements. See the [preview.2 notes](RELEASE_NOTES.md) for scope and links; contributor work and follow-up corrections remain separate.
+
+Thanks to [@windowmmk](https://github.com/windowmmk) for native Antigravity commands, model/effort selection, stopping, split views and client reliability fixes in [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173), [#178](https://github.com/try2love/codex-mobile-bridge/pull/178), [#179](https://github.com/try2love/codex-mobile-bridge/pull/179), [#180](https://github.com/try2love/codex-mobile-bridge/pull/180) and [#189–#198](RELEASE_NOTES.md).
 
 Thanks to [@heiqiu47](https://github.com/heiqiu47) for interactive charts and Codex compatibility in [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) and [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169), and [@windowmmk](https://github.com/windowmmk) for large-log port discovery in [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171).
 

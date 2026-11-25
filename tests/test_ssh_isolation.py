@@ -310,6 +310,22 @@ class OperationGateTests(unittest.TestCase):
         finally:
             release.set();reader.join(2);writer.join(2)
 
+    def test_ssh_read_ignores_login_shell_banner_before_json_and_rejects_unparseable_output(self):
+        for stdout, expected in (
+            ('Welcome to Ubuntu\nLast login: now\n{"available": true}\n', {'available': True}),
+            ('banner line\n[\n  {"id": "t1"}\n]\n', [{'id': 't1'}]),
+        ):
+            with self.subTest(stdout=stdout), patch(
+                    'bridge.clients.codex.remote.subprocess.run',
+                    return_value=SimpleNamespace(returncode=0, stdout=stdout)):
+                self.assertEqual(ssh_read('banner-host', 'read'), expected)
+        for bad in ('Welcome banner only\n', '{"ok": true}\ntrailing noise\n', ''):
+            with self.subTest(bad=bad), patch(
+                    'bridge.clients.codex.remote.subprocess.run',
+                    return_value=SimpleNamespace(returncode=0, stdout=bad)):
+                with self.assertRaises(RemoteUnavailable):
+                    ssh_read('bad-json-host', 'read')
+
     def test_exclusive_account_change_blocks_new_host_operation(self):
         gate=OperationGate();entered=threading.Event()
         def operate():

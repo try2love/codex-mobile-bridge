@@ -155,6 +155,30 @@ class UploadActivityTests(unittest.TestCase):
             self.assertEqual(ssh.call_args.args[0], 'test-host')
             compile(ssh.call_args.args[1], '<remote-upload>', 'exec')
 
+    def test_remote_upload_digest_verification_runs_under_python_optimize(self):
+        import contextlib, hashlib, io, json, tempfile
+        captured = []
+        def capture(alias, source, timeout=90):
+            captured.append(source)
+            return {'path': '/remote/path'}
+        upload_file('test-host', 'thread-1', 'up-1', 'file.txt', b'hello', hashlib.sha256(b'hello').hexdigest(), reader=capture)
+        upload_file('test-host', 'thread-1', 'up-1', 'file.txt', b'hello', '0' * 64, reader=capture)
+        script, wrong_digest_script = captured
+        # 验证即使在 optimize=1（对应 PYTHONOPTIMIZE=1 / python -O）下，哈希校验也不会被剥离
+        code = compile(script, '<remote-upload-opt>', 'exec', optimize=1)
+        with tempfile.TemporaryDirectory(dir=self.root) as home:
+            with patch.dict('os.environ', {'CODEX_HOME': home}):
+                with self.assertRaises(ValueError):
+                    exec(compile(wrong_digest_script, '<bad-digest>', 'exec', optimize=1), {})
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    exec(code, {})
+                uploaded = Path(json.loads(buf.getvalue())['path'])
+                self.assertEqual(uploaded.read_bytes(), b'hello')
+                uploaded.write_bytes(b'tampered')
+                with self.assertRaises(ValueError):
+                    exec(code, {})
+
     def test_activity_follows_visible_chats_without_history_reads_or_activation(self):
         self.bridge.list()
         with patch.object(self.bridge.store, 'history', side_effect=AssertionError('No history for list')), patch('bridge.app.service.open_in_desktop', side_effect=AssertionError('No navigation')):
@@ -281,6 +305,40 @@ class UploadActivityTests(unittest.TestCase):
         resolved = self.bridge.artifact(THREAD, files[str(image)]['id'])
         self.assertEqual(Path(resolved['path']), image.resolve())
         self.assertTrue(resolved['image'])
+        self.assertFalse(files[str(image)]['id'].startswith('host-'))
+        # Repeated reads reuse the projection after attachment path removal.
+        repeated = self.bridge.timeline_read(THREAD)
+        self.assertNotIn('path', repeated['rows'][0]['attachments'][0])
+        self.assertIn(files[str(image)]['id'], {item['id'] for item in repeated['files']})
+        conversation = self.bridge.timeline_read(THREAD, projection='conversation')
+        group = next(row for row in conversation['rows'] if row.get('processCursor'))
+        process = self.bridge.timeline_read(THREAD, 'process', cursor=group['processCursor'])
+        activity = next(row for row in process['rows'] if row['kind'] == 'imageView')
+        detail = self.bridge.timeline_read(THREAD, 'detail', cursor=activity['detailCursor'])
+        self.assertNotIn('path', detail['attachments'][0])
+        self.assertIn(files[str(image)]['id'], {item['id'] for item in detail['files']})
+        with session.condition:
+            session.state['turns'][0]['items'] = []
+            session.changed()
+        self.assertFalse(self.bridge.timeline_read(THREAD)['files'])
+        with self.assertRaises(KeyError):
+            self.bridge.artifact(THREAD, files[str(image)]['id'])
+
+    def test_first_conversation_process_image_detail_keeps_private_path_hidden(self):
+        image = self.root/'lazy-preview.png'
+        image.write_bytes(PNG)
+        session = self.bridge.session(THREAD)
+        with session.condition:
+            session.state = {**self.fixture.state, 'turns': [{'turnId': 'lazy', 'status': 'completed',
+                'items': [{'id': 'image', 'type': 'imageView', 'path': image.as_uri()}]}]}
+            session.changed()
+        conversation = self.bridge.timeline_read(THREAD, projection='conversation')
+        group = next(row for row in conversation['rows'] if row.get('processCursor'))
+        process = self.bridge.timeline_read(THREAD, 'process', cursor=group['processCursor'])
+        detail = self.bridge.timeline_read(THREAD, 'detail', cursor=process['rows'][0]['detailCursor'])
+        self.assertNotIn('path', detail['attachments'][0])
+        self.assertTrue(detail['attachments'][0]['desktopId'])
+        self.assertEqual(Path(self.bridge.artifact(THREAD, detail['files'][0]['id'])['path']), image.resolve())
 
     def test_model_markdown_cannot_leave_roots_but_imageview_can(self):
         import tempfile

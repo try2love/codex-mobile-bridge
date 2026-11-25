@@ -109,8 +109,11 @@ async function main(){
           await until(async()=>JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'ready.json'),'utf8')).token===token,'update helper');
           appChild.kill();await exit;
         }});
-      assert.equal((await updater.check()).state,'available');
-      assert.equal((await updater.install()).state,'restarting');
+      const checked=await updater.check();assert.equal(checked.state,'available');assert.ok(checked.candidateId);
+      assert.equal(checked.intent,'update');assert.equal(checked.requiresConfirmation,false);
+      // This legacy helper fixture replaces the same installed version. Its
+      // synthetic download source is not a real version transition or a user rollback.
+      assert.equal((await updater.install({candidateId:checked.candidateId})).state,'restarting');
       const result=await until(async()=>JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'result.json'),'utf8')),scenario+' result',90000);
       assert.equal(result.state,scenario==='success'?'updated':'failed',JSON.stringify(result));
       if(scenario!=='success')assert.equal(result.recovered,true,JSON.stringify(result));

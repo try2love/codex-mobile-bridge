@@ -8,7 +8,8 @@ from pathlib import Path
 BINARIES = {'codex': ('ChatGPT', 'chatgpt', 'Codex', 'codex-desktop', 'codex'),
             'claude': ('claude-desktop', 'Claude', 'claude'),
             'zcode': ('zcode', 'ZCode'),
-            'deepseek': ('deepseek-harness', 'DeepSeek Harness', 'DeepSeekHarness', 'dsh-desktop')}
+            'deepseek': ('deepseek-harness', 'DeepSeek Harness', 'DeepSeekHarness', 'dsh-desktop'),
+            'antigravity': ('Antigravity.AppImage', 'Antigravity', 'antigravity', 'antigravity-ide', 'Antigravity IDE')}
 
 
 def candidate(path, provider):
@@ -32,6 +33,9 @@ def candidate(path, provider):
         if provider == 'zcode':
             from bridge.platforms.linux.zcode_pipe import installation
             return installation(path)
+        if provider == 'antigravity':
+            from bridge.platforms.antigravity import installation
+            return installation(path, platform='linux')
         # A PATH codex/claude command can be a standalone CLI. Only accept
         # these ambiguous names when an Electron desktop package is present.
         if path.name in ('codex', 'claude') and not (path.parent/'resources/app.asar').is_file():
@@ -43,16 +47,21 @@ def candidate(path, provider):
     return None
 
 
-def candidates(provider, app_names, home, env):
+def candidates(provider, app_names, home, env, *, metadata=None):
     names = BINARIES[provider]
-    for folder in ('/opt', '/usr/lib', '/usr/local/lib', str(home/'.local/share')):
+    folders = ('/opt', '/usr/lib', '/usr/local/lib', '/usr/share', str(home/'.local/share')) if provider == 'antigravity' else ('/opt', '/usr/lib', '/usr/local/lib', str(home/'.local/share'))
+    for folder in folders:
         for name in (*app_names, *names):
             for binary in names:
                 yield Path(folder)/name/binary
+    if provider == 'antigravity':
+        # 常见 Linux AppImage 存放目录 ~/Applications
+        for binary in names:
+            yield home/'Applications'/binary
     for name in names:
         executable = shutil.which(name, path=env.get('PATH', ''))
         if executable:
-            yield Path(executable).resolve()
+            yield Path(executable)
     # Desktop entries also cover AppImages and nonstandard install locations.
     directories = [Path(env.get('XDG_DATA_HOME') or home/'.local/share')]
     directories += [Path(p) for p in env.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':') if p]
@@ -72,7 +81,9 @@ def candidates(provider, app_names, home, env):
                         continue
                     executable = parts[0] if Path(parts[0]).is_absolute() else shutil.which(parts[0], path=env.get('PATH', ''))
                     if executable:
-                        yield Path(executable).resolve()
+                        if metadata is not None:
+                            metadata.setdefault(Path(executable), {}).setdefault('discoveryFile', str(path))
+                        yield Path(executable)
                 except (OSError, ValueError, KeyError, configparser.Error):
                     continue
         except OSError:

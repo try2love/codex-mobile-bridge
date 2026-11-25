@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" role="img" aria-labelledby="cmb-light-title cmb-light-desc">
+  <title id="cmb-light-title">Codex Mobile Bridge · Light</title>
+  <desc id="cmb-light-desc">A blue terminal window behind a cyan-edged phone with a command prompt, on a pale rounded square.</desc>
+  <defs>
+    <linearGradient id="cmb-light-tile" x1="272" y1="56" x2="740" y2="984" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FCFDFE"/>
+      <stop offset="1" stop-color="#E3EAF3"/>
+    </linearGradient>
+    <linearGradient id="cmb-light-window" x1="228" y1="230" x2="640" y2="588" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#519AFF"/>
+      <stop offset="1" stop-color="#2864D9"/>
+    </linearGradient>
+    <linearGradient id="cmb-light-terminal" x1="240" y1="318" x2="630" y2="568" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#234D91"/>
+      <stop offset="1" stop-color="#16366E"/>
+    </linearGradient>
+    <linearGradient id="cmb-light-phone" x1="490" y1="362" x2="808" y2="806" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#70EBDE"/>
+      <stop offset="0.48" stop-color="#38C5ED"/>
+      <stop offset="1" stop-color="#3784F3"/>
+    </linearGradient>
+    <linearGradient id="cmb-light-screen" x1="528" y1="386" x2="758" y2="808" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF6FF"/>
+    </linearGradient>
+    <filter id="cmb-light-window-shadow" x="132" y="204" width="616" height="454" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dy="16" stdDeviation="15" flood-color="#1A457D" flood-opacity="0.16"/>
+    </filter>
+    <filter id="cmb-light-phone-shadow" x="414" y="326" width="458" height="572" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dy="18" stdDeviation="17" flood-color="#12385F" flood-opacity="0.23"/>
+    </filter>
+  </defs>
+  <g transform="translate(71.68 71.68) scale(0.86)">
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#cmb-light-tile)"/>
+  <rect x="33" y="33" width="958" height="958" rx="217" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="2"/>
+  <g filter="url(#cmb-light-window-shadow)">
+    <rect x="178" y="230" width="524" height="358" rx="56" fill="url(#cmb-light-window)"/>
+    <path d="M202 314H678V530C678 549 663 564 644 564H236C217 564 202 549 202 530V314Z" fill="url(#cmb-light-terminal)"/>
+    <g fill="#ECF7FF">
+      <circle cx="226" cy="273" r="10"/>
+      <circle cx="258" cy="273" r="10" fill-opacity="0.75"/>
+      <circle cx="290" cy="273" r="10" fill-opacity="0.5"/>
+    </g>
+    <path d="M252 384H372M252 428H328" stroke="#9AC9FF" stroke-width="18" stroke-linecap="round" opacity="0.7"/>
+  </g>
+  <g filter="url(#cmb-light-phone-shadow)">
+    <rect x="466" y="360" width="354" height="468" rx="70" fill="url(#cmb-light-phone)"/>
+    <rect x="488" y="382" width="310" height="424" rx="49" fill="url(#cmb-light-screen)"/>
+    <rect x="610" y="407" width="66" height="10" rx="5" fill="#366685" fill-opacity="0.32"/>
+    <path d="M549 527L598 574L549 621" stroke="#21446D" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M643 621H697" stroke="#1B9ED2" stroke-width="24" stroke-linecap="round"/>
+    <rect x="608" y="766" width="70" height="9" rx="4.5" fill="#7096B7" fill-opacity="0.38"/>
+  </g>
+  </g>
+</svg>

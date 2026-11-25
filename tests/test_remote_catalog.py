@@ -52,7 +52,7 @@ for line in sys.stdin:
               'account/read': {'account': {'type': 'chatgpt'}}, 'getAuthStatus': {'authMethod': 'chatgpt', 'authToken': None, 'requiresOpenaiAuth': True},
               'model/list': {'data': [{'model': 'fixture-model', 'displayName': 'Fixture'}]},
               'skills/list': {'data': [{'skills': [{'name': 'fixture-skill', 'path': '/fixture/SKILL.md'}]}]},
-              'configRequirements/read': {}}[method]
+              'configRequirements/read': {'requirements': None}}[method]
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
 """)
             executable.chmod(0o700)

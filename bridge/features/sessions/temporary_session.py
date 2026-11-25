@@ -12,7 +12,7 @@ from bridge.features.sessions import message_management
 class TemporarySession:
     capabilities = {'notifications': False}
     temporary = True
-    actions = {None, 'timeline', 'detail', 'changes', 'poll', 'events', 'catalog',
+    actions = {None, 'timeline', 'conversation', 'process', 'detail', 'changes', 'poll', 'events', 'catalog',
                'send', 'settings', 'permissions', 'stop', 'respond', 'queue', 'uploads', 'notifications', 'message-management'}
 
     def __init__(self, bridge, chat):
@@ -43,6 +43,9 @@ class TemporarySession:
 
     def timeline_read(self, identifier, mode='page', **options):
         chat = self.session(identifier)
+        conversation = options.get('projection') == 'conversation' or mode == 'process'
+        if mode == 'detail':
+            options.pop('projection', None)
         with chat.condition:
             view = self.view(identifier)
             # The standard timeline expects preview descriptors, not raw uploads.
@@ -51,7 +54,9 @@ class TemporarySession:
                 for row in turn['messages']:
                     row['attachments'] = [dict(a, type='image' if a.get('image') else 'file')
                                           for a in row.get('attachments', [])]
-            chat.timeline.update(view)
+            chat.timeline.update(view, conversation=conversation)
+            if mode == 'process':
+                return {**chat.timeline.process(**options), 'files': []}
             result = (chat.timeline.detail(**options) if mode == 'detail' else
                       chat.timeline.changes(**options) if mode == 'changes' else chat.timeline.page(**options))
             if mode != 'detail':

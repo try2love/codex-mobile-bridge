@@ -23,6 +23,10 @@ def save_config(directory, value, name='shared-relay.json'):
     directory = Path(directory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / name
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, json.dumps(value, ensure_ascii=False).encode('utf-8'))
+        return
     temporary = path.with_suffix('.tmp')
     with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w', encoding='utf-8') as stream:
         json.dump(value, stream, ensure_ascii=False)

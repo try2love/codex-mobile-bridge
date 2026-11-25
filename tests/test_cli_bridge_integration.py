@@ -180,8 +180,25 @@ class CliBridgeTests(CliBridgeFixture):
         self.assertEqual(session.runtime, 'cli')
         self.bridge.ipc.owner.assert_called_once()
         self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+        self.wait_for_background_read()
         self.bridge._cli_disconnected()
-        self.bridge.activate(self.thread_id)
+        started.clear(); release.clear(); waiting.clear()
+        with session.condition:
+            session.retry_at = 0
+        worker = threading.Thread(target=activate)
+        try:
+            with patch.object(session.condition, 'wait_for', side_effect=await_probe):
+                worker.start()
+                self.assertTrue(started.wait(5), 'reconnect owner probe did not start')
+                self.assertTrue(waiting.wait(5), 'reconnect did not overlap its owner probe')
+                self.assertEqual(self.bridge.ipc.owner.call_count, 2)
+                self.cli.attach.assert_called_once_with(self.thread_id, explicit=True)
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive(), 'reconnect did not finish')
+        if 'error' in outcome:
+            raise outcome['error']
         self.assertEqual(self.bridge.ipc.owner.call_count, 2)
         self.assertEqual(self.cli.attach.call_count, 2)
 

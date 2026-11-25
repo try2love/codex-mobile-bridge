@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.1：** [正式版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex APP 原生连接；新增 Antigravity、聊天内交互图表并改善长会话与模型缓存。
+> **v2.2.2-preview.3：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.3) · [更新说明](RELEASE_NOTES.md)。适配新版 Codex 原生连接，新增完整历史版本选择、安装包下载缓存管理，改善版本切换配置恢复与 Windows 配置权限；首次正常准备可能需要重启 Codex 一次。preview.1 的 Mac/Windows 用户及 preview.2 用户可检查更新，Linux preview.1 需手动安装；稳定版仍为 [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)。
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
@@ -36,6 +36,8 @@
 从手机 App 或浏览器继续电脑上的 **Codex、Claude Code / Cowork、DeepSeek Harness、ZCode** 会话。四个客户端保留独立聊天列表、账号和工作区；在当前应用下创建会话、查看回复、发送附件、切换可用模型与推理强度、处理权限请求。
 
 任务继续在原电脑执行，Codex 的 SSH 任务继续在原服务器执行。网关复用原客户端的会话、认证和执行环境，不让手机重新运行一套 Agent。手机无需登录相同的模型账号，使用网关登录或可撤销的扫码配对即可接入。
+
+通过 [云账号 Web 入口](docs/cloud-web.md) 登录桌面的云账号，可访问自己在线电脑的现有网站，无需逐浏览器批准。官方使用 `https://bridge.apijr.xyz`，自建可配置独立 Web 地址。网页由桌面实时提供，更新桌面即可更新云访问页面；Web 内容由云端代理处理。
 
 ## v2.2.0 更新
 
@@ -397,9 +399,12 @@ macOS 在构建网关运行时后执行 `npm run build:mac -- --arm64`（M 系�
 
 ```bash
 git switch main
+python -m pip install -r requirements-desktop.txt
 npm ci
 npm run desktop
 ```
+
+源码桌面运行先在同一 Python 环境安装上述依赖，其中包含云中继所需的 `aiohttp`、`noiseprotocol` 和系统凭据库 `keyring`；仅安装 Node 依赖不够。使用 `CMB_PYTHON` 时请指向安装了这些依赖的解释器。修改环境后需重启网关；刷新窗口不会替换正在运行的 Python 进程。桌面打包会提前检查并显式收集这些模块，安装版用户无需自行安装 Python 依赖。
 
 构建步骤（在当前项目的 Python 虚拟环境中执行）：
 
@@ -932,6 +937,10 @@ python3 -B -m unittest discover -s tests -v
 ## 致谢
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
+
+感谢 [@heiqiu47](https://github.com/heiqiu47) 的 [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201) 输入区定制、[@mc373906408](https://github.com/mc373906408) 的 [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182) 明暗图标、[@hmho000](https://github.com/hmho000) 的 [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) 启动修复，以及 [@windowmmk](https://github.com/windowmmk) 的 Antigravity、SSH、文件与消息管理改进。各项关联与采纳范围见 [preview.2 更新说明](RELEASE_NOTES.md)。原作者贡献与后续修订分别保留。
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)、[#178](https://github.com/try2love/codex-mobile-bridge/pull/178)、[#179](https://github.com/try2love/codex-mobile-bridge/pull/179)、[#180](https://github.com/try2love/codex-mobile-bridge/pull/180) 和 [#189–#198](RELEASE_NOTES.md) 中贡献 Antigravity 原生指令、模型强度、停止、分屏及多客户端稳定性修复。
 
 感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) 与 [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169) 中贡献聊天内交互图表和 Codex 协议兼容，以及 [@windowmmk](https://github.com/windowmmk) 在 [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171) 中修复大型日志中的原生端口发现。
 

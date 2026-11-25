@@ -14,6 +14,8 @@ Status: implemented
 
 IPC 的连接、初始化和 owner 读取共享绝对 deadline。握手也放入核验工作线程，协调线程不会同步卡在 Unix `sendall` 或 Windows 写入等待中。带期限的读取扣除发送耗时，不附加普通请求的一秒回执宽限；正常写请求保留原等待和结果未知语义，不重放。超时或提前失败时关闭本次临时 follower 并唤醒等待者，不等待静默任务逐个结束。`close` 的连接世代同时阻止迟到的 socket 或初始化响应重新发布连接；原有控制连接与原 owner 不受影响。
 
+所核对的本机 Desktop 路由对 `client-discovery-request` 固定等待最多 10 秒，之后才返回精确 `no-client-found`。单次 owner 读取上限为 11 秒，并将候选预算的三分之二留给发现、余量留给快照及最终复核；总操作截止仍为原 20 秒。有大量候选时每项仍按有界并行分摊，不承诺全量历史在期限内完成，也不把未收到的负面回复推断为不存在 owner。
+
 ## 备选方案
 
 只检查 `gateway.live` 可以绕过历史规模，但会漏掉仅在原 App 中运行的任务。当前 Desktop follower 协议没有已验证的完整 loaded-thread 枚举，也没有附属聊天 fork；原 App 的内部 `thread/loaded/list` 和 `thread/fork` 不等同于外部 follower 接口，因此不借此宣称可以免初始化。
@@ -35,3 +37,7 @@ IPC 的连接、初始化和 owner 读取共享绝对 deadline。握手也放入
 ## 历史笔记核对
 
 [共享运行时数据边界](../architecture/2026-11-08-codex-shared-runtime-data-deletion.md)部分重叠：保留透明适配器、首次重启、写入事务和原生数据验收，只细化初始化任务范围与核验调度。[共享运行时提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)保留其标签同步限制，不将本次核验修复视为已实现标签同步。[CLI 原 owner](2026-10-14-cli-existing-owner.md)继续要求按实际归属而非来源路由；本次不改其接续规则。账号切换与本次初始化不同，通用 CLI 保护继续有效。
+
+## 原生发现时限复验
+
+本机 Codex Desktop 随附 0.169.0-alpha.11.1，安装包路由实现中 discovery 等待 10 秒。纯读取同一历史元数据目标：旧版单次读取上限 6 秒返回读取超时并判 unknown；调整后实际收到原生 `no-client-found`，审计通过。没有读取聊天正文到日志，也没有执行退出、归档或删除。新增匹配原生时限的回归先失败后通过；48 项 Desktop idle/IPC deadline/stream 定向通过，既有 busy、systemError、修订漂移与绝对期限保护均保持。全历史 876 个候选的同机对照仍检出真实 active，并保留大历史/无响应客户端可能不完整的限制。

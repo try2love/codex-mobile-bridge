@@ -1,7 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id),api=window.bridgeDesktop,t=BridgeI18n.t;
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
-let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',savedFields={},feedbackKind='',lastFeedback;
+let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',activeMaintenanceTab='general',savedFields={},feedbackKind='',lastFeedback;
 let networkAdaptationState,networkAdaptationBusy=false,networkAdaptationRevision=0,networkAdaptationError='';
 const defaultWebhookBodyTemplate=JSON.stringify({event:'{{event}}',title:'{{title}}',body:'{{body}}',session_name:'{{session_name}}',url:'{{url}}'},null,2);
 let webhookTemplates={},revealedWebhookUrl='',webhookRevealRequest=0;
@@ -191,6 +191,7 @@ function showError(error){
 
 function moduleName(name){return ({account:'accounts','desktop-sessions':'accounts',harness:'accounts',updates:'advanced',logs:'advanced'})[name]||name;}
 function tab(name){const requested=name;name=moduleName(name);activeTab=name;
+  if(name==='advanced')activeMaintenanceTab=['updates','logs'].includes(requested)?requested:'general';
   if(name!=='notifications')hideWebhookUrl();
   if(name!=='accounts'&&typeof claudeCliAccessPanel!=='undefined')claudeCliAccessPanel?.clear();
   document.querySelectorAll('[data-panel]').forEach(node=>node.hidden=moduleName(node.dataset.panel)!==name);
@@ -306,6 +307,7 @@ function render(value,watchRevision=watchPanel.revision){
   prunePairing(value.urls);
   for(const url of value.urls){const card=document.createElement('div');card.className='address';const text=document.createElement('div'),label=document.createElement('small'),address=document.createElement('strong');const fixed=(value.preferences.connections||[]).some(c=>c.enabled&&url===c.publicUrl+'/');label.textContent=(fixed?t('固定 HTTPS · 请检测入口'):url.startsWith('https:')?t('临时外网 HTTPS'):url.includes('127.0.0.1')?t('此电脑'):t('局域网'))+(running?'':t(' · 网关未启动'));address.textContent=url;text.append(label,address);card.append(text);for(const [name,action] of [[t('复制'),()=>api.copy(url)],[t('打开'),()=>api.open(url)]]){const button=document.createElement('button');button.textContent=name;button.onclick=()=>action().catch(e=>feedback(e.message,true));card.append(button);}if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(card,url,running);$('addresses').append(card);}
   watchPanel.render(value,watchRevision);
+  window.CloudPanel?.update(value.cloud);
   if(!dirty){
     const p=value.preferences,n=value.notifications;
     for(const [id,key] of [['port','port'],['cloudflared','cloudflared'],['codex-home','codexHome'],['ipc-path','ipcPath'],['codex-bin','codexBin']])input(id,p[key]);
@@ -451,7 +453,7 @@ function applyLanguage(value){
   document.title=t('Codex 手机网关');
   if(snapshot){const pending=dirty;dirty=true;render(snapshot);dirty=pending;renderConnections();updateDirty();}
   if(lastFeedback)feedback(...lastFeedback);
-  tab(activeTab);
+  tab(activeTab==='advanced'&&activeMaintenanceTab!=='general'?activeMaintenanceTab:activeTab);
   renderPairing();if(devicesState)renderDevices(devicesState);
 }
 $('language').value=BridgeI18n.language();
@@ -465,20 +467,144 @@ BridgeI18n.apply();
 $('add-connection').onclick=addConnection;
 $('connection-kind').onchange=()=>setupGuide($('connection-guide'),$('connection-kind').value);
 
-const updateMessages={idle:'检查是否有新版本。',checking:'正在检查更新…',current:'当前已是最新可用版本。',available:'有新版本可用。',skipped:'已跳过此版本。手动检查仍可更新。',downloading:'正在下载更新…',preparing:'正在验证并准备更新…',restarting:'即将重启应用…',unsupported:'当前系统或运行方式不支持应用内更新，请从发布页面下载新版。'};
-let updateBusy=false;
+const updateMessages={idle:'检查是否有新版本。',checking:'正在检查更新…',current:'当前已是最新可用版本。',available:'有新版本可用。',skipped:'已跳过此版本。手动检查仍可更新。',downloading:'正在下载更新…',preparing:'正在验证并准备更新…',restarting:'即将重启应用…',downloaded:'更新包已校验并保存，请手动完成安装或替换。当前版本仍在运行。','installer-handoff':'更新包已校验并交给系统打开，请在安装器中完成安装。当前版本仍在运行。','manual-release':'已打开官方发布页，请手动下载并安装此版本。',unsupported:'当前系统或运行方式不支持应用内更新，请从发布页面下载新版。'};
+let updateBusy=false,updateChannel;
+const updateCacheState={entries:[],totalBytes:0,selected:new Set(),loaded:false,loading:false,deleting:false,stale:true,error:'',message:'',listSignature:''};
+let updateCacheSnapshot;
+function updateCacheBusy(){return updateBusy||['checking','downloading','preparing','restarting'].includes(snapshot?.update?.state);}
+function updateCacheVisible(){return activeTab==='advanced'&&activeMaintenanceTab==='updates';}
+function updateCacheSize(value){const bytes=Math.max(0,Number(value)||0);if(bytes<1024)return bytes+' B';const units=['KiB','MiB','GiB'];let size=bytes/1024,index=0;while(size>=1024&&index<units.length-1){size/=1024;index++;}return size.toLocaleString(BridgeI18n.locale(),{maximumFractionDigits:1})+' '+units[index];}
+function renderUpdateCache(){
+  const state=updateCacheState,busy=updateCacheBusy(),locked=busy||state.loading||state.deleting;
+  const eligible=state.entries.filter(entry=>!entry.inUse);
+  state.selected=new Set([...state.selected].filter(id=>eligible.some(entry=>entry.id===id)));
+  const selected=state.selected.size;
+  $('update-cache-all').disabled=locked||!eligible.length;
+  $('update-cache-all').checked=eligible.length>0&&selected===eligible.length;
+  $('update-cache-all').indeterminate=selected>0&&selected<eligible.length;
+  $('update-cache-refresh').disabled=locked;
+  $('update-cache-delete').disabled=locked||!selected;
+  $('update-cache-summary').textContent=state.loaded?t('{count} 个更新包 · {size}').replace('{count}',state.entries.length).replace('{size}',updateCacheSize(state.totalBytes)):'';
+  const message=state.deleting?'正在删除所选缓存…':state.loading?'正在读取下载缓存…':state.error?'缓存操作失败，请重试。':busy?'更新进行中，暂时无法删除缓存。':state.message||(!state.entries.length&&state.loaded?'暂无下载缓存。':'');
+  $('update-cache-state').textContent=t(message)+(state.error?' '+t(state.error):'');
+  $('update-cache-state').classList.toggle('state-error',!!state.error);
+  const signature=JSON.stringify([state.entries,BridgeI18n.language()]);
+  if(signature!==state.listSignature){
+    state.listSignature=signature;
+    $('update-cache-list').replaceChildren();
+    for(const entry of state.entries){
+      const row=document.createElement('label'),box=document.createElement('input'),info=document.createElement('span'),version=document.createElement('strong'),details=document.createElement('small'),size=document.createElement('span');
+      row.className='update-cache-entry';box.type='checkbox';box.dataset.updateCacheId=entry.id;
+      info.className='update-cache-info';version.textContent=entry.version||t('未知版本');
+      const platform=({darwin:'macOS',win32:'Windows',linux:'Linux'})[entry.platform]||entry.platform;
+      details.textContent=[platform,entry.arch].filter(Boolean).join(' / ')+' · '+String(entry.format||'').toUpperCase();
+      info.append(version,details);size.className='update-cache-size';size.textContent=updateCacheSize(entry.size);
+      if(entry.inUse){const status=document.createElement('small');status.textContent=t('使用中');status.className='update-cache-in-use';size.append(status);}
+      box.onchange=()=>{if(updateCacheBusy()||state.loading||state.deleting||entry.inUse)return;if(box.checked)state.selected.add(entry.id);else state.selected.delete(entry.id);state.message='';renderUpdateCache();};
+      row.append(box,info,size);$('update-cache-list').append(row);
+    }
+  }
+  for(const box of $('update-cache-list').querySelectorAll('input')){box.checked=state.selected.has(box.dataset.updateCacheId);box.disabled=locked||!!state.entries.find(entry=>entry.id===box.dataset.updateCacheId)?.inUse;}
+}
+function acceptUpdateCache(value){
+  const state=updateCacheState;state.entries=value.entries||[];state.totalBytes=value.totalBytes||0;state.loaded=true;state.stale=false;
+}
+async function loadUpdateCache(force=false){
+  const state=updateCacheState;
+  if(typeof api.updateCache!=='function'||state.loading||state.deleting||updateCacheBusy()||!force&&state.loaded&&!state.stale)return;
+  state.loading=true;state.error='';state.message='';renderUpdateCache();
+  try{acceptUpdateCache(await api.updateCache({action:'list'}));}
+  catch(error){state.error=error.message;state.stale=false;}
+  finally{state.loading=false;renderUpdateCache();}
+}
+$('update-cache-all').onchange=()=>{const state=updateCacheState;if(updateCacheBusy()||state.loading||state.deleting)return;state.selected=$('update-cache-all').checked?new Set(state.entries.filter(entry=>!entry.inUse).map(entry=>entry.id)):new Set();state.message='';renderUpdateCache();};
+$('update-cache-refresh').onclick=()=>loadUpdateCache(true);
+$('update-cache-delete').onclick=async()=>{
+  const state=updateCacheState;if(updateCacheBusy()||state.loading||state.deleting||!state.selected.size)return;
+  state.deleting=true;state.error='';state.message='';renderUpdate();
+  try{const result=await api.updateCache({action:'delete',ids:[...state.selected]});if(result.entries)acceptUpdateCache(result);if(result.cancelled)state.message='已取消删除，缓存已保留。';else{state.selected.clear();state.message='所选下载缓存已删除。';}}
+  catch(error){state.error=error.message;}
+  finally{state.deleting=false;renderUpdate();}
+};
+const updateVersionsState={value:null,loading:false,selecting:false,error:'',filter:'all',version:'',assetId:'',candidateId:'',signature:''};
+function updateVersionRelease(){return updateVersionsState.value?.releases?.find(release=>release.version===updateVersionsState.version);}
+function updateVersionAsset(){return updateVersionRelease()?.assets?.find(asset=>asset.id===updateVersionsState.assetId);}
+function renderUpdateVersions(){
+  const state=updateVersionsState,value=snapshot?.update||{},busy=updateCacheBusy()||updateCacheState.deleting||state.loading||state.selecting;
+  const releases=(state.value?.releases||[]).filter(release=>state.filter==='all'||release.channel===state.filter);
+  const signature=JSON.stringify([state.value,state.filter,state.version,state.assetId,BridgeI18n.language()]);
+  if(signature!==state.signature){
+    state.signature=signature;
+    $('update-versions-channel').value=state.filter;
+    $('update-versions-version').replaceChildren(new Option(t('请选择版本'),''),...releases.map(release=>new Option(release.version+' · '+t(release.channel==='preview'?'预览版（Preview）':'稳定版（Stable）'),release.version)));
+    $('update-versions-version').value=state.version;
+    $('update-versions-asset').replaceChildren(...(updateVersionRelease()?.assets||[]).map(asset=>new Option(String(asset.format).toUpperCase()+' · '+updateCacheSize(asset.size),asset.id)));
+    $('update-versions-asset').value=state.assetId;
+  }
+  const platform=state.value&&[({darwin:'macOS',win32:'Windows',linux:'Linux'})[state.value.platform]||state.value.platform,state.value.arch].filter(Boolean).join(' / ');
+  $('update-versions-platform').textContent=platform?t('适用于此电脑：')+platform:'';
+  $('update-versions-refresh').disabled=busy;
+  $('update-versions-channel').disabled=busy;
+  $('update-versions-version').disabled=busy||!releases.length;
+  $('update-versions-asset').disabled=busy||!updateVersionRelease();
+  $('update-versions-package').textContent=updateVersionAsset()?.name||'';
+  const message=state.loading?'正在读取官方历史版本…':state.selecting?'正在读取所选安装包…':state.error?'历史版本操作失败，请重试。':state.value&&!releases.length?'此渠道暂无适用于此电脑的安装包。':'';
+  $('update-versions-state').textContent=t(message)+(state.error?' '+t(state.error):'');
+  $('update-versions-state').classList.toggle('state-error',!!state.error);
+  const selected=value.selected&&state.candidateId&&state.candidateId===value.candidateId&&!!updateVersionAsset();
+  $('update-versions-download').disabled=busy||!selected;
+  $('update-versions-install').disabled=busy||!selected;
+  $('update-versions-install').textContent=t(value.manualInstall?(value.path?'打开安装包':'下载并打开安装包'):'切换版本并重启');
+}
+async function loadUpdateVersions(force=false){
+  const state=updateVersionsState;
+  if(typeof api.updateVersions!=='function'||state.loading||state.selecting||updateCacheBusy()||updateCacheState.deleting||state.value&&!force)return;
+  const previousAsset=updateVersionAsset();let reselect=false;
+  state.loading=true;state.error='';renderUpdateVersions();
+  try{
+    state.value=await api.updateVersions({action:'list'});
+    if(state.version){const asset=updateVersionRelease()?.assets?.find(asset=>asset.name===previousAsset?.name);state.candidateId='';if(asset){state.assetId=asset.id;reselect=true;}else{state.version='';state.assetId='';}}
+  }
+  catch(error){state.error=error.message;}
+  finally{state.loading=false;renderUpdateVersions();}
+  if(reselect)await selectUpdateVersion();
+}
+async function selectUpdateVersion(){
+  const state=updateVersionsState;if(updateCacheBusy()||updateCacheState.deleting||state.selecting||!updateVersionAsset())return;
+  state.selecting=true;state.error='';state.candidateId='';updateBusy=true;renderUpdate();
+  try{const value=await api.updateVersions({action:'select',id:state.assetId});state.candidateId=value.candidateId;await refresh();}
+  catch(error){state.error=error.message;}
+  finally{state.selecting=false;updateBusy=false;renderUpdate();}
+}
+$('update-versions-channel').onchange=()=>{const state=updateVersionsState;state.filter=$('update-versions-channel').value;if(state.version&&state.filter!=='all'&&updateVersionRelease()?.channel!==state.filter){state.version='';state.assetId='';state.candidateId='';}renderUpdateVersions();};
+$('update-versions-version').onchange=()=>{const state=updateVersionsState;state.version=$('update-versions-version').value;const assets=updateVersionRelease()?.assets||[];state.assetId=(assets.find(asset=>asset.format==='zip')||assets[0])?.id||'';if(state.assetId)return selectUpdateVersion();renderUpdateVersions();};
+$('update-versions-asset').onchange=()=>{updateVersionsState.assetId=$('update-versions-asset').value;return selectUpdateVersion();};
+$('update-versions-refresh').onclick=()=>loadUpdateVersions(true);
+$('update-versions-download').onclick=async()=>{
+  if(updateCacheBusy()||updateCacheState.deleting||!updateVersionsState.candidateId||updateVersionsState.candidateId!==snapshot?.update?.candidateId)return;
+  updateBusy=true;renderUpdate();
+  try{await api.downloadUpdate({candidateId:updateVersionsState.candidateId});await refresh();}
+  catch(error){feedback(error.message,true);}
+  finally{updateBusy=false;updateCacheState.stale=true;renderUpdate();}
+};
+$('update-versions-install').onclick=()=>{if(updateVersionsState.candidateId&&updateVersionsState.candidateId===snapshot?.update?.candidateId)return $('install-update').onclick();};
+document.querySelectorAll('[data-maintenance-tab]').forEach(button=>button.addEventListener('click',()=>{activeMaintenanceTab=button.dataset.maintenanceTab;if(activeMaintenanceTab==='updates'){loadUpdateCache();loadUpdateVersions();}}));
 function renderUpdate(){
   const value=snapshot?.update;if(!value)return;
-  const busy=['downloading','preparing','restarting'].includes(value.state)||updateBusy;
+  const busy=['downloading','preparing','restarting'].includes(value.state)||updateBusy||updateCacheState.deleting;
+  updateChannel??=value.channel||(value.current.includes('-')?'preview':'stable');
+  $('update-channel').value=updateChannel;
+  $('update-channel').disabled=busy||value.state==='unsupported';
   $('update-version').textContent=t('当前版本：')+value.current+(value.version?' → '+value.version:'');
-  $('update-state').textContent=value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':updateMessages[value.state]||'');
-  $('update-badge').hidden=value.state!=='available';
-  $('update-banner').hidden=value.state!=='available'||activeTab==='advanced';
+  $('update-state').textContent=(value.selected&&value.state==='available'?t('已选择安装版本。'):value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.selected&&!value.manualInstall&&value.state==='downloaded'?'所选安装包已校验并缓存，点击“切换版本并重启”完成安装。当前版本仍在运行。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
+  $('update-badge').hidden=value.state!=='available'||!!value.selected;
+  $('update-banner').hidden=value.state!=='available'||!!value.selected||activeTab==='advanced';
   $('update-banner').textContent=t('发现新版本，点击查看：')+(value.version||'');
   $('check-update').disabled=busy||value.state==='checking'||value.state==='unsupported';
-  $('skip-update').hidden=value.state!=='available'||value.skipped===true;
+  $('skip-update').hidden=value.state!=='available'||value.skipped===true||!!value.selected;
   $('skip-update').disabled=busy||value.state==='checking';
-  $('install-update').hidden=!value.version||['current','unsupported'].includes(value.state);
+  $('install-update').hidden=!value.version||value.selected||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
+  $('install-update').textContent=t(value.manualRelease?'打开官方发布页':value.manualInstall?'下载所选版本':value.intent==='return-stable'?'返回稳定版并重启':value.intent==='opt-in-preview'?'安装预览版并重启':'更新并重启');
   $('install-update').disabled=busy||value.state==='checking';
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';
   $('update-progress').hidden=value.state!=='downloading';
@@ -494,28 +620,37 @@ function renderUpdate(){
     $('settings').inert=true;
     for(const id of ['start','stop','choose-data','install-cloudflared'])$(id).disabled=true;
   }else $('settings').inert=false;
+  const cacheSnapshot=JSON.stringify([value.state,value.path]);
+  if(updateCacheSnapshot!==undefined&&updateCacheSnapshot!==cacheSnapshot&&['downloading','preparing','restarting','downloaded','installer-handoff','error'].includes(value.state))updateCacheState.stale=true;
+  updateCacheSnapshot=cacheSnapshot;
+  renderUpdateCache();
+  renderUpdateVersions();
+  if(updateCacheVisible()){if(updateCacheState.stale)loadUpdateCache();if(!updateVersionsState.value&&!updateVersionsState.error)loadUpdateVersions();}
 }
-$('check-update').onclick=async()=>{
-  if(updateBusy)return;
+async function checkUpdateChannel(){
+  if(updateBusy||updateCacheState.deleting)return;
+  updateChannel=$('update-channel').value;
   updateBusy=true;renderUpdate();
-  try{await api.checkUpdate();await refresh();}
+  try{await api.checkUpdate({channel:updateChannel});await refresh();}
   catch(error){feedback(error.message,true);}
   finally{updateBusy=false;renderUpdate();}
-};
+}
+$('check-update').onclick=checkUpdateChannel;
+$('update-channel').onchange=checkUpdateChannel;
 $('skip-update').onclick=async()=>{
-  if(updateBusy)return;
+  if(updateBusy||updateCacheState.deleting)return;
   updateBusy=true;renderUpdate();
   try{await api.skipUpdate();await refresh();}
   catch(error){feedback(error.message,true);}
   finally{updateBusy=false;renderUpdate();}
 };
 $('install-update').onclick=async()=>{
-  if(updateBusy)return;
+  if(updateBusy||updateCacheState.deleting)return;
   if(dirty||devicesDirty){feedback('请先保存配置，再更新应用。',true);return;}
   if(cloudflaredBusy||startPending||$('save').disabled||busyActions.size){feedback('请等待当前操作完成后再更新。',true);return;}
   updateBusy=true;renderUpdate();
-  try{await api.installUpdate();await refresh();}catch(error){feedback(error.message,true);}
-  finally{updateBusy=false;renderUpdate();}
+  try{await api.installUpdate({candidateId:snapshot?.update?.candidateId});await refresh();}catch(error){feedback(error.message,true);}
+  finally{updateBusy=false;updateCacheState.stale=true;renderUpdate();}
 };
 $('update-releases').onclick=()=>api.open('releases').catch(error=>feedback(error.message,true));
 

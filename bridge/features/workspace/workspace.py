@@ -125,6 +125,11 @@ def display_absolute_path(path):
     return path
 
 
+def _has_git_component(parts):
+    """Reject .git segments regardless of filesystem case sensitivity."""
+    return any(part.rstrip(' .').casefold() == '.git' for part in parts)
+
+
 class Workspace:
     def __init__(self, root):
         if not root or not Path(root).is_absolute():
@@ -382,8 +387,7 @@ class Workspace:
 
     def upload(self, path, encoded):
         parts = self.parts(path)
-        protected_parts = [part.rstrip(' .').casefold() for part in parts] if os.name == 'nt' else parts
-        if not parts or '.git' in protected_parts: raise PermissionError('请选择项目内的普通文件位置')
+        if not parts or _has_git_component(parts): raise PermissionError('请选择项目内的普通文件位置')
         try: data = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError): raise ValueError('上传内容无效') from None
         if len(data) > MAX_TRANSFER: raise ValueError('每个文件不能超过 20 MB')
@@ -453,14 +457,9 @@ class GitWorkspace:
             if process.poll() is None: process.kill(); process.wait()
 
     def status(self):
-        code, top, _ = self.run(['rev-parse', '--show-toplevel'])
-        if code: return {'available': False, 'message': '当前项目不是 Git 工作区，或仓库不可访问'}
-        repository = Path(os.fsdecode(top.rstrip(b'\n'))).resolve()
-        code, gitdir, _ = self.run(['rev-parse', '--absolute-git-dir'])
-        if code: raise ValueError('无法读取 Git 仓库位置')
-        self.gitdir = Path(os.fsdecode(gitdir.rstrip(b'\n')))
-        prefix = self.workspace.root.relative_to(repository).as_posix()
-        self.prefix = '' if prefix == '.' else prefix + '/'
+        context = self.repository_context()
+        if not context['available']: return context
+        prefix = context['path_prefix']
         code, raw, truncated = self.run(['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all',
                                           '--renames', '--ignore-submodules=dirty', '--', '.'])
         if code or truncated: raise ValueError('Git 变更列表过大或不可读取，请在电脑上检查仓库')
@@ -493,10 +492,24 @@ class GitWorkspace:
                 fingerprint.update(str((entry['path'], info.st_mtime_ns, info.st_ctime_ns, info.st_size)).encode('utf-8', 'replace'))
             except FileNotFoundError: pass
         operation = 'merge' if (self.gitdir / 'MERGE_HEAD').exists() else 'other' if any((self.gitdir / name).exists() for name in ('rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD')) else None
-        return {'available': True, 'project': self.workspace.root.name, 'repository': repository.name, 'scope': prefix, 'branch': headers.get('branch.head', ''),
+        return {'available': True, 'project': self.workspace.root.name, 'repository': context['repository'], 'scope': context['scope'], 'branch': headers.get('branch.head', ''),
                 'version': fingerprint.hexdigest(), 'operation': operation,
                 'commit': headers.get('branch.oid', ''), 'upstream': headers.get('branch.upstream'),
                 'ahead': int(counts[0]) if counts else None, 'behind': -int(counts[1]) if counts else None, 'entries': entries}
+
+    def repository_context(self):
+        """Prepare the repository boundary without enumerating working-tree changes."""
+        code, top, _ = self.run(['rev-parse', '--show-toplevel'])
+        if code: return {'available': False, 'message': '当前项目不是 Git 工作区，或仓库不可访问'}
+        repository = Path(os.fsdecode(top.rstrip(b'\n'))).resolve()
+        code, gitdir, _ = self.run(['rev-parse', '--absolute-git-dir'])
+        if code: raise ValueError('无法读取 Git 仓库位置')
+        self.gitdir = Path(os.fsdecode(gitdir.rstrip(b'\n')))
+        relative = self.workspace.root.relative_to(repository).as_posix()
+        self.prefix = '' if relative == '.' else relative + '/'
+        code, head, _ = self.run(['rev-parse', '--verify', 'HEAD'])
+        commit = head.decode('ascii', 'ignore').strip() if code == 0 else '(initial)'
+        return {'available': True, 'repository': repository.name, 'scope': relative, 'path_prefix': self.prefix, 'commit': commit}
 
     def blob(self, spec):
         code, data, truncated = self.run(['cat-file', 'blob', spec], MAX_PREVIEW)
@@ -562,7 +575,8 @@ class GitWorkspace:
         return value
 
     def history(self, limit=40, ref='all'):
-        state = self.require_repository()
+        state = self.repository_context()
+        if not state['available']: raise ValueError(state['message'])
         if not isinstance(limit, int) or not 1 <= limit <= 1000 or ref not in ('all', 'current'):
             raise ValueError('历史查询无效')
         revisions = ['--all'] if ref == 'all' else []
@@ -581,7 +595,9 @@ class GitWorkspace:
         return {'commits': commits[:limit], 'hasMore': len(commits) > limit, 'scope': state['scope']}
 
     def commit_detail(self, revision):
-        self.require_repository(); self.revision(revision)
+        context = self.repository_context()
+        if not context['available']: raise ValueError(context['message'])
+        self.revision(revision)
         code, raw, truncated = self.run(['show', '-s', '--format=%H%x00%P%x00%an%x00%aI%x00%B', revision, '--'], MAX_PREVIEW)
         if code or truncated: raise ValueError('提交详情不可读取')
         oid, parents, author, date, message = raw.decode('utf-8', 'replace').split('\0', 4)
@@ -653,7 +669,7 @@ class GitWorkspace:
                 raise ValueError('此操作影响整个仓库，请在仓库根目录对应的聊天中操作')
             if action in ('stage', 'unstage'):
                 parts = self.workspace.parts(path)
-                if not parts or '.git' in parts: raise ValueError('请选择项目中的变更文件')
+                if not parts or _has_git_component(parts): raise ValueError('请选择项目中的变更文件')
                 entry = next((e for e in state['entries'] if e['path'] == path), None)
                 if not entry or entry['submodule']: raise ValueError('文件状态已变化或为子模块，请刷新后在电脑上处理')
                 # Existing parent components must not redirect staging outside the project.

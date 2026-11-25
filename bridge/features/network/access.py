@@ -32,13 +32,19 @@ def origin(value, scheme='https'):
     if parsed.netloc.endswith(':'):
         raise ValueError('地址端口不正确')
     host = parsed.hostname
+    if '%' in host:
+        raise ValueError('地址不能包含 IPv6 区域标识')
     try:
-        ipaddress.ip_address(host)
-        if '%' in host:
-            raise ValueError('地址不能包含 IPv6 区域标识')
+        address = ipaddress.ip_address(host)
     except ValueError:
         if not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?', host):
             raise ValueError('请使用域名或 IP 地址；国际化域名请填写 Punycode')
+    else:
+        host = address.compressed
+        if address.version == 6:
+            if not re.fullmatch(r'\[[^\]]+\](?::[0-9]+)?', parsed.netloc):
+                raise ValueError('请使用域名或 IP 地址；国际化域名请填写 Punycode')
+            # Browsers serialize IPv6 literals in their compressed form.
     if port is not None and not 1 <= port <= 65535:
         raise ValueError('地址端口不正确')
     authority = '['+host+']' if ':' in host else host

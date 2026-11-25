@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from bridge.features.auth.auth import password_record
 from bridge.api.httpd import GatewayServer
+from bridge.app.cloud import create_cloud_server
 from bridge.app.lifecycle import GatewayControl
 from bridge.app.service import Bridge
 from bridge.features.network.tunnel import QuickTunnel
@@ -89,7 +90,7 @@ def main(connections=None, connection_secrets=None):
         parser.error("auth.mode 只能为 password 或 none")
     if args.no_auth:
         config["auth"]["mode"] = "none"
-    from bridge.features.network.access import validate_connections, public_urls, public_url
+    from bridge.features.network.access import origin as normalize_origin, validate_connections, public_urls, public_url
     legacy_addresses = config.get('lanAddresses')
     raw_interfaces = config.get('lanInterfaces',
                                 interfaces.migrate_addresses_to_interfaces(rows, legacy_addresses))
@@ -105,10 +106,14 @@ def main(connections=None, connection_secrets=None):
     if entries:
         config['publicUrl'] = public_url(preferences)
     origins = config.get("origins", []) + args.origin + public_urls(preferences)
-    for origin in origins:
-        parsed = urlsplit(origin)
+    for index, value in enumerate(origins):
+        parsed = urlsplit(value)
         if parsed.scheme != "https" or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
             parser.error("额外 origin 必须是完整 HTTPS 源且不能有路径")
+        try:
+            origins[index] = normalize_origin(value)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.lan:
         hosts = ['127.0.0.1', 'localhost'] + network.bindings(preferences, rows)[1:]
     else:
@@ -173,6 +178,8 @@ def main(connections=None, connection_secrets=None):
                           lan_addresses=monitor.addresses())
     address_notifications = AddressNotifications(args.config.parent, notification_urls, server.instance_id)
     notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''), desktop_sessions=server.desktop_sessions)
+    from bridge.features.network.cloud_connector import Connector
+    cloud = Connector(args.config.parent, server)
     def valid_push_session(key):
         with server.auth.lock:
             session = server.auth.sessions.get(key)
@@ -276,10 +283,14 @@ def main(connections=None, connection_secrets=None):
         for listener in servers:
             listener.connection_discovery = discovery
         notifications.start()
+        try:
+            cloud.start(lambda: create_cloud_server(server))
+        except ImportError:
+            cloud.status('unavailable', 'cloud_dependencies_missing')
         address_notifications.start()
         monitor.start()
         bridge.accounts.monitor.start()
-        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts_control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control)
+        control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts_control, server.harness.control, server.desktop_sessions.control, bridge.cli_access_control, network_adaptation=adaptation.control, cloud=cloud.control)
         for listener in servers[1:]:
             thread = threading.Thread(target=listener.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
             thread.start()
@@ -289,6 +300,7 @@ def main(connections=None, connection_secrets=None):
     except KeyboardInterrupt:
         pass
     finally:
+        cloud.close()
         for listener, thread in listener_threads:
             listener.shutdown()
             thread.join()

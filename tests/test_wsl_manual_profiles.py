@@ -156,16 +156,45 @@ class ManualWslProfiles(unittest.TestCase):
                 before = registry.path.read_bytes()
                 temporary = registry.path.with_suffix('.tmp')
                 temporary.write_bytes(b'owned existing temporary file')
-                with self.assertRaises(FileExistsError):
+                # Stale fixed-name files no longer block private_json. Inject
+                # the actual atomic replacement failure and keep the contract.
+                # POSIX uses Path.replace (cached accessor on Python 3.9); the
+                # Windows private writer publishes through os.replace directly.
+                original_replace = os.replace
+                def fail_registry_replace(source, destination):
+                    if Path(destination) == registry.path:
+                        raise OSError('fixture atomic replacement denied')
+                    return original_replace(source, destination)
+                with patch.object(Path, 'replace', side_effect=fail_registry_replace, autospec=True) as path_replace, \
+                     patch.object(os, 'replace', side_effect=fail_registry_replace) as replace, self.assertRaises(OSError):
                     registry.save_wsl('Ubuntu-24.04', 'alice', self.home, 'Private')
+                self.assertTrue(any(Path(call.args[1]) == registry.path for call in replace.call_args_list + path_replace.call_args_list))
                 self.assertEqual(registry.entries, [old]); self.assertFalse(registry.candidates)
                 self.assertFalse(old['enabled'])
                 self.assertEqual(registry.path.read_bytes(), before)
                 self.assertEqual(temporary.read_bytes(), b'owned existing temporary file')
-                temporary.unlink()
                 identifier = registry.save_wsl('Ubuntu-24.04', 'alice', self.home, 'Private')
+                self.assertEqual(temporary.read_bytes(), b'owned existing temporary file')
+                temporary.unlink()
                 self.assertEqual(registry.entries[-1]['id'], identifier)
                 self.assertEqual(registry.entries[0], old)
+
+    def test_failed_atomic_write_contract_through_windows_private_writer(self):
+        from bridge.app import lifecycle
+        from bridge.platforms.windows import local_service
+        def windows_writer(path, content):
+            temporary = path.with_name(path.name+'.windows-writer-fixture')
+            try:
+                temporary.write_bytes(content)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        # Exercise private_json's actual Windows dispatch while isolating native
+        # ACL allocation; the writer uses the same os.replace publication seam.
+        with patch.object(lifecycle, 'os', SimpleNamespace(name='nt')), \
+             patch.object(local_service, 'write_private', side_effect=windows_writer) as writer:
+            self.test_failed_atomic_write_never_publishes_or_enables_a_manual_entry()
+            self.assertEqual(writer.call_count, 6)
 
     def test_atomic_replace_with_lost_ack_is_verified_without_a_second_write(self):
         from bridge.app.lifecycle import private_json
