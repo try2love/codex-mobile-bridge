@@ -114,12 +114,16 @@ class RetainedIndexHistoryTests(unittest.TestCase):
             injected = self.home/'injected-remote.py'
             injected.write_text(script, encoding='utf-8')
             result = subprocess.run([sys.executable, '-B', str(injected)], cwd=self.home,
-                env={**os.environ, 'PYTHONPATH': '', 'CODEX_HOME': str(self.home)}, capture_output=True, text=True, check=True)
+                env={**os.environ, 'PYTHONPATH': '', 'CODEX_HOME': str(self.home), 'PYTHONIOENCODING': 'utf-8'},
+                capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(result.returncode, 0,
+                             f'Injected remote failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}')
             return json.loads(result.stdout)
         with patch('bridge.clients.codex.remote.ssh_read', side_effect=read):
             remote = RemoteStore('fixture')
             snapshot = remote.transfer_snapshot(THREAD)
             turns = list(remote.transfer_index_turns(snapshot['nativeIndex']))
+        self.assertEqual(snapshot['warnings'], self.store.transfer_snapshot(THREAD)['warnings'])
         self.assertEqual(len(turns[0]['items']), 65)
 
     def test_saved_prefix_allows_appends_but_rejects_changes_to_pinned_items(self):

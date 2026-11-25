@@ -24,7 +24,7 @@ class AntigravityReadingTest(unittest.TestCase):
         self.store = AntigravityStore(self.home / 'scratch', home=self.home)
 
     def row(self, cid=CID, time='2026-01-01', parent=''):
-        return (cid, 'native title', '', 2, time, json.dumps(['file:///project']),
+        return (cid, 'native title', '', 2, time, json.dumps([(self.home / 'project').as_uri()]),
                 'CASCADE_RUN_STATUS_RUNNING', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION',
                 '', parent, int(bool(parent)), 1, 0, '')
 
@@ -72,7 +72,7 @@ class AntigravityReadingTest(unittest.TestCase):
         conn.close()
         summary = self.store.resolve_session(gateway_id('app', CID))
         self.assertEqual(summary['title'], 'native title')
-        self.assertEqual(summary['cwd'], '/project')
+        self.assertEqual(summary['cwd'], str(self.home / 'project'))
         self.assertEqual(summary['nativeId'], CID)
         self.assertEqual(summary['status'], 'active')
         self.assertTrue(summary['runtimeKnown'])
