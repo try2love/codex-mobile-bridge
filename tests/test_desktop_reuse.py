@@ -27,6 +27,10 @@ class DesktopReuseTests(unittest.TestCase):
     def test_successful_platform_can_be_reused_from_cancelled_overall_run(self):
         self.validate(['tests/test_bridge.py', 'tests/test_desktop_idle.py', 'tests/test_hosted_desktop.py'])
 
+    def test_windows_path_and_utf8_fixture_repairs_preserve_product_packages(self):
+        self.validate(['tests/test_antigravity_reading.py', 'tests/test_retained_index_history.py',
+                       'tests/test_history_control_separation.py', 'tests/test_progressive_loading.py'])
+
     def test_workflow_scopes_rebuild_and_keeps_default_all(self):
         workflow = (ROOT/'.github/workflows/desktop.yml').read_text()
         self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse]', workflow)
