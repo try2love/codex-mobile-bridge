@@ -7,6 +7,7 @@ test('desktop theme survives a new reader and invalid changes preserve the saved
  for(const theme of ['dark','light','system']){saveAppearance(directory,theme);assert.equal(readAppearance(directory),theme);}
  const file=path.join(directory,'desktop-appearance.json'),before=fs.readFileSync(file);
  assert.throws(()=>saveAppearance(directory,'unknown'),/主题/);assert.deepEqual(fs.readFileSync(file),before);
- assert.equal(fs.statSync(file).mode&0o777,0o600);assert.deepEqual(fs.readdirSync(directory),['desktop-appearance.json']);
+ if(process.platform!=='win32')assert.equal(fs.statSync(file).mode&0o777,0o600);
+ assert.deepEqual(fs.readdirSync(directory),['desktop-appearance.json']);
  fs.writeFileSync(file,'broken');assert.equal(readAppearance(directory),'system');
 });

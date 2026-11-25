@@ -4,7 +4,7 @@ const {readFileSync}=require('node:fs'),{stripTypeScriptTypes}=require('node:mod
 // Execute the production URL rules. This is not an ArkTS or device build.
 const source=readFileSync(path.join(__dirname,'../mobile/harmony/entry/src/main/ets/services/GatewayUrl.ets'),'utf8');
 const context=vm.createContext({url:{URL:{parseURL:value=>new URL(value)}}});
-vm.runInContext(stripTypeScriptTypes(source.replace(/^import .*;\n/,'').replace('export class','class'))+'\nglobalThis.GatewayUrl=GatewayUrl;',context);
+vm.runInContext(stripTypeScriptTypes(source.replace(/^import .*;\r?\n/,'').replace('export class','class'))+'\nglobalThis.GatewayUrl=GatewayUrl;',context);
 const GatewayUrl=context.GatewayUrl;
 test('Harmony accepts canonical gateway and one-time pairing entries',()=>{
   const prefix='/d/'+'a'.repeat(32),pair='#pair='+'b'.repeat(43);
