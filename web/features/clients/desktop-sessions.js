@@ -20,7 +20,7 @@ class DesktopSessionsView {
     this.clientIcon=this.node('span','client-icon');const info=this.node('div','chat-info');this.title=this.node('span','ds-title');this.titleButton=this.button('',()=>this.chatDetails());this.titleButton.className='chat-title-button';this.label(this.titleButton,'查看聊天详情');this.titleButton.append(this.title);info.append(this.titleButton);
     this.status=this.node('span','status');this.status.setAttribute('role','status');const settings=this.iconButton('设置','M5 12h.01M12 12h.01M19 12h.01',()=>{document.getElementById('appearance-dialog')?.showModal();window.loadNotificationDefaults?.();});settings.className='ds-settings appearance-button';settings.setAttribute('data-open-appearance','');
     const head=this.node('header','ds-head chat-head');head.append(this.back,this.clientIcon,info,this.status,settings);
-    this.messages=this.node('div','ds-messages timeline');this.messages.tabIndex=-1;this.progress=this.node('div','working');this.progress.hidden=true;this.requests=this.node('div','ds-requests');this.notice=this.node('p','notice');this.notice.hidden=true;this.resumeButton=this.button('继续会话',()=>this.continueChat());this.resumeButton.hidden=true;
+    this.messages=this.node('div','ds-messages timeline');this.messages.tabIndex=-1;this.progress=this.node('div','working');this.progress.hidden=true;this.requests=this.node('div','ds-requests');this.notice=this.node('p','notice');this.notice.hidden=true;dismissibleChatNotice(this.notice,()=>this.writeScope());this.resumeButton=this.button('继续会话',()=>this.continueChat());this.resumeButton.hidden=true;
     this.messageList=this.node('div');this.messages.append(this.messageList);
     this.messages.addEventListener('scroll',()=>this.rememberReading(),{passive:true});
     this.messages.addEventListener('click',event=>{
@@ -399,6 +399,8 @@ class DesktopSessionsView {
       this.loadNotificationPolicy();
       const client=this.clientStates?.find(row=>row.id===this.provider);
       if(continueSelected&&this.resumeSelected===sid&&this.provider==='zcode'&&client?.pipeReady===true&&this.canResume()){this.resumeSelected=null;await this.continueChat();}
+      else if(ClientIdentity.family(this.provider)==='deepseek'&&this.isChatOpen&&!this.root.hidden&&!document.hidden&&
+              window.BridgeChatForeground!==false&&navigator.onLine!==false&&!this.workbench.isFileVisible&&this.canResume())await this.continueChat();
     }catch(error){if(generation===this.generation&&sid===this.sid)this.showReadFailure(error);}
   }
   async detail(generation){

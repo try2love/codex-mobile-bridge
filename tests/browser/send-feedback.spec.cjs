@@ -5,6 +5,31 @@ test.beforeEach(async({context,request,baseURL})=>{
  await context.route('**/*',route=>new URL(route.request().url()).origin===baseURL?route.continue():route.abort());
  expect(await(await request.get('/__fixture_health')).json()).toEqual({fixture:'cmb-browser-regression'});
 });
+test('DSH opens its original session automatically and chat notices dismiss without changing authority',async({page},info)=>{
+ await page.goto('/?case=success');await expect(page.locator('#bootstrap-status')).toBeHidden();
+ await page.waitForFunction(()=>typeof DesktopSessionsView==='function');
+ await page.evaluate(async()=>{
+  const root=document.createElement('div');root.id='dsh-auto';root.className='app';root.style.cssText='position:fixed;inset:0;background:var(--page);z-index:10';document.body.append(root);
+  const test=window.dshAuto={writes:[],connected:false,notice:'原会话提示'};
+  const detail=()=>({session:{id:'cold',title:'DSH原生会话',status:'idle',connectionState:test.connected?'ready':'detached',controlScope:'session'},
+   capabilities:{resume:!test.connected,send:test.connected},notice:test.notice,messages:[{id:'old',role:'assistant',text:'原有聊天内容'}]});
+  const view=test.view=new DesktopSessionsView({root,select:document.createElement('select'),notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async(url,body)=>{
+   if(body){test.writes.push({url,body});test.connected=true;return {status:'ready'};}
+   if(url.includes('/detail'))return detail();if(url.includes('/workspace'))return {entries:[],total:0,project:'/fixture'};
+   return {sessions:[detail().session],connected:true};
+  }});
+  view.setClientStates([{id:'deepseek',enabled:true,connected:true,historyAvailable:true}]);await view.choose('deepseek');test.listWrites=test.writes.length;await view.open('cold');clearTimeout(view.timer);
+ });
+ expect(await page.evaluate(()=>dshAuto.listWrites)).toBe(0);expect(await page.evaluate(()=>dshAuto.writes.map(row=>row.url))).toEqual(['/api/desktop-sessions/deepseek/resume']);
+ const root=page.locator('#dsh-auto'),notice=root.locator('.notice');await expect(root.locator('.message-body')).toContainText('原有聊天内容');
+ await expect(notice).toBeVisible();await notice.getByRole('button',{name:'关闭提示',exact:true}).click();await expect(notice).toBeHidden();
+ await page.evaluate(async()=>{await dshAuto.view.refresh();clearTimeout(dshAuto.view.timer);});await expect(notice).toBeHidden();
+ expect(await page.evaluate(()=>dshAuto.writes.length)).toBe(1);expect(await page.evaluate(()=>dshAuto.view.canMutate())).toBe(true);
+ await page.evaluate(()=>{dshAuto.view.detailNotice='原会话连接已变化';dshAuto.view.renderNotice();});await expect(notice).toBeVisible();
+ const image=info.outputPath('dsh-notice.png');await page.screenshot({path:image});await info.attach('dsh-notice',{path:image,contentType:'image/png'});
+ await notice.getByRole('button',{name:'关闭提示',exact:true}).click();await expect(notice).toBeHidden();
+ await page.evaluate(()=>{dshAuto.view.sid='other';dshAuto.view.renderNotice();});await expect(notice).toBeVisible();
+});
 test('merged controls send queue and steer through the real submit handler and stop without clearing a draft', async ({
   page,
 }) => {

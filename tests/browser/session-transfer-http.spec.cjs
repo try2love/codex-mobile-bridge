@@ -95,6 +95,11 @@ test('process metadata remains visible and native read-only status stays below c
       notice:document.getElementById('notice').getBoundingClientRect().toJSON(),timeline:document.getElementById('timeline').getBoundingClientRect().top}));
     expect(bounds.notice.y).toBeGreaterThanOrEqual(bounds.tabs-1);expect(bounds.notice.bottom).toBeLessThanOrEqual(bounds.timeline+1);
     const screenshot=info.outputPath('readonly-banner.png');await page.screenshot({path:screenshot});await info.attach('readonly-banner',{path:screenshot,contentType:'image/png'});
+    await notice.getByRole('button',{name:'关闭提示',exact:true}).click();await expect(notice).toBeHidden();
+    await page.evaluate(()=>{const text=document.getElementById('notice-text');text.textContent=text.textContent;document.getElementById('notice').hidden=false;});
+    await expect(notice).toBeHidden();expect(await page.evaluate(()=>OfflineChatReader.enabled)).toBe(true);
+    await page.evaluate(()=>{document.getElementById('notice-text').textContent='连接状态已变化';document.getElementById('notice').hidden=false;});
+    await expect(notice).toBeVisible();
   }finally{lines.close();server.kill();}
 });
 

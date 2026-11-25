@@ -22,6 +22,24 @@ function renderChatMessageTime(container,value,now=new Date()){
   time.setAttribute('aria-label',time.title);container.append(time);
 }
 function chatTurnStopped(status){return ['failed','interrupted','cancelled','canceled'].includes(status);}
+function dismissibleChatNotice(notice,scope){
+  const close=document.createElement('button');close.type='button';close.className='plain chat-notice-close';close.textContent='×';
+  let dismissed=null,hidden=notice.hidden;
+  const key=()=>JSON.stringify([scope(),[...notice.childNodes].filter(node=>node!==close&&node.nodeName!=='BUTTON')
+    .map(node=>node.textContent).join('').trim()]);
+  const refresh=()=>{
+    if(notice.hidden&&!hidden)dismissed=null;
+    hidden=notice.hidden;
+    const current=key();
+    if(dismissed!==current){dismissed=null;delete notice.dataset.noticeDismissed;}
+    const label=typeof BridgeI18n==='undefined'?'关闭提示':BridgeI18n.t('关闭提示');
+    if(close.getAttribute('aria-label')!==label)close.setAttribute('aria-label',label);
+    if(!notice.hidden&&close.parentElement!==notice)notice.append(close);
+  };
+  close.onclick=()=>{dismissed=key();notice.dataset.noticeDismissed='true';};
+  notice.classList.add('chat-notice-dismissible');
+  new MutationObserver(refresh).observe(notice,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['hidden']});
+}
 function chatTurnCompletionLabel(turn,{live=false,now=Date.now()}={}){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(chatTurnStopped(turn.status))return t(turn.status==='failed'?'运行失败':'已停止');

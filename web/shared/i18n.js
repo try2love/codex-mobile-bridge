@@ -2,6 +2,7 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"关闭提示":"Dismiss notice",
 "正在读取中间过程…":"Loading intermediate steps…",
 "本地数据传输":"Local data transfer",
 "手机 App":"Mobile app",

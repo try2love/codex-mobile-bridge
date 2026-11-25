@@ -2,6 +2,9 @@
 .activity{margin:0}.activity summary{padding:2px 0}
 .notice{background:var(--warning-bg);color:var(--warning-text)}
 .notice .plain{color:inherit}
+.notice.chat-notice-dismissible{position:relative;padding-right:44px}
+.notice[data-notice-dismissed="true"]{display:none!important}
+.notice .chat-notice-close{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:32px;height:32px;padding:0;border:0;background:none;font-size:20px;line-height:1}
 .timeline{padding:20px max(24px,calc((100% - 760px)/2))}
 .message{font-size:var(--message-size);line-height:var(--message-leading);margin:var(--message-gap) 0}
 .timeline-row{margin-bottom:var(--message-gap)}

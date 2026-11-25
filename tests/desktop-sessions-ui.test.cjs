@@ -1577,6 +1577,46 @@ test('only selecting a ZCode row continues its verified private session',async()
  assert.deepEqual(actions,['resume']);
 });
 
+test('opening a fresh DSH chat continues it once while list and background reads stay passive',async()=>{
+ const ui=fixture(),view=ui.view;let connected=false;
+ const detail=()=>({session:{id:'cold',title:'DSH chat',status:'idle',connectionState:connected?'ready':'detached',controlScope:'session'},
+  capabilities:{resume:!connected,send:connected},messages:[{id:'history',role:'assistant',text:'Saved DSH reply'}]});
+ view.setClientStates([{id:'deepseek',enabled:true,connected:true,historyAvailable:true}]);
+ ui.setHandler(async(url,body)=>{
+  if(body){assert.match(url,/\/resume$/);connected=true;return {status:'ready'};}
+  return url.includes('/detail')?detail():{sessions:[detail().session],connected:true};
+ });
+ await view.choose('deepseek');assert.equal(ui.calls.filter(row=>row.body).length,0);
+ await view.open('cold');await new Promise(setImmediate);assert.equal(ui.calls.filter(row=>row.body).length,1);assert.equal(view.canMutate(),true);
+ await view.refresh();assert.equal(ui.calls.filter(row=>row.body).length,1);
+ assert.match(view.messages.textContent,/Saved DSH reply/);
+});
+
+for(const condition of ['cached','offline','hidden','disabled','stale','background'])test(`DSH automatic continuation rejects ${condition} detail`,async()=>{
+ const ui=fixture(),view=ui.view;view.provider='deepseek';view.sid='cold';view.showSelection(true);
+ view.clientStates=[{id:'deepseek',enabled:condition!=='disabled',connected:true,historyAvailable:true}];
+ view.loadNotificationPolicy=()=>{};
+ view.detail=async()=>{
+  view.applyDetail({session:{id:'cold',title:'Cold',connectionState:'detached'},capabilities:{resume:true},messages:[]},condition==='cached');
+  if(condition==='stale')view.sid='new-chat';
+ };
+ if(condition==='offline')ui.run('window.OfflineChatReader={enabled:true}');
+ if(condition==='hidden')ui.document.hidden=true;
+ if(condition==='background')ui.run('window.BridgeChatForeground=false');
+ await view.open('cold');assert.equal(ui.calls.filter(row=>row.body).length,0);
+});
+
+test('a failed DSH automatic continuation is not repeated by later detail polling',async()=>{
+ const ui=fixture(),view=ui.view;
+ view.setClientStates([{id:'deepseek',enabled:true,connected:true,historyAvailable:true}]);
+ const detail={session:{id:'cold',title:'Cold',connectionState:'detached'},capabilities:{resume:true},messages:[]};
+ ui.setHandler(async(url,body)=>{if(body)throw Error('Original session unavailable');return url.includes('/detail')?detail:{sessions:[detail.session],connected:true};});
+ await view.choose('deepseek');await view.open('cold');await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(row=>row.body).length,1);
+ await view.refresh();assert.equal(ui.calls.filter(row=>row.body).length,1);
+ assert.equal(view.canResume(),true);assert.match(view.error.textContent,/Original session unavailable/);
+});
+
 async function progressiveChat(options){
  const ui=fixture(options),view=ui.view,session={id:'sess-cold',title:'Cold',status:'idle',cwd:'/p',requests:[]};
  const detail=ready=>({session:{...session,controlScope:'session',connectionState:ready?'ready':'detached'},
