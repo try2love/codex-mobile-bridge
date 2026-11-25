@@ -6,6 +6,75 @@ const fs=require('node:fs/promises'),sync=require('node:fs'),vm=require('node:vm
 const {createHash,generateKeyPairSync,sign}=require('node:crypto');
 const {installerHandoffEvidence,click,stopOwnedGui,debuggerClient,transportScript,baselinePolicy,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine,credentialBoundaryProof,paths}=require('../scripts/smoke-published-upgrade.cjs');
 const script=path.join(__dirname,'../scripts/smoke-published-upgrade.cjs');
+test('candidate transport requires the CI signature and exact ZIP bytes',async t=>{
+  const {prepareCandidateRelease}=require('../scripts/smoke-published-upgrade.cjs');
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-candidate-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic candidate ZIP'),version='2.2.2-preview.4';
+  const name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256=createHash('sha256').update(bytes).digest('hex');
+  const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',assets:{'win32-x64':{name,size:bytes.length,sha256}}}));
+  await fs.mkdir(path.join(directory,'candidate'));
+  const manifest=path.join(directory,'candidate','bridge-update.json'),archive=path.join(directory,'candidate',name);
+  await fs.writeFile(manifest,JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,keys.privateKey).toString('base64')}));
+  await fs.writeFile(archive,bytes);
+  const result=await prepareCandidateRelease(directory,'win32','x64',keys.publicKey);
+  assert.equal(result.asset.name,name);assert.equal(result.asset.sha256,sha256);
+  assert.equal(result.release.tag_name,'v'+version);
+  assert.equal(result.release.assets.find(row=>row.name===name).digest,'sha256:'+sha256);
+  await assert.rejects(prepareCandidateRelease(directory,'win32','x64',generateKeyPairSync('ed25519').publicKey),/签名/);
+  await fs.writeFile(archive,Buffer.alloc(bytes.length));
+  await assert.rejects(prepareCandidateRelease(directory,'win32','x64',keys.publicKey),/candidate ZIP/);
+});
+test('upgrade receipts cannot report success without the real matching ACK and restored runtime',async t=>{
+  const {verifyUpgradeReceipt}=require('../scripts/smoke-published-upgrade.cjs');
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-ack-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const plan={token:'synthetic-token',version:'2.2.2-preview.4',dataDir:directory,runtime:{running:true}};
+  await fs.writeFile(path.join(directory,'plan.json'),JSON.stringify(plan));
+  await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({state:'updated',version:plan.version}));
+  await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}})),{code:'ENOENT'});
+  await fs.writeFile(path.join(directory,'ack.json'),JSON.stringify({token:'wrong',version:plan.version,dataDir:directory}));
+  await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}})));
+  await fs.writeFile(path.join(directory,'ack.json'),JSON.stringify({token:plan.token,version:plan.version,dataDir:directory}));
+  await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:false}})),/restored gateway/);
+  assert.equal((await verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}}))).acknowledged,true);
+});
+test('candidate transport lets a Preview3 updater authenticate and install Preview4 as a normal update',async t=>{
+  const {prepareCandidateRelease}=require('../scripts/smoke-published-upgrade.cjs');
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-forward-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3']]){
+    await fs.mkdir(path.join(directory,folder));
+    await fs.writeFile(path.join(directory,folder,'release.json'),JSON.stringify({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),assets:[]}));
+  }
+  await fs.mkdir(path.join(directory,'candidate'));
+  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic CI ZIP'),version='2.2.2-preview.4';
+  const name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256=createHash('sha256').update(bytes).digest('hex');
+  const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',assets:{'win32-x64':{name,size:bytes.length,sha256}}}));
+  await fs.writeFile(path.join(directory,'candidate','bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,keys.privateKey).toString('base64')}));
+  await fs.writeFile(path.join(directory,'candidate',name),bytes);
+  await prepareCandidateRelease(directory,'win32','x64',keys.publicKey);
+  const module={exports:{}};
+  vm.runInNewContext(sync.readFileSync(path.join(__dirname,'../desktop/features/updates/updater.cjs'),'utf8'),
+    {module,require,Buffer,URL,AbortController,AbortSignal,setTimeout,Response});
+  const native={dialog:{showMessageBox:async()=>({response:0})},shell:{}};
+  const req=name=>name==='./desktop/features/updates/updater.cjs'?module.exports:name==='electron'?native:require(name);
+  const context=vm.createContext({process:{resourcesPath:'/unpacked/resources',getBuiltinModule:()=>({createRequire:()=>req})},Buffer,Response});
+  vm.runInContext(transportScript(directory,true,true,true,true),context);
+  let preflight=0,applied=0;
+  const options={current:'2.2.2-preview.3',platform:'win32',arch:'x64',key:keys.publicKey,directory:path.join(directory,'downloads'),
+    preflight:async()=>{preflight++;},install:async candidate=>{
+      assert.equal(candidate.version,version);assert.equal(candidate.transition.intent,'update');
+      assert.deepEqual(await fs.readFile(candidate.archive),bytes);applied++;
+    }};
+  const updater=new module.exports.Updater(options),state=await updater.check({manual:true});
+  assert.equal(state.state,'available',state.message);assert.equal(state.version,version);assert.equal(state.requiresConfirmation,false);
+  assert.equal((await updater.install({candidateId:state.candidateId})).state,'restarting');
+  assert.equal(preflight,1);assert.equal(applied,1);assert.equal(updater.key,keys.publicKey);
+  const unknown=new module.exports.Updater({...options,key:generateKeyPairSync('ed25519').publicKey});
+  assert.equal((await unknown.check({manual:true})).state,'error');assert.match(unknown.status().message,/签名/);
+  assert.equal(applied,1);
+});
 test('acceptance mouse click scrolls an offscreen history action into view and verifies its hit target',async()=>{
   let y=1280,clicks=0,pressed=false,covered=false,disabled=false;
   const button={hidden:false,get disabled(){return disabled;},

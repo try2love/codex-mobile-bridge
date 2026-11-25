@@ -1,6 +1,9 @@
 name: Published package upgrade acceptance
 on:
   workflow_call:
+    secrets:
+      UPDATE_SIGNING_KEY:
+        required: true
     inputs:
       source_ref:
         required: true
@@ -30,6 +33,46 @@ permissions:
   contents: read
   actions: read
 jobs:
+  sign-candidate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify frozen candidate before accessing signing secret
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_ONLY: 'true'
+        run: python scripts/prepare-upgrade-acceptance.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: .tmp/published-upgrade/candidate
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Sign exact CI packages for isolated updater acceptance
+        env:
+          CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          node scripts/release-assets.cjs notes RELEASE_NOTES.md .tmp/acceptance-release-notes.md
+          node scripts/sign-update.cjs .tmp/published-upgrade/candidate .tmp/acceptance-release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-candidate-signature
+          if-no-files-found: error
+          path: |
+            .tmp/published-upgrade/candidate/bridge-update.json
+            .tmp/published-upgrade/candidate/SHA256SUMS.txt
   select:
     runs-on: ubuntu-24.04
     outputs:
@@ -57,7 +100,7 @@ jobs:
               output.write('matrix=' + json.dumps({'include': rows}) + '\n')
           PY
   upgrade:
-    needs: select
+    needs: [select, sign-candidate]
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -88,6 +131,10 @@ jobs:
           path: .tmp/published-upgrade/candidate
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: upgrade-candidate-signature
+          path: .tmp/published-upgrade/candidate
       - run: npm ci
       - name: Install test browser
         run: npx playwright install --with-deps chromium
@@ -96,7 +143,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb xauth dbus-x11 libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0
-      - name: Real package bootstrap and in-app stable return with failure recovery
+      - name: Original Preview3 updater to signed CI Preview4 and stable return with failure recovery
         if: runner.os != 'Linux'
         run: node scripts/smoke-published-upgrade.cjs
       - name: Real Debian bootstrap and explicit manual stable return
@@ -111,9 +158,15 @@ jobs:
           path: |
             .tmp/published-upgrade/provenance.json
             .tmp/published-upgrade/result.json
+            .tmp/published-upgrade/candidate/bridge-update.json
+            .tmp/published-upgrade/candidate/SHA256SUMS.txt
             .tmp/published-upgrade/*-desktop.png
             .tmp/published-upgrade/*-browser.png
             .tmp/published-upgrade/*/result.json
             .tmp/published-upgrade/*/release.json
             .tmp/published-upgrade/*/*-desktop.png
             .tmp/published-upgrade/*/*-browser.png
+            .tmp/published-upgrade/*-bootstrap/.cmb-update-*/plan.json
+            .tmp/published-upgrade/*-bootstrap/.cmb-update-*/ack.json
+            .tmp/published-upgrade/*-bootstrap/.cmb-update-*/result.json
+            .tmp/published-upgrade/*-bootstrap/.cmb-update-*/*.log

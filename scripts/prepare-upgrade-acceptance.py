@@ -60,6 +60,9 @@ def main():
     changed = subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines()
     if set(changed) - ACCEPTANCE_FILES:
         raise SystemExit('Workflow checkout differs from product beyond acceptance-only files: ' + repr(changed))
+    if os.environ.get('SOURCE_ONLY') == 'true':
+        print('Verified exact candidate build and acceptance-only checkout before signing')
+        return
     work = Path('.tmp/published-upgrade')
     suffix = os.environ['OLD_ASSET_SUFFIX']
     baselines = []
@@ -98,8 +101,9 @@ def main():
     (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
         'buildSource': build_source, 'sourceEquivalentChanges': build_changes,
         'baselines': baselines, 'acceptanceOnlyChanges': changed,
-        'mode': 'manual-bootstrap-then-production-updater-return-stable',
-        'catalogue': 'fixture release directory; original official signed manifests and packages'}, indent=2) + '\n')
+        'mode': 'original-preview3-updater-to-ci-preview4-on-macos-windows; older-baselines-manual; updater-return-stable',
+        'candidateManifest': 'same-run CI signature using original shipped public key; no release publication',
+        'catalogue': 'fixture release directory; original official baseline manifests/packages and signed CI candidate'}, indent=2) + '\n')
     print('Verified official stable/preview1/preview2/preview3 packages and exact candidate build provenance')
 
 

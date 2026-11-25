@@ -8,6 +8,12 @@ Status: implemented
 
 ## 决策
 
+Preview 3 的 Mac/Windows 基线直接使用原包的“更新并重启”安装签名的 CI Preview 4 ZIP。当前验收工作流以既有发布密钥签署冻结构建的桌面产物，矩阵验证原公钥、准确摘要和版本后提供受限的本地下载传输；不替换安装器、ACK 或回滚逻辑，不发布验收清单。原其他三种基线的手动覆盖、Linux 手动安装，以及候选回稳定版、取消、故障回滚和账号绑定草稿保留继续单独验证。
+
+Mac 正向升级在原 P3 完成准备并暂停、其管理 worker 已关闭后，加入合成的 enabled 旧连接与 bool 凭据索引；不让旧 GUI 自动读取测试索引，也不改写真实 plan 的运行状态。实际新包必须恢复网关、写匹配 ACK，显示待迁移状态及可见迁移入口，并保留新增配置和索引。只有此场景通过才移除新增的合成连接，继续既有回退场景；不能把无连接的回退证据描述为带旧连接的冷启动成功。成品没有做钥匙串调用级监控，零 backend 调用来自源码陷阱测试，须区分这两类证据。
+
+该补充来自 [Mac 更新启动故障](../bug-fix/2026-11-25-update-legacy-connection-startup.md)：旧验收的“手动覆盖候选 → 候选更新器回稳定版”未覆盖“旧更新器 → 新候选”，不能凭此前矩阵通过推断正向更新可靠。
+
 手动 `desktop.yml` 的 `acceptance_only` 模式调用可复用 `upgrade-acceptance.yml`，不要求把新工作流合入 main。普通构建模式保持默认，checkout 采用本次 run 的不可变 SHA；显式 `source_ref` 优先。验收从真实 v2.2.1、v2.2.2-preview.1、v2.2.2-preview.2 与 v2.2.2-preview.3 Release 下载对应平台包并校验发布的 SHA256SUMS，从指定成功 Desktop builds run 下载候选包。`source_ref` 必须是完整 40 位提交、包含已发布 Preview 3 基线 `d79a89c0b58f212323dac2a28b8d99baa32bd281`，且版本为 `2.2.2-preview.4`；候选 run 与它之间只允许脚本声明的精确验收文件差异。验收 checkout 与产品源码之间只允许验收脚本、工作流、测试及本笔记差异，不能夹带未构建产品修正。候选包实际安装后还须通过包内版本、平台、架构和真实 GUI 版本核验，不能只相信下载文件名。最终产品提交由发布负责人明确冻结，新增验收流程无需再次编译 App。
 
 脚本只接受 GitHub hosted runner，拒绝本机和 self-hosted。macOS 在任务目录替换同一路径的 App，Windows 使用真实 NSIS 同一目标目录静默覆盖，Linux 在临时托管 runner 上通过 apt 安装真实 Debian 包并允许回滚降级。三阶段均使用同一隔离 `CMB_DATA_DIR` 和浏览器持久目录，不读取日常用户配置，不连接真实 Agent，不发送聊天。旧运行时创建合成配置和真实配对 cookie；真实浏览器在产品 `ComposerDrafts` 中写入合成未发送草稿，候选及回滚均验证配置原字节、原配对信任、浏览器原 cookie、草稿文本与选择位置。每阶段记录真实 GUI 和网页截图，关闭的仅是本任务启动的 GUI 与隔离网关。

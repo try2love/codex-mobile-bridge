@@ -64,6 +64,22 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         self.rejected('differs from product', changed='bridge/app/service.py\n')
         self.rejected('differs from product', changed='tests/browser/unreviewed-fixture.spec.cjs\n')
 
+    def test_signing_source_guard_checks_build_and_checkout_without_downloading_baselines(self):
+        source = 'a'*40
+        run = {'head_sha': source, 'path': '.github/workflows/desktop.yml',
+               'status': 'completed', 'conclusion': 'success'}
+        with patch.dict(os.environ, {'SOURCE_REF': source, 'CANDIDATE_RUN_ID': '123', 'SOURCE_ONLY': 'true'}), \
+                patch.object(prepare.subprocess, 'run') as ancestry, \
+                patch.object(prepare.subprocess, 'check_output', side_effect=[json.dumps({'version': prepare.VERSION}).encode(), '.github/workflows/desktop.yml\n']), \
+                patch.object(prepare, 'api', return_value=run) as api, \
+                patch.object(prepare.urllib.request, 'urlretrieve') as download:
+            prepare.main()
+            ancestry.assert_called_once()
+            api.assert_called_once_with('/actions/runs/123')
+            download.assert_not_called()
+        with patch.dict(os.environ, {'SOURCE_ONLY': 'true'}):
+            self.rejected('differs from product', changed='desktop/main.cjs\n')
+
     def test_preview4_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
         product = json.loads((ROOT/'package.json').read_text(encoding='utf-8'))
         self.assertEqual(product['version'], prepare.VERSION)

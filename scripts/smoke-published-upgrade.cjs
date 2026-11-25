@@ -1,5 +1,5 @@
 'use strict';
-// Official baseline -> manual candidate bootstrap -> production Updater return.
+// Official P3 -> production Updater -> CI candidate; older baselines bootstrap manually.
 // Hosted runners only. Debugger transport uses official bytes and the shipped key.
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
 const {spawn,execFileSync}=require('node:child_process'),net=require('node:net');
@@ -107,20 +107,35 @@ async function inspectDesktop(executable,data,version,work,phase,exercise){
     return result;
   }finally{ui?.close();main?.close();await stopOwnedGui(child);console.log(`${phase} GUI exited: code=${child.exitCode} signal=${child.signalCode}`);}
 }
-function transportScript(directory,includeCandidate=false,includePreview2=false,includePreview3=false){
+async function prepareCandidateRelease(directory,platform=process.platform,arch=process.arch,key){
+  const {manifest,releaseUrl}=require('../desktop/features/updates/updater.cjs');
+  key??=await fs.readFile(path.join(__dirname,'../desktop/features/updates/update-public-key.pem'));
+  const candidate=path.join(directory,'candidate'),bytes=await fs.readFile(path.join(candidate,'bridge-update.json'));
+  const value=manifest(bytes,key,{current:'2.2.2-preview.3',platform,arch,expected:candidateVersion,channel:'preview'});
+  const zip=await fs.readFile(path.join(candidate,value.asset.name));
+  assert.equal(zip.length,value.asset.size,'candidate ZIP size from CI signature');
+  assert.equal(createHash('sha256').update(zip).digest('hex'),value.asset.sha256,'candidate ZIP digest from CI signature');
+  const release={tag_name:'v'+candidateVersion,draft:false,prerelease:true,
+    body:'CI candidate for isolated acceptance',assets:[
+      {name:'bridge-update.json',browser_download_url:releaseUrl(candidateVersion,'bridge-update.json')},
+      {...value.asset,digest:'sha256:'+value.asset.sha256,browser_download_url:releaseUrl(candidateVersion,value.asset.name)}]};
+  await fs.writeFile(path.join(candidate,'release.json'),JSON.stringify(release,null,2)+'\n');
+  return {asset:value.asset,release,manifestSha256:createHash('sha256').update(bytes).digest('hex')};
+}
+function transportScript(directory,includeCandidate=false,includePreview2=false,includePreview3=false,installCandidate=false){
   // No signature, key, selection, install or helper logic is replaced. The
   // synthetic release directory cannot supply bytes outside this exact map.
   return `(()=>{const req=process.getBuiltinModule('module').createRequire(process.resourcesPath+'/app.asar/package.json');
     const fs=req('node:fs'),path=req('node:path'),{Readable}=req('node:stream'),electron=req('electron');
     const module=req('./desktop/features/updates/updater.cjs'),directory=${JSON.stringify(directory)};
-    const releases=new Map(),files=new Map();for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3']]){
+    const releases=new Map(),files=new Map();for(const [version,folder] of ${JSON.stringify([[oldVersion,'old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3'],...(installCandidate?[[candidateVersion,'candidate']]:[])])}){
       const release=JSON.parse(fs.readFileSync(path.join(directory,folder,'release.json'),'utf8'));
       if(release.tag_name!=='v'+version||release.draft||release.prerelease!==version.includes('-'))throw Error('Unexpected official acceptance release');
       releases.set(version,release);
       for(const name of fs.readdirSync(path.join(directory,folder)))if(!['SHA256SUMS.txt','release.json'].includes(name))files.set(module.releaseUrl(version,name),path.join(directory,folder,name));
     }
     const catalogue=${JSON.stringify(['2.2.1','2.2.2-preview.1',...(includePreview2?['2.2.2-preview.2']:[]),...(includePreview3?['2.2.2-preview.3']:[])])}.map(version=>releases.get(version));
-    ${includeCandidate?`catalogue.push({tag_name:'v${candidateVersion}',draft:false,prerelease:true,assets:[{name:'bridge-update.json'}]});`:''}
+    ${installCandidate?`catalogue.push(releases.get('${candidateVersion}'));`:includeCandidate?`catalogue.push({tag_name:'v${candidateVersion}',draft:false,prerelease:true,assets:[{name:'bridge-update.json'}]});`:''}
     const fetch=async(url,{signal}={})=>{if(signal?.aborted)throw signal.reason;
       acceptance.requests.push(url);
       if(url===module.RELEASES)return new Response(JSON.stringify(catalogue));
@@ -225,8 +240,8 @@ async function stopLaunchedGui(planFile){
   try{process.kill(pid);}catch(error){if(error.code!=='ESRCH')throw error;}
   await until(()=>{try{process.kill(pid,0);return false;}catch(error){if(error.code==='ESRCH')return true;throw error;}},'helper-owned GUI exit');
 }
-async function verifiedArchiveProof(archive,asset,requests,expectedDownloads){
-  const url=`https://github.com/try2love/codex-mobile-bridge/releases/download/v${oldVersion}/${asset.name}`;
+async function verifiedArchiveProof(archive,asset,requests,expectedDownloads,version=oldVersion){
+  const url=`https://github.com/try2love/codex-mobile-bridge/releases/download/v${version}/${asset.name}`;
   const downloads=requests.filter(value=>value===url).length;
   assert.equal(downloads,expectedDownloads,'official selected package downloads in this attempt');
   assert.ok(path.isAbsolute(archive));
@@ -354,6 +369,88 @@ async function credentialBoundaryProof(files,work,worker=runWorker){
   return {syntheticCmb1:true,blocked,configurationBytesUnchanged:true,backupCreated:false,
     legacyReturnFixtureHasCmb1:false,decryptionTested:false};
 }
+async function seedLegacyConnection(data,files){
+  // Seed only while P3 is paused after preparation: its old renderer must not
+  // read the synthetic legacy index. The actual plan/runtime are never edited.
+  const desktop=await fs.readFile(path.join(data,'desktop.json')),preferences=JSON.parse(desktop);
+  const id='acceptance-legacy-cloudflare',index=Buffer.from(JSON.stringify({[id]:true})+'\n');
+  assert.deepEqual(preferences.connections,[]);
+  await assert.rejects(fs.access(path.join(data,'connection-vault.json')),{code:'ENOENT'});
+  preferences.cloudflared=files.runtime; // Executable exists; pending credentials must prevent launching it.
+  preferences.connections=[{id,name:'Synthetic legacy Cloudflare',enabled:true,accessMode:'cloudflare',publicUrl:'https://acceptance.invalid',
+    proxyUpstream:'',sshTarget:'',sshRemotePort:18787,sshAuth:'config',sshHost:'',sshPort:22,sshUser:'',sshKeyPath:'',
+    tailscaleMode:'funnel',tailscalePort:443,tailscaleNodeId:''}];
+  const saved=Buffer.from(JSON.stringify(preferences,null,2)+'\n');
+  await fs.writeFile(path.join(data,'desktop.json'),saved,{mode:0o600});
+  await fs.writeFile(path.join(data,'connection-vault.json'),index,{mode:0o600,flag:'wx'});
+  return {id,index,desktop,saved};
+}
+async function verifyUpgradeReceipt(planFile,worker){
+  const transaction=path.dirname(planFile),plan=JSON.parse(await fs.readFile(planFile,'utf8'));
+  const result=JSON.parse(await fs.readFile(path.join(transaction,'result.json'),'utf8'));
+  assert.equal(result.state,'updated',JSON.stringify(result));assert.equal(result.version,candidateVersion);
+  assert.equal(plan.version,candidateVersion);
+  const ack=JSON.parse(await fs.readFile(path.join(transaction,'ack.json'),'utf8'));
+  assert.deepEqual(ack,{token:plan.token,version:plan.version,dataDir:plan.dataDir},'new candidate GUI acknowledgement');
+  assert.equal(plan.runtime.running,true,'original P3 gateway was running');
+  const snapshot=await worker('snapshot');assert.equal(snapshot.runtime.running,true,'actual restored gateway');
+  return {state:result.state,acknowledged:true,gatewayRunning:true,configurationBackup:result.configurationBackup};
+}
+async function upgradePreview3(files,data,work,directory,worker){
+  const candidate=await prepareCandidateRelease(directory);let planFile,legacy;
+  const evidence=await inspectDesktop(files.app,data,'2.2.2-preview.3',work,'preview3-in-app-upgrade',async({ui,main,child})=>{
+    await until(async()=>(await ui.evaluate('snapshot.update')).state!=='checking','P3 background check completion');
+    await main.evaluate(transportScript(directory,true,true,true,true));
+    await ui.evaluate("tab('updates')");await click(ui,'check-update');
+    const selected=await until(async()=>{const state=await ui.evaluate('snapshot.update');if(state.state==='error')throw Error(state.message);return state.state==='available'&&state;},'P3 signed P4 discovery');
+    assert.equal(selected.current,'2.2.2-preview.3');assert.equal(selected.version,candidateVersion);assert.equal(selected.intent,'update');assert.equal(selected.requiresConfirmation,false);
+    const shippedKey=await main.evaluate("acceptance.updater.key.toString()");
+    assert.equal(shippedKey,await fs.readFile(path.join(__dirname,'../desktop/features/updates/update-public-key.pem'),'utf8'),'original P3 public key');
+    await main.call('Debugger.enable');
+    const script=main.events.find(value=>value.method==='Debugger.scriptParsed'&&/[\\/]desktop[\\/]main\.cjs$/.test(value.params.url));assert.ok(script);
+    const source=(await main.call('Debugger.getScriptSource',{scriptId:script.params.scriptId})).scriptSource;
+    await main.call('Debugger.setBreakpoint',{location:{scriptId:script.params.scriptId,lineNumber:automaticHandoffLine(source)}});
+    const paused=main.event('Debugger.paused',180000);paused.catch(()=>{});await click(ui,'install-update');
+    const pause=await paused,frame=pause.callFrames.find(value=>value.functionName==='installUpdate');assert.ok(frame);
+    const prepared=await pausedUpdateEvidence(main,frame);planFile=prepared.plan;
+    const archive=await verifiedArchiveProof(prepared.archive,candidate.asset,prepared.requests,1,candidateVersion);
+    const plan=JSON.parse(await fs.readFile(planFile,'utf8'));
+    assert.equal(plan.version,candidateVersion);assert.equal(plan.dataDir,data);assert.equal(plan.transition.intent,'update');assert.equal(plan.runtime.running,true);
+    assert.equal(plan.target,process.platform==='darwin'?path.dirname(path.dirname(path.dirname(files.app))):path.dirname(files.app));
+    if(process.platform==='darwin')legacy=await seedLegacyConnection(data,files);
+    await main.call('Debugger.resume');main.close();ui.close();
+    await until(()=>child.exitCode!==null||child.signalCode!==null,'original P3 updater handoff',30000);
+    return {archive,manifestSha256:candidate.manifestSha256,shippedPublicKey:true,originalUpdater:true};
+  });
+  const result=await until(async()=>JSON.parse(await fs.readFile(path.join(path.dirname(planFile),'result.json'),'utf8')),'P3 helper actual P4 result',180000);
+  assert.equal(result.state,'updated',JSON.stringify(result));
+  const receipt=await verifyUpgradeReceipt(planFile,worker);
+  assert.ok(receipt.configurationBackup);await fs.access(receipt.configurationBackup);
+  const backup=JSON.parse(await fs.readFile(path.join(receipt.configurationBackup,'backup.json'),'utf8'));
+  assert.equal(backup.transition.intent,'update');
+  for(const name of ['config.json','desktop.json','accounts/index.json',...(legacy?['connection-vault.json']:[])]){
+    assert.deepEqual(await fs.readFile(path.join(receipt.configurationBackup,name)),await fs.readFile(path.join(data,name)),'P3 updater retained final data backup: '+name);
+  }
+  await stopLaunchedGui(planFile);
+  let pending;
+  if(legacy){
+    pending=await inspectDesktop(files.app,data,candidateVersion,work,'preview4-legacy-pending',async({ui})=>{
+      await ui.evaluate(`tab('network');document.querySelector('[data-connection-id="${legacy.id}"]').open=true`);
+      const visible=await until(async()=>ui.evaluate(`(()=>{const banner=document.getElementById('credential-migration'),button=document.querySelector('[data-connection-action="migrateCredentials"][data-connection="${legacy.id}"]');return banner&&!banner.hidden&&button&&button.getClientRects().length?{banner:banner.textContent,migration:button.textContent,state:snapshot.externalStatus[${JSON.stringify(legacy.id)}],runtime:snapshot.runtime}:null;})()`),'P4 visible migration status and action');
+      assert.match(visible.banner,/迁移旧凭据|saved credentials migrated/);assert.match(visible.migration,/迁移旧连接凭据|Migrate/);
+      assert.equal(visible.runtime.running,true);assert.equal(visible.state.state,'credentials-required');assert.equal(visible.state.pid,visible.runtime.pid);
+      return {gatewayRunning:true,status:'credentials-required',banner:visible.banner,migrationAction:visible.migration};
+    });
+    assert.deepEqual(await fs.readFile(path.join(data,'desktop.json')),legacy.saved,'enabled connection unchanged');
+    assert.deepEqual(await fs.readFile(path.join(data,'connection-vault.json')),legacy.index,'legacy bool index was not migrated');
+    await assert.rejects(fs.access(path.join(data,'.credential-vault/connections.enc')),{code:'ENOENT'});
+    // Only this additional fixture is removed before the existing legacy return.
+    await fs.writeFile(path.join(data,'desktop.json'),legacy.desktop);await fs.unlink(path.join(data,'connection-vault.json'));
+    pending={...pending,indexUnchanged:true,encryptedVaultCreated:false,fixtureRemovedBeforeStableReturn:true,
+      keychainReadVerification:'not instrumented in package; source backend trap plus packaged pending/index evidence'};
+  }
+  return {...evidence,...receipt,legacy:pending||null};
+}
 async function main(){
   assert.equal(process.env.GITHUB_ACTIONS,'true','Only run against an ephemeral GitHub-hosted runner');
   assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted','Self-hosted/daily machines are excluded');
@@ -450,8 +547,12 @@ async function main(){
             await until(async()=>{const value=await ui.evaluate('snapshot.update');return value.channel==='preview'&&value.state==='current';},baseline+' channel restored');
           }
         });
-        await verifyData('baseline',{seed:true});await worker('stop');
-        await install(candidateArchive,target,work,'candidate');await useRuntime();await verifyVersion(candidateVersion);
+        await verifyData('baseline',{seed:true});
+        let upgradedByPreview3;
+        if(baseline==='2.2.2-preview.3'&&process.platform!=='linux'){
+          upgradedByPreview3=await upgradePreview3(files,data,work,directory,worker);
+        }else{await worker('stop');await install(candidateArchive,target,work,'candidate');}
+        await useRuntime();await verifyVersion(candidateVersion);
         await inspectDesktop(files.app,data,candidateVersion,work,'candidate');await verifyData('candidate',{preview:true});
         const credentialBoundary=await credentialBoundaryProof(files,work);
         // First prove cancel leaves the verified candidate and live data intact.
@@ -478,13 +579,13 @@ async function main(){
           returned=await returnThroughUpdater(files,data,work,'return-stable',directory,{native,retryCache:failure.cache});await useRuntime();
         }
         await verifyVersion(oldVersion);await inspectDesktop(files.app,data,oldVersion,work,'returned-stable');await verifyData('returned-stable');
-        const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,cancellation,failure,returnedByUpdater:returned,credentialBoundary,checks,
-          transport:'fixture release directory; original official manifests/packages and API digests; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
+        const result={ok:true,baseline,baselineUpdate:policy,candidate:candidateVersion,returned:oldVersion,archiveDigests,upgradedByPreview3,cancellation,failure,returnedByUpdater:returned,credentialBoundary,checks,
+          transport:'fixture release directory; original official baseline bytes and signed CI candidate; shipped public key',nativeUiLimitation:nativeLimit||null,dataSnapshotRestored:false};
         results.push(result);await fs.writeFile(path.join(work,'result.json'),JSON.stringify(result,null,2)+'\n');console.log('PASS official '+baseline+' bootstrap and stable return');
       }finally{if(worker)await worker('stop').catch(error=>console.error('Owned gateway cleanup: '+error.message));}
     }
     await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:true,results,nativeUiLimitation:nativeLimit||null},null,2)+'\n');
   }catch(error){await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({ok:false,results,error:error.message,nativeUiLimitation:nativeLimit||null},null,2)+'\n');throw error;}
 }
-module.exports={installerHandoffEvidence,click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine,credentialBoundaryProof};
+module.exports={installerHandoffEvidence,click,packageName,paths,baselinePolicy,stopOwnedGui,debuggerClient,transportScript,nativeClick,verifiedArchiveProof,stableReturnCacheProof,pausedUpdateEvidence,automaticHandoffLine,credentialBoundaryProof,prepareCandidateRelease,verifyUpgradeReceipt};
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
