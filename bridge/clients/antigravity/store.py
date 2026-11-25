@@ -24,6 +24,7 @@ SURFACE_DIRS = (
 _FRACTION_RE = re.compile(r'\.(\d+)')
 _MAX_FULL_FIELD_CHARS = 65536
 _MAX_ANNOTATION_BYTES = 65536
+_TRANSCRIPT_CACHE_TTL = 1.0
 _PBTXT_ESCAPE_RE = re.compile(r'\\([0-7]{1,3}|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[abfnrtv\\\'"])')
 _PBTXT_SIMPLE_ESCAPES = {
     'a': b'\a', 'b': b'\b', 'f': b'\f', 'n': b'\n', 'r': b'\r', 't': b'\t', 'v': b'\v',
@@ -467,6 +468,7 @@ class AntigravityStore:
             raise ValueError('原生会话路径无效')
         logs_dir = Path(surface_root) / 'brain' / conversation_id / '.system_generated' / 'logs'
         key = (str(logs_dir), int(limit or 40), '' if before is None else str(before), bool(session_active))
+        started = time.monotonic()
         def signature():
             result = []
             for name in ('transcript.jsonl', 'transcript_full.jsonl'):
@@ -482,14 +484,14 @@ class AntigravityStore:
                 if old_key[0] == key[0] and self._transcript_cache[old_key][0] != stamp:
                     del self._transcript_cache[old_key]
             cached = self._transcript_cache.get(key)
-            if cached and not (Path(surface_root) / 'brain' / conversation_id).is_symlink():
+            if cached and started - cached[2] < _TRANSCRIPT_CACHE_TTL and not (Path(surface_root) / 'brain' / conversation_id).is_symlink():
                 self._transcript_cache.move_to_end(key)
                 return deepcopy(cached[1])
         result = self._read_transcript_page(surface_root, conversation_id, limit=limit,
                                             before=before, session_active=session_active)
         if stamp[0] is not None and stamp == signature():
             with self._cache_lock:
-                self._transcript_cache[key] = (stamp, deepcopy(result))
+                self._transcript_cache[key] = (stamp, deepcopy(result), started)
                 self._transcript_cache.move_to_end(key)
                 while len(self._transcript_cache) > 16:
                     self._transcript_cache.popitem(last=False)

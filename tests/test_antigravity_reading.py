@@ -104,8 +104,11 @@ class AntigravityReadingTest(unittest.TestCase):
         def content():
             return json.dumps(self.store.read_transcript_page(self.root, CID), ensure_ascii=False)
         self.assertIn('answer one', content())
+        full_path = logs / 'transcript_full.jsonl'
+        full_stamp = full_path.stat()
         full[0]['content'] = 'answer two'
         _write_transcript(self.root, CID, compact, full)
+        os.utime(full_path, ns=(full_stamp.st_atime_ns, full_stamp.st_mtime_ns + 1_000_000_000))
         self.assertIn('answer two', content())
         path = logs / 'transcript.jsonl'
         before = path.stat()
@@ -119,6 +122,41 @@ class AntigravityReadingTest(unittest.TestCase):
         path.unlink()
         self.assertFalse(self.store.read_transcript_page(self.root, CID)['messages'])
         self.assertFalse(self.store._transcript_cache)
+
+    def test_page_cache_expires_same_signature_rewrite_without_renewing_on_hits(self):
+        compact = [{'step_index': 0, 'type': 'PLANNER_RESPONSE', 'content': 'short', 'truncated_fields': ['content']}]
+        full = [{'step_index': 0, 'type': 'PLANNER_RESPONSE', 'content': 'answer one'}]
+        logs = _write_transcript(self.root, CID, compact, full)
+        stamps = {str(logs / name): (logs / name).stat()
+                  for name in ('transcript.jsonl', 'transcript_full.jsonl')}
+        stat = Path.stat
+        def unchanged(path, *args, **kwargs):
+            return stamps.get(str(path)) or stat(path, *args, **kwargs)
+        def content():
+            return json.dumps(self.store.read_transcript_page(self.root, CID), ensure_ascii=False)
+        with mock.patch.object(Path, 'stat', unchanged), \
+                mock.patch('bridge.clients.antigravity.store.time.monotonic', return_value=0) as clock:
+            self.assertIn('answer one', content())
+            full[0]['content'] = 'answer two'
+            _write_transcript(self.root, CID, compact, full)
+            for now in (0.25, 0.75, 0.999):
+                clock.return_value = now
+                self.assertIn('answer one', content())
+            clock.return_value = 1.0
+            self.assertIn('answer two', content())
+
+    def test_page_cache_lifetime_starts_before_a_slow_read(self):
+        _write_transcript(self.root, CID, [{'type': 'USER_INPUT', 'content': 'question'}])
+        read = self.store._read_transcript_page
+        with mock.patch('bridge.clients.antigravity.store.time.monotonic', return_value=0) as clock:
+            def slow(*args, **kwargs):
+                result = read(*args, **kwargs)
+                clock.return_value = 2.0
+                return result
+            with mock.patch.object(self.store, '_read_transcript_page', side_effect=slow) as reads:
+                self.store.read_transcript_page(self.root, CID)
+                self.store.read_transcript_page(self.root, CID)
+            self.assertEqual(reads.call_count, 2)
 
     def test_changed_during_read_is_not_cached(self):
         logs = _write_transcript(self.root, CID, [{'type': 'USER_INPUT', 'content': 'one'}])
