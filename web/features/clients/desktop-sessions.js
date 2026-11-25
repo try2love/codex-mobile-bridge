@@ -750,7 +750,7 @@ class DesktopSessionsView {
         : (message.role==='activity'||message.phase==='commentary')&&document.documentElement.dataset.showProcess==='false';
       next.set(key,{stamp,node,version:message.version});nodes.push(node);
     }
-    nodes.splice(0,nodes.length,...chatNodesWithTurnCompletions(this.messageList,nodes,messages,{viewport:this.messages,following:this.reading?.following,onDisclosure:(id,open)=>this.syncTimeline?.sync.disclosure(id,open)}));
+    nodes.splice(0,nodes.length,...chatNodesWithTurnCompletions(this.messageList,nodes,messages,{viewport:this.messages,following:this.reading?.following,live:this.freshDetail&&!window.OfflineChatReader?.enabled,onDisclosure:(id,open)=>this.syncTimeline?.sync.disclosure(id,open)}));
     if(this.historyPage?.hasMore){const older=this.button(this.historyRetry?'历史加载失败，点击重试':this.historyBusy?'正在读取…':'加载更早内容',()=>this.loadOlderHistory());older.classList.add('plain','ds-history-older');older.disabled=!!this.historyBusy;nodes.unshift(older);}this.messageNodes=next;if(!nodes.length&&this.state)nodes.push(this.translated('p','这条聊天还没有消息','muted ds-history-empty'));nodes.push(this.progress);
     const kept=nodes.findLast(node=>node.__chatRetained);
     if(this.deferredHistory||this.syncTimeline?.sync.deferred||this.syncTimeline?.sync.needsRefill||kept){

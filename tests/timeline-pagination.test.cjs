@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 test('chat readiness follows fresh content rendering and excludes pending, cached and history pages',()=>{
  const ctx=vm.createContext({window:{},BridgeI18n:{t:s=>s}});for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx);let ready=0,rendered=0;
- const ui=Object.assign(Object.create(Type.prototype),{cached:false,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),container:{children:[],firstChild:null,replaceChildren(){}},sequence:0,following:true,abort:new AbortController(),capture(){},renderMeta(){rendered++;},refreshActions(){},historyStatus(){},restore(){},onReady(){assert.ok(rendered>0);ready++;}});
+ const ui=Object.assign(Object.create(Type.prototype),{active:()=>true,cached:false,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),container:{children:[],firstChild:null,replaceChildren(){}},sequence:0,following:true,abort:new AbortController(),capture(){},renderMeta(){rendered++;},refreshActions(){},historyStatus(){},restore(){},onReady(){assert.ok(rendered>0);ready++;}});
  const page={rows:[],files:[],sequence:1,meta:{loadingHistory:true}};
  ui.apply(page);assert.equal(ready,0);page.meta={loadingHistory:false};ui.apply(page);assert.equal(ready,1);
  ui.apply(page,false,false,true);ui.apply(page,false,true);ui.abort.abort();ui.apply(page);assert.equal(ready,1);
@@ -75,7 +75,7 @@ function persistentFixture(){
  vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);const Type=vm.runInContext('ChatTimeline',ctx);
  const ui=Object.assign(Object.create(Type.prototype),{cacheKey:'synthetic-history',sequence:-1,epoch:'',generation:0,windowRevision:0,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),abort:new AbortController(),older:{},newer:{},following:true,
   container:{children:[],replaceChildren(){this.children=[];}},viewport:{removeEventListener(){}},resize:{disconnect(){}},
-  read:()=>new Promise(resolve=>freshResolve=resolve),renderMeta:value=>meta.push(value),renderRow:()=>({dataset:{}}),capture(){},refreshActions(){},historyStatus(){},restore(){},updates(){},status(){}});
+  active:()=>true,read:()=>new Promise(resolve=>freshResolve=resolve),renderMeta:value=>meta.push(value),renderRow:()=>({dataset:{}}),capture(){},refreshActions(){},historyStatus(){},restore(){},updates(){},status(){}});
  return {ui,writes,meta,cached:value=>cachedResolve(value),fresh:value=>freshResolve(value)};
 }
 const historyPage=(key,meta={},sequence=1)=>({rows:key?[{key,role:'assistant',order:1}]:[],files:[],sequence,epoch:'fixture',before:null,hasMore:false,meta:{requests:[],...meta}});

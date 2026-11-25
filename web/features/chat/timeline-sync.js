@@ -62,7 +62,12 @@ class ChatTimelineSync {
   }
   async read(mode,params={},source='manual',signal){
     const revision=this.clearRevision;
-    const page=await window.BridgeChatSync.read(this.target,mode,params,source,()=>this.active()&&revision===this.clearRevision,signal);
+    let page;
+    try{page=await window.BridgeChatSync.read(this.target,mode,params,source,()=>this.active()&&revision===this.clearRevision,signal);}
+    catch(error){if(mode==='body'&&error.code==='sync_cursor_changed'&&this.active())this.resume();throw error;}
+    if(mode==='body'&&page&&page.version!==params.version&&revision===this.clearRevision&&this.active()){
+      this.resume();throw Error(timelineText('消息内容已变化，请重试'));
+    }
     return revision===this.clearRevision?page:null;
   }
   async start(source='manual'){
@@ -166,6 +171,10 @@ class ChatTimelineSync {
           group.cursor=descriptor.processCursor;
           group.version=descriptor.version;
         }
+        if(!cached&&!history&&group.recovering&&group.recoveredAt!==(page.sourceVersion||descriptor.version)){
+          group.recoveredAt=page.sourceVersion||descriptor.version;
+          group.recovering=false;group.error=null;
+        }
         this.processes.set(descriptor.key,group);
       }
     }
@@ -174,7 +183,10 @@ class ChatTimelineSync {
       this.before=page.before;this.hasMore=!!page.hasMore;
     }
     this.paint({cached,history});
-    if(!cached)this.refreshRunning();
+    if(!cached){
+      this.refreshRunning();
+      for(const [key,group] of this.processes)if(group.open)void this.fillProcess(key);
+    }
   }
   project(){
     const rows=[];
@@ -212,7 +224,7 @@ class ChatTimelineSync {
   }
   async readProcess(key,direction,source='manual'){
     const group=this.processes.get(key);
-    if(!group?.cursor||group.loading||this.host.cached&&!this.target.offline||!this.active())return;
+    if(!group?.cursor||group.loading||group.recovering&&group.error||this.host.cached&&!this.target.offline||!this.active())return;
     const loading=group.loading={},version=group.version;
     const status=this.turns.get(group.turnId)?.status;
     const query={key:group.cursor,...(direction==='earlier'?{before:group.previous}:direction==='later'?{after:group.next}:
@@ -236,7 +248,16 @@ class ChatTimelineSync {
       group.loadedVersion=version;group.runningWindow||=query.after==='latest';group.error=null;
       this.paint({process:true});
     }catch(error){
-      if(this.active()&&group.loading===loading){group.error=direction;this.paint({process:true});}
+      if(this.active()&&group.loading===loading){
+        group.error=direction;
+        if(error.code==='sync_cursor_changed'){
+          group.previous=null;group.next=null;group.loadedVersion=null;group.recovering=true;
+          if(group.recoveredAt!==(this.version||group.version)){
+            this.needsRefresh=true;this.cancelWatch();this.wake?.();
+          }
+        }
+        this.paint({process:true});
+      }
     }finally{
       if(group.loading===loading)group.loading=null;
       if(group.open&&!group.filling&&!group.error)void this.fillProcess(key);
@@ -256,7 +277,7 @@ class ChatTimelineSync {
       }
     }finally{if(group.filling===filling)group.filling=null;}
   }
-  processAction(key,direction){const group=this.processes.get(key);if(group){group.open=true;this.readProcess(key,group.error||direction);}}
+  processAction(key,direction){const group=this.processes.get(key);if(group){group.open=true;group.recovering=false;group.recoveredAt=null;this.readProcess(key,group.error||direction);}}
   disclosure(turnId,open){
     const status=this.turns.get(turnId)?.status;
     let reset=false;
@@ -283,14 +304,25 @@ class ChatTimelineSync {
     }
   }
   cancelWatch(){this.watch?.abort();}
+  resume(){
+    this.needsRefresh=true;
+    for(const group of this.processes.values())if(group.open&&group.error){
+      group.error=null;group.loadedVersion=null;group.previous=null;group.next=null;group.recoveredAt=null;
+    }
+    this.cancelWatch();this.wake?.();
+  }
   pause(ms){return new Promise(resolve=>{const timer=setTimeout(()=>this.wake(),ms);this.wake=()=>{clearTimeout(timer);this.wake=null;resolve();};});}
   async updates(){
     if(this.loop||this.abort.signal.aborted)return;
     this.loop=true;
+    let wasActive=this.active();
     const lifecycle=event=>{
       if(event.type==='beforeunload'||event.type==='pagehide')this.pageHidden=true;
       if(event.type==='pageshow')this.pageHidden=false;
-      if(!this.active())this.cancelWatch();
+      const active=this.active();
+      if(!active)this.cancelWatch();
+      else if(!wasActive||event.type==='online'||event.type==='pageshow')this.resume();
+      wasActive=active;
       this.wake?.();
     };
     const events=['bridge-chat-foreground','offline','online','beforeunload','pagehide','pageshow'];
@@ -306,6 +338,7 @@ class ChatTimelineSync {
           this.refreshRunning();
           if(!this.enabled||this.needsRefresh){
             this.needsRefresh=false;await this.start(this.enabled?'live':'manual');
+            if(this.active())await this.reconcile();
           }else{
             const params=this.version?{ifVersion:this.version}:{},start=Date.now();
             if(!live&&this.version&&this.waitSupported!==false)params.waitMs=8000;

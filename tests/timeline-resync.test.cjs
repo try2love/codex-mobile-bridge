@@ -97,3 +97,21 @@ test('a connecting empty response does not suppress a later local first screen',
  await sync.start();release({index:[{key:'saved'}],rows:[{key:'saved',text:'Saved first screen'}]});
  await new Promise(setImmediate);assert.equal(sync.rows[0]?.text,'Saved first screen');
 });
+
+test('a changed process cursor requests a fresh screen instead of leaving a permanent retry button',async()=>{
+ const {ChatTimelineSync}=syncProjection(),group={cursor:'process',version:'v1',loadedVersion:'v1',rows:[{key:'old'}],turnId:'turn',next:'removed',open:true};
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{target:{},host:{},files:new Map(),turns:new Map([['turn',{status:'completed'}]]),processes:new Map([['process',group]]),active:()=>true,paint(){},
+  read:async()=>{throw Object.assign(Error('Process changed'),{status:409,code:'sync_cursor_changed'});}});
+ await sync.readProcess('process','later');
+ assert.equal(sync.needsRefresh,true);assert.equal(group.next,null);assert.equal(group.loadedVersion,null);
+ assert.deepEqual(group.rows,[{key:'old'}],'keep previously visible content during refresh');
+});
+
+test('returning to a visible chat retries open failed processes without deleting its displayed rows',()=>{
+ const {ChatTimelineSync}=syncProjection(),group={cursor:'process',version:'v1',loadedVersion:'v1',rows:[{key:'saved'}],turnId:'turn',error:'later',open:true};
+ let cancelled=0,woken=0;
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{target:{},host:{},processes:new Map([['process',group]]),turns:new Map(),cancelWatch(){cancelled++;},wake(){woken++;}});
+ sync.resume();
+ assert.equal(sync.needsRefresh,true);assert.equal(group.error,null);assert.equal(group.loadedVersion,null);
+ assert.equal(group.rows[0].key,'saved');assert.equal(cancelled,1);assert.equal(woken,1);
+});

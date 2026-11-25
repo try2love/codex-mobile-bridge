@@ -120,7 +120,7 @@ class ChatTimeline {
     this.refreshActions();
     this.restore(anchor,bottom);
   }
-  foldOptions(following=this.following){return {viewport:this.viewport,following,onDisclosure:(id,open)=>this.sync?.disclosure(id,open)};}
+  foldOptions(following=this.following){return {viewport:this.viewport,following,live:!this.cached&&this.active()&&!globalThis.window?.OfflineChatReader?.enabled,onDisclosure:(id,open)=>this.sync?.disclosure(id,open)};}
   collapseRetained(){
     for(const control of this.container.children)if(control.__chatRetained)control.__chatCollapse();
   }

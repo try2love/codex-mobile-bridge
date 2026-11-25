@@ -32,6 +32,16 @@ def projection(turns, sequence=1, **meta):
 
 
 class TimelineSyncTests(unittest.TestCase):
+    def test_changed_process_cursors_are_recoverable_without_replaying_a_write(self):
+        timeline = projection(example_turns()[:1])
+        key = next(iter(timeline.process_groups))
+        for options in ({'key': 'process-missing'}, {'key': key, 'after': 'removed'},
+                        {'key': key, 'before': 'removed'}):
+            with self.assertRaises(sync.SyncCursorChanged) as error:
+                sync.process(timeline, **options)
+            self.assertEqual(error.exception.code, 'sync_cursor_changed')
+        self.assertTrue(sync.process(timeline, key=key)['rows'])
+
     def test_exact_range_does_not_delete_cached_children_hidden_by_process_groups(self):
         timeline = projection(example_turns()[:2], syncSourceComplete=True)
         recent = sync.read(timeline, 'recent')

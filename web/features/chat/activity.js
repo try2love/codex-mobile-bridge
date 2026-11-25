@@ -22,18 +22,38 @@ function renderChatMessageTime(container,value,now=new Date()){
   time.setAttribute('aria-label',time.title);container.append(time);
 }
 function chatTurnStopped(status){return ['failed','interrupted','cancelled','canceled'].includes(status);}
-function chatTurnCompletionLabel(turn){
+function chatTurnCompletionLabel(turn,{live=false,now=Date.now()}={}){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(chatTurnStopped(turn.status))return t(turn.status==='failed'?'运行失败':'已停止');
   if(!['completed','inProgress'].includes(turn.status))return '';
   const done=turn.status==='completed';
-  const start=chatMessageDate(turn.start),end=chatMessageDate(done?turn.end:turn.answerAt);
+  const start=chatMessageDate(turn.start),end=chatMessageDate(done?turn.end:live?now:turn.answerAt);
   if(!start||!end||!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return done?t('已完成'):'';
   const seconds=Math.floor((end-start)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds/60)%60;
   const doneLabel=hours?'已完成，用时 {hours} 小时 {minutes} 分钟 {seconds} 秒':minutes?'已完成，用时 {minutes} 分钟 {seconds} 秒':'已完成，用时 {seconds} 秒';
   const liveLabel=hours?'用时 {hours} 小时 {minutes} 分钟 {seconds} 秒':minutes?'用时 {minutes} 分钟 {seconds} 秒':'用时 {seconds} 秒';
   return t(done?doneLabel:liveLabel).replace('{hours}',hours).replace('{minutes}',minutes).replace('{seconds}',seconds%60);
 }
+// One display clock for visible, verified running turns. It never polls the
+// gateway, advances a cached/offline turn, or changes the native start instant.
+const chatTurnClocks=(()=>{
+  const controls=new Map();let timer,installed=false;
+  const visible=()=>!globalThis.document?.hidden&&globalThis.window?.BridgeChatForeground!==false&&
+    globalThis.navigator?.onLine!==false&&!globalThis.window?.OfflineChatReader?.enabled;
+  const tick=()=>{
+    clearTimeout(timer);timer=null;
+    for(const [node,update] of controls){if(!node.isConnected)controls.delete(node);else if(visible())update();}
+    if(controls.size&&visible())timer=setTimeout(tick,1000);
+  };
+  return (node,update)=>{
+    if(update)controls.set(node,update);else controls.delete(node);
+    if(!installed&&globalThis.document?.addEventListener){
+      installed=true;document.addEventListener('visibilitychange',tick);
+      for(const name of ['bridge-chat-foreground','online','offline','pageshow','pagehide'])window.addEventListener(name,tick);
+    }
+    if(!timer&&controls.size&&visible()&&typeof setTimeout==='function')timer=setTimeout(tick,1000);
+  };
+})();
 function chatMessageHeading(row,agent){
   const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
   if(row.role==='user')return t('你');
@@ -65,7 +85,7 @@ function chatTurnProcessRow(row){
   return !row.fileSummary&&(row.role==='user'&&row.interaction==='response'||row.role==='activity'||chatActivityKind(row)==='reasoning'||
     row.role==='assistant'&&row.phase==='commentary');
 }
-function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=true,onDisclosure}={}){
+function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=true,onDisclosure,live=false}={}){
   const turns=new Map(),nodeByKey=new Map(nodes.map(node=>[node.dataset.key,node])),managed=new Set();
   for(const [index,row] of rows.entries()){
     const key=String(row.key??row.id??index);
@@ -89,9 +109,9 @@ function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=t
     if(turn.status==='completed'&&!process.length)continue;
     const running=turn.status==='inProgress',stopped=chatTurnStopped(turn.status);
     const locate=running&&!!turn.answerKey&&process.length>0;
-    const duration=chatTurnCompletionLabel(turn);
+    const duration=chatTurnCompletionLabel(turn,{live});
     const runningLabel=typeof BridgeI18n==='undefined'?'正在思考与执行…':BridgeI18n.t('正在思考与执行…');
-    const label=running&&process.length?(locate&&duration||runningLabel):duration;
+    let label=running&&process.length?((live||locate)&&duration||runningLabel):duration;
     if(!label)continue;
     const key='turn-completion:'+turn.id;
     const foldable=process.length>0&&(turn.status==='completed'&&!!turn.answerKey||stopped&&!turn.answerKey);
@@ -147,6 +167,7 @@ function chatNodesWithTurnCompletions(container,nodes,rows,{viewport,following=t
       toggle(!(control.__chatProcessOpen??stopped));
     };
     update();
+    chatTurnClocks(control,running&&live?()=>{label=chatTurnCompletionLabel(turn,{live:true})||runningLabel;update();}:null);
     if(finished&&foldable&&!control.__chatProcessOpen)onDisclosure?.(turn.id,false);
     if(process.length)before.set(process[0].key,control);else after.set(turn.last,control);
   }

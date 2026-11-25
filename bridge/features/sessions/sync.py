@@ -11,6 +11,12 @@ _RUNNING = {'inProgress', 'active'}
 CONTEXT_FIELDS = ('contextUsage', 'contextUsageStatus', 'lastPromptContextUsage')
 
 
+class SyncCursorChanged(ValueError):
+    """A validated read cursor no longer belongs to the current projection."""
+
+    code = 'sync_cursor_changed'
+
+
 def digest(value):
     return hashlib.sha256(encoded(value)).hexdigest()[:24]
 
@@ -239,7 +245,10 @@ def process(timeline, *, key, before=None, after=None, limit=20, known=None, ifV
             from_start=False):
     group = timeline.process_groups.get(key)
     if not group:
-        raise ValueError('过程记录已变化，请重新展开')
+        raise SyncCursorChanged('过程记录已变化，正在更新')
+    if any(cursor and cursor != 'latest' and cursor not in {row['key'] for row in group}
+           for cursor in (before, after)):
+        raise SyncCursorChanged('过程记录已变化，正在更新')
     latest = not before and (after == 'latest' or not from_start and not after and group[-1].get('turnStatus') in _RUNNING)
     if latest:
         after = 'latest'
@@ -278,7 +287,7 @@ def process(timeline, *, key, before=None, after=None, limit=20, known=None, ifV
 def body(timeline, *, key, offset=0, version=None, ifVersion=None):
     position = timeline.positions.get(key)
     if position is None:
-        raise ValueError('这条内容已更新，请重新打开聊天')
+        raise SyncCursorChanged('这条内容已更新，正在更新聊天')
     entry = timeline.rows[position]
     if ifVersion == entry['version']:
         detail = timeline.detail(timeline.cursor(key), offset=offset, version=version)

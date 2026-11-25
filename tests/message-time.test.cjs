@@ -34,6 +34,32 @@ test('completion uses native turn boundaries and never invents a duration or suc
  for(const status of ['inProgress','unknown','idle',undefined])assert.equal(label({status,start,end:start+125000}),'');
 });
 
+test('only a verified live turn measures elapsed time from its native start',()=>{
+ const context=vm.createContext({Date,BridgeI18n:{t:s=>s}});
+ vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),context);
+ const label=context.chatTurnCompletionLabel,start=1700000000000,turn={status:'inProgress',start,answerAt:start+10000};
+ assert.equal(label(turn,{live:true,now:start+61000}),'用时 1 分钟 1 秒');
+ assert.equal(label(turn,{live:true,now:start+125000}),'用时 2 分钟 5 秒');
+ assert.equal(label(turn,{live:false,now:start+125000}),'用时 10 秒');
+ assert.equal(label({status:'inProgress'},{live:true,now:start+125000}),'');
+ assert.equal(label({status:'completed',start,end:start+4000},{live:true,now:start+125000}),'已完成，用时 4 秒');
+});
+
+test('the visible turn clock corrects immediately on foreground return and stops for removed controls',()=>{
+ const events=new Map(),timers=new Map();let seq=0,paints=0;
+ const on=(name,callback)=>events.set(name,callback),document={hidden:false,addEventListener:on};
+ const window={BridgeChatForeground:true,addEventListener:on};
+ const context=vm.createContext({document,window,Date,setTimeout:callback=>{timers.set(++seq,callback);return seq;},clearTimeout:id=>timers.delete(id)});
+ vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),context);
+ const register=vm.runInContext('chatTurnClocks',context),node={isConnected:true};
+ register(node,()=>paints++);assert.equal(timers.size,1);
+ document.hidden=true;events.get('visibilitychange')();assert.equal(timers.size,0);assert.equal(paints,0);
+ document.hidden=false;events.get('visibilitychange')();assert.equal(paints,1);assert.equal(timers.size,1);
+ window.BridgeChatForeground=false;events.get('bridge-chat-foreground')();assert.equal(timers.size,0);
+ window.BridgeChatForeground=true;events.get('bridge-chat-foreground')();assert.equal(paints,2);
+ node.isConnected=false;events.get('visibilitychange')();assert.equal(timers.size,0);
+});
+
 test('Claude connector preserves native timestamp while sanitizing the transcript',()=>{
  const source=fs.readFileSync('bridge/clients/claude/connector.js','utf8');
  const sanitizer=source.slice(source.indexOf('  function sanitize('),source.indexOf('  function callArgs('));

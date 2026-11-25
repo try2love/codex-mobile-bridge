@@ -18,6 +18,43 @@ const syncResponse=(page,mode)=>page.waitForResponse(response=>{
   return url.pathname.endsWith('/sync')&&url.searchParams.get('mode')===mode;
 });
 
+test('an Android foreground chat recovers a changed process cursor without reloading the page',async({page,context})=>{
+  const root=path.resolve(__dirname,'../..');
+  const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});
+  const lines=createInterface({input:server.stdout});
+  try{
+    const origin=await new Promise((resolve,reject)=>{lines.once('line',resolve);server.once('error',reject);server.once('exit',code=>reject(Error('Fixture exited '+code)));});
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+    await page.addInitScript(()=>{
+      Object.defineProperty(navigator,'userAgent',{value:navigator.userAgent+' BridgeMobile/0.1-Android'});
+      window.CodexBridgeNativeOffline={request:async()=>({recordPages:1,foreground:true,allowTransfer:true,clearRevision:0,turns:[]})};
+    });
+    let processReads=0,recentReads=0;
+    await page.route(url=>url.pathname.endsWith('/sync'),async route=>{
+      const mode=new URL(route.request().url()).searchParams.get('mode');
+      if(mode==='recent')recentReads++;
+      if(mode==='process'&&++processReads===1)return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'过程记录已变化，正在更新',code:'sync_cursor_changed'})});
+      return route.continue();
+    });
+    await page.goto(origin);
+    await page.locator('#username').fill('fixture');await page.locator('#password').fill('session-transfer-test-only');await page.locator('#login-button').click();
+    await page.locator('#sessions .session').filter({hasText:'Transfer HTTP fixture'}).click();
+    await expect(page.locator('#messages')).toContainText('Answer 89');
+    await page.evaluate(()=>window.recoveryDocumentMarker='same-document');
+    const baseline=recentReads;
+    await page.locator('#messages').getByRole('button',{name:'已完成',exact:true}).last().click();
+    await expect(page.locator('#messages .activity:not(.chat-process-collapsed)')).toHaveCount(24);
+    await expect(page.locator('#messages').getByRole('button',{name:/读取失败，点击重试|加载后续过程/})).toHaveCount(0);
+    expect(recentReads).toBeGreaterThan(baseline);expect(processReads).toBeGreaterThan(1);
+    expect(await page.evaluate(()=>window.recoveryDocumentMarker)).toBe('same-document');
+    // Android can publish repeated foreground=true storage/network facts. They
+    // must not continually restart recent reads or abort the current watch.
+    const before=recentReads;
+    await page.evaluate(()=>{for(let i=0;i<5;i++)window.dispatchEvent(new CustomEvent('bridge-chat-foreground',{detail:{foreground:true}}));});
+    await page.waitForTimeout(600);expect(recentReads).toBe(before);
+  }finally{lines.close();server.kill();}
+});
+
 test('opening a native chat with an earlier cache cleanup loads without returning to latest',async({page,context},info)=>{
   const root=path.resolve(__dirname,'../..');
   const server=spawn(process.platform==='win32'?'python':'python3',['-B','tests/browser/session-transfer-http-fixture.py'],{cwd:root});

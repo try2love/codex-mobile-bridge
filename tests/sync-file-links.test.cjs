@@ -63,6 +63,15 @@ test('body reuse retains file metadata and upgrades older cached chunks once',as
  assert.equal(requests,1);
 });
 
+test('a changed body version cannot persist new chunks with the old cached row preview',async()=>{
+ const f=await fixture();let writes=0;
+ f.cache.write=async()=>{writes++;};
+ const target={scope:f.scope,url:'/fixture/sync',authorized:()=>true,request:async()=>({key:f.row.key,version:'edited',offset:0,text:'Edited full text',next:null,files:[]})};
+ const result=await f.read(target,'body',{key:f.row.key,version:f.row.version,offset:100},'manual',()=>true);
+ assert.equal(result.version,'edited');assert.equal(writes,0);
+ assert.equal(f.cache.resident.get(f.scope)?.pages.size||0,0);
+});
+
 test('a fresh online page can paint while an earlier cache commit is still pending',async()=>{
  const f=await fixture(),known=await f.cache.known(f.scope,'recent',{});let release;
  const gate=new Promise(resolve=>{release=resolve;});f.cache.pending.set(f.scope,gate);

@@ -66,7 +66,7 @@ def _prepared_static(data, content_type, use_gzip):
 
 from bridge.features.sessions.cli_release import CliConnections
 from bridge.app.lifecycle import private_json
-from bridge.features.sessions.sync import parse_query as sync_query, wait_for_watch
+from bridge.features.sessions.sync import parse_query as sync_query, wait_for_watch, SyncCursorChanged
 from bridge.features.sessions.history_transfer import HistoryTransfer, HistorySources, CHUNK_BYTES as HISTORY_CHUNK_BYTES
 
 THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|conversation|process|changes|sync|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
@@ -1630,6 +1630,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.output(400, {"error": str(exc), "code": "send_not_submitted"})
         except CatalogIdentityChanged as exc:
+            self.close_connection = True
+            self.output(409, {"error": str(exc), "code": exc.code})
+        except SyncCursorChanged as exc:
             self.close_connection = True
             self.output(409, {"error": str(exc), "code": exc.code})
         except ValueError as exc:

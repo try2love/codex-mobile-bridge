@@ -65,6 +65,9 @@ async function readChatSync(target,mode,params={},source='manual',active=chatSyn
   if(!active())return null;
   let wire=await fetchPage(known);
   if(!wire)return null;
+  // A body edit resets the server's chunk offset/version. Let the renderer
+  // refresh its row, but never persist that reply against the old row preview.
+  if(mode==='body'&&(wire.key!==params.key||wire.version!==params.version||wire.offset!==params.offset))return wire;
   // A network read can finish from the offline archive when its connection drops.
   if(window.OfflineChatReader?.enabled)return source==='manual'?wire:null;
   if(known?.probe){
