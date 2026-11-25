@@ -14,7 +14,7 @@ Status: implemented
 
 此流程验证手动安装预览后的数据保留，并在新候选中实际通过历史版本列表、明确选择、单独下载及 `switch-version` 返回官方 2.2.1；不声称旧稳定版能自动发现预览。历史列表使用保存的官方 API 原始发布元数据，包摘要与大小仍对照原发布清单，下载不替换公钥或重新签名旧包。先验证单独下载不创建安装事务或配置副本，再确认安装；失败恢复后验证完整缓存仍在且重试没有重复下载。Linux 下载真实 DEB 并核对安装交接，最终 apt 安装仍在托管环境执行。调试器在真实主进程 `update-prepare` 后暂停时，通过 `Debugger.evaluateOnCallFrame` 一次读取计划、归档和请求证据；不能先用等待 Promise 的 `Runtime.evaluate` 再恢复执行，否则形成等待暂停解除的死锁。断点按准备调用之后的位置定位，不与手动安装分支中的同名保存调用混淆。
 
-Preview 3 到 Preview 4 走同一真实包覆盖路径；Preview 2、Preview 3 分别只看到截至自身的预览目录，保持渠道检查为 current，并各自验证官方 stable 发现。正常账号、配对和草稿夹具只创建 `accounts/*/api.json`，不创建 CMB1 连接或 ZCode 登录，因此成功返回 stable 只证明旧格式资料保留，不能证明旧版能读取新凭据。每个候选安装后另建隔离的 CMB1 头部合成资料，用候选真实网关运行时调用 `update-backup`，验证返回 stable 和切换 Preview 3 在自动准备、手动安装交接两种模式下均因凭据拒绝，且不创建更新备份、不改写原配置与旧设置副本。结果仅记录拒绝目标、模式和字节保留结论，不上传资料目录或合成密钥；此检查不声称完成加解密或钥匙串迁移。产品凭据门禁不替换、不放宽，详见[凭据回退边界](../bug-fix/2026-11-24-update-credential-backup-and-legacy-guard.md)。
+Preview 3 到 Preview 4 走同一真实包覆盖路径；Preview 2、Preview 3 分别只看到截至自身的预览目录，保持渠道检查为 current，并各自验证官方 stable 发现。正常账号、配对和草稿夹具只创建 `accounts/*/api.json`，不创建 CMB1 连接或 ZCode 登录，因此成功返回 stable 只证明旧格式资料保留，不能证明旧版能读取新凭据。每个候选安装后另建隔离的 CMB1 头部合成资料，用候选真实网关运行时调用 `update-backup`，验证返回 stable 和切换 Preview 3 在常规备份、手动安装交接备份两种模式下均因凭据拒绝，且不创建更新备份、不改写原配置与旧设置副本。结果仅记录拒绝目标、模式和字节保留结论，不上传资料目录或合成密钥；此检查不声称完成加解密、钥匙串迁移或完整自动安装。自动 `update-prepare` 使用相同的配置快照门禁，暂存前拒绝旧 Preview 的源码回归仍保留。产品凭据门禁不替换、不放宽，详见[凭据回退边界](../bug-fix/2026-11-24-update-credential-backup-and-legacy-guard.md)。
 
 结果与 provenance、公开发布元数据作为独立 artifact；不上传合成密码、配对 cookie、浏览器 profile 或完整数据目录。移动端真旧包验收仍由移动构建流程单独覆盖，不从桌面结果推断 Android/iOS 安装成功。
 
