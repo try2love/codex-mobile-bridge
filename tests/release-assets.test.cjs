@@ -85,9 +85,9 @@ test('release caller grants reusable desktop read permissions and keeps ordinary
   assert.equal(build.with.acceptance_only,undefined);
   for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.acceptance_only.default,false);
   assert.equal(desktop.jobs.package.if,'inputs.acceptance_only != true');
-  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse'");
+  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'");
   assert.equal(desktop.on.workflow_dispatch.inputs.build_target.default,'all');
-  assert.deepEqual(desktop.on.workflow_dispatch.inputs.build_target.options,['all','intel','mac-windows-reuse','windows-reuse']);
+  assert.deepEqual(desktop.on.workflow_dispatch.inputs.build_target.options,['all','intel','mac-windows-reuse','windows-reuse','mac-arm-reuse']);
   assert.equal(desktop.on.workflow_call.inputs.build_target.default,'all');
   const matrix=desktop.jobs.package.strategy.matrix.include;
   assert.ok(matrix.includes("inputs.build_target == 'intel'"));
@@ -95,6 +95,10 @@ test('release caller grants reusable desktop read permissions and keeps ordinary
   assert.deepEqual(selected,[{os:'macos-15',arch:'arm64','app-dir':'mac-arm64'},{os:'windows-latest',arch:'x64'}]);
   const windows=JSON.parse(matrix.match(/inputs.build_target == 'windows-reuse' && '([^']+)'/)[1]);
   assert.deepEqual(windows,[{os:'windows-latest',arch:'x64'}]);
+  const macArm=JSON.parse(matrix.match(/inputs.build_target == 'mac-arm-reuse' && '([^']+)'/)[1]);
+  assert.deepEqual(macArm,[{os:'macos-15',arch:'arm64','app-dir':'mac-arm64'}]);
+  const macArmReuse=JSON.parse(desktop.jobs.reuse.strategy.matrix.artifact.match(/inputs.build_target == 'mac-arm-reuse' && '([^']+)'/)[1]);
+  assert.deepEqual(macArmReuse,['desktop-Windows-x64','desktop-macOS-x64','desktop-Linux-x64','desktop-Linux-arm64']);
   assert.ok(desktop.jobs.reuse.strategy.matrix.artifact.includes('desktop-macOS-arm64'));
   const fullSuite=desktop.jobs.package.steps.find(step=>step.run==='python -B -m unittest discover -s tests -v');
   assert.equal(fullSuite.if,"inputs.build_target != 'intel'");
