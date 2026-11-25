@@ -3,6 +3,7 @@ import copy
 import uuid
 import re
 import os
+import sys
 import threading
 from collections import OrderedDict
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
-def project_root_key(path):
+def project_root_key(path, platform=None):
     """Compare registered roots for display without resolving filesystem paths."""
     if not isinstance(path, str) or not path:
         return None
@@ -30,7 +31,9 @@ def project_root_key(path):
     drive = re.match(r'^/?([A-Za-z]:/.*)$', windows)
     if drive:
         return 'windows', drive[1].rstrip('/').lower()
-    if (path.startswith(('\\\\', '//')) and not windows.startswith(('//?/', '//./'))
+    unc = path.startswith('\\\\') or path.startswith('//?/') or (
+        path.startswith('//') and (sys.platform if platform is None else platform) == 'win32')
+    if (unc and not windows.startswith(('//?/', '//./'))
             and re.match(r'^//[^/]+/[^/]+', windows)):
         return 'windows', windows.rstrip('/').lower()
     return 'posix', path.rstrip('/') or '/'

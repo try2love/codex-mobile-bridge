@@ -1,11 +1,15 @@
 """Native memberships and registered project roots determine chat list groups."""
 import sqlite3
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from bridge.clients.codex.remote import AppHosts
-from bridge.features.sessions.store import SessionStore
+from bridge.clients.codex.remote import AppHosts, RemoteStore
+from bridge.features.sessions.store import SessionStore, project_root_key
 
 
 class ProjectGroupingTests(unittest.TestCase):
@@ -105,6 +109,76 @@ class ProjectGroupingTests(unittest.TestCase):
         self.assertEqual(self.decorate('/work/Project/')['projectKey'], 'local|local')
         for path in ['/work/project', r'/work\Project', '/work/Project/child', '/work/Other/../Project']:
             self.assertEqual(self.decorate(path)['projectKey'], 'local|unassigned')
+
+    def test_double_slash_roots_follow_the_local_execution_platform(self):
+        self.saved['local-projects']['local']['rootPaths'] = ['//work/Project']
+        for platform in ('darwin', 'linux', 'win32'):
+            with self.subTest(platform=platform), patch('sys.platform', platform):
+                self.assertEqual(self.decorate('//work/Project/')['projectKey'], 'local|local')
+                expected = 'local|local' if platform == 'win32' else 'local|unassigned'
+                self.assertEqual(self.decorate('//work/project')['projectKey'], expected)
+
+    def test_windows_explicit_unc_is_unambiguous_on_posix(self):
+        with patch('sys.platform', 'linux'):
+            self.assertEqual(project_root_key(r'\\server\Share\Project'),
+                             project_root_key(r'\\?\UNC\SERVER\share\project'))
+            self.assertNotEqual(project_root_key('//server/share/project'),
+                                project_root_key(r'\\server\share\project'))
+
+    def test_native_root_matching_uses_execution_platform_and_preserves_cwd(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
+            home = Path(directory)
+            with sqlite3.connect(home / 'state_5.sqlite') as db:
+                db.executescript("""
+                    CREATE TABLE threads(id TEXT, cwd TEXT, source TEXT, archived INTEGER, updated_at INTEGER);
+                    INSERT INTO threads VALUES ('different', '//work/project', 'vscode', 0, 1),
+                        ('exact', '//work/Project/', 'vscode', 0, 2);
+                    CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT);
+                    INSERT INTO projects VALUES ('native', 'Native');
+                    CREATE TABLE project_roots(project_id TEXT, path TEXT);
+                    INSERT INTO project_roots VALUES ('native', '//work/Project');
+                """)
+            for platform in ('darwin', 'linux', 'win32'):
+                with self.subTest(platform=platform), patch('sys.platform', platform):
+                    rows = SessionStore(home).list(project_roots=True)
+                    result = AppHosts(home).decorate(rows, 'local', 'Local')
+                    self.assertEqual(result[0]['projectKey'], 'local|native')
+                    self.assertEqual(result[1]['projectKey'],
+                                     'local|native' if platform == 'win32' else 'local|unassigned')
+                    self.assertEqual([row['cwd'] for row in result], ['//work/Project/', '//work/project'])
+
+    def test_ssh_root_platform_is_independent_of_gateway_platform(self):
+        self.saved['remote-projects'][0]['remotePath'] = '//work/Project'
+        for gateway, target in [('win32', 'linux'), ('darwin', 'win32')]:
+            with self.subTest(gateway=gateway, target=target), patch('sys.platform', gateway):
+                rows = [{'id': 'fixture', 'cwd': '//work/project', '_projectPlatform': target}]
+                result = self.hosts.decorate(rows, 'ssh', 'SSH')[0]
+                self.assertEqual(result['projectKey'], 'ssh|remote' if target == 'win32' else 'ssh|unassigned')
+                self.assertNotIn('_projectPlatform', result)
+
+    def test_remote_list_transports_target_platform_in_the_same_read(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / '.tmp') as directory:
+            home = Path(directory)
+            with sqlite3.connect(home / 'state_5.sqlite') as db:
+                db.executescript("""
+                    CREATE TABLE threads(id TEXT, cwd TEXT, source TEXT, archived INTEGER, updated_at INTEGER);
+                    INSERT INTO threads VALUES ('fixture', '//work/project', 'vscode', 0, 1);
+                """)
+            self.saved['remote-projects'][0]['remotePath'] = '//work/Project'
+            for gateway, target in [('win32', 'linux'), ('linux', 'win32')]:
+                def run_target(alias, source, **kwargs):
+                    output = io.StringIO()
+                    with patch('sys.platform', target), redirect_stdout(output):
+                        exec(source, {})
+                    return json.loads(output.getvalue())
+                with self.subTest(gateway=gateway, target=target), patch('sys.platform', gateway), \
+                     patch('bridge.clients.codex.remote.ssh_read', side_effect=run_target) as read:
+                    rows = RemoteStore('fixture').call('list', {'project_scope': True}, home=home)
+                    self.assertEqual(rows[0]['_projectPlatform'], target)
+                    result = self.hosts.decorate(rows, 'ssh', 'SSH')[0]
+                    self.assertEqual(result['projectKey'], 'ssh|remote' if target == 'win32' else 'ssh|unassigned')
+                    self.assertNotIn('_projectPlatform', result)
+                    read.assert_called_once()
 
     def test_native_and_legacy_root_match_requires_current_config_mapping(self):
         self.saved['app-server-project-id-by-legacy-project-id-by-host'] = {'local:/other': {'local': 'native'}}

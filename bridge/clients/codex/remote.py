@@ -195,6 +195,8 @@ class RemoteStore:
                   'result = s.' + method + '(**' + payload(args) + ')\n')
         if method == 'discovery_diagnostics':
             suffix += 'result["homeSource"] = home_source\n'
+        if method == 'list' and args.get('project_scope'):
+            suffix += 'for row in result: row["_projectPlatform"] = sys.platform\n'
         return ssh_read(self.alias, source + suffix + 'print(json.dumps(result, ensure_ascii=False))\n', timeout=30)
 
     def list(self, **kwargs):
@@ -665,6 +667,7 @@ class AppHosts:
         scope = 'local:' + str(self.home.resolve()) if local else host
         legacy_by_scope = {}
         for row in rows:
+            platform = row.pop('_projectPlatform', None)
             assigned = assignments.get(row['id'], {})
             project = row.pop('_nativeProject', None)
             native_roots = row.pop('_nativeRootProjects', ())
@@ -692,7 +695,13 @@ class AppHosts:
                 # The App also groups legacy SSH chats by their registered host/root,
                 # without persisting a thread projectId. Keep explicit removals authoritative.
                 if can_match_root and not local:
-                    project = next((p for p in projects if p['cwd'] and p['cwd'] == row.get('cwd')), None)
+                    # Only the execution host can disambiguate a pure // path.
+                    # Older/unknown sources retain the exact-string fallback.
+                    def root_key(path):
+                        return project_root_key(path, platform) if platform in ('darwin', 'linux', 'win32') else path
+                    candidates = {p['id']: p for p in projects if p['cwd'] and root_key(p['cwd']) == root_key(row.get('cwd'))}
+                    if len(candidates) == 1:
+                        project = next(iter(candidates.values()))
             row.update(host=host, hostLabel=label,
                        projectKey=host + '|' + (legacy_ids.get(project['id'], project['id']) if project else 'unassigned'),
                        projectName=project['name'] if project else '未归类',
