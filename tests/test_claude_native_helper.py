@@ -29,8 +29,7 @@ class DesktopSessionGuards(unittest.TestCase):
     def test_owner_errors_require_this_attempt_marker(self):
         source = (ROOT/'bridge/platforms/macos/claude-helper.swift').read_text()
         pure = source[source.index('func bridgeOwnerIssue('):source.index('func attribute(')]
-        fixture = '''import Foundation
-''' + pure + '''
+        fixture = pure + '''
 precondition(bridgeOwnerIssue("Error: BRIDGE_OWNER_BUSY [current]", marker: "current") == "busy")
 precondition(bridgeOwnerIssue("Error: BRIDGE_OWNER_UNCONFIRMED [current]", marker: "current") == "unconfirmed")
 precondition(bridgeOwnerIssue("Error: BRIDGE_OWNER_LEGACY [current]", marker: "current") == "legacy")
@@ -49,8 +48,7 @@ print("owner error marker fixtures passed")
     def test_pure_state_guards_without_starting_native_helper_or_reading_desktop(self):
         source = (ROOT/'bridge/platforms/macos/claude-helper.swift').read_text()
         pure = source[source.index('func desktopIssue('):source.index('func currentDesktopIssue(')]
-        fixture = '''import Foundation
-struct SetupError: Error { let state: String; let reason: String }
+        fixture = '''struct SetupError: Error { let state: String; let reason: String }
 ''' + pure + '''
 func state(_ has: Bool = true, _ console: Bool? = true, _ login: Bool? = true,
            _ locked: Bool? = false, _ front: String? = "com.anthropic.claudefordesktop", _ saver: Bool = false) -> String? {
