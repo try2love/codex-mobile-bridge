@@ -8,6 +8,8 @@
 - **未确认记录**：进入会话时按原发送 ID 核对结果。已确认的记录可解除旧版客户端阻塞；结果未知或查不到时保留。检查聊天记录后，可显式忽略该记录，操作不会撤销、重发或删除聊天消息。
 - **断网和多个页面**：撤回、排序或保存编辑的结果不明确时不会自动重试。其他页面修改了队列或编辑记录时，刷新或重新打开后再操作。
 
+断开连接时，仍可编辑草稿、收起输入框、调整工具栏，以及查看本机上次同步的上下文用量、模型和额度。点击「存入待发」后，这条消息会出现在输入区上方。交给网关之前可编辑或撤回，也可以继续写下一条草稿。手机重新打开后会恢复两者。重新连到同一网关、原账号的会话可以发送时，页面按顺序投递待发消息。回执中断时，页面会显示「发送结果待确认」，并使用原消息编号核对。尚未选择「存入待发」的草稿会留在输入框。
+
 Codex Desktop、本机 CLI、SSH CLI 和 WSL 的网关队列支持管理。Claude / DSH 已交给原生客户端的队列仍由原生客户端管理；页面会说明限制，不提供无效的排序。当前设备保存的未确认记录可以单独处理。
 
 在本机 Codex App 选择“完成后发送”的消息会单独显示在“Codex 中待发送”。打开消息管理时会自动刷新，它们继续由 Codex 发送，编辑、排序和撤回请在电脑端操作。
@@ -23,6 +25,8 @@ Open **More → Message management** in a chat. A shortcut also appears above th
 - **Edit** changes a queued message in place, keeping its position and attachments. The separate editor preserves your chat draft and quotes. If dispatch has started, the edit is kept but cannot be applied.
 - Old unconfirmed records are checked against their original submission IDs. Unknown or missing results remain visible for explicit dismissal; dismissal never resends or deletes chat messages.
 - Ambiguous operations are not retried automatically. Conflicts between pages require refreshing or reopening the manager.
+
+While disconnected, you can edit your draft, collapse the composer, rearrange its tools, and view the last synced context usage, models, and quota. Choose **Save to outbox** to keep a message on this device. You can edit or withdraw it before handoff and start another draft. Both survive reopening the mobile app. When the same gateway and session account are available to send, the app delivers pending messages in order. If a delivery receipt is interrupted, the app checks the original message ID. Text left in the composer stays a draft.
 
 Gateway-owned Codex Desktop, local CLI, SSH CLI and WSL queues are supported. Claude / DSH native queues remain managed by their native clients; unsupported actions are not offered. Device-local unconfirmed records can still be managed.
 

@@ -107,3 +107,228 @@ test('remaining quota customization moves hides and restores the independent con
  await quota.click();await expect(page.locator('.quota-details-dialog')).toBeVisible();await page.evaluate(()=>codexQuota.clear());await expect(page.locator('.quota-details-dialog')).toBeHidden();
  await page.reload();await page.waitForFunction(()=>document.getElementById('bootstrap-status')?.hidden);expect(await page.evaluate(()=>composerToolbar.layout.bottomRight.includes('quota'))).toBe(true);
 });
+
+test('context dialog updates in place as readings and available operations change',async({page,context})=>{
+  await page.goto('/?case=session-menu');
+  await expect(page.locator('#app')).toBeVisible();
+  await page.evaluate(()=>{
+    BridgeI18n.setLanguage('zh');
+    contextUsageControl.update({id:'context-fixture',scope:'host-a',preview:true,
+      contextUsage:{usedTokens:20,contextWindow:100,cached:true}});
+    contextUsageControl.open();
+  });
+  const dialog=page.getByRole('dialog',{name:'上下文使用量'});
+  const close=dialog.getByRole('button',{name:'关闭',exact:true});
+  const compact=dialog.getByRole('button',{name:'压缩上下文',exact:true});
+  await expect(dialog).toContainText('20.0%');
+  await expect(dialog).toContainText('显示最近一次可用的上下文读数。');
+  await expect(compact).toBeHidden();
+  await close.focus();
+
+  await page.evaluate(()=>{
+    window.contextFixtureDialog=contextUsageControl.dialog;
+    contextUsageControl.update({id:'context-fixture',scope:'host-a',account:'account-a',connected:true,
+      contextUsage:{usedTokens:35,contextWindow:100,cached:true},capabilities:{compact:true}});
+  });
+  await expect(dialog).toContainText('35.0%');
+  await expect(dialog).toContainText('显示最近一次可用的上下文读数。');
+  await expect(dialog).not.toContainText('连接恢复后更新');
+  await expect(compact).toBeEnabled();
+  await expect(close).toBeFocused();
+  expect(await page.evaluate(()=>window.contextFixtureDialog===contextUsageControl.dialog)).toBe(true);
+
+  await context.setOffline(true);
+  await expect(dialog).toContainText('连接恢复后更新');
+  await expect(compact).toBeDisabled();
+  await context.setOffline(false);
+  await expect(compact).toBeEnabled();
+  await compact.focus();
+  await page.evaluate(()=>{
+    contextUsageControl.update({id:'context-fixture',scope:'host-a',account:'account-a',connected:true,
+      contextUsageStatus:'unsupported',lastPromptContextUsage:{usedTokens:42}});
+  });
+  await expect(dialog).toContainText('当前客户端或会话模式未提供上下文用量接口。');
+  await expect(dialog).toContainText('最近一次模型输入 · 42');
+  await expect(dialog).not.toContainText('使用占比');
+  await expect(compact).toBeHidden();
+  await expect(close).toBeFocused();
+
+  await page.evaluate(()=>contextUsageControl.update({id:'context-fixture',scope:'host-a',account:'account-b',connected:true}));
+  await expect(dialog).toBeHidden();
+});
+
+for(const provider of ['codex','antigravity'])test(`offline composer opens read-only snapshots for ${provider}`,async({page,context})=>{
+  await page.goto('/?case=session-menu');
+  await expect(page.locator('#app')).toBeVisible();
+  const network=[];
+  await context.route('**/api/**',route=>{
+    const url=new URL(route.request().url());
+    if(/\/(account|catalog|compact|settings)$/.test(url.pathname))network.push(url.pathname);
+    return route.abort();
+  });
+  await page.evaluate(async provider=>{
+    await BridgeFeatures.load('chat');
+    BridgeI18n.setLanguage('zh');
+    const stamp=1795200000000;
+    const saved={account:'fixture-account',context:{
+      usage:{syncedAt:stamp,contextUsage:{usedTokens:3200,contextWindow:10000}},
+      models:{syncedAt:stamp,rows:[{id:'saved',name:'本机同步模型'}]},
+      quota:{syncedAt:stamp,value:{groups:[{name:'本机额度池',windows:[{remainingPercent:62,windowDurationMins:300}]}]}},
+    }};
+    const matches=route=>route?.provider===provider&&route.host==='local'&&route.session==='offline-catalog';
+    // Codex enters hot with resident data. The desktop view exercises local storage hydration after opening.
+    let hydrated=provider==='codex';
+    window.BridgeOfflineComposer={peek:route=>matches(route)&&hydrated?saved:null,async get(route){
+      if(!matches(route))return null;
+      if(!hydrated){hydrated=true;queueMicrotask(()=>window.dispatchEvent(new CustomEvent('bridge-offline-composer-change',{detail:{route}})));}
+      return saved;
+    }};
+    OfflineChatReader.enableHot(async action=>action==='list'?{sessions:[]}:Promise.reject(Error('Unexpected archive operation')));
+    if(provider==='codex'){
+      currentId='offline-catalog';currentHost='local';
+      workbench.open(currentId,currentHost);
+      $('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');
+      state={id:currentId,access:{source:'history'},readOnly:true};
+      document.dispatchEvent(new CustomEvent('bridge-hot-offline',{detail:{active:true}}));
+      syncCodexOfflineComposer();
+      composerToolbar.sync();
+    }else{
+      const root=document.createElement('div');root.id='offline-desktop';root.className='app';root.style.cssText='position:fixed;inset:0;z-index:10';document.body.append(root);
+      const view=window.offlineDesktop=new DesktopSessionsView({root,select:document.createElement('select'),notify(){},onSelect(){},csrf:()=>'',onUnauthorized(){},request:async url=>{throw Error('Unexpected desktop network: '+url);}});
+      view.provider=provider;view.container.hidden=false;root.classList.add('desktop-mode');
+      view.sid='offline-catalog';view.showSelection(true);
+      view.applyDetail({connected:false,readOnly:true,session:{id:view.sid,title:'本机聊天',readOnly:true},messages:[]});
+    }
+  },provider);
+  const composer=page.locator(provider==='codex'?'#composer':'#offline-desktop .composer');
+  for(const [selector,name,text] of [
+    ['.context-usage','上下文使用量','32.0%'],
+    [provider==='codex'?'#model-button':'.ds-model','可用模型','本机同步模型'],
+    ['.remaining-quota','剩余额度','本机额度池'],
+  ]){
+    const trigger=composer.locator(selector);
+    // The toolbar is customizable. Open from its current zone or the same tools panel.
+    if(!await trigger.isVisible()){
+      await composer.getByRole('button',{name:'工具面板'}).click();
+      await page.getByRole('dialog',{name:'工具面板'}).getByRole('button',{name:new RegExp(name==='上下文使用量'?'上下文':name==='可用模型'?'模型':name)}).click();
+    }else await trigger.click();
+    const dialog=page.getByRole('dialog',{name,exact:true});
+    await expect(dialog).toContainText(text);
+    await expect(dialog).toContainText('最后同步');
+    await expect(dialog.getByRole('button',{name:/刷新|应用|压缩/})).toHaveCount(0);
+    await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  }
+  await page.evaluate(provider=>{
+    if(provider==='codex'){currentId='other-session';$('model-button').click();}
+    else {offlineDesktop.sid='other-session';void offlineDesktop.models();}
+  },provider);
+  const empty=page.getByRole('dialog',{name:'可用模型',exact:true});
+  await expect(empty).toContainText('本机暂无记录');
+  await expect(empty).not.toContainText('本机同步模型');
+  expect(network).toEqual([]);
+});
+
+test('cold offline composer loads persisted readings through the native storage port',async({page,context})=>{
+  const session='offline-persisted',archive=JSON.stringify(['codex','local',session]);
+  const records=new Map(),calls=[],network=[];
+  await page.exposeFunction('offlineReadingHost',request=>{
+    const action=request.type||request.action;
+    calls.push(action);
+    const saved=records.get(request.sessionId)||{revision:0,value:null};
+    if(action==='composerRead')return saved;
+    if(action==='composerWrite'){
+      if(request.revision!==saved.revision)return {...saved,applied:false};
+      const row={revision:saved.revision+1,value:request.value};
+      records.set(request.sessionId,row);return {...row,applied:true};
+    }
+    if(action==='composerPending')return {sessions:[]};
+    if(action==='list')return {sessions:[{id:archive,title:'本机持久化会话',syncedAt:1795200000000}],lang:'zh',composerWritable:false};
+    if(action==='session')return {id:archive,title:'本机持久化会话',turns:[],before:null,gaps:false};
+    return {error:'Unexpected host operation '+action};
+  });
+  await page.addInitScript(()=>{
+    window.OfflineChatHost={postMessage(raw){
+      const message=JSON.parse(raw);
+      void window.offlineReadingHost(message).then(value=>OfflineChatReader.receive(message.id,value));
+    }};
+  });
+  await page.goto('/?case=session-menu');
+  await expect(page.locator('#app')).toBeVisible();
+  await page.evaluate(async session=>{
+    window.CodexBridgeNativeOffline={request:event=>window.offlineReadingHost(event)};
+    BridgeOfflineComposer.bind({authenticated:true,draftIdentity:'fixture-snapshot',sessionSync:{version:1,gatewayId:'a'.repeat(32),identity:'b'.repeat(64)}},
+      async()=>{throw Error('Unexpected network request');});
+    const account='native-account',route={provider:'codex',host:'local',session},syncedAt=1795200000000;
+    await BridgeOfflineComposer.observe(route,{gateway:'fixture-snapshot',account,canSend:false});
+    await BridgeOfflineComposer.saveContext(route,{
+      usage:{syncedAt,contextUsage:{usedTokens:22,contextWindow:100}},
+      models:{syncedAt,rows:[{id:'persisted',name:'重启后读取的模型'}]},
+      quota:{syncedAt,value:{groups:[{name:'重启后读取的额度',windows:[{remainingPercent:64,windowDurationMins:300}]}]}},
+    },account);
+  },session);
+  expect(records.get(archive).value).toMatchObject({account:'native-account',canSend:false});
+  await context.route(url=>url.searchParams.get('cold-composer')==='1',async route=>{
+    const reply=await route.fetch();
+    await route.fulfill({response:reply,body:(await reply.text()).replace('<html ','<html data-bridge-offline ')});
+  });
+  await context.route('**/api/**',route=>{network.push(new URL(route.request().url()).pathname);return route.abort();});
+  await page.goto('/?case=session-menu&cold-composer=1');
+  await expect(page.locator('#app')).toBeVisible();
+  expect(await page.evaluate(()=>OfflineChatReader.cold)).toBe(true);
+  expect(await page.evaluate(session=>BridgeOfflineComposer.peek({provider:'codex',host:'local',session}),session)).toBeNull();
+  await page.locator('#sessions .session').filter({hasText:'本机持久化会话'}).click();
+  const composer=page.locator('#composer');
+  const usage=composer.locator('.context-usage');
+  await expect(usage).toHaveAttribute('aria-label',/22%$/);
+  await usage.click({timeout:5000});
+  const dialog=page.getByRole('dialog',{name:'上下文使用量',exact:true});
+  await expect(dialog).toContainText('22.0%');
+  await expect(dialog).toContainText('最后同步');
+  const saved=records.get(archive);
+  records.set(archive,{revision:saved.revision+1,value:{...saved.value,context:{...saved.value.context,
+    usage:{syncedAt:1795200001000,contextUsage:{usedTokens:34,contextWindow:100}}}}});
+  await page.evaluate(session=>BridgeOfflineComposer.get({provider:'codex',host:'local',session}),session);
+  await expect(dialog).toContainText('34.0%');
+  await expect(dialog.getByRole('button',{name:'压缩上下文',exact:true})).toHaveCount(0);
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  for(const [trigger,name,text] of [
+    ['#model-button','可用模型','重启后读取的模型'],
+    ['.remaining-quota','剩余额度','重启后读取的额度'],
+  ]){
+    const button=composer.locator(trigger);
+    if(!await button.isVisible()){
+      await composer.getByRole('button',{name:'工具面板'}).click();
+      await page.getByRole('dialog',{name:'工具面板'}).getByRole('button',{name:new RegExp(name==='可用模型'?'模型':name)}).click();
+    }else await button.click();
+    const details=page.getByRole('dialog',{name,exact:true});
+    await expect(details).toContainText(text);
+    await expect(details).toContainText('最后同步');
+    await expect(details.getByRole('button',{name:/刷新|应用/})).toHaveCount(0);
+    await details.getByRole('button',{name:'关闭',exact:true}).click();
+  }
+  expect(calls.filter(action=>action==='composerWrite')).toHaveLength(2);
+  expect(network).toEqual([]);
+
+  // Switch accounts through the existing account panel before any new session data confirms the new owner.
+  await context.unroute('**/api/**');
+  await page.goto('/?case=session-menu');
+  await expect(page.locator('#app')).toBeVisible();
+  await page.evaluate(async session=>{
+    window.CodexBridgeNativeOffline={request:event=>window.offlineReadingHost(event)};
+    const route={provider:'codex',host:'local',session};
+    BridgeOfflineComposer.bind({authenticated:true,draftIdentity:'fixture-snapshot',sessionSync:{version:1,gatewayId:'a'.repeat(32),identity:'b'.repeat(64)}},
+      async()=>{throw Error('Unexpected network request');});
+    if((await BridgeOfflineComposer.get(route))?.account!=='native-account')throw Error('Prior account not found');
+    accountsPanel.accept({accounts:[],activeId:'native-account'});
+    accountsPanel.accept({accounts:[],activeId:'another-account'});
+    if((await BridgeOfflineComposer.get(route))?.context?.usage)throw Error('Prior account reading is visible after account switch');
+  },session);
+  await context.route('**/api/**',route=>{network.push(new URL(route.request().url()).pathname);return route.abort();});
+  await page.goto('/?case=session-menu&cold-composer=1');
+  await page.locator('#sessions .session').filter({hasText:'本机持久化会话'}).click();
+  await expect(usage).toHaveAttribute('aria-label',/暂未提供/);
+  await usage.click({timeout:5000});
+  await expect(dialog).toContainText('本机暂无记录');
+  await expect(dialog).not.toContainText('34.0%');
+  expect(network).toEqual([]);
+});

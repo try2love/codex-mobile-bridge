@@ -80,6 +80,15 @@ class RegistryTests(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     validate(method, root+action)
 
+    def test_offline_delivery_has_the_same_provider_boundary_as_send(self):
+        paths = ['/api/sessions/' + THREAD + '/delivery'] + [
+            '/api/desktop-sessions/' + provider + '/delivery' for provider in ('claude', 'deepseek', 'antigravity')]
+        for method in ('GET', 'POST'):
+            for path in paths:
+                validate(method, path)
+            with self.assertRaises(PermissionError):
+                validate(method, '/api/desktop-sessions/zcode/delivery')
+
     def test_protocol_v2_routes_and_management_boundary(self):
         validate('GET', '/api/sessions/diagnostics')
         validate('GET', '/api/sessions/diagnostics?thread=' + THREAD)

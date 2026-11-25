@@ -8,6 +8,8 @@ import time
 import uuid
 from contextlib import contextmanager
 from functools import wraps
+from bridge.features.sessions.offline_delivery import (
+    DeliveryBlocked, admit as admit_delivery, fingerprint as delivery_fingerprint, proof as delivery_proof, require_intent, waiting_for_turn)
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +22,7 @@ from bridge.clients.codex.configuration import magpie_managed
 from bridge.clients.codex.catalog import Catalog, normalize_native_skills
 from bridge.features.sessions import linux_permissions
 from bridge.features.accounts.draft_identity import draft_identity
-from bridge.features.sessions.model import normalize_state, normalize_request, computer_use_approval
+from bridge.features.sessions.model import normalize_state, normalize_request, computer_use_approval, context_usage
 from bridge.features.sessions.timeline import Timeline
 from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.store import StoreUnavailable
@@ -257,6 +259,12 @@ class WslEntry(WslFeatures):
                     session.state['latestCollaborationMode'] = copy.deepcopy(settings['collaborationMode'])
             elif method == 'turn/plan/updated':
                 session.state['turnPlan'] = copy.deepcopy(params.get('plan') or [])
+            elif method == 'thread/tokenUsage/updated':
+                usage = params.get('tokenUsage')
+                if context_usage({'latestTokenUsageInfo': usage}) is None:
+                    return
+                session.state['latestTokenUsageInfo'] = copy.deepcopy(usage)
+                session.state.pop('tokenUsageFromHistory', None)
             elif method == 'thread/status/changed':
                 session.state['threadRuntimeStatus'] = copy.deepcopy(params.get('status') or {})
             elif method == 'thread/closed':
@@ -300,7 +308,10 @@ class WslEntry(WslFeatures):
             with session.condition:
                 requests = session.state.get('requests', [])
                 stamp = hashlib.sha256(json.dumps([state, connected, error], sort_keys=True).encode()).hexdigest()
-                for key in ('turnPlan', 'latestCollaborationMode', 'latestTokenUsageInfo'):
+                if context_usage(state) is None and context_usage(session.state) is not None:
+                    state['latestTokenUsageInfo'] = copy.deepcopy(session.state['latestTokenUsageInfo'])
+                    state['tokenUsageFromHistory'] = not connected or session.state.get('tokenUsageFromHistory') is True
+                for key in ('turnPlan', 'latestCollaborationMode'):
                     if key in session.state:
                         state[key] = copy.deepcopy(session.state[key])
                 state['latestThreadSettings'] = copy.deepcopy(session.state.get('latestThreadSettings') or {})
@@ -1095,6 +1106,56 @@ class WslEntry(WslFeatures):
                 raise ValueError('相同请求标识不能用于不同操作')
             return dict(old['result'])
 
+    def _delivery_status(self, identifier, submission_id, account, intent=None):
+        old = self.receipts.get(identifier + ':send:' + submission_id)
+        if not old:
+            return 'notFound'
+        if (old.get('entry') or {}).get('deliveryAccount') != account:
+            return 'unknown'
+        require_intent((old.get('entry') or {}).get('deliveryFingerprint'), intent)
+        return old['result'].get('status') or 'unknown'
+
+    def _delivery_admission(self, session, *, fresh=False):
+        archived = bool(self.store.get(session.id).get('archived'))
+        with session.condition:
+            state = session.state
+            provider = state.get('modelProvider')
+            ready = bool(session.connected and self._access(session)['canSend']
+                         and state.get('threadRuntimeStatus', {}).get('type') == 'idle'
+                         and not state.get('requests'))
+        if fresh and provider:
+            try:
+                current = self._account_draft_state(provider)['accountIdentity']
+            except (IPCError, RemoteUnavailable, ValueError, KeyError):
+                current = ''
+        else:
+            current = self._management_identity(session.id, refresh=not fresh)
+        ready = ready and not any(key.startswith(session.id + ':send:') and waiting_for_turn(
+                                      {**(row.get('entry') or {}), **row['result']}, state.get('turns') or [], current)
+                                  for key, row in self.receipts.items())
+        return current, not archived and ready, archived
+
+    @_entry_write
+    def offline_delivery(self, identifier, submission_id, account, body=None):
+        session = self.session(identifier, attach=False, background=True)
+        current, ready, archived = self._delivery_admission(session, fresh=body is not None)
+        intent = delivery_fingerprint(body) if body is not None else None
+        status = self._delivery_status(identifier, submission_id, account, intent) if current == account else 'notFound'
+        if body is None:
+            if not archived and current in ('', account) and not session.connected and not self.released_cli.contains(identifier):
+                # Probe the existing registered daemon only. Passive refresh
+                # does not start it or resume a thread that is not loaded.
+                self.session(identifier, background=True)
+            return delivery_proof(current, account, ready=ready, status=status)
+        if status != 'notFound':
+            return {'status': status, 'duplicate': True, 'id': submission_id}
+        admit_delivery(current, account, ready, archived)
+        if body.get('plugins'):
+            raise DeliveryBlocked('此会话离线发送不支持插件')
+        return self._send(identifier, body['text'], submission_id, skills=body.get('skills'),
+                          work_mode=body.get('workMode'), attachments=body.get('attachments'),
+                          references=body.get('references'), delivery_account=account, delivery_intent=intent)
+
     @_entry_write
     def send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, **options):
         if work_mode == 'goal':
@@ -1104,7 +1165,7 @@ class WslEntry(WslFeatures):
                                   attachments=attachments, ui_locale=options.get('ui_locale'))
         return self._send(identifier, text, submission_id, mode, skills, work_mode, attachments, references=options.get('references'))
 
-    def _send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, *, references=None, queued=False, goal_activation=None):
+    def _send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, *, references=None, queued=False, goal_activation=None, delivery_account=None, delivery_intent=None):
         uuid.UUID(identifier); uuid.UUID(submission_id)
         skills = skills or []
         if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(s, str) for s in skills):
@@ -1130,14 +1191,19 @@ class WslEntry(WslFeatures):
                 value['workMode'] = work_mode
             if goal_activation is not None:
                 value['goalActivation'] = copy.deepcopy(goal_activation)
+            if delivery_account is not None:
+                value['deliveryAccount'] = delivery_account
+                value['deliveryFingerprint'] = delivery_intent
             key = identifier + ':send:' + submission_id
             previous = self._previous_send(identifier, key, value)
             if previous is not None and not (queued and previous.get('status') == 'queued'):
                 return previous
             if not queued:
                 self._check_scope_new_work()
-            runtime, thread = self._target(identifier, activate=mode != 'queue', managed_control=True)
+            runtime, thread = self._target(identifier, activate=mode != 'queue' and delivery_account is None, managed_control=True)
             if (mode == 'send' or queued) and thread['status']['type'] == 'active':
+                if delivery_account is not None:
+                    raise DeliveryBlocked('WSL 会话正在执行，请稍后投递', wait=True)
                 raise ValueError('任务正在运行，请选择补充当前任务，或等待完成')
             if goal_activation is not None:
                 from bridge.features.sessions.goal import goal_identity
@@ -1187,6 +1253,16 @@ class WslEntry(WslFeatures):
             # Check immediately before creating an uncertain write receipt. A
             # known route rejection has not sent model bytes and stays retryable.
             self._check_account_route(runtime, thread)
+            if delivery_account is not None:
+                try:
+                    current = self._account_draft_state(thread.get('modelProvider') or '')['accountIdentity']
+                except (IPCError, RemoteUnavailable, ValueError, KeyError):
+                    current = ''
+                admit_delivery(current, delivery_account, True, bool(self.store.get(identifier).get('archived')))
+                session = self.session(identifier, attach=False)
+                with session.condition:
+                    observed = session.state.get('turns') or []
+                    value['deliveryBeforeTurn'] = observed[-1].get('id') if observed else None
             result = self._mutation(identifier, key, value, dispatch)
             self.session(identifier, background=True)
             return result

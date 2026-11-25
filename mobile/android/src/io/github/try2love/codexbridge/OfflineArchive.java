@@ -46,7 +46,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
 
 
  OfflineArchive(Context context) {
-  super(context, new File(context.getNoBackupFilesDir(), "offline-archive.db").getPath(), null, 4);
+  super(context, new File(context.getNoBackupFilesDir(), "offline-archive.db").getPath(), null, 5);
   this.context=context;
  }
  @Override public void onConfigure(SQLiteDatabase db) {
@@ -63,12 +63,76 @@ final class OfflineArchive extends SQLiteOpenHelper {
   createTransfers(db);
   createTransferAliases(db);
   createRecords(db);
+  createComposer(db);
  }
  @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-  if(newVersion!=4||oldVersion<1||oldVersion>3)throw new IllegalStateException("Unsupported offline archive version");
+  if(newVersion!=5||oldVersion<1||oldVersion>4)throw new IllegalStateException("Unsupported offline archive version");
   if(oldVersion==1){createOfflinePreferences(db);createTransfers(db);}
   if(oldVersion<3)createTransferAliases(db);
-  createRecords(db);
+  if(oldVersion<4)createRecords(db);
+  createComposer(db);
+ }
+ private static void createComposer(SQLiteDatabase db) {
+  db.execSQL("CREATE TABLE composer(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, session TEXT NOT NULL, revision INTEGER NOT NULL, content TEXT NOT NULL, pending INTEGER NOT NULL, active INTEGER NOT NULL, title TEXT NOT NULL, changed INTEGER NOT NULL, PRIMARY KEY(account,session))");
+ }
+ static boolean composerAction(String action) {
+  return "composerRead".equals(action)||"composerWrite".equals(action)||"composerPending".equals(action);
+ }
+ private static JSONObject readComposer(SQLiteDatabase db,String account,String session)throws JSONException {
+  try(Cursor row=db.rawQuery("SELECT revision,content FROM composer WHERE account=? AND session=?",new String[]{account,session})) {
+   if(row.moveToFirst())return new JSONObject().put("revision",row.getLong(0)).put("value",new JSONObject(row.getString(1)));
+  }
+  return new JSONObject().put("revision",0).put("value",JSONObject.NULL);
+ }
+ JSONObject composer(Account previous,String action,JSONObject input)throws JSONException {
+  Account account=account(previous.id);
+  if(account==null||locked(account)||account.epoch!=previous.epoch||
+    !account.gateway.equals(previous.gateway)||!account.identity.equals(previous.identity))
+   throw new IllegalArgumentException("Invalid composer account");
+  String accountId=Long.toString(account.id);
+  if("composerPending".equals(action)){
+   JSONArray sessions=new JSONArray();
+   try(Cursor row=getReadableDatabase().rawQuery("SELECT session FROM composer WHERE account=? AND pending=1 AND session<>'' ORDER BY session",new String[]{accountId})){
+    while(row.moveToNext())sessions.put(row.getString(0));
+   }
+   return new JSONObject().put("sessions",sessions);
+  }
+  Object rawSession=input.opt("sessionId");
+  if(!(rawSession instanceof String))throw new IllegalArgumentException("Invalid composer session");
+  String session=(String)rawSession;
+  if(session.indexOf(0)>=0||session.getBytes(StandardCharsets.UTF_8).length>4096)throw new IllegalArgumentException("Invalid composer session");
+  if("composerRead".equals(action))return readComposer(getReadableDatabase(),accountId,session);
+  Object expected=input.opt("revision");
+  JSONObject value=input.optJSONObject("value");
+  if(!"composerWrite".equals(action)||!"valid".equals(account.status)||!(expected instanceof Number)||value==null)
+   throw new IllegalArgumentException("Invalid composer write");
+  double number=((Number)expected).doubleValue();
+  long revision=((Number)expected).longValue();
+  String encoded=value.toString();
+  if(number!=revision||revision<0||revision>=9_007_199_254_740_991L||encoded.getBytes(StandardCharsets.UTF_8).length>1_048_576)
+   throw new IllegalArgumentException("Invalid composer write");
+  SQLiteDatabase db=getWritableDatabase();
+  db.beginTransaction();
+  try {
+   JSONObject current=readComposer(db,accountId,session);
+   if(current.getLong("revision")!=revision)return current.put("applied",false);
+   boolean pending=hasComposerItems(value,"outbox");
+   JSONObject draft=value.optJSONObject("draft");
+   boolean hasDraft=draft!=null&&((draft.opt("text") instanceof String&&!draft.optString("text").isEmpty())
+     ||hasComposerItems(draft,"quotes")||hasComposerItems(draft,"attachments")||hasComposerItems(draft,"references")
+     ||hasComposerItems(draft,"attachmentDrafts")||hasComposerItems(draft,"skills")
+     ||"plan".equals(draft.optString("workMode"))||"goal".equals(draft.optString("workMode")));
+   String title=value.opt("title") instanceof String?value.optString("title"):"";
+   if(title.length()>512)title=title.substring(0,title.offsetByCodePoints(0,Math.min(512,title.codePointCount(0,title.length()))));
+   db.execSQL("INSERT OR REPLACE INTO composer(account,session,revision,content,pending,active,title,changed) VALUES(?,?,?,?,?,?,?,?)",
+     new Object[]{account.id,session,revision+1,encoded,pending?1:0,!session.isEmpty()&&(pending||hasDraft)?1:0,title,System.currentTimeMillis()});
+   db.setTransactionSuccessful();
+   return new JSONObject().put("revision",revision+1).put("value",value).put("applied",true);
+  } finally { db.endTransaction(); }
+ }
+ private static boolean hasComposerItems(JSONObject value,String key) {
+  JSONArray items=value.optJSONArray(key);
+  return items!=null&&items.length()>0;
  }
  private static void createRecords(SQLiteDatabase db) {
   db.execSQL("CREATE INDEX IF NOT EXISTS turns_recent ON turns(account,session,suppressed,asked DESC,id DESC);");
@@ -203,7 +267,11 @@ final class OfflineArchive extends SQLiteOpenHelper {
   if(account==null||locked(account))return null;
   SQLiteDatabase db=getReadableDatabase();String title;long synced;boolean complete;
   try(Cursor row=db.rawQuery("SELECT title,synced,complete FROM sessions WHERE account=? AND id=? AND epoch=?",new String[]{""+account.id,session,""+account.epoch})){
-   if(!row.moveToFirst())return null;title=row.getString(0);synced=row.getLong(1);complete=row.getInt(2)!=0;
+   if(row.moveToFirst()){title=row.getString(0);synced=row.getLong(1);complete=row.getInt(2)!=0;}
+   else try(Cursor local=db.rawQuery("SELECT title,changed FROM composer WHERE account=? AND session=? AND active=1",new String[]{""+account.id,session})){
+    if(!local.moveToFirst())return null;
+    title=local.getString(0);synced=local.getLong(1);complete=false;
+   }
   }
   String mode=event.optString("mode","recent"),filter=" AND r.visible=1",sort="r.asked DESC,r.turn DESC,r.position DESC,r.key DESC";
   if(mode.equals("body"))return body(account,new JSONObject().put("sessionId",session).put("body",event));
@@ -327,6 +395,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
    if(erase){
     clearAccountTurns(db,current.id,Long.MIN_VALUE,Long.MAX_VALUE);
     db.execSQL("DELETE FROM transfer_tasks WHERE account=?",new Object[]{current.id});
+    db.execSQL("DELETE FROM composer WHERE account=?",new Object[]{current.id});
    }
    status(current,"unlinked");
    db.execSQL("UPDATE accounts SET retained=1 WHERE id=?",new Object[]{current.id});
@@ -344,7 +413,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
  List<Account> available(boolean retainedOnly) {
   List<Account> values=new ArrayList<>();
   String filter=retainedOnly?"a.retained=1 AND ":"";
-  String stored="EXISTS(SELECT 1 FROM turns t WHERE t.account=a.id AND t.suppressed=0)";
+  String stored="EXISTS(SELECT 1 FROM turns t WHERE t.account=a.id AND t.suppressed=0) OR EXISTS(SELECT 1 FROM composer c WHERE c.account=a.id AND c.active=1)";
   String partial=retainedOnly?"":" OR EXISTS(SELECT 1 FROM transfer_items t WHERE t.account=a.id) OR EXISTS(SELECT 1 FROM transfer_tasks j WHERE j.account=a.id)";
   try(Cursor row=getReadableDatabase().rawQuery("SELECT a.* FROM accounts a WHERE "+filter+
         "("+stored+partial+") ORDER BY a.name,a.id",null)) {
@@ -431,8 +500,11 @@ final class OfflineArchive extends SQLiteOpenHelper {
   List<Session> values=new ArrayList<>();
   if(account==null||locked(account))return values;
   try(Cursor row=getReadableDatabase().rawQuery("SELECT s.id,s.title,s.synced,s.complete FROM sessions s WHERE s.account=? AND s.epoch=? "+
-     "AND EXISTS(SELECT 1 FROM turns t WHERE t.account=s.account AND t.session=s.id AND t.suppressed=0) ORDER BY s.synced DESC,s.id",
-      new String[]{Long.toString(account.id),Long.toString(account.epoch)})) {
+     "AND EXISTS(SELECT 1 FROM turns t WHERE t.account=s.account AND t.session=s.id AND t.suppressed=0) "+
+     "UNION ALL SELECT c.session,c.title,c.changed,0 FROM composer c WHERE c.account=? AND c.active=1 "+
+     "AND NOT EXISTS(SELECT 1 FROM sessions s JOIN turns t ON s.account=t.account AND s.id=t.session "+
+     "WHERE s.account=c.account AND s.id=c.session AND s.epoch=? AND t.suppressed=0) ORDER BY 3 DESC,1",
+      new String[]{""+account.id,""+account.epoch,""+account.id,""+account.epoch})) {
    while(row.moveToNext())values.add(new Session(row.getString(0),row.getString(1),row.getLong(2),row.getInt(3)!=0));
   }
   return values;
@@ -538,7 +610,7 @@ final class OfflineArchive extends SQLiteOpenHelper {
  }
  boolean hasContent(Account account) {
   if(account==null)return false;
-  try(Cursor row=getReadableDatabase().rawQuery("SELECT 1 FROM turns WHERE account=? AND suppressed=0 LIMIT 1",new String[]{Long.toString(account.id)})){return row.moveToFirst();}
+  try(Cursor row=getReadableDatabase().rawQuery("SELECT 1 FROM turns WHERE account=? AND suppressed=0 UNION ALL SELECT 1 FROM composer WHERE account=? AND active=1 LIMIT 1",new String[]{""+account.id,""+account.id})){return row.moveToFirst();}
  }
  Set<String> legacyScopes(List<Long> accounts,long start,long end) {
   Set<String> scopes=new HashSet<>();

@@ -64,7 +64,9 @@ export struct OfflinePage {
           () => generation === this.generation && this.foreground);
       } else {
         result = await archive.serial(async () => {
+          if (generation !== this.generation || !this.foreground) { throw new Error('离线页面已关闭'); }
           const account = await archive.current(this.account, false);
+          if (OfflineArchive.composerAction(action)) { return archive.composer(account, action, event); }
           if (action === 'list') {
             const listing = await archive.list(account);
             const saved = await archive.db.rows('SELECT content FROM appearance WHERE account=?', [account.id]);
@@ -91,7 +93,7 @@ export struct OfflinePage {
     Column() {
       Row() {
         Button('返回').onClick(() => { this.controller.runJavaScript('window.OfflineChatReader?.back()').catch(() => { this.onClose(); }); })
-        Text('离线 · 只读').layoutWeight(1).fontSize(14)
+        Text(this.account.status === 'valid' ? '离线' : '离线 · 只读').layoutWeight(1).fontSize(14)
         Button('显示设置').onClick(() => { this.controller.runJavaScript('document.querySelector("[data-open-appearance]")?.click()').catch(() => {}); })
         Button('重新连接').onClick(() => { this.onReconnect(); })
       }.padding(8).width('100%')
@@ -109,7 +111,7 @@ export struct OfflinePage {
             if (!event) { return false; }
             try {
               if (event.message === 'codexbridge-reader:' + this.token) {
-                if (event.value.length > 65536 || !this.guard.accepts(event.url, this.controller.getUrl())) { event.result.handleCancel(); return true; }
+                if (event.value.length > 2000000 || !this.guard.accepts(event.url, this.controller.getUrl())) { event.result.handleCancel(); return true; }
                 event.result.handlePromptConfirm('queued'); this.read(event.value, this.generation).catch(() => {});
               } else {
                 const result = this.bridge?.prompt(event.url, event.message, event.value);

@@ -157,6 +157,24 @@ class WslControlsTests(unittest.TestCase):
             self.assertEqual(fallback['cache']['state'], 'stale')
             self.assertIn('上次结果', fallback['modelError'])
 
+    def test_native_usage_replaces_recorded_count_and_survives_polling(self):
+        session = self.entry.session(self.identifier)
+        session.state.update(latestTokenUsageInfo={'last': {'totalTokens': 30}, 'modelContextWindow': 100},
+                             tokenUsageFromHistory=True)
+        self.entry.server.thread['name'] = 'updated fixture'
+        self.entry._refresh(session)
+        self.assertTrue(session.view()['contextUsage']['cached'])
+
+        def emit(info):
+            self.entry._event({'method': 'thread/tokenUsage/updated', 'params': {
+                'threadId': self.identifier, 'tokenUsage': info}}, self.entry.generation)
+
+        emit({'last': {'totalTokens': 15}, 'modelContextWindow': 100})
+        emit({'total': {'totalTokens': 250}})
+        self.entry.server.thread['name'] = 'updated again'
+        self.entry._refresh(session)
+        self.assertEqual(session.view()['contextUsage'], {'usedTokens': 15, 'contextWindow': 100, 'cached': False})
+
     def test_native_plan_and_settings_survive_polling(self):
         self.entry.session(self.identifier)
         mode = {'mode': 'plan', 'settings': {'model': 'group/fixture'}}

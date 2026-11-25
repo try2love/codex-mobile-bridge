@@ -74,6 +74,29 @@ test('a recent projection missing usage keeps only verified context and honors u
 });
 
 
+test('an authorized first-screen preview only exposes readings and yields to live context',()=>{
+ const {ChatTimelineSync}=syncProjection(),previews=[];
+ const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{target:{},rows:[],turns:new Map(),
+  files:new Map(),processes:new Map(),host:{renderCachedContext:meta=>previews.push(meta),renderSync(){}},refreshRunning(){}});
+ sync.accept({rows:[],meta:{loadingHistory:true,contextUsage:null}});
+ const contextUsage={usedTokens:20,contextWindow:100};
+ sync.accept({rows:[],meta:{connected:true,contextUsage,capabilities:{compact:true},requests:[{id:'saved'}]}},{cached:true});
+ assert.deepEqual(Object.keys(previews[0]),['contextUsage']);
+ assert.equal(previews[0].contextUsage,contextUsage);
+ assert.equal(sync.value.meta.contextUsage,null);
+ sync.accept({rows:[],meta:{connected:true,contextUsageStatus:'unavailable'}});
+ assert.equal(sync.value.meta.contextUsage.usedTokens,20);
+ assert.equal(sync.value.meta.contextUsage.cached,true);
+ assert.equal(sync.value.meta.capabilities,undefined);
+ sync.accept({rows:[],meta:{connected:true,contextUsage:{usedTokens:35,contextWindow:100}}});
+ assert.equal(sync.value.meta.contextUsage.usedTokens,35);
+ assert.equal(sync.value.meta.contextUsage.cached,undefined);
+ sync.accept({rows:[],meta:{contextUsageStatus:'unsupported'}});
+ sync.accept({rows:[],meta:{contextUsage}},{cached:true});
+ assert.equal(previews.length,1);
+ assert.equal(sync.value.meta.contextUsage,null);
+});
+
 test('offline archive process descriptors keep their source position in the flat timeline',()=>{
  const {ChatTimelineSync}=syncProjection();
  const sync=Object.assign(Object.create(ChatTimelineSync.prototype),{target:{offline:true},rows:[],turns:new Map(),

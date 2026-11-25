@@ -382,6 +382,45 @@ class CodexProviderSyncTests(unittest.TestCase):
     setUp = test_bridge.IntegrationTests.setUp
     tearDown = test_bridge.IntegrationTests.tearDown
 
+    def test_connected_recent_reads_latest_recorded_usage_without_loading_history(self):
+        from bridge.app.service import LiveSession
+
+        thread = test_bridge.THREAD
+        session = LiveSession(thread)
+        session.state = {'id': thread, 'turns': []}
+        session.connected = True
+        rollout = self.root / 'sessions/fixture.jsonl'
+
+        def record(amount):
+            with rollout.open('a') as stream:
+                stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {
+                    'last_token_usage': {'total_tokens': amount}, 'model_context_window': 100}}}) + '\n')
+
+        def read(mode, **options):
+            return self.bridge.timeline_read(thread, 'sync', sync_mode=mode, **options)
+
+        with patch.object(self.bridge, 'session', return_value=session), patch.object(self.bridge, '_refresh_async'), \
+                patch.object(self.bridge.store, 'history', side_effect=AssertionError('complete live history')):
+            record(20)
+            recent = read('recent')
+            self.assertEqual(recent['meta']['contextUsage'], {'usedTokens': 20, 'contextWindow': 100, 'cached': True})
+            self.assertTrue(read('watch', ifVersion=recent['sourceVersion'])['notModified'])
+            with patch('bridge.features.sessions.store._rollout_metadata_tail', side_effect=AssertionError('unchanged rollout')):
+                self.assertEqual(read('recent')['meta']['contextUsage']['usedTokens'], 20)
+            with session.condition:
+                session.state.update(latestTokenUsageInfo={'last': {'totalTokens': 20}, 'modelContextWindow': 100},
+                                     tokenUsageFromHistory=True)
+                session.changed()
+            record(35)
+            self.assertFalse(read('watch', ifVersion=recent['sourceVersion'])['notModified'])
+            self.assertEqual(read('recent')['meta']['contextUsage']['usedTokens'], 35)
+            with session.condition:
+                session.state['latestTokenUsageInfo'] = {'last': {'totalTokens': 12}, 'modelContextWindow': 100}
+                session.state.pop('tokenUsageFromHistory')
+                session.changed()
+            record(41)
+            self.assertEqual(read('recent')['meta']['contextUsage'], {'usedTokens': 12, 'contextWindow': 100, 'cached': False})
+
     def test_saved_codex_sync_has_large_pages_and_existing_owner_is_passive(self):
         read = lambda mode, **options: self.bridge.timeline_read(test_bridge.THREAD, 'sync', sync_mode=mode, **options)
         with patch.object(self.bridge, '_attach') as attach, patch.object(self.bridge.store, 'history',

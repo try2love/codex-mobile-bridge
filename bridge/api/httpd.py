@@ -67,9 +67,10 @@ def _prepared_static(data, content_type, use_gzip):
 from bridge.features.sessions.cli_release import CliConnections
 from bridge.app.lifecycle import private_json
 from bridge.features.sessions.sync import parse_query as sync_query, wait_for_watch, SyncCursorChanged
+from bridge.features.sessions.offline_delivery import DeliveryBlocked, request as delivery_request
 from bridge.features.sessions.history_transfer import HistoryTransfer, HistorySources, CHUNK_BYTES as HISTORY_CHUNK_BYTES
 
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|conversation|process|changes|sync|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|delivery|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|conversation|process|changes|sync|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
 DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
@@ -422,6 +423,21 @@ class Handler(BaseHTTPRequestHandler):
         if write and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), session["csrf"]):
             raise PermissionError("登录验证已失效，请刷新页面")
         return session
+
+    def resolve_desktop_send(self, manager, uploads, provider, sid, body, detail=None):
+        if 'attachments' not in body:
+            return
+        if uploads is None:
+            raise IPCError('桌面会话接入不可用')
+        if detail is None:
+            detail = manager.call(provider, 'detail', sid)
+        session = detail.get('session') or {}
+        local_cli = provider == 'claude' and session.get('backend') == 'cli'
+        images, files = uploads.resolve(provider, sid, body.pop('attachments'), local_claude_cli=local_cli,
+                                        native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
+        body['resolvedImages'] = images
+        if files:
+            body['resolvedFiles'] = files
 
     def read_json(self):
         if self.headers.get("Transfer-Encoding"):
@@ -816,9 +832,19 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in (WRITES if write else READS | {'sync'}):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in ({'delivery'} | (WRITES if write else READS | {'sync'})):
                     return self.output(404, {'error': '接口不存在'})
                 manager, uploads, _ = self.desktop_context(parts[2], query)
+                if parts[3] == 'delivery':
+                    sid = query.get('sessionId', [None])[0]
+                    if len(query.get('sessionId', [])) != 1 or len(query.get('entry', [])) > 1:
+                        raise DeliveryBlocked('离线会话标识无效')
+                    body = self.read_json() if write else None
+                    rid, account = delivery_request(query, self.server.auth.session_sync['gatewayId'], sid, body)
+                    if body is not None:
+                        body.pop('sessionId')
+                    return self.output(200, manager.offline_delivery(parts[2], sid, rid, account, body,
+                        resolve=lambda detail: self.resolve_desktop_send(manager, uploads, parts[2], sid, body, detail)))
                 manager.require_enabled(parts[2])
                 if not write and parts[3] == 'sync':
                     mode, options = sync_query(query)
@@ -854,14 +880,7 @@ class Handler(BaseHTTPRequestHandler):
                 if write and parts[3] == 'send' and 'attachments' in body:
                     if uploads is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
-                    detail = manager.call(parts[2], 'detail', sid)
-                    session = detail.get('session') or {}
-                    local_cli = parts[2] == 'claude' and session.get('backend') == 'cli'
-                    images, files = uploads.resolve(
-                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli, native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
-                    body['resolvedImages'] = images
-                    if files:
-                        body['resolvedFiles'] = files
+                    self.resolve_desktop_send(manager, uploads, parts[2], sid, body)
                 feed = self.server.notifications.mobile.checkpoint() if parts[3] == 'list' and self.server.notifications else None
                 result = manager.list_with_activity(parts[2]) if parts[3] == 'list' else manager.call(parts[2], parts[3], sid, body)
                 if feed is not None:
@@ -1467,6 +1486,12 @@ class Handler(BaseHTTPRequestHandler):
             if not match:
                 return self.output(404, {"error": "页面不存在"})
             thread_id, action = match.groups()
+            if action == 'delivery':
+                if side is not None or len(query.get('host', [])) != 1 or not hasattr(bridge, 'offline_delivery'):
+                    raise DeliveryBlocked('此接入暂不支持离线投递')
+                body = self.read_json() if write else None
+                rid, account = delivery_request(query, self.server.auth.session_sync['gatewayId'], thread_id, body)
+                return self.output(200, bridge.offline_delivery(thread_id, rid, account, body))
             if action == 'cli-network':
                 if not hasattr(bridge, 'cli_network'):
                     raise ValueError('只支持本机 Codex CLI')
@@ -1626,6 +1651,9 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self.close_connection = True
             self.output(404, {"error": "找不到这个会话"})
+        except DeliveryBlocked as exc:
+            self.close_connection = True
+            self.output(409, {"error": str(exc), "code": exc.code})
         except SubmissionRejected as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc), "code": "send_not_submitted"})

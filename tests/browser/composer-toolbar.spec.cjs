@@ -711,3 +711,130 @@ test.describe('touch composer controls', () => {
     });
   }
 });
+
+for (const provider of ['codex', 'claude']) {
+  test(`the ${provider} input survives browser disconnection and keeps draft B apart from outbox A`, async ({ page }) => {
+    await page.route('**/api/__offline-probe', route => route.fulfill({ status: 503 }));
+    if (provider === 'claude') await page.route('**/api/auth', route => route.fulfill({ status:503, json:{error:'Gateway unreachable'} }));
+    await page.evaluate(async (provider) => {
+      const route = { provider, host: 'local', session: 'offline-test' };
+      delete window.CodexBridgeNativeOffline;
+      const auth = { authenticated: true, sessionSync: { version: 1, gatewayId: 'a'.repeat(32), identity: 'b'.repeat(64) } };
+      const store = window.BridgeOfflineComposer;
+      await BridgeChatSyncCache.bind(auth);
+      store.bind(auth, async () => { throw Error('Unexpected delivery while offline'); });
+      await store.observe(route, { account: 'fixture-account', canSend: true });
+      const enqueue = store.enqueue;
+      store.enqueue = async (...args) => {
+        const writing = enqueue(...args);
+        await new Promise(resolve => { window.__finishOutboxWrite = resolve; });
+        return writing;
+      };
+      let panel;
+      if (provider === 'codex') {
+        currentId = route.session;
+        clientNavigation.provider = 'codex';
+        window.__offlineToolbar = composerToolbar;
+        attachments.open('local|' + route.session);
+        panel = attachments;
+        selectedSkills.add('prepared-skill');
+      } else {
+        await desktopSessions.choose(provider, { previewOnly: true, loadList: false });
+        clientNavigation.provider = provider;
+        document.getElementById('chat').hidden = true;
+        desktopSessions.prepareChat(route.session);
+        window.__offlineToolbar = desktopSessions.toolbar;
+        panel = desktopSessions.attachments;
+        desktopSessions.selectedSkills().set('prepared-skill', { id: 'prepared-skill', name: 'Prepared skill' });
+      }
+      panel.rows.push({ id: 'uploaded-id', name: 'notes.txt', size: 64, status: 'ready' });
+      panel.rows.push({ id: 'project-reference', kind: 'file', name: 'plan.txt', size: 42, status: 'ready',
+        reference: { path: 'plan.txt', absolutePath: '/project/plan.txt' } });
+      if (provider === 'codex') window.dispatchEvent(new Event('offline'));
+      else await api('/api/__offline-probe').catch(() => {});
+    }, provider);
+    const form = page.locator('form[data-offline-composer]:visible');
+    const input = form.locator('textarea');
+    await expect(input).toBeEditable();
+    await page.evaluate(() => __offlineToolbar.setCollapsed(true));
+    await expect(input).toBeHidden();
+    await page.evaluate(() => __offlineToolbar.setCollapsed(false));
+    await input.fill('消息 A');
+    await form.getByRole('button', { name: '存入待发' }).click();
+    await expect.poll(() => page.evaluate(() => !!window.__finishOutboxWrite)).toBe(true);
+    await input.fill('新草稿 B');
+    await page.evaluate(() => __finishOutboxWrite());
+
+    const pending = page.locator('.offline-outbox:visible');
+    await expect(pending).toContainText('消息 A');
+    await expect(input).toHaveValue('新草稿 B');
+    const record = await page.evaluate(provider => BridgeOfflineComposer.get({ provider, host: 'local', session: 'offline-test' }), provider);
+    expect(record.outbox[0].body).toMatchObject({
+      text: '消息 A', mode: 'send', attachments: ['uploaded-id'],
+      references: [{ path: 'plan.txt', absolutePath: '/project/plan.txt' }],
+      [provider === 'codex' ? 'skills' : 'plugins']: ['prepared-skill'],
+    });
+    expect(record.draft).toMatchObject({ text: '新草稿 B', attachmentDrafts: [], skills: [] });
+    await pending.getByRole('button', { name: '编辑', exact: true }).click();
+    const editor = page.locator('.offline-outbox-editor[open]');
+    await editor.locator('textarea').fill('编辑后的消息 A');
+    await editor.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(pending).toContainText('编辑后的消息 A');
+    await pending.getByRole('button', { name: '撤回', exact: true }).click();
+    await expect(pending).toHaveCount(0);
+    await expect(input).toHaveValue('新草稿 B');
+    await expect(form.locator('[data-composer-tool=permissions]')).toBeDisabled();
+  });
+}
+
+test('the cold archive restores the original toolbar and its prepared draft from the host', async ({ page }) => {
+  await page.addInitScript(() => {
+    const archiveId = JSON.stringify(['codex', 'local', 'offline-cold']);
+    const title = 'Offline archive composer';
+    const rows = new Map([
+      ['', { revision: 1, value: { display: { submit: 'icon' }, followUpMode: 'steer', layout: {
+        topLeft: ['more'], topRight: ['collapse'], bottomLeft: ['model'], bottomRight: ['context'],
+        more: ['skills', 'quota', 'attachments', 'permissions', 'plan', 'goal', 'sendMode'],
+      } } }],
+      [archiveId, { revision: 1, value: { account: 'fixture-account', gateway: 'fixture-gateway', canSend: true,
+        draft: { text: '冷启动草稿', selectionStart: 1, selectionEnd: 3, workMode: 'plan', quotes: [], skills: ['cached-skill'],
+          attachmentDrafts: [
+            { id: 'cached-upload', name: 'uploaded.txt', size: 42, status: 'ready' },
+            { id: 'local-file', name: 'pending.txt', size: 24, status: 'reselect' },
+          ],
+        }, outbox: [], context: {},
+      } }],
+    ]);
+    window.OfflineChatHost = {
+      postMessage(message) {
+        const { id, action, sessionId, revision, value } = JSON.parse(message);
+        let result;
+        if (action === 'list') result = { sessions: [{ id: archiveId, title }], composerWritable: true };
+        else if (action === 'session' && sessionId === archiveId) result = { id: archiveId, title, turns: [], before: null };
+        else if (action === 'composerRead') result = rows.get(sessionId) || { revision: 0, value: null };
+        else if (action === 'composerWrite') {
+          result = { revision: revision + 1, value, applied: true };
+          rows.set(sessionId, result);
+        }
+        queueMicrotask(() => window.OfflineChatReader.receive(id, result || { error: 'Unexpected host operation' }));
+      },
+    };
+  });
+  await page.route(/\/\?case=session-menu$/, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace('<html ', '<html data-bridge-offline ') });
+  });
+  await page.goto('/?case=session-menu');
+  await page.locator('#sessions .session').filter({ hasText: 'Offline archive composer' }).click();
+  const form = page.locator('#composer');
+  await expect(form.locator('#message')).toHaveValue('冷启动草稿');
+  await expect(form.locator('.attachment-list')).toContainText('uploaded.txt');
+  await expect(form.locator('.attachment-list')).toContainText('pending.txt');
+  await expect(form.locator('.attachment-list')).toContainText('文件尚未上传，请重新选择后上传。');
+  await expect(form.locator('.composer-submit')).toHaveAttribute('data-display', 'icon');
+  expect(await page.evaluate(() => workModes.selection)).toBe('plan');
+  await form.getByRole('button', { name: '存入待发' }).click();
+  await expect(form.locator('#send-error')).toContainText('草稿已保留');
+  await expect(form.locator('#message')).toHaveValue('冷启动草稿');
+  await expect(page.locator('.offline-outbox:visible')).toHaveCount(0);
+});

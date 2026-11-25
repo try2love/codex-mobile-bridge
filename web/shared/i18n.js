@@ -1538,6 +1538,8 @@ const en={
 "使用占比":"Context used",
 "当前客户端尚未提供此会话的上下文用量。":"This client has not provided context usage for this session.",
 "包含客户端对尚未发送内容的估算。":"Includes the client estimate of content not yet sent.",
+"本机暂无记录":"No local record yet.",
+"显示最近一次可用的上下文读数。":"Showing the last available context reading.",
 "当前为缓存数据，连接恢复后更新。":"Cached data. It will update when the connection resumes.",
 "电脑已锁定":"Computer locked",
 "电脑桌面暂不可用":"Computer desktop unavailable",
@@ -4363,7 +4365,24 @@ const en={
   "帮助与测试": "Help & testing",
 "已编辑 {count} 个文件":"Edited {count} files",
 "累计修改":"Recorded edits",
-"请在电脑端完成连接":"Complete the connection on your computer"
+"请在电脑端完成连接":"Complete the connection on your computer",
+"待发送":"Pending",
+"存入待发":"Save to outbox",
+"待发送 · 等待连接":"Pending · Waiting for connection",
+"可编辑草稿":"Drafts are editable",
+"离线撰写，联网后发送":"Write offline, send when connected",
+"离线撰写草稿":"Write an offline draft",
+"离线草稿暂不可用":"Offline drafts are temporarily unavailable.",
+"离线草稿保存失败":"Could not save the offline draft.",
+"离线消息保存失败，请重试":"Could not add the message to the outbox. Try again.",
+"待发消息发送失败":"Outbox message failed to send",
+"请检查原会话中的发送结果。":"Check the original conversation for the delivery result.",
+"编辑待发消息":"Edit outbox message",
+"待发消息撤回失败":"Could not withdraw the outbox message.",
+"待发消息编辑失败":"Could not save the edited outbox message.",
+"仍有附件需要联网后上传。草稿已保留。":"Some attachments still need to upload when connected. Your draft is still here.",
+"文件尚未上传，请重新选择后上传。":"This file was not uploaded. Select it again to upload.",
+"特殊工作模式需联网发送。草稿已保留。":"Special work modes require a connection to send. Your draft is still here."
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}

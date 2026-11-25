@@ -285,6 +285,7 @@ class ComposerSubmitControl {
   sync() {
     const available = this.availableModes();
     const action = this.action(available);
+    const offline = this.getState().offline === true;
     const selected = action.followUpMode || this.preferences.value.followUpMode;
     if (this.mode.value !== selected) this.mode.value = selected;
     ComposerUI.attribute(this.root, 'data-display', this.preferences.value.display.submit);
@@ -301,14 +302,14 @@ class ComposerSubmitControl {
     if (this.caret.disabled !== action.choicesDisabled) {
       this.caret.disabled = action.choicesDisabled;
     }
-    this.iconLabel(this.send, action.label, action.mode === 'send' ? 'send' : action.mode);
+    this.iconLabel(this.send, offline ? '存入待发' : action.label, action.mode === 'send' ? 'send' : action.mode);
     const modeLabel = this.choices.has(action.mode)
       ? ComposerUI.t(this.choices.get(action.mode).label)
       : ComposerUI.t('发送新消息');
     ComposerUI.attribute(
       this.send,
       'aria-label',
-      action.label === '正在发送…' ? ComposerUI.t('正在发送…') : modeLabel,
+      offline ? ComposerUI.t('存入待发') : action.label === '正在发送…' ? ComposerUI.t('正在发送…') : modeLabel,
     );
     ComposerUI.attribute(this.send, 'aria-disabled', action.sendDisabled);
     ComposerUI.attribute(this.send, 'title', this.send.getAttribute('aria-label'));

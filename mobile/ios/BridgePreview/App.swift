@@ -370,6 +370,11 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             OfflineArchive.queue.async {
                 do {
                     guard let entry = try archive.account(id: account.id), entry.status == "valid" else { DispatchQueue.main.async { respond(nil) }; return }
+                    if OfflineArchive.composerActions.contains(type) {
+                        let result = try archive.composer(entry, action: type, input: event)
+                        DispatchQueue.main.async { respond(result) }
+                        return
+                    }
                     if Self.transferCommands.contains(type) {
                         if type == "transferChunkFetch" {
                             if let reason = try archive.transferAdmission(entry, event) {
@@ -453,7 +458,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
             return
         }
-        guard Self.transferCommands.contains(type) || ["state", "auth", "merge", "read", "list", "session", "appearance"].contains(type), (1...256).contains(gateway.utf8.count), (1...256).contains(identity.utf8.count) else { respond(nil); return }
+        guard Self.transferCommands.contains(type) || OfflineArchive.composerActions.contains(type) || ["state", "auth", "merge", "read", "list", "session", "appearance"].contains(type), (1...256).contains(gateway.utf8.count), (1...256).contains(identity.utf8.count) else { respond(nil); return }
         binding(address) { cookie in
             guard current() else { respond(nil); return }
             if type != "auth", let binding = self.offlineBinding, document == binding.document, cookie?.value == binding.cookie,
@@ -2461,7 +2466,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let sessions = try archive.sessions(account).map {
                 ["id": $0.id, "title": $0.title, "syncedAt": $0.syncedAt] as [String: Any]
             }
-            return ["name": account.name, "lang": language, "sessions": sessions]
+            return ["name": account.name, "lang": language, "sessions": sessions, "composerWritable": account.status == "valid"]
         }
         guard let id = input["sessionId"] as? String, id.utf8.count <= 4096 else { return nil }
         return try archive.recordPage(account, session: id, event: input)
@@ -2474,7 +2479,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
               offlineForeground, let visit = readerAccount, let input = message.body as? [String: Any],
               let id = input["id"] as? String, !id.isEmpty, id.utf8.count <= 64, let action = input["action"] as? String else { return }
         if action == "close" { home(); return }
-        guard ["list", "session", "reconnect", "attachment", "attachmentOpen"].contains(action) else { return }
+        guard OfflineArchive.composerActions.contains(action) || ["list", "session", "reconnect", "attachment", "attachmentOpen"].contains(action) else { return }
         let address = readerAddress, authenticated = readerAuthenticated
         let displayIdentity = address.flatMap { gatewayIdentity($0) }
         let nativeTheme: [String: Any] = ["theme": theme, "dark": traitCollection.userInterfaceStyle == .dark]
@@ -2516,6 +2521,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                         if let sessionId, try offlineArchive.recordPage(account, session: sessionId, event: [:]) == nil {
                             authorized = false
                         }
+                    case "composerRead", "composerWrite", "composerPending":
+                        result = try offlineArchive.composer(account, action: action, input: input)
                     default: break
                     }
                 }

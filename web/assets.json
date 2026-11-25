@@ -20,6 +20,7 @@
     "features/chat/session-menu.js",
     "shared/quota-continuation.js",
     "features/chat/sync-cache.js",
+    "features/chat/offline-reader/composer-store.js",
     "features/chat/session-transfer.js",
     "features/chat/history-transfer-task.js",
     "features/chat/history-transfer.js",

@@ -152,10 +152,15 @@ final class OfflineBridge {
     local.verifiedCookie="";local.account=null;result=state(null,"");
    }else{
     if(gateway.isEmpty()||identity.isEmpty()||gateway.length()>256||identity.length()>256)throw new IllegalArgumentException();
-    if(!TRANSFER_COMMANDS.contains(type)&&!"auth".equals(type)&&!"state".equals(type)&&!"merge".equals(type)&&!"read".equals(type)&&!"list".equals(type)&&!"session".equals(type)&&!"appearance".equals(type))throw new IllegalArgumentException();
+    if(!TRANSFER_COMMANDS.contains(type)&&!OfflineArchive.composerAction(type)&&!"auth".equals(type)&&!"state".equals(type)&&!"merge".equals(type)&&!"read".equals(type)&&!"list".equals(type)&&!"session".equals(type)&&!"appearance".equals(type))throw new IllegalArgumentException();
     OfflineArchive.Account account=authorize(local,gateway,identity,"auth".equals(type));
     if(link!=local||!foreground)return;
     if(account==null)throw new IllegalStateException("Login required");
+    if(OfflineArchive.composerAction(type)){
+     reply.put("ok",true).put("value",archive.composer(account,type,command));
+     owner.runOnUiThread(()->send(local,reply));
+     return;
+    }
     if("transferChunkFetch".equals(type)){
      fetchTransferChunk(local,account,command,id);
      return;

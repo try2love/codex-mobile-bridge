@@ -35,6 +35,17 @@ class ComposerToolbar {
     this.buildToolControls();
     this.buildSubmitControl(sendState);
     this.buildStatus();
+    this.outbox = ComposerUI.node('section', 'offline-outbox');
+    this.outbox.hidden = true;
+    this.form.before(this.outbox);
+    this.onOfflineChange = ({ detail }) => {
+      const current = this.offlineRoute, route = detail?.route;
+      if (current && route?.provider === current.route.provider && route?.host === current.route.host && route?.session === current.route.session) {
+        this.renderOutbox();
+        this.requestSync();
+      }
+    };
+    window.addEventListener('bridge-offline-composer-change', this.onOfflineChange);
     this.bindUpdates(onPreferenceChange);
     this.apply();
   }
@@ -168,7 +179,12 @@ class ComposerToolbar {
       mode: this.controls.sendMode,
       frame: this.frame,
       preferences: this.preferences,
-      getState: sendState,
+      getState: () => this.localCompose ? {
+        running: false, hasDraft: !!this.input.value.trim() || !!this.offlineRoute?.draft.read().quotes?.length ||
+          !!this.offlineRoute?.draft.read().attachmentDrafts?.length,
+        pending: !!this.offlineRoute?.saving,
+        offline: true,
+      } : sendState(),
       isCollapsed: () => this.collapsed,
       onError: (error) => this.showError(error),
     });
@@ -183,8 +199,153 @@ class ComposerToolbar {
     this.input.after(this.status);
   }
 
+  setOfflineRoute(route, offline, draft, account = '', writable = true) {
+    const feature = window.BridgeOfflineComposer;
+    const key = route ? JSON.stringify(route) : '';
+    const previous = this.offlineRoute;
+    if (previous?.key === key && previous.offline === offline && previous.account === account && previous.writable === writable) return;
+    this.outboxEditor?.close();
+    const current = this.offlineRoute = route && feature && writable ? { key, route, offline, draft, account, writable, revision: 0 } : null;
+    this.form.toggleAttribute('data-offline-composer', !!route && offline);
+    this.form.toggleAttribute('data-offline-composer-readonly', !!route && offline && !writable);
+    this.renderOutbox();
+    this.requestSync();
+    if (!current || !offline && !account) return;
+    const initial = draft.read();
+    void feature.get(route).then((record) => {
+      if (this.offlineRoute !== current) return;
+      if (current.revision === 0 && (!account || !record?.account || account === record.account)) {
+        const fromOnline = offline && previous?.key === key && previous.account === account && !previous.offline;
+        if (offline && (initial.text || initial.quotes?.length || initial.attachmentDrafts?.length || initial.skills?.length) && (fromOnline || !record?.draft)) {
+          this.saveOfflineDraft(initial);
+        } else if (record?.draft && (offline || record.account === account)) {
+          draft.restore(record.draft);
+        }
+      }
+      this.renderOutbox();
+      this.requestSync();
+    }).catch(() => {
+      if (this.offlineRoute === current && offline) this.showError(new Error('离线草稿暂不可用'));
+    });
+  }
+
+  get localCompose() { return this.form.hasAttribute('data-offline-composer'); }
+
+  offlineRecord() {
+    const current = this.offlineRoute;
+    if (!current || !current.offline && !current.account) return null;
+    const record = window.BridgeOfflineComposer.peek(current.route);
+    if (current.account && record?.account !== current.account) return null;
+    return record;
+  }
+
+  saveOfflineDraft(draft = this.offlineRoute?.draft.read()) {
+    const current = this.offlineRoute;
+    if (!current || !current.offline && !current.account) return;
+    current.revision++;
+    if(current.enqueuedContent)draft={...draft,
+      attachmentDrafts:draft.attachmentDrafts?.filter(row=>!current.enqueuedContent.attachments.has(row.id)),
+      skills:draft.skills?.filter(id=>!current.enqueuedContent.skills.has(id)),
+      quotes:draft.quotes?.filter(quote=>!current.enqueuedContent.quotes.has(JSON.stringify(quote))),
+    };
+    void Promise.resolve(window.BridgeOfflineComposer.saveDraft(current.route, draft)).catch(() => {
+      if (current.offline && this.offlineRoute === current) this.showError(new Error('离线草稿保存失败'));
+    });
+  }
+
+  async enqueueOffline(body, clearSentContent) {
+    const current = this.offlineRoute;
+    if (!current?.offline || current.saving || this.offlineRecord()?.canSend !== true||
+        !body.text.trim()&&!body.attachments?.length&&!body.references?.length) return;
+    const draft=current.draft.read();
+    current.enqueuedContent={
+      attachments:new Set(draft.attachmentDrafts?.map(row=>row.id)),
+      skills:new Set(draft.skills),
+      quotes:new Set(draft.quotes?.map(quote=>JSON.stringify(quote))),
+    };
+    current.saving = true;
+    this.requestSync();
+    const revision = current.revision;
+    try {
+      await window.BridgeOfflineComposer.enqueue(current.route, body);
+      clearSentContent?.(current.enqueuedContent, this.offlineRoute === current);
+      if (this.offlineRoute === current && current.revision === revision) {
+        current.draft.restore({ text: '', selectionStart: 0, selectionEnd: 0, quotes: [],attachmentDrafts:[] });
+      }
+      this.renderOutbox();
+    } catch {
+      if (this.offlineRoute === current) {
+        current.enqueuedContent=null;
+        if(current.revision!==revision)this.saveOfflineDraft();
+        this.showError(new Error('离线消息保存失败，请重试'));
+      }
+    } finally {
+      current.saving = false;
+      current.enqueuedContent = null;
+      this.requestSync();
+    }
+  }
+
+  renderOutbox() {
+    const current = this.offlineRoute;
+    const rows = this.offlineRecord()?.outbox || [];
+    const stamp = JSON.stringify([current?.key, current?.offline, ComposerUI.t('待发送'), rows]);
+    if (this.outboxStamp === stamp) return;
+    this.outboxStamp = stamp;
+    this.outbox.hidden = !rows.length;
+    this.outbox.setAttribute('aria-label', ComposerUI.t('待发送'));
+    this.outbox.replaceChildren(...rows.map((row) => {
+      const card = ComposerUI.node('article', 'queue-card');
+      const status = row.state === 'checking' ? '发送结果待确认' : row.state === 'failed' ? '待发消息发送失败' : current.offline ? '待发送 · 等待连接' : '待发送';
+      card.append(ComposerUI.node('strong', '', ComposerUI.t(status)), ComposerUI.node('p', '', row.body.text));
+      const attachments=(row.body.attachments?.length||0)+(row.body.references?.length||0);
+      if(attachments)card.append(ComposerUI.node('small','muted',ComposerUI.t('附件：')+attachments));
+      if (row.state === 'failed' && row.error) card.append(ComposerUI.node('small','muted',row.error));
+      if (row.state === 'checking') {
+        card.append(ComposerUI.node('small','muted',ComposerUI.t('请检查原会话中的发送结果。')));
+      } else {
+        const remove = ComposerUI.textButton(row.state === 'pending' ? '撤回' : '移除', async () => {
+          try { await window.BridgeOfflineComposer.remove(current.route, row.id); }
+          catch { if(this.offlineRoute === current) this.showError(new Error('待发消息撤回失败')); }
+        });
+        const actions = ComposerUI.node('div', 'actions');
+        if(row.state === 'pending') actions.append(ComposerUI.textButton('编辑', () => this.editOutbox(current, row)));
+        actions.append(remove);card.append(actions);
+      }
+      return card;
+    }));
+  }
+
+  editOutbox(current, row) {
+    if (this.outboxEditor?.open || this.offlineRoute !== current) return;
+    const dialog = this.outboxEditor = ComposerUI.node('dialog', 'picker offline-outbox-editor');
+    const title = ComposerUI.node('h2', '', ComposerUI.t('编辑待发消息'));
+    const input = ComposerUI.node('textarea');
+    input.value = row.body.text;
+    input.maxLength = 100000;
+    input.setAttribute('aria-label', title.textContent);
+    const error = ComposerUI.node('p', 'error');
+    error.setAttribute('role', 'alert');
+    const save = ComposerUI.textButton('保存', async () => {
+      if (!input.value.trim()&&!row.body.attachments?.length&&!row.body.references?.length) return;
+      save.disabled = true;
+      try { await window.BridgeOfflineComposer.edit(current.route, row.id, input.value); dialog.close(); }
+      catch { error.textContent = ComposerUI.t('待发消息编辑失败'); }
+      finally { save.disabled = false; }
+    });
+    const actions = ComposerUI.node('div', 'actions');
+    actions.append(save, ComposerUI.textButton('取消', () => dialog.close()));
+    dialog.append(title, input, error, actions);
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
   bindUpdates(onPreferenceChange) {
-    this.onInput = () => this.requestInputResize();
+    this.onInput = () => {
+      this.requestInputResize();
+      if (this.offlineRoute) this.saveOfflineDraft(this.offlineRoute.draft.read());
+    };
     this.input.addEventListener('input', this.onInput);
     this.alerts = Array.from(this.form.querySelectorAll('[role=alert]'));
     this.alertObserver = new MutationObserver(() => {
@@ -199,7 +360,7 @@ class ComposerToolbar {
         characterData: true,
       });
     }
-    this.modeListener = () => this.requestSync();
+    this.modeListener = () => { this.requestSync(); this.saveOfflineDraft(); };
     this.workMode.addEventListener('change', this.modeListener);
     this.unsubscribe = this.preferences.subscribe((value) => {
       const modeChanged = this.followUpMode !== value.followUpMode;
@@ -331,6 +492,12 @@ class ComposerToolbar {
       return;
     }
     this.scheduled = false;
+    if (this.localCompose) {
+      this.submitControl.send.disabled = this.offlineRecord()?.canSend !== true || !!this.offlineRoute?.saving;
+      this.input.disabled = this.form.hasAttribute('data-offline-composer-readonly');
+      for (const id of ['skills', 'permissions', 'attachments', 'sendMode']) this.controls[id].disabled = true;
+      this.workMode.disabled = true;
+    }
     this.submitControl.sync();
     this.syncPlaceholder();
     for (const id of ['skills', 'permissions', 'attachments']) {
@@ -461,7 +628,7 @@ class ComposerToolbar {
     ComposerUI.hidden(this.bottomPin, !pinned);
   }
   syncPlaceholder() {
-    const placeholder = ComposerUI.t(this.actionMode() === 'queue'
+    const placeholder = ComposerUI.t(this.localCompose ? this.offlineRecord()?.canSend === true ? '离线撰写，联网后发送' : '离线撰写草稿' : this.actionMode() === 'queue'
       ? '完成后发送 · 输入 / 查看指令'
       : '继续这条聊天 · 输入 / 查看指令');
     if (this.input.placeholder !== placeholder) {
@@ -766,6 +933,7 @@ class ComposerToolbar {
   }
 
   relabel() {
+    this.renderOutbox();
     for (const id of composerToolIds) {
       if (['skills', 'permissions', 'attachments'].includes(id)) {
         this.decorate(id);
@@ -792,6 +960,9 @@ class ComposerToolbar {
   }
   dispose() {
     this.disposed = true;
+    window.removeEventListener('bridge-offline-composer-change', this.onOfflineChange);
+    this.outboxEditor?.close();
+    this.outbox.remove();
     this.scheduled = false;
     this.alertObserver.disconnect();
     this.submitControl.dispose();

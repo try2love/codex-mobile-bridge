@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import CryptoKit
 import SQLite3
 
@@ -72,6 +73,7 @@ final class OfflineArchive {
         CREATE TABLE IF NOT EXISTS transfer_items(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, version TEXT NOT NULL, session TEXT NOT NULL, turn TEXT NOT NULL, asked INTEGER NOT NULL, media TEXT, size INTEGER, attachment_key TEXT, PRIMARY KEY(account,version,session,turn));
         CREATE TABLE IF NOT EXISTS transfer_attachment_keys(account INTEGER NOT NULL, version TEXT NOT NULL, session TEXT NOT NULL, turn TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(account,version,session,turn,key), FOREIGN KEY(account,version,session,turn) REFERENCES transfer_items(account,version,session,turn) ON DELETE CASCADE);
         CREATE INDEX IF NOT EXISTS transfer_items_dates ON transfer_items(account,asked);
+        CREATE TABLE IF NOT EXISTS composer(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, session TEXT NOT NULL, revision INTEGER NOT NULL, content TEXT NOT NULL, pending INTEGER NOT NULL, active INTEGER NOT NULL, title TEXT NOT NULL, changed INTEGER NOT NULL, PRIMARY KEY(account,session));
         CREATE TABLE IF NOT EXISTS offline_preferences(account INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE, appearance TEXT);
         CREATE TABLE IF NOT EXISTS turns(account INTEGER NOT NULL, session TEXT NOT NULL, id TEXT NOT NULL, asked INTEGER NOT NULL, content TEXT, suppressed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account,session,id), FOREIGN KEY(account,session) REFERENCES sessions(account,id) ON DELETE CASCADE);
         CREATE INDEX IF NOT EXISTS turns_recent ON turns(account,session,suppressed,asked DESC,id DESC);
@@ -174,6 +176,7 @@ final class OfflineArchive {
             if erase {
                 try clearAccountTurns(account.id, from: .min, before: .max)
                 try run("DELETE FROM transfer_tasks WHERE account=?", [account.id])
+                try run("DELETE FROM composer WHERE account=?", [account.id])
             }
             try status(account, "unlinked")
             try run("UPDATE accounts SET retained=1 WHERE id=?", [account.id])
@@ -189,12 +192,12 @@ final class OfflineArchive {
     }
     func available(retained: Bool) throws -> [Account] {
         let filter = retained ? "a.retained=1 AND " : ""
-        let stored = "EXISTS(SELECT 1 FROM turns t WHERE t.account=a.id AND t.suppressed=0)"
+        let stored = "EXISTS(SELECT 1 FROM turns t WHERE t.account=a.id AND t.suppressed=0) OR EXISTS(SELECT 1 FROM composer c WHERE c.account=a.id AND c.active=1)"
         let partial = retained ? "" : " OR EXISTS(SELECT 1 FROM transfer_items t WHERE t.account=a.id) OR EXISTS(SELECT 1 FROM transfer_tasks j WHERE j.account=a.id)"
         return try rows("SELECT a.* FROM accounts a WHERE " + filter + "(" + stored + partial + ") ORDER BY a.name,a.id", [], readAccount)
     }
     func hasContent(_ account: Account) throws -> Bool {
-        try !rows("SELECT 1 FROM turns WHERE account=? AND suppressed=0 LIMIT 1", [account.id]) { _ in true }.isEmpty
+        try !rows("SELECT 1 FROM turns WHERE account=? AND suppressed=0 UNION ALL SELECT 1 FROM composer WHERE account=? AND active=1 LIMIT 1", [account.id, account.id]) { _ in true }.isEmpty
     }
     func appearance(_ account: Account) throws -> [String: Any]? {
         try rows("SELECT appearance FROM offline_preferences WHERE account=?", [account.id]) { try decode(text($0, 0)) }.first
@@ -204,6 +207,49 @@ final class OfflineArchive {
         guard data.count <= 4096 else { throw Failure.invalidContent }
         try run("INSERT OR REPLACE INTO offline_preferences(account,appearance) VALUES(?,?)", [account.id, String(decoding: data, as: UTF8.self)])
     }
+    static let composerActions: Set<String> = ["composerRead", "composerWrite", "composerPending"]
+
+    func composer(_ previous: Account, action: String, input: [String: Any]) throws -> [String: Any] {
+        guard let account = try account(id: previous.id), account.matches(previous.gateway, previous.identity),
+              account.epoch == previous.epoch, !account.locked else { throw Failure.invalidContent }
+        if action == "composerPending" {
+            let sessions = try rows("SELECT session FROM composer WHERE account=? AND pending=1 AND session<>'' ORDER BY session",
+                                    [account.id]) { text($0, 0) }
+            return ["sessions": sessions]
+        }
+        guard let session = input["sessionId"] as? String, session.utf8.count <= 4096,
+              !session.utf8.contains(0) else { throw Failure.invalidContent }
+        func read() throws -> [String: Any] {
+            try rows("SELECT revision,content FROM composer WHERE account=? AND session=?", [account.id, session]) {
+                ["revision": sqlite3_column_int64($0, 0), "value": try decode(text($0, 1))]
+            }.first ?? ["revision": Int64(0), "value": NSNull()]
+        }
+        if action == "composerRead" { return try read() }
+        guard action == "composerWrite", account.status == "valid",
+              let expected = input["revision"] as? NSNumber, CFGetTypeID(expected) != CFBooleanGetTypeID(),
+              let revision = Int64(exactly: expected.doubleValue), (0..<9_007_199_254_740_991).contains(revision),
+              let value = input["value"] as? [String: Any] else { throw Failure.invalidContent }
+        let encoded = try encode(value)
+        guard encoded.utf8.count <= 1_048_576 else { throw Failure.invalidContent }
+        return try transaction {
+            var current = try read()
+            guard current["revision"] as? Int64 == revision else {
+                current["applied"] = false
+                return current
+            }
+            let pending = (value["outbox"] as? [Any])?.isEmpty == false
+            let draft = value["draft"] as? [String: Any] ?? [:]
+            let hasDraft = (draft["text"] as? String)?.isEmpty == false ||
+                ["quotes", "attachments", "references", "attachmentDrafts", "skills"].contains { (draft[$0] as? [Any])?.isEmpty == false } ||
+                ["plan", "goal"].contains(draft["workMode"] as? String ?? "")
+            let title = String((value["title"] as? String ?? "").prefix(512))
+            try run("INSERT OR REPLACE INTO composer(account,session,revision,content,pending,active,title,changed) VALUES(?,?,?,?,?,?,?,?)",
+                    [account.id, session, revision + 1, encoded, Int64(pending ? 1 : 0),
+                     Int64(!session.isEmpty && (pending || hasDraft) ? 1 : 0), title, Int64(Date().timeIntervalSince1970 * 1000)])
+            return ["revision": revision + 1, "value": value, "applied": true]
+        }
+    }
+
     func tombstones(_ account: Account, session: String = "") throws -> [String: [String]] {
         let query = "SELECT session,id FROM turns WHERE account=? AND suppressed=1"
         let parameters: [Any] = session.isEmpty ? [account.id] : [account.id, session]
@@ -375,8 +421,11 @@ final class OfflineArchive {
         return message
     }
     func recordPage(_ account: Account, session: String, event: [String:Any]) throws -> [String:Any]? {
-        guard !account.locked,let saved=try rows("SELECT title,synced,complete FROM sessions WHERE account=? AND id=? AND epoch=?",
-            [account.id,session,account.epoch],{ (text($0,0),sqlite3_column_int64($0,1),sqlite3_column_int($0,2) != 0) }).first else { return nil }
+        guard !account.locked else { return nil }
+        let history = try rows("SELECT title,synced,complete FROM sessions WHERE account=? AND id=? AND epoch=?",
+            [account.id,session,account.epoch],{ (text($0,0),sqlite3_column_int64($0,1),sqlite3_column_int($0,2) != 0) }).first
+        guard let saved = try history ?? rows("SELECT title,changed,0 FROM composer WHERE account=? AND session=? AND active=1",
+            [account.id,session], { (text($0, 0),sqlite3_column_int64($0, 1),false) }).first else { return nil }
         let mode=event["mode"] as? String ?? "recent"
         var values:[Any]=[account.id,session,account.epoch],filter="",sort="r.asked DESC,r.turn DESC,r.position DESC,r.key DESC"
         if mode=="body" {
@@ -455,9 +504,14 @@ final class OfflineArchive {
     }
     func sessions(_ account: Account) throws -> [Session] {
         guard !account.locked else { return [] }
-        return try rows("SELECT s.id,s.title,s.synced,s.complete FROM sessions s WHERE s.account=? AND s.epoch=? " +
-                        "AND EXISTS(SELECT 1 FROM turns t WHERE t.account=s.account AND t.session=s.id AND t.suppressed=0) ORDER BY s.synced DESC",
-                        [account.id, account.epoch]) {
+        return try rows("""
+            SELECT s.id,s.title,s.synced,s.complete FROM sessions s WHERE s.account=? AND s.epoch=?
+            AND EXISTS(SELECT 1 FROM turns t WHERE t.account=s.account AND t.session=s.id AND t.suppressed=0)
+            UNION ALL SELECT c.session,c.title,c.changed,0 FROM composer c WHERE c.account=? AND c.active=1
+            AND NOT EXISTS(SELECT 1 FROM sessions s JOIN turns t ON s.account=t.account AND s.id=t.session
+            WHERE s.account=c.account AND s.id=c.session AND s.epoch=? AND t.suppressed=0)
+            ORDER BY 3 DESC,1
+            """, [account.id, account.epoch, account.id, account.epoch]) {
             Session(id: text($0, 0), title: text($0, 1), syncedAt: sqlite3_column_int64($0, 2), complete: sqlite3_column_int($0, 3) != 0)
         }
     }

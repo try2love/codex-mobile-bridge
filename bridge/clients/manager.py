@@ -20,6 +20,8 @@ from pathlib import Path
 from contextlib import closing, contextmanager, nullcontext, ExitStack
 from concurrent.futures import Future
 
+from bridge.features.sessions.offline_delivery import (
+    DeliveryBlocked, admit as admit_delivery, fingerprint as delivery_fingerprint, proof as delivery_proof, require_intent)
 from bridge.clients.claude.accounts import ClaudeLoginDatabaseUnavailable
 from bridge.clients.deepseek.adapter import DeepSeek, BRIDGE_REVISION, LIFECYCLE_REVISIONS, UPDATE_REASON
 from bridge.clients.errors import BridgeUnavailable, TaskStateUnavailable, ResumePreflightBlocked
@@ -567,6 +569,17 @@ class DesktopSessions:
                         self.binding_epochs[provider] += 1
                         self.binding_changes[provider] -= 1
 
+    @staticmethod
+    def _composer_capabilities(value):
+        caps = value.get('capabilities', (value.get('session') or {}).get('capabilities', {}))
+        if isinstance(caps, dict) and type(caps.get('attachments')) is bool:
+            # Built-in adapters resolve files through the same native prompt
+            # route; a legacy adapter's explicit send restriction still wins.
+            caps = dict(caps)
+            caps.setdefault('send', caps['attachments'])
+            caps.setdefault('projectReferences', caps['attachments'])
+        return caps if isinstance(caps, dict) else {}
+
     def _read(self, provider, action, sid=None, body=None):
         body = body or {}
         with self.read_lock:
@@ -586,15 +599,8 @@ class DesktopSessions:
             try:
                 value = self._adapter_call(provider, action, sid, body)
                 if action == 'detail' and isinstance(value, dict):
-                    caps = value.get('capabilities', value.get('session', {}).get('capabilities', {}))
-                    if isinstance(caps, dict) and type(caps.get('attachments')) is bool:
-                        # Built-in adapters translate validated resolvedReferences
-                        # through the same native prompt route as attachments.
-                        # Missing native route metadata remains unknown; explicit
-                        # send/reference restrictions always take precedence.
-                        caps = dict(caps)
-                        caps.setdefault('send', caps['attachments'])
-                        caps.setdefault('projectReferences', caps['attachments'])
+                    caps = self._composer_capabilities(value)
+                    if type(caps.get('attachments')) is bool:
                         value['capabilities'] = caps
                     from bridge.features.sessions.model import desktop_file_attachments, user_display_text
                     for message in value.get('messages', []):
@@ -1947,7 +1953,83 @@ class DesktopSessions:
         return {**value, 'messages': rows, 'turns': [], 'history': history,
                 'files': workspace_references(rows, session.get('cwd'), host_files=True)}
 
-    def call(self, provider, action, sid=None, body=None):
+    def _delivery_state(self, provider, sid):
+        detail = self._adapter_call(provider, 'detail', sid, {'historyLimit': 1})
+        session = detail.get('session') or {}
+        if session.get('id') != sid:
+            return '', False, False, detail
+        caps = self._composer_capabilities(detail)
+        archived = session.get('archived') is True or detail.get('archived') is True
+        connection = session.get('connectionState')
+        connected = detail.get('connected') is not False or (
+            session.get('controlScope') == 'session' and connection == 'ready')
+        ready = connected and not archived and not (detail.get('readOnly') or session.get('readOnly')) and (
+            caps.get('send') is True and (caps.get('sendModes') or {}).get('send') is not False and
+            session.get('status') == 'idle' and session.get('runtimeKnown') is not False and
+            connection not in ('detached', 'closed', 'active', 'awaiting') and
+            (connection != 'unknown' or provider == 'deepseek' and detail.get('connected') is True) and
+            not (session.get('requests') or detail.get('requests') or detail.get('queued') or session.get('notFullyIdle')))
+        try:
+            identity = self._draft_account_identity(provider, sid, detail)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, BridgeUnavailable):
+            identity = ''
+        return identity, ready, archived, detail
+
+    @staticmethod
+    def _delivery_observation(detail):
+        latest = []
+        for name in ('turns', 'messages'):
+            values = detail.get(name) or []
+            row = values[-1] if isinstance(values, list) and values and isinstance(values[-1], dict) else {}
+            latest.append(row.get('id') or row.get('key') or row.get('turnId'))
+        return json.dumps(latest if any(latest) else (detail.get('session') or {}).get('updatedAt'))
+
+    def _delivery_receipt(self, provider, sid, rid, account, observation, intent):
+        with self.db_lock:
+            db = self._receipts(self.adapters[provider])
+            old = db.execute('SELECT result FROM requests WHERE id=?', (rid,)).fetchone()
+            scope = json.dumps([provider, sid, account], separators=(',', ':'))
+            table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='offline_delivery_requests'").fetchone()
+            blocked = False
+            if table:
+                bound = db.execute('SELECT scope,fingerprint FROM offline_delivery_requests WHERE id=?', (rid,)).fetchone()
+                for result, before in db.execute('SELECT r.result,s.observation FROM requests r JOIN offline_delivery_requests s USING(id) WHERE s.scope=?', (scope,)):
+                    status = json.loads(result).get('status')
+                    if status in ('unknown', 'uncertain', 'queued') or status in ('accepted', 'sent', 'delivered') and before == observation:
+                        blocked = True
+                        break
+            else:
+                bound = None
+            if old and bound and bound[0] == scope:
+                require_intent(bound[1], intent)
+                status = json.loads(old[0]).get('status') or 'unknown'
+            else:
+                status = 'unknown' if old else 'notFound'
+            return status, blocked, scope
+
+    def offline_delivery(self, provider, sid, rid, account, body=None, resolve=None):
+        gate = self.locks[provider] if body is None else self._changing(provider, rebind=False)
+        with gate:
+            self.require_enabled(provider)
+            current, ready, archived, detail = self._delivery_state(provider, sid)
+            observation = self._delivery_observation(detail)
+            intent = delivery_fingerprint(body) if body is not None else None
+            status, blocked, scope = (self._delivery_receipt(provider, sid, rid, account, observation, intent)
+                                      if current == account else ('notFound', True, None))
+            if body is None:
+                return delivery_proof(current, account, status=status, ready=ready and not blocked)
+            if status != 'notFound':
+                return {'id': rid, 'status': status, 'duplicate': True}
+            admit_delivery(current, account, ready and not blocked, archived)
+            try:
+                if resolve is not None:
+                    resolve(detail)
+            except (ValueError, FileNotFoundError) as exc:
+                raise DeliveryBlocked(str(exc)) from exc
+            result = self.call(provider, 'send', sid, body, _delivery_scope=(scope, observation, intent))
+            return {**result, 'id': rid}
+
+    def call(self, provider, action, sid=None, body=None, *, _delivery_scope=None):
         if provider not in self.adapters or action not in READS | WRITES:
             raise ValueError('不支持的桌面操作')
         if provider == 'deepseek' and self.deepseek_restore_error:
@@ -2102,9 +2184,14 @@ class DesktopSessions:
                 scope = request_scope(self, provider, action, sid, body)
             reference_files = []
             if action == 'send' and 'references' in body:
-                reference_files = self.workspace_bridge(provider, sid).workspace(sid, 'references', {'references': body['references']})
-                if len(reference_files) + len(body.get('resolvedImages', [])) + len(body.get('resolvedFiles', [])) > 10:
-                    raise ValueError('每条消息最多添加 10 个不同附件')
+                try:
+                    reference_files = self.workspace_bridge(provider, sid).workspace(sid, 'references', {'references': body['references']})
+                    if len(reference_files) + len(body.get('resolvedImages', [])) + len(body.get('resolvedFiles', [])) > 10:
+                        raise ValueError('每条消息最多添加 10 个不同附件')
+                except (ValueError, FileNotFoundError) as exc:
+                    if _delivery_scope is not None:
+                        raise DeliveryBlocked(str(exc)) from exc
+                    raise
             cached = None
             with self.db_lock:
                 db = None
@@ -2115,6 +2202,10 @@ class DesktopSessions:
                         raise ValueError('请先核对 Antigravity 待确认操作或处理待发消息，再撤回对话')
                     result = {'status': 'unknown', 'id': rid, 'message': '结果待核对，请检查桌面原会话；相同请求不会重复执行'}
                     inserted = db.execute('INSERT OR IGNORE INTO requests VALUES (?,?,?)', (rid, fingerprint, json.dumps(result))).rowcount
+                    if inserted and _delivery_scope is not None:
+                        db.execute('CREATE TABLE IF NOT EXISTS offline_delivery_requests (id TEXT PRIMARY KEY, scope TEXT NOT NULL, observation TEXT NOT NULL, fingerprint TEXT NOT NULL)')
+                        db.execute('CREATE INDEX IF NOT EXISTS offline_delivery_scope ON offline_delivery_requests(scope)')
+                        db.execute('INSERT INTO offline_delivery_requests VALUES (?,?,?,?)', (rid, *_delivery_scope))
                     if inserted and reference_files and provider == 'zcode':
                         from bridge.clients.zcode.attachments import remember_project_files
                         remember_project_files(db, sid, rid, reference_files)
@@ -2124,6 +2215,12 @@ class DesktopSessions:
                     db.commit()
                     if not inserted:
                         old = db.execute('SELECT fingerprint,result FROM requests WHERE id=?', (rid,)).fetchone()
+                        if _delivery_scope is not None:
+                            bound = db.execute('SELECT scope,fingerprint FROM offline_delivery_requests WHERE id=?', (rid,)).fetchone() if db.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='offline_delivery_requests'").fetchone() else None
+                            if not bound or bound[0] != _delivery_scope[0]:
+                                return {'status': 'unknown', 'id': rid}
+                            require_intent(bound[1], _delivery_scope[2])
                         if old[0] != fingerprint:
                             raise ValueError('相同请求 ID 不能用于不同操作')
                         cached = json.loads(old[1])

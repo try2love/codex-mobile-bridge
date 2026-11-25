@@ -4,7 +4,7 @@ const source=fs.readFileSync(require('node:path').join(__dirname,'../web/shell/a
 const code=source.slice(source.indexOf('const contextCompactions='),source.indexOf('let newChatProjects='));
 function fixture(){
  const calls=[],messages=[];let control,serial=0,reply=async()=>({status:'accepted'});
- const context=vm.createContext({currentId:'original',currentHost:'remote',state:{id:'original',connected:true},
+ const context=vm.createContext({window:{addEventListener(){}},document:{addEventListener(){}},listIdentity:'fixture',currentId:'original',currentHost:'remote',state:{id:'original',connected:true},
   chatKey:(id,host)=>host+':'+id,uuid:()=>String(++serial),t:s=>s,toast:s=>messages.push(s),$:()=>({after(){}}),
   sessionUrl:(id,action,host)=>`/${host}/${id}/${action}`,api:async(path,body)=>{calls.push({path,body});return reply();},
   ContextUsageControl:class{constructor(options){this.options=options;control=this;}update(state){this.state=state;}}});
@@ -25,4 +25,11 @@ test('inflight compaction is single-flight and late reply cannot update another 
  const first=f.control.options.onCompact();assert.equal(await f.control.options.onCompact(),false);
  f.context.currentId='another';f.context.state={id:'another',connected:true};finish({status:'accepted'});await first;
  assert.equal(f.calls.length,1);assert.notEqual(f.control.state.id,'another');
+});
+
+test('cannot dispatch an online compact action after switching to offline browsing',async()=>{
+ const f=fixture();
+ f.context.window.BridgeOfflineReads={active:()=>true};
+ assert.equal(await f.control.options.onCompact(),false);
+ assert.deepEqual(f.calls,[]);
 });

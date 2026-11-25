@@ -108,6 +108,7 @@ export class OfflineBridge {
     return this.archive.serial(async () => {
       if (!this.current(generation, cookie)) { throw new Error('登录已变化'); }
       const current = await this.archive.current(account);
+      if (OfflineArchive.composerAction(type)) { return this.archive.composer(current, type, event); }
       if (type === 'merge') {
         if (!['manual', 'live'].includes(event['source'] as string) && !(event['source'] === 'prefetch' && this.network?.unmetered)) { throw new Error('不允许后台预取'); }
         await this.archive.merge(current, event); return { saved: true };

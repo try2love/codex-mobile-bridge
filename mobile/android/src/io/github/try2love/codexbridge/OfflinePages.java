@@ -194,7 +194,7 @@ final class OfflinePages {
   private final Reader item;
   LocalHost(Reader item){this.item=item;}
   @JavascriptInterface public void postMessage(String message){
-   if(message==null||message.length()>16_384)return;
+   if(message==null||message.length()>2_000_000)return;
    owner.runOnUiThread(()->request(item,message));
   }
  }
@@ -222,16 +222,22 @@ final class OfflinePages {
     return;
    }
    boolean listing="list".equals(action), attachment="attachment".equals(action), open="attachmentOpen".equals(action);
-   if(!listing&&!attachment&&!open&&!"session".equals(action))return;
+   boolean composer=OfflineArchive.composerAction(action);
+   if(!composer&&!listing&&!attachment&&!open&&!"session".equals(action))return;
    if(listing){item.sessionId="";item.anchor=null;}
    String session=input.optString("sessionId"),before=input.isNull("before")?"":input.optString("before");
-   if(!listing&&(session.isEmpty()||session.length()>4096||before.length()>4096))return;
+   if(!composer&&!listing&&(session.isEmpty()||session.length()>4096||before.length()>4096))return;
    String lang=owner.offlineLanguage();
    long visibility=item.visibility;
    bridge.run(archive->{
     OfflineArchive.Account account=readAccount(archive,item);
     if(account==null){owner.runOnUiThread(()->closeReader(item.account));return;}
     try{
+     if(composer){
+      JSONObject value=archive.composer(account,action,input);
+      owner.runOnUiThread(()->{if(current(item)&&item.visibility==visibility)reply(item,id,value);});
+      return;
+     }
      if(open){
       android.net.Uri target=archive.exportTransferAttachment(account,input);
       owner.runOnUiThread(()->{
@@ -249,7 +255,7 @@ final class OfflinePages {
       JSONObject appearance=null;
       try{appearance=owner.offlineAppearance(item.address);}catch(Exception ignored){}
       if(appearance==null)appearance=archive.appearance(account);
-      value=new JSONObject().put("name",account.name).put("lang",lang).put("sessions",sessions)
+      value=new JSONObject().put("name",account.name).put("lang",lang).put("sessions",sessions).put("composerWritable","valid".equals(account.status))
         .put("appearance",appearance).put("nativeTheme",owner.offlineNativeTheme());
      }else if(attachment){
       JSONObject part=archive.transferAttachment(account,input);

@@ -38,3 +38,5 @@ Status: implemented
 
 - [共享账号编辑器与输入区状态](../feature/2026-11-04-shared-account-editor-and-zcode-readiness.md)：部分重叠；保留其展示与写权限分离、草稿和横滑约束，本记录把完整槽位扩展到没有展示元数据的共享加载路径，并修复发送行列号。
 - [Antigravity 原生接入](../feature/2026-11-10-antigravity-native-integration.md)：部分重叠；原生协议与真实能力不变，完整加载结构由共享组件统一承担。
+
+离线时的草稿、工具栏和本地待发消息见[设备离线草稿与待发消息](../feature/2026-11-25-offline-composer-outbox.md)。

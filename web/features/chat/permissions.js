@@ -17,6 +17,81 @@ function permissionOption(button,preset,label,help,selected){
   button.append(svg,copy,check);return button;
 }
 
+// Offline inspection shares the durable, account-bound route used by the composer.
+const OfflineComposerReads={
+  active(){return !!window.OfflineChatReader?.enabled||globalThis.navigator?.onLine===false;},
+  snapshot(route,account){
+    const record=route&&window.BridgeOfflineComposer?.peek(route);
+    return !account||record?.account===account?record?.context:undefined;
+  },
+  sameRoute(a,b){return a?.provider===b?.provider&&a?.host===b?.host&&a?.session===b?.session;},
+  load(route){return route&&window.BridgeOfflineComposer?.get(route)?.catch(()=>null);},
+  stamp(value){
+    const stamp=typeof value==='string'?Date.parse(value):value;
+    return Number.isFinite(stamp)&&stamp>0?(stamp<1e12?stamp*1000:stamp):Date.now();
+  },
+  status(stamp){
+    const t=BridgeI18n.t;
+    return Number.isFinite(stamp)&&stamp>0
+      ?t('最后同步')+' · '+new Date(stamp).toLocaleString(BridgeI18n.locale())
+      :t('本机暂无记录');
+  },
+  save(route,account,key,value,stamp){
+    if(!route||!account||this.active())return;
+    const previous=window.BridgeOfflineComposer?.peek(route);
+    const reading=previous?.account===account?previous.context?.[key]:undefined,syncedAt=this.stamp(stamp);
+    if(reading&&(stamp&&reading.syncedAt>syncedAt||
+       JSON.stringify({...reading,syncedAt:undefined})===JSON.stringify(value)&&(!stamp||reading.syncedAt===syncedAt)))return;
+    void window.BridgeOfflineComposer?.saveContext(route,{[key]:{...value,syncedAt}},account)?.catch(()=>{});
+  },
+  saveUsage(route,account,view){
+    const {contextUsage,contextUsageStatus,lastPromptContextUsage}=view||{};
+    if(contextUsage||contextUsageStatus==='unsupported'||lastPromptContextUsage)
+      this.save(route,account,'usage',{contextUsage,contextUsageStatus,lastPromptContextUsage},
+        contextUsage?.updatedAt||lastPromptContextUsage?.updatedAt);
+  },
+  saveModels(route,account,catalog){
+    if(!Array.isArray(catalog?.models)||catalog.modelError||catalog.cache?.state==='legacy')return;
+    const rows=catalog.models.filter(row=>typeof row?.id==='string'&&row.id).map(({id,name})=>({id,name:name||id}));
+    this.save(route,account,'models',{rows},catalog.cache?.updatedAt);
+  },
+  open(route,kind,isCurrent,account=()=>null){
+    if(!route||!this.active())return;
+    this.current?.close();
+    const t=BridgeI18n.t,dialog=document.createElement('dialog'),head=document.createElement('div'),title=document.createElement('h2');
+    const titleCopy=t(kind==='models'?'可用模型':'剩余额度');
+    dialog.className='picker';dialog.setAttribute('aria-label',titleCopy);head.className='picker-head';title.textContent=titleCopy;
+    const close=document.createElement('button');close.type='button';close.className='icon-button';close.setAttribute('aria-label',t('关闭'));close.append(ComposerIcons.create('close'));close.onclick=()=>dialog.close();
+    head.append(title,close);
+    const content=document.createElement('div'),status=document.createElement('p');status.className='muted';
+    dialog.append(head,content,status);document.body.append(dialog);
+    let rendered;
+    const draw=()=>{
+      if(!dialog.open)return;
+      if(!this.active()||!isCurrent()){dialog.close();return;}
+      const saved=this.snapshot(route,account())?.[kind],signature=JSON.stringify(saved);
+      if(signature===rendered&&status.textContent)return;
+      rendered=signature;
+      status.textContent=this.status(saved?.syncedAt);
+      if(kind==='quota')QuotaDisplay.summary(content,saved?.value);
+      else{
+        const list=document.createElement('ul');
+        for(const row of saved?.rows||[]){
+          const item=document.createElement('li');item.textContent=row.name||row.id;list.append(item);
+        }
+        content.replaceChildren(...(list.children.length?[list]:[]));
+        if(saved&&!list.children.length)content.textContent=t('暂未提供可用模型');
+      }
+    };
+    this.current=dialog;this.draw=draw;
+    dialog.addEventListener('close',()=>{if(this.current===dialog){this.current=null;this.draw=null;}dialog.remove();},{once:true});
+    dialog.showModal();draw();
+    void Promise.resolve(this.load(route)).then(draw,()=>{});
+    return dialog;
+  }
+};
+if(typeof window!=='undefined')window.BridgeOfflineReads=OfflineComposerReads;
+
 // All clients and side chats share native context usage and last-prompt semantics.
 class ContextUsageControl {
   constructor({onCompact}={}){
@@ -25,12 +100,13 @@ class ContextUsageControl {
     this.button.onclick=()=>this.open();
   }
   update(state){
-    if(!state||state.id!==this.state?.id){this.dialog?.remove();this.dialog=null;}
-    this.state=state;
-    if(this.compactButton){
-      const disabled=!state?.connected||state?.capabilities?.compact!==true||!!state?.busy;
-      if(this.compactButton.disabled!==disabled)this.compactButton.disabled=disabled;
+    const sameSession=state&&state.id===this.state?.id&&state.scope===this.state?.scope;
+    if(!sameSession||state.account&&this.account&&state.account!==this.account){
+      this.dialog?.close();this.account=null;
     }
+    if(state?.account)this.account=state.account;
+    this.state=state;
+    if(this.dialog?.open)this.renderDetails();
     if(this.button.hidden!==!state)this.button.hidden=!state;
     const usage=state?.contextUsage;
     const known=usage?.measurement!=='lastPrompt'&&Number.isFinite(usage?.usedTokens)&&usage.usedTokens>=0&&Number.isFinite(usage.contextWindow)&&usage.contextWindow>0;
@@ -48,13 +124,40 @@ class ContextUsageControl {
     }
   }
   open(){
-    if(!this.state)return;this.dialog?.remove();const dialog=this.dialog=document.createElement('dialog');dialog.className='picker';
-    const title=document.createElement('h2');title.textContent=BridgeI18n.t('上下文使用量');
-    const close=document.createElement('button');close.type='button';close.className='icon-button';close.append(ComposerIcons.create('close'));close.setAttribute('aria-label',BridgeI18n.t('关闭'));close.onclick=()=>dialog.close();const head=document.createElement('div');head.className='picker-head';head.append(title,close);dialog.append(head);
-    const line=(label,value)=>{const p=document.createElement('p');p.textContent=BridgeI18n.t(label)+(value===undefined?'':' · '+value);dialog.append(p);};
+    if(!this.state||this.dialog?.open)return;
+    const dialog=this.dialog=document.createElement('dialog');dialog.className='picker';
+    const title=document.createElement('h2');title.textContent=BridgeI18n.t('上下文使用量');dialog.setAttribute('aria-label',title.textContent);
+    const close=document.createElement('button');close.type='button';close.className='icon-button';close.append(ComposerIcons.create('close'));close.setAttribute('aria-label',BridgeI18n.t('关闭'));close.onclick=()=>dialog.close();const head=document.createElement('div');head.className='picker-head';head.append(title,close);
+    this.details=document.createElement('div');
+    dialog.append(head,this.details);
+    if(this.onCompact){
+      const button=this.compactButton=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t('压缩上下文');
+      button.onclick=async()=>{
+        if(this.dialog!==dialog||!dialog.open||button.hidden||button.disabled||navigator.onLine===false)return;
+        this.inFlight=dialog;this.renderDetails();
+        try{if(await this.onCompact())dialog.close();}
+        finally{
+          if(this.inFlight===dialog)this.inFlight=null;
+          if(this.dialog===dialog&&dialog.open)this.renderDetails();
+        }
+      };
+      dialog.append(button);
+    }
+    const connectionChanged=()=>{if(this.dialog===dialog&&dialog.open)this.renderDetails();};
+    window.addEventListener('offline',connectionChanged);window.addEventListener('online',connectionChanged);
+    dialog.addEventListener('close',()=>{
+      window.removeEventListener('offline',connectionChanged);window.removeEventListener('online',connectionChanged);
+      if(this.dialog===dialog){this.dialog=null;this.details=null;this.compactButton=null;}
+      dialog.remove();
+    },{once:true});
+    this.renderDetails();document.body.append(dialog);dialog.showModal();
+  }
+  renderDetails(){
+    const lines=[],line=(label,value)=>lines.push(BridgeI18n.t(label)+(value===undefined?'':' · '+value));
+    const offline=this.state.offline===true||this.state.connected===false||navigator.onLine===false;
     const usage=this.state.contextUsage,previous=this.state.lastPromptContextUsage,number=value=>Number.isFinite(value)&&value>=0?value.toLocaleString(BridgeI18n.locale()):BridgeI18n.t('暂未提供');
-    if(!usage)line(this.state.contextUsageStatus==='unsupported'?'当前客户端或会话模式未提供上下文用量接口。':this.state.contextUsageStatus==='unavailable'?'当前会话尚未提供上下文用量；有可用数据时会自动更新。':'当前客户端尚未提供此会话的上下文用量。');
-    else {
+    if(!usage&&(!this.state.readOnlyPreview||this.state.contextUsageStatus==='unsupported'))line(this.state.contextUsageStatus==='unsupported'?'当前客户端或会话模式未提供上下文用量接口。':this.state.contextUsageStatus==='unavailable'?'当前会话尚未提供上下文用量；有可用数据时会自动更新。':'当前客户端尚未提供此会话的上下文用量。');
+    else if(usage){
       line(usage.measurement==='lastPrompt'?'最近一次模型输入':'已用 Token',number(usage.usedTokens));line('上下文容量',number(usage.contextWindow));
       if(usage.measurement!=='lastPrompt'&&usage.contextWindow>0&&Number.isFinite(usage.usedTokens)&&usage.usedTokens>=0)line('使用占比',(usage.usedTokens/usage.contextWindow*100).toFixed(1)+'%');
       if(usage.model)line('模型',usage.model);
@@ -64,17 +167,28 @@ class ContextUsageControl {
       if(usage.compacted)line('最近一次压缩后统计。');
       if(usage.measurement==='lastPrompt')line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');
       if(usage.estimated)line('包含客户端对尚未发送内容的估算。');
-      if(usage.cached||!this.state.connected)line('当前为缓存数据，连接恢复后更新。');
     }
     if(previous&&!usage){line('最近一次模型输入',number(previous.usedTokens));line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');}
-    if(this.onCompact&&this.state.capabilities?.compact===true){
-      const stateId=this.state.id,button=this.compactButton=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t('压缩上下文');button.disabled=!this.state.connected||!!this.state.busy;
-      button.onclick=async()=>{if(button.disabled||stateId!==this.state?.id)return;button.disabled=true;try{if(await this.onCompact())dialog.close();}finally{if(dialog.open&&stateId===this.state?.id)button.disabled=!this.state.connected||this.state.capabilities?.compact!==true||!!this.state.busy;}};
-      dialog.append(button);
+    if(this.state.readOnlyPreview)lines.push(OfflineComposerReads.status(this.state.syncedAt));
+    else if(usage||previous){
+      if(offline)line('当前为缓存数据，连接恢复后更新。');
+      else if(this.state.preview||usage?.cached||!usage)line('显示最近一次可用的上下文读数。');
     }
-    dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();
+    for(const [index,copy] of lines.entries()){
+      let row=this.details.children[index];
+      if(!row){row=document.createElement('p');this.details.append(row);}
+      if(row.textContent!==copy)row.textContent=copy;
+    }
+    while(this.details.children.length>lines.length)this.details.children[this.details.children.length-1].remove();
+    if(this.compactButton){
+      const hidden=this.state.readOnlyPreview===true||this.state.capabilities?.compact!==true;
+      const disabled=hidden||offline||!this.state.connected||!!this.state.busy||this.inFlight===this.dialog;
+      if((hidden||offline||!this.state.connected)&&document.activeElement===this.compactButton)this.dialog.querySelector('.picker-head button')?.focus();
+      if(this.compactButton.hidden!==hidden)this.compactButton.hidden=hidden;
+      if(this.compactButton.disabled!==disabled)this.compactButton.disabled=disabled;
+    }
   }
-  dispose(){this.dialog?.remove();this.button.remove();}
+  dispose(){this.dialog?.close();this.button.remove();}
 }
 
 // Linux Desktop and native CLI capability picker; other sessions keep their existing flow.

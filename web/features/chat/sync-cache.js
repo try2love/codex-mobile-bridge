@@ -57,10 +57,12 @@
   const fields=(value,names)=>Object.fromEntries(names.filter(name=>value?.[name]!==undefined).map(name=>[name,value[name]]));
   const rowFields='key version id role kind turnId turnStatus order status title text timestamp phase truncated totalChars textLength byteLength attachments fileSummary activityFiles toolName model effort turnStartedAt turnCompletedAt turnCompletionKnown turnError originalQuestion interaction hasDetail processCursor detailCursor processCount count firstKey lastKey'.split(' ');
   const safeRow=row=>fields({...row,phase:row.phase||(row.role==='assistant'&&row.forkable===true?'final_answer':undefined)},rowFields);
+  const contextFields=['contextUsage','contextUsageStatus','lastPromptContextUsage'];
   const safePage=page=>({
     ...fields(page,['version','sourceVersion','key','group','before','after','next','hasMore','hasEarlier','hasLater','previous','range','turns','offset','limit','sequence','epoch','reset']),
     index:(page.index||[]).map(item=>safeRow(item)),
-    meta:{...fields(page.meta,['title','model','effort','cwd','status','turnStatus','turnId','running','updatedAt','loadingHistory','temporary','contextUsage','contextUsageStatus','lastPromptContextUsage']),requests:[]},files:[],
+    meta:{...fields(page.meta,['title','model','effort','cwd','status','turnStatus','turnId','running','updatedAt','loadingHistory','temporary']),
+      ...fields(page.session||page.meta,contextFields),requests:[]},files:[],
   });
   const dateOf=value=>{
     if(value===null||value===undefined||value==='')return 0;

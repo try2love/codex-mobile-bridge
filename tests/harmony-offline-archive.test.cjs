@@ -7,7 +7,7 @@ async function fixture(){
  const db={run:async(query,values=[])=>{sql.prepare(query).run(...values);},rows:async(query,values=[])=>{
   queries.push(query);return sql.prepare(query).all(...values).map(row=>Object.values(row));
  }};
- const context=vm.createContext({Uint8Array,Promise});
+ const context=vm.createContext({Uint8Array,Promise,util:{TextEncoder:class{encodeInto(value){return new TextEncoder().encode(value);}}}});
  const source=fs.readFileSync('mobile/harmony/entry/src/main/ets/services/OfflineArchive.ets','utf8')
   .replace(/^import .*;\r?\n/gm,'').replaceAll('export class','class').replaceAll('export type','type');
  vm.runInContext(stripTypeScriptTypes(source)+'\nglobalThis.Archive=OfflineArchive;',context);
@@ -56,6 +56,56 @@ test('Harmony clearing rejects late writes and stale cursors while retaining oth
  }finally{f.close();}
 });
 
+test('Harmony composer archive preserves CAS across the offline reader and independent accounts',async()=>{
+ const f=await fixture();
+ try{
+  const call=(action,input={},who=f.account)=>f.archive.serial(()=>f.archive.composer(who,action,input));
+  const sessionId=f.session,value={title:'Draft only',draft:{text:'中文📝'},outbox:[{id:'queued'}]};
+  assert.equal((await call('composerRead',{sessionId})).value,null);
+  const concurrent=await Promise.all(Array.from({length:2},()=>call('composerWrite',{sessionId,revision:0,value})));
+  assert.deepEqual(concurrent.map(item=>item.applied),[true,false]);
+  assert.equal(concurrent[1].value.draft.text,'中文📝');
+  await call('composerWrite',{sessionId:'',revision:0,value});
+  assert.equal(JSON.stringify((await call('composerPending')).sessions),JSON.stringify([sessionId]));
+  assert.equal((await f.archive.available())[0].id,f.account.id);
+  const listing=await f.archive.list(f.account),page=await f.archive.page(f.account,sessionId,{});
+  assert.equal(listing.composerWritable,true);assert.equal(listing.sessions.length,1);
+  assert.equal(page.title,'Draft only');assert.equal(page.rows.length,0);
+  const other=await f.archive.bind('https://another.example','Other','a'.repeat(32),'c'.repeat(64));
+  assert.equal((await call('composerRead',{sessionId},other)).value,null);
+  assert.equal((await call('composerPending',{},other)).sessions.length,0);
+  await f.archive.unlinkRoute('https://gateway.example');
+  const retained=await f.archive.account(f.account.id);
+  assert.equal((await f.archive.list(retained)).composerWritable,false);
+  assert.equal((await call('composerRead',{sessionId},retained)).revision,1);
+  await assert.rejects(call('composerWrite',{sessionId,revision:1,value},retained));
+  await f.archive.clear(retained,0,Number.MAX_SAFE_INTEGER,true);
+  assert.equal((await call('composerRead',{sessionId},retained)).value,null);
+  assert.equal((await f.archive.available()).length,0);
+ }finally{f.close();}
+});
+
+test('Harmony lists attachment-, Skill-, and work-mode-only drafts without chat history',async()=>{
+ const f=await fixture();
+ try{
+  const drafts=[{attachmentDrafts:[{id:'upload',name:'draft.txt',status:'ready'}]},
+    {skills:['check-notes']},{workMode:'plan'},{workMode:'goal'},{workMode:'default'}];
+  const routes=drafts.map((_,i)=>JSON.stringify(['codex','local','prepared-'+i]));
+  for(const [index,draft] of drafts.entries()){
+   const value={title:'Draft '+index,draft:{text:'',...draft},outbox:[]};
+   await f.archive.serial(()=>f.archive.composer(f.account,'composerWrite',{sessionId:routes[index],revision:0,value}));
+  }
+  const listing=await f.archive.list(f.account);
+  assert.deepEqual(Array.from(listing.sessions,row=>row.id).sort(),routes.slice(0,4));
+  for(const [index,route] of routes.slice(0,4).entries()){
+   const page=await f.archive.page(f.account,route,{});
+   assert.equal(page.title,'Draft '+index);
+   assert.equal(page.rows.length,0);
+  }
+  assert.equal((await f.archive.serial(()=>f.archive.composer(f.account,'composerPending',{}))).sessions.length,0);
+ }finally{f.close();}
+});
+
 function bridgeFixture(f){
  const replies=[],base='https://gateway.example';
  f.context.url={URL:{parseURL:value=>new URL(value)}};
@@ -80,6 +130,21 @@ test('Harmony archive requires independent gateway proof and rejects page-suppli
   b.send({type:'auth',status:'valid'});await new Promise(setImmediate);assert.equal(b.replies[1].ok,true);
   b.send({type:'merge',identity:'c'.repeat(64),sessionId:f.session,clearRevision:'0',syncedAt:200,turns:[]});await new Promise(setImmediate);
   assert.equal(b.replies[2].ok,false);assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0);
+ }finally{f.close();}
+});
+test('a verified Harmony online request reads and updates the same local composer record',async()=>{
+ const f=await fixture();try{
+  const b=bridgeFixture(f),sessionId=f.session;
+  const value={draft:{text:'Draft from offline'},outbox:[{id:'queued'}]};
+  await f.archive.serial(()=>f.archive.composer(f.account,'composerWrite',{sessionId,revision:0,value}));
+  b.send({type:'composerRead',sessionId});await new Promise(setImmediate);
+  assert.equal(b.replies[0].value.value.draft.text,'Draft from offline');
+  b.send({type:'composerPending',identity:'c'.repeat(64)});await new Promise(setImmediate);
+  assert.equal(b.replies[1].ok,false);
+  b.send({type:'composerWrite',sessionId,revision:1,value:{draft:null,outbox:[]}});await new Promise(setImmediate);
+  assert.equal(b.replies[2].value.applied,true);
+  const pending=await f.archive.serial(()=>f.archive.composer(f.account,'composerPending',{}));
+  assert.equal(pending.sessions.length,0);
  }finally{f.close();}
 });
 test('a late Harmony authentication proof cannot reauthorize an account after logout',async()=>{

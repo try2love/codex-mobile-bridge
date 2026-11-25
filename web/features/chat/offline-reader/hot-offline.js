@@ -2,7 +2,7 @@
 (() => {
   const reader=window.OfflineChatReader;
   if(!reader||reader.cold)return;
-  let visit,opening,proof,retry,networkAvailable;
+  let visit,opening,proof,retry,networkAvailable,health;
 
   function route(){return typeof browserNavigation==='undefined'?null:browserNavigation.read();}
   function timeline(selected){
@@ -20,11 +20,8 @@
     const codex=selected.provider==='codex';
     const form=codex?document.getElementById('composer'):desktopSessions.form;
     const notice=codex?document.getElementById('notice'):desktopSessions.notice;
-    if(!form?.offsetHeight||!notice)return;
+    if(!form||!notice)return;
     const hidden=notice.hidden;
-    const controls=[...form.children].filter(node=>!node.inert);
-    controls.forEach(node=>node.inert=true);
-    form.dataset.offlineInPlace='';
     notice.classList.add('offline-readonly-notice');
     const reconnect=codex?document.getElementById('reconnect'):null;
     const reconnectHidden=reconnect?.hidden;
@@ -35,14 +32,13 @@
         notice.hidden=hidden;
         if(reconnect)reconnect.hidden=reconnectHidden;
       }
-      delete form.dataset.offlineInPlace;
-      controls.forEach(node=>node.inert=false);
     };
   }
   async function transport(v,action,fields){
     if(!stillHere(v))throw Error('Offline identity changed');
     if(action==='reconnect')return reconnect();
     if(action==='close'){window.BridgeNavigation?.back();return Promise.resolve({});}
+    if(!v.native)throw Error('Offline history unavailable');
     const type={attachment:'transferAttachment',attachmentOpen:'transferAttachmentOpen',list:'list',session:'session'}[action];
     if(!type)throw Error('Offline history is read only');
     const value=await window.CodexBridgeNativeOffline.request({type,...fields,gatewayId:v.owner.gatewayId,identity:v.owner.identity});
@@ -68,13 +64,16 @@
     if(opening)return opening;
     if(visit)return true;
     const owner=window.BridgeChatSyncCache?.owner;
-    if(!owner||!window.CodexBridgeNativeOffline||document.getElementById('app')?.hidden!==false)return false;
-    const v=visit={owner};
+    if(!owner||document.getElementById('app')?.hidden!==false)return false;
+    const v=visit={owner,native:!!window.CodexBridgeNativeOffline};
     const selected=route(),view=timeline(selected);
     v.route=selected;v.release=keepReadingLayout(selected);
     window.BridgeChatSyncCache.requireValidation();
     reader.enableHot((action,fields)=>transport(v,action,fields));
     view?.cancelWatch();
+    document.dispatchEvent(new CustomEvent('bridge-hot-offline',{detail:{active:true}}));
+    if(selected)reader.showStatus?.();
+    if(!v.native){schedule();return true;}
     const start=async()=>{
       try{
         const list=await reader.refreshList();
@@ -99,15 +98,34 @@
         document.dispatchEvent(new CustomEvent('bridge-hot-offline',{detail:{active:true,syncedAt}}));
         schedule();return true;
       }catch{
-        if(stillHere(v))finished();
+        if(stillHere(v)){schedule();return true;}
         return false;
       }
     };
     opening=start().finally(()=>{opening=null;});
     return opening;
   }
+  function gatewayResponds(owner){
+    if(health?.owner===owner)return health.task;
+    const controller=new AbortController(),deadline=setTimeout(()=>controller.abort(),3000);
+    const check={owner};
+    check.task=api('/api/auth',undefined,controller.signal,()=>window.BridgeChatSyncCache?.owner===owner,true)
+      .then(auth=>typeof auth.authenticated==='boolean'&&auth.online!==false)
+      .catch(error=>error.status===401||error.status===403)
+      .finally(()=>{clearTimeout(deadline);if(health===check)health=null;});
+    health=check;
+    return check.task;
+  }
   async function fallback(path,body,signal,error){
-    if(signal?.aborted||!await enterOffline()||signal?.aborted||body!==undefined)throw error;
+    if(signal?.aborted)throw error;
+    const owner=window.BridgeChatSyncCache?.owner;
+    const gatewayError=[502,503,504,522,523,524,530].includes(error.status);
+    if(!visit && owner && networkAvailable!==false && navigator.onLine!==false && gatewayError && path!=='/api/auth'){
+      const reachable=await gatewayResponds(owner);
+      if(signal?.aborted||window.BridgeChatSyncCache?.owner!==owner||reachable&&!visit)throw error;
+    }
+    if(gatewayError)window.BridgeMobileHandoff?.unreachable();
+    if(!await enterOffline()||signal?.aborted||body!==undefined)throw error;
     return reader.request(path);
   }
   async function reconnect(){
@@ -122,6 +140,7 @@
         const auth=await api('/api/auth',undefined,abort.signal,current,true);
         if(!current())return false;
         if(!auth.authenticated){finished();authLost(auth.authStatus);return false;}
+        if(auth.online===false)return false;
         if(auth.sessionSync?.version!==1||auth.sessionSync.gatewayId!==v.owner.gatewayId||auth.sessionSync.identity!==v.owner.identity){
           finished();showLogin();await enter(auth);return false;
         }
@@ -148,6 +167,7 @@
         }else if(!selected){
           if(isCodexClient(clientNavigation.provider))await loadList(true);else await desktopSessions.refresh();
         }
+        void window.BridgeOfflineComposer?.flush();
         return true;
       }catch{return false;}finally{clearTimeout(deadline);if(visit===v)schedule();}
     };

@@ -659,6 +659,27 @@ class WslSessionTests(unittest.TestCase):
         self.assertEqual(self.entry.send(self.identifier, 'synthetic input', identifier, work_mode='default'), result)
         self.assertEqual(sum(m == 'turn/start' for m, _ in self.entry.server.calls), 1)
 
+    def test_offline_delivery_revalidates_wsl_account_before_receipt_and_native_send(self):
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        account, other = 'a' * 64, 'b' * 64
+        identifier = str(uuid.uuid4())
+        self.assertTrue(self.entry.view(self.identifier)['connected'])
+        with patch.object(self.entry, '_management_identity', return_value=account), \
+             patch.object(self.entry, '_refresh_background'), \
+             patch.object(self.entry, '_account_draft_state', side_effect=[
+                 {'accountIdentity': account}, {'accountIdentity': other},
+                 {'accountIdentity': account}, {'accountIdentity': account}, {'accountIdentity': account}]):
+            self.assertTrue(self.entry.offline_delivery(self.identifier, identifier, account)['ready'])
+            with self.assertRaises(DeliveryBlocked) as stale:
+                self.entry.offline_delivery(self.identifier, identifier, account, {'text': 'offline'})
+            self.assertEqual(stale.exception.code, 'offline_delivery_rejected')
+            self.assertFalse(self.entry.receipts_path.exists())
+            result = self.entry.offline_delivery(self.identifier, identifier, account, {'text': 'offline'})
+            self.assertEqual(result['status'], 'accepted')
+            self.assertTrue(self.entry.offline_delivery(self.identifier, identifier, account, {'text': 'offline'})['duplicate'])
+        writes = [payload for method, payload in self.entry.server.calls if method == 'turn/start']
+        self.assertEqual([payload['clientUserMessageId'] for payload in writes], [identifier])
+
     def test_fresh_not_loaded_evidence_blocks_even_when_display_says_connected(self):
         session = self.entry.session(self.identifier)
         self.assertTrue(session.connected)

@@ -9,7 +9,11 @@
 .transfer-usage-scroll th,.transfer-usage-scroll td{text-align:left;padding:10px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-bottom:1px solid var(--line)}
 .transfer-usage-scroll th{position:sticky;top:0;background:var(--surface,#f6f7f9);z-index:1}.transfer-usage-scroll th:first-child{width:35%}.transfer-usage-scroll th:nth-child(2){width:27%}.transfer-usage-scroll :is(th,td):nth-child(2){text-align:right;font-variant-numeric:tabular-nums}
 .transfer-choice{display:flex;align-items:center;gap:.6em;padding-block:.3em}
-[data-offline-reader] :is(.composer:not([data-offline-in-place]),#new-chat,.ds-new-chat){display:none!important}
+[data-offline-reader] :is(.composer:not([data-offline-composer]),#new-chat,.ds-new-chat){display:none!important}
+[data-offline-composer-readonly] :is(.composer-frame textarea,.composer-submit){display:none!important}
+.offline-outbox{flex:none;max-height:min(22dvh,180px);overflow:auto;margin-inline:12px}
+.offline-outbox .queue-card p{white-space:pre-wrap;overflow-wrap:anywhere;margin-block:6px}
+.offline-outbox-editor textarea{display:block;min-height:96px;width:100%;margin-block:12px;resize:vertical}
 .offline-readonly-notice:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px}
 .offline-readonly-notice .recovery-actions>button:not(#reconnect){display:none!important}.offline-list-status{font-size:12px;line-height:1.5;flex:none;margin:2px 0 6px}
 

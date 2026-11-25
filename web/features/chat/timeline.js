@@ -26,8 +26,8 @@ function timelineFilePath(path,cwd){
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
   static clearCache(key){if(key)recentTimelinePages.delete(key);else recentTimelinePages.clear();window.BridgeChatHistoryCache?.forget(key);}
-  constructor({url, request, renderMeta, renderText, status, onAction, onFile, onReady, canEdit = () => true, elements = {}, active = () => true, cacheKey = '', syncTarget, initialSync}) {
-    Object.assign(this,{url,request,renderMeta,renderText,status,onAction,onFile,onReady,active,cacheKey,syncTarget});
+  constructor({url, request, renderMeta, renderCachedContext, renderText, status, onAction, onFile, onReady, canEdit = () => true, elements = {}, active = () => true, cacheKey = '', syncTarget, initialSync}) {
+    Object.assign(this,{url,request,renderMeta,renderCachedContext,renderText,status,onAction,onFile,onReady,active,cacheKey,syncTarget});
     this.canEdit=()=>!this.cached&&canEdit();
     this.viewport=elements.viewport||document.getElementById('timeline');
     this.container=elements.container||document.getElementById('messages');
@@ -178,7 +178,7 @@ class ChatTimeline {
       this.apply(recentTimelinePages.get(this.cacheKey),true,false,true);
     }
     if(this.sequence<0&&this.cacheKey)window.BridgeChatHistoryCache?.read(this.cacheKey,'timeline-recent-v1').then(page=>{
-      if(page&&!this.receivedFreshPage&&this.sequence<0&&!this.abort.signal.aborted)this.apply(page,true,false,true);
+      if(page&&!this.receivedFreshPage&&this.sequence<0&&!this.abort.signal.aborted&&this.active())this.apply(page,true,false,true);
     });
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
@@ -222,11 +222,15 @@ class ChatTimeline {
     finally{this.busy=false;if(!this.abort.signal.aborted)this.historyStatus();}
   }
   apply(page,reset=false,history=false,cached=false){
+    if(!history&&!this.sync){
+      if(cached)this.renderCachedContext?.(chatSyncContextPreview(page.meta));
+      else page={...page,meta:carryChatSyncContext(page.meta,this.meta)};
+    }
     if(!cached&&!history&&!page.meta.loadingHistory)this.receivedFreshPage=true;
     if(!this.sync&&this.cached&&!cached){
       // An empty owner-discovery response is not an empty conversation.
       if(!page.rows.length&&page.meta.loadingHistory){
-        this.sequence=page.sequence;this.epoch=page.epoch;
+        this.sequence=page.sequence;this.epoch=page.epoch;this.meta=page.meta;
         this.renderMeta({...page.meta,files:page.files||[]});return;
       }
       reset=true;
@@ -279,7 +283,7 @@ class ChatTimeline {
       // Cached approvals and access permissions never become actionable state.
       recentTimelinePages.delete(this.cacheKey);
       if(rows.length)recentTimelinePages.set(this.cacheKey,JSON.parse(JSON.stringify({rows,sequence:this.sequence,epoch:this.epoch,
-        before:this.epoch+'.'+rows[0].key,hasMore:this.hasMore||ordered.length>20,meta:{requests:[]},files:page.files||[]})));
+        before:this.epoch+'.'+rows[0].key,hasMore:this.hasMore||ordered.length>20,meta:{...chatSyncContextPreview(page.meta),requests:[]},files:page.files||[]})));
       if(!page.meta.temporary&&!page.meta.loadingHistory)window.BridgeChatHistoryCache?.write(this.cacheKey,'timeline-recent-v1',recentTimelinePages.get(this.cacheKey)||{rows:[],sequence:this.sequence,epoch:this.epoch,before:null,hasMore:false,meta:{requests:[]},files:[]});
       while(recentTimelinePages.size>8)recentTimelinePages.delete(recentTimelinePages.keys().next().value);
     }

@@ -519,11 +519,18 @@ test('a reopened running turn reuses 100 cached steps and automatically reads ac
     const messages=page.locator('#messages');
     const contents=messages.locator('.message-body').filter({hasText:/^Step \d{3}$/});
     await open('Transfer HTTP fixture');
+    const transferId=await entry('Transfer HTTP fixture').getAttribute('data-id');
     await expect(contents).toHaveText(steps(1,100));
     const contextBadge=page.locator('#composer .context-usage');
     await expect(contextBadge).toHaveAttribute('aria-label',/25%$/);
+    await contextBadge.click({timeout:5000});
+    const usageDialog=page.getByRole('dialog',{name:'上下文使用量'});
+    await expect(usageDialog).toContainText('25.0%');
     await append([usage(768)]);
     await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
+    await expect(usageDialog).toContainText('37.5%');
+    await expect(usageDialog).not.toContainText('连接恢复后更新');
+    await usageDialog.getByRole('button',{name:'关闭',exact:true}).click();
     await expect(messages.locator('.sync-process')).toHaveCount(0);
     // Read the actual IndexedDB records, not merely the rendered rows.
     const diskCount=await page.evaluate(async()=>{
@@ -558,12 +565,37 @@ test('a reopened running turn reuses 100 cached steps and automatically reads ac
     await open('Other transfer fixture');await expect(page.locator('#messages')).toContainText('Other session answer');
     offset=payloads.length;
     await append(appendSteps(121,165));
-    await open('Transfer HTTP fixture');
+    let releaseRecent;
+    const holdRecent=new Promise(resolve=>{releaseRecent=resolve;});
+    const recent=url=>url.pathname.endsWith('/'+transferId+'/sync')&&url.searchParams.get('mode')==='recent';
+    const delayRecent=async route=>{await holdRecent;await route.continue();};
+    await page.route(recent,delayRecent,{times:1});
+    try{
+      await open('Transfer HTTP fixture');
+      await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
+      await expect.poll(()=>page.evaluate(()=>chatTimeline.cached)).toBe(true);
+      await contextBadge.click({timeout:5000});
+      await expect(usageDialog).toContainText('显示最近一次可用的上下文读数。');
+      await expect(usageDialog.getByRole('button',{name:'压缩上下文',exact:true})).toBeHidden();
+      await usageDialog.getByRole('button',{name:'关闭',exact:true}).click();
+      await page.evaluate(()=>{window.reopeningTimeline=chatTimeline;});
+      await page.locator('#back').evaluate(button=>button.click());
+      await open('Transfer HTTP fixture');
+      expect(await page.evaluate(()=>chatTimeline===window.reopeningTimeline)).toBe(true);
+      await expect(contextBadge).toHaveAttribute('aria-label',/38%$/);
+      await contextBadge.click({timeout:5000});
+      await expect(usageDialog).toContainText('显示最近一次可用的上下文读数。');
+      await expect(usageDialog.getByRole('button',{name:'压缩上下文',exact:true})).toBeHidden();
+      await usageDialog.getByRole('button',{name:'关闭',exact:true}).click();
+    }finally{
+      releaseRecent();
+    }
     await expect(contents).toHaveText(steps(1,165));
     const acrossGap=(await Promise.all(payloads.slice(offset))).flatMap(({mode,body})=>mode==='body'?[body.text]:body.rows.map(row=>row.text));
     expect([...acrossGap].sort()).toEqual(steps(121,165));
 
     const anchor=contents.getByText(step(35),{exact:true});
+    await page.waitForFunction(()=>!chatTimeline.suppress);
     await anchor.evaluate(node=>{
       const viewport=document.getElementById('timeline');
       viewport.scrollTop+=node.getBoundingClientRect().top-viewport.getBoundingClientRect().top-50;

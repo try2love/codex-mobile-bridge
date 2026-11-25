@@ -115,6 +115,7 @@ struct Index {
       }
       const next = this.addresses.includes(origin) ? this.addresses : [origin, ...this.addresses];
       // Persist only an address; the one-time pairing fragment stays in memory.
+      await this.archive.serial(async () => { await this.archive.unlinkRoute(origin); return null; });
       await this.store.save(next);
       this.addresses = next;
       this.input = '';
@@ -189,10 +190,10 @@ struct Index {
   }
   private async clearRecords(account: ArchiveAccount): Promise<void> {
     const result = await this.getUIContext().getPromptAction().showDialog({ title: '清除离线缓存？',
-      message: '清除“' + account.name + '”保存在此设备上的聊天与附件，电脑上的内容和绑定保持不变。',
+      message: '清除“' + account.name + '”保存在此设备上的聊天、附件、草稿和待发送内容，电脑上的内容和绑定保持不变。',
       buttons: [{ text: '取消', color: '#64748B' }, { text: '清除', color: '#DC2626' }] });
     if (result.index !== 1) { return; }
-    await this.archive.serial(async () => { await this.archive.clear(account, 0, Number.MAX_SAFE_INTEGER); return null; });
+    await this.archive.serial(async () => { await this.archive.clear(account, 0, Number.MAX_SAFE_INTEGER, true); return null; });
     this.offline.publish(); await this.records();
   }
   private async reconnectOffline(): Promise<void> {

@@ -701,6 +701,35 @@ class CliSessionTests(unittest.TestCase):
         except Exception as exc:
             errors.append(exc)
 
+    def test_native_token_usage_is_published_and_survives_thread_refresh(self):
+        self.fake.thread['turns'] = [{'id': 'turn-1', 'status': 'inProgress', 'items': []}]
+        self.sessions.attach('thread-a', explicit=True)
+        usage = {'last': {'totalTokens': 17}, 'total': {'totalTokens': 240}, 'modelContextWindow': 100}
+
+        def emit(info, thread='thread-a'):
+            self.sessions._event({'method': 'thread/tokenUsage/updated',
+                                  'params': {'threadId': thread, 'turnId': 'turn-1', 'tokenUsage': info}})
+
+        emit(usage)
+        self.assertEqual(self.states[-1][1].get('latestTokenUsageInfo'), usage)
+        published = len(self.states)
+        emit({'total': {'totalTokens': 55}})
+        emit({'last': {'totalTokens': 99}}, thread='unrelated')
+        self.assertEqual(len(self.states), published)
+
+        # A count can arrive during thread/read while its returned turn advances.
+        # The count and completed turn must both survive that refresh.
+        self.fake.thread['turns'][0]['status'] = 'completed'
+        original = self.fake.request
+        def request(method, params, **kwargs):
+            if method == 'thread/read':
+                emit({'last': {'totalTokens': 0}, 'modelContextWindow': 100})
+            return original(method, params, **kwargs)
+        self.fake.request = request
+        refreshed = self.sessions.refresh('thread-a')
+        self.assertEqual(refreshed['latestTokenUsageInfo']['last']['totalTokens'], 0)
+        self.assertEqual(refreshed['turns'][0]['status'], 'completed')
+
     def test_native_settings_event_survives_thread_refresh(self):
         self.sessions.attach('thread-a', explicit=True)
         self.fake.thread['model'] = 'native-model'

@@ -2,7 +2,7 @@
 (() => {
   const providers={codex:'Codex',claude:'Claude',deepseek:'DeepSeek',zcode:'ZCode',antigravity:'Antigravity'};
   const pending=new Map(),catalog=new Map();
-  let serial=0,selected=null,listing,hot=null;
+  let serial=0,selected=null,listing,hot=null,composerWritable;
   const reads=new Map();
   const cold=globalThis.document?.documentElement?.hasAttribute?.('data-bridge-offline')===true;
   function host(action,fields={}){
@@ -29,6 +29,7 @@
   function list(refresh=false){
     if(refresh)listing=null;
     return listing||=(host('list').then(result=>{
+      composerWritable=result.composerWritable;
       if(cold){
         if(result.nativeTheme)window.BridgeNativeTheme=result.nativeTheme;
         if(result.appearance){
@@ -297,9 +298,14 @@
     void list(true).catch(()=>{});
   }
   window.OfflineChatReader={receive,request,projectPage,back,reconnect,raster,leaveSession,openAttachment,
+    composer(action,fields){
+      if(!['composerRead','composerWrite','composerPending'].includes(action))return Promise.reject(Error('Unsupported composer action'));
+      return host(action,fields);
+    },
     enableHot(transport){hot=transport;listing=null;screen(true);},
     disableHot(){hot=null;listing=null;selected=null;reads.clear();screen(cold);},
     refreshList:()=>list(true),
+    get composerWritable(){return composerWritable;},
     get cold(){return cold;},get enabled(){return cold||!!hot;}};
   screen(cold);
 })();

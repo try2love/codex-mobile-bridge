@@ -173,6 +173,86 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
 
+    def test_codex_offline_delivery_uses_original_owner_and_waits_for_turn_evidence(self):
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        account = 'a' * 64
+        first, second, legacy = (str(uuid.uuid4()) for _ in range(3))
+        body = {'text': 'offline text'}
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        with patch.object(self.bridge, '_management_identity', return_value=account):
+            ready = self.bridge.offline_delivery(THREAD, first, account)
+            self.assertEqual((ready['ready'], ready['status']), (True, 'notFound'))
+            self.assertEqual(self.bridge.offline_delivery(THREAD, first, account, body)['status'], 'accepted')
+            self.assertEqual(self.bridge.offline_delivery(THREAD, first, account, body)['duplicate'], True)
+            with self.assertRaises(DeliveryBlocked) as changed:
+                self.bridge.offline_delivery(THREAD, first, account, {'text': 'different'})
+            self.assertEqual(changed.exception.code, 'offline_delivery_rejected')
+            with self.assertRaises(DeliveryBlocked) as busy:
+                self.bridge.offline_delivery(THREAD, second, account, body)
+            self.assertEqual(busy.exception.code, 'offline_delivery_wait')
+            self.bridge.submissions[THREAD + ':' + legacy] = {'text': 'historic', 'mode': 'send', 'status': 'accepted'}
+            self.assertEqual(self.bridge.offline_delivery(THREAD, legacy, account)['status'], 'unknown')
+            self.assertEqual(self.bridge.offline_delivery(THREAD, legacy, account, body)['status'], 'unknown')
+            session = self.bridge.session(THREAD)
+            with session.condition:
+                session.state['turns'].append({'id': 'new-turn', 'status': 'completed', 'items': []})
+            self.assertEqual(self.bridge.offline_delivery(THREAD, second, account, body)['status'], 'accepted')
+        calls = [row for row in self.fixture.requests if row['method'] == 'thread-follower-start-turn']
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([row['params']['turnStart']['request']['clientUserMessageId'] for row in calls], [first, second])
+        self.assertTrue(all(row['targetClientId'] == 'owner' for row in calls))
+
+    def test_cold_offline_delivery_discovers_running_native_owner_without_opening_chat(self):
+        account, request_id = 'a' * 64, str(uuid.uuid4())
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        self.bridge.close()
+        self.bridge = Bridge(self.root, self.root / 'data', ipc_path=self.fixture.path,
+                             codex_bin=self.root / 'fixture-codex-not-installed')
+        self.assertEqual(self.bridge.live, {})
+        # This fixture's legacy database intentionally has no model_provider
+        # column. The provider is discovered only from the existing IPC owner.
+        with patch.object(self.bridge, '_draft_account_identity',
+                          side_effect=lambda value: account if value.get('provider') == 'custom-api' else ''):
+            proof = self.bridge.offline_delivery(THREAD, request_id, account)
+            self.assertEqual((proof['account'], proof['ready']), ('', False))
+            session = self.bridge.live[THREAD]
+            with session.condition:
+                self.assertTrue(session.condition.wait_for(lambda: session.connected, timeout=3))
+            self.assertTrue(self.bridge.offline_delivery(THREAD, request_id, account)['ready'])
+            result = self.bridge.offline_delivery(THREAD, request_id, account, {'text': 'offline text'})
+            self.assertEqual(result['status'], 'accepted')
+        self.opened_desktop.assert_not_called()
+        self.assertEqual([r['targetClientId'] for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn'], ['owner'])
+
+    def test_offline_delivery_does_not_activate_a_read_only_cli(self):
+        with sqlite3.connect(self.root / 'state_5.sqlite') as db:
+            db.execute("UPDATE threads SET originator='codex_cli_rs',source='cli' WHERE id=?", (THREAD,))
+        account, request_id = 'a' * 64, str(uuid.uuid4())
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        with patch.object(self.bridge, '_management_identity', return_value=account), \
+             patch.object(self.bridge, '_refresh_async') as refresh:
+            self.assertFalse(self.bridge.offline_delivery(THREAD, request_id, account)['ready'])
+            with self.assertRaises(DeliveryBlocked):
+                self.bridge.offline_delivery(THREAD, request_id, account, {'text': 'offline text'})
+            refresh.assert_not_called()
+        self.assertFalse(self.fixture.requests)
+        self.assertFalse(self.bridge.submissions)
+
+    def test_offline_delivery_ignores_other_account_but_preserves_ordinary_queue(self):
+        self.assertTrue(self.bridge.view(THREAD)['connected'])
+        account, prior_account = 'a' * 64, 'b' * 64
+        with self.bridge.submit_lock:
+            for status in ('unknown', 'queued'):
+                self.bridge.submissions[THREAD + ':' + str(uuid.uuid4())] = {
+                    'status': status, 'deliveryAccount': prior_account}
+        new = str(uuid.uuid4())
+        with patch.object(self.bridge, '_management_identity', return_value=account):
+            self.assertTrue(self.bridge.offline_delivery(THREAD, new, account)['ready'])
+            ordinary = THREAD + ':' + str(uuid.uuid4())
+            with self.bridge.submit_lock:
+                self.bridge.submissions[ordinary] = {'status': 'queued'}
+            self.assertFalse(self.bridge.offline_delivery(THREAD, new, account)['ready'])
+
     def test_title_only_update_reaches_an_open_chat_without_an_ipc_title_patch(self):
         self.fixture.state['title'] = None
         with closing(sqlite3.connect(self.root / 'state_5.sqlite')) as db, db:
@@ -1523,6 +1603,87 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         return {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
+
+    def test_offline_delivery_endpoint_validates_gateway_account_and_exact_send_body(self):
+        from unittest.mock import Mock
+        from urllib.parse import urlencode
+        from bridge.features.sessions.offline_delivery import DeliveryBlocked
+        headers = self.login()
+        account, rid = 'a' * 64, str(uuid.uuid4())
+        params = {'host': 'local', 'gatewayId': self.server.auth.session_sync['gatewayId'], 'account': account, 'id': rid}
+        path = '/api/sessions/' + THREAD + '/delivery?'
+        route = path + urlencode(params)
+        body = {'sessionId': THREAD, 'id': rid, 'text': 'offline fixture'}
+        self.server.bridge.offline_delivery = deliver = Mock(return_value={
+            'deliveryVersion': 1, 'ready': True, 'status': 'notFound', 'account': account})
+        self.assertEqual(self.request('GET', route)[0], 401)
+        self.assertEqual(self.request('POST', route, body, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path + urlencode({**params, 'gatewayId': 'wrong'}), body, headers)[2]['code'],
+                         'offline_delivery_rejected')
+        self.assertEqual(self.request('POST', route, {**body, 'mode': 'steer'}, headers)[2]['code'], 'offline_delivery_rejected')
+        self.assertEqual(self.request('POST', route, {**body, 'sessionId': rid}, headers)[2]['code'], 'offline_delivery_rejected')
+        deliver.assert_not_called()
+        self.assertEqual(self.request('GET', route, headers=headers)[2]['deliveryVersion'], 1)
+        deliver.assert_called_once_with(THREAD, rid, account, None)
+        deliver.side_effect = DeliveryBlocked('busy', wait=True)
+        status, _, response = self.request('POST', route, body, headers)
+        self.assertEqual((status, response['code']), (409, 'offline_delivery_wait'))
+        deliver.assert_called_with(THREAD, rid, account, body)
+
+    def test_desktop_offline_delivery_uses_scoped_native_receipts_and_waits_between_turns(self):
+        from unittest.mock import Mock
+        from urllib.parse import urlencode
+        from bridge.clients.manager import DesktopSessions
+        headers = self.login()
+        temp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(temp.cleanup)
+        manager = self.server.desktop_sessions = DesktopSessions(Path(temp.name))
+        self.addCleanup(manager.close)
+        account, sid = 'a' * 64, 'fixture-native'
+        detail = {'connected': True, 'session': {'id': sid, 'status': 'idle', 'updatedAt': 1, 'connectionState': 'unknown',
+                                                   'runtimeKnown': True}, 'capabilities': {'attachments': True}}
+        native = Mock()
+        uncertain = set()
+        def native_call(action, identifier, body):
+            if action == 'detail':
+                return detail
+            if body['id'] in uncertain:
+                raise TimeoutError('native acknowledgement unavailable')
+            return {'status': 'accepted'}
+        native.call.side_effect = native_call
+        manager.adapters['deepseek'] = native
+        manager.require_enabled = Mock()
+        manager.config.setdefault('enabled', {})['deepseek'] = True
+        manager._draft_account_identity = Mock(return_value=account)
+        def path(rid, account=account):
+            return '/api/desktop-sessions/deepseek/delivery?' + urlencode({
+                'sessionId': sid, 'gatewayId': self.server.auth.session_sync['gatewayId'], 'account': account, 'id': rid})
+        def send(rid, expected=account):
+            return self.request('POST', path(rid, expected), {'sessionId': sid, 'id': rid, 'text': 'offline text'}, headers)
+        first, second, legacy = (str(uuid.uuid4()) for _ in range(3))
+        self.assertEqual(self.request('GET', path(first), headers=headers)[2]['ready'], True)
+        self.assertEqual(send(first)[2], {'status': 'accepted', 'id': first})
+        self.assertEqual(send(first)[2]['duplicate'], True)
+        different = self.request('POST', path(first), {'sessionId': sid, 'id': first, 'text': 'different'}, headers)[2]
+        self.assertEqual(different['code'], 'offline_delivery_rejected')
+        self.assertEqual(send(second)[2]['code'], 'offline_delivery_wait')
+        detail['session'].update(status='active', updatedAt=2)
+        self.assertEqual(send(second)[2]['code'], 'offline_delivery_wait')
+        detail['session'].update(status='idle', updatedAt=3)
+        self.assertEqual(send(second)[2]['status'], 'accepted')
+        third = str(uuid.uuid4())
+        uncertain.add(third)
+        detail['session']['updatedAt'] = 4
+        self.assertEqual(send(third)[2]['status'], 'unknown')
+        self.assertEqual(self.request('GET', path(third), headers=headers)[2]['status'], 'unknown')
+        self.assertEqual(send(third)[2]['duplicate'], True)
+        manager._draft_account_identity.return_value = 'b' * 64
+        self.assertEqual(send(first)[2]['code'], 'offline_delivery_rejected')
+        self.assertEqual(self.request('GET', path(first, 'b' * 64), headers=headers)[2]['status'], 'unknown')
+        manager.db.execute('INSERT INTO requests VALUES (?,?,?)', (legacy, 'historical', '{"status":"accepted"}'))
+        manager.db.commit()
+        self.assertEqual(send(legacy, 'b' * 64)[2]['status'], 'unknown')
+        self.assertEqual([item.args[0] for item in native.call.call_args_list].count('send'), 3)
 
     def test_only_pre_submission_rejections_have_the_safe_release_code(self):
         headers = self.login()

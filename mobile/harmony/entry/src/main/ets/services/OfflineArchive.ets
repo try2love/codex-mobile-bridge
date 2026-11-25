@@ -1,3 +1,4 @@
+import { util } from '@kit.ArkTS';
 import { ArchiveDatabase, ArchiveValue } from './ArchiveDatabase';
 
 export type ArchiveObject = Record<string, Object | null>;
@@ -35,6 +36,7 @@ export class OfflineArchive {
       'CREATE TABLE IF NOT EXISTS chunks(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,version TEXT NOT NULL,part INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(account,version,part))',
       'CREATE TABLE IF NOT EXISTS items(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,version TEXT NOT NULL,session TEXT NOT NULL,turn TEXT NOT NULL,asked INTEGER NOT NULL,content TEXT NOT NULL,PRIMARY KEY(account,version,session,turn))',
       'CREATE TABLE IF NOT EXISTS attachment_keys(account INTEGER NOT NULL,version TEXT NOT NULL,session TEXT NOT NULL,turn TEXT NOT NULL,key TEXT NOT NULL,PRIMARY KEY(account,session,turn,key),FOREIGN KEY(account,version,session,turn) REFERENCES items(account,version,session,turn) ON DELETE CASCADE)',
+      'CREATE TABLE IF NOT EXISTS composer(account INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,session TEXT NOT NULL,revision INTEGER NOT NULL,content TEXT NOT NULL,pending INTEGER NOT NULL,active INTEGER NOT NULL,title TEXT NOT NULL,changed INTEGER NOT NULL,PRIMARY KEY(account,session))',
       'CREATE TABLE IF NOT EXISTS appearance(account INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,content TEXT NOT NULL)'
     ]) { await this.db.run(sql); }
     const recordColumns = await this.db.rows('PRAGMA table_info(records)');
@@ -81,10 +83,64 @@ export class OfflineArchive {
   }
   async current(previous: ArchiveAccount, valid: boolean = true): Promise<ArchiveAccount> {
     const account = await this.account(previous.id);
-    if (!account || account.epoch !== previous.epoch || ['revoked', 'unknownRejected'].includes(account.status) || valid && account.status !== 'valid') {
+    if (!account || account.epoch !== previous.epoch || account.gateway !== previous.gateway || account.identity !== previous.identity || ['revoked', 'unknownRejected'].includes(account.status) || valid && account.status !== 'valid') {
       throw new Error('离线身份已变化');
     }
     return account;
+  }
+  static composerAction(action: string): boolean {
+    return ['composerRead', 'composerWrite', 'composerPending'].includes(action);
+  }
+  async composer(account: ArchiveAccount, action: string, input: ArchiveObject): Promise<ArchiveObject> {
+    const current = await this.current(account, action === 'composerWrite');
+    if (action === 'composerPending') {
+      const pending = await this.db.rows("SELECT session FROM composer WHERE account=? AND pending=1 AND session<>'' ORDER BY session", [current.id]);
+      return { sessions: pending.map(row => row[0] as string) };
+    }
+    const session = input['sessionId'];
+    const encoder = new util.TextEncoder();
+    if (typeof session !== 'string' || session.includes(String.fromCharCode(0)) || encoder.encodeInto(session).length > 4096) { throw new Error('无效离线会话'); }
+    if (action === 'composerRead') { return this.readComposer(current, session); }
+    const revision = input['revision'], value = input['value'];
+    if (action !== 'composerWrite' || typeof revision !== 'number' || !Number.isSafeInteger(revision) ||
+      revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('无效离线输入');
+    }
+    const record = value as ArchiveObject, encoded = JSON.stringify(record);
+    if (encoder.encodeInto(encoded).length > 1048576) { throw new Error('离线输入过大'); }
+    let result: ArchiveObject = {};
+    await this.transaction(async () => {
+      const saved = await this.readComposer(current, session);
+      if (saved['revision'] !== revision) {
+        saved['applied'] = false; result = saved; return;
+      }
+      const pending = this.composerItems(record['outbox']), draft = record['draft'] as ArchiveObject | null;
+      const active = !!session && (pending || !!draft && (typeof draft['text'] === 'string' && !!draft['text'] ||
+        this.composerItems(draft['quotes']) || this.composerItems(draft['attachments']) || this.composerItems(draft['references']) ||
+        this.composerItems(draft['attachmentDrafts']) || this.composerItems(draft['skills']) ||
+        draft['workMode'] === 'plan' || draft['workMode'] === 'goal'));
+      const title = typeof record['title'] === 'string' ? (record['title'] as string).slice(0, 512) : '';
+      await this.db.run('INSERT OR REPLACE INTO composer(account,session,revision,content,pending,active,title,changed) VALUES(?,?,?,?,?,?,?,?)',
+        [current.id, session, revision + 1, encoded, pending ? 1 : 0, active ? 1 : 0, title, Date.now()]);
+      result = { revision: revision + 1, value: record, applied: true };
+    });
+    return result;
+  }
+  private composerItems(value: Object | null): boolean {
+    return Array.isArray(value) && value.length > 0;
+  }
+  private async readComposer(account: ArchiveAccount, session: string): Promise<ArchiveObject> {
+    const rows = await this.db.rows('SELECT revision,content FROM composer WHERE account=? AND session=?', [account.id, session]);
+    return rows.length ? { revision: rows[0][0] as number, value: JSON.parse(rows[0][1] as string) as ArchiveObject } : { revision: 0, value: null };
+  }
+  async unlinkRoute(address: string): Promise<void> {
+    await this.transaction(async () => {
+      const account = await this.forAddress(address);
+      if (!account) { return; }
+      await this.db.run('DELETE FROM routes WHERE address=?', [address]);
+      await this.db.run("UPDATE accounts SET status='unlinked',epoch=epoch+1 WHERE id=? AND status NOT IN ('revoked','unknownRejected') AND NOT EXISTS(SELECT 1 FROM routes WHERE account=?)",
+        [account.id, account.id]);
+    });
   }
   async state(account: ArchiveAccount, session: string = ''): Promise<ArchiveObject> {
     const current = await this.current(account);
@@ -179,18 +235,21 @@ export class OfflineArchive {
   async list(account: ArchiveAccount): Promise<ArchiveObject> {
     await this.current(account, false);
     const sessions: ArchiveObject[] = [];
-    for (const row of await this.db.rows('SELECT s.id,s.title,s.synced FROM sessions s WHERE account=? AND EXISTS(SELECT 1 FROM records r WHERE r.account=s.account AND r.session=s.id) ORDER BY s.synced DESC,s.id', [account.id])) {
+    for (const row of await this.db.rows('SELECT s.id,s.title,s.synced FROM sessions s WHERE account=? AND EXISTS(SELECT 1 FROM records r WHERE r.account=s.account AND r.session=s.id) ' +
+      'UNION ALL SELECT c.session,c.title,c.changed FROM composer c WHERE c.account=? AND c.active=1 ' +
+      'AND NOT EXISTS(SELECT 1 FROM records r WHERE r.account=c.account AND r.session=c.session) ORDER BY 3 DESC,1', [account.id, account.id])) {
       sessions.push({ id: row[0] as string, title: row[1] as string, syncedAt: row[2] as number });
     }
-    return { sessions, name: account.name };
+    return { sessions, name: account.name, composerWritable: account.status === 'valid' };
   }
   async available(): Promise<ArchiveAccount[]> {
-    const rows = await this.db.rows('SELECT a.* FROM accounts a WHERE EXISTS(SELECT 1 FROM records r WHERE r.account=a.id) ORDER BY a.name,a.id');
+    const rows = await this.db.rows('SELECT a.* FROM accounts a WHERE EXISTS(SELECT 1 FROM records r WHERE r.account=a.id) OR EXISTS(SELECT 1 FROM composer c WHERE c.account=a.id AND c.active=1) ORDER BY a.name,a.id');
     return rows.map(row => this.accountRow(row));
   }
   async page(account: ArchiveAccount, session: string, event: ArchiveObject): Promise<ArchiveObject | null> {
     const current = await this.current(account, false), mode = event['mode'] as string || 'recent';
-    const saved = await this.db.rows('SELECT title,synced,complete FROM sessions WHERE account=? AND id=?', [current.id, session]);
+    let saved = await this.db.rows('SELECT title,synced,complete FROM sessions WHERE account=? AND id=?', [current.id, session]);
+    if (!saved.length) { saved = await this.db.rows('SELECT title,changed,0 AS complete FROM composer WHERE account=? AND session=? AND active=1', [current.id, session]); }
     if (!saved.length) { return null; }
     if (mode === 'body') { return this.body(current, session, event); }
     const values: ArchiveValue[] = [current.id, session]; let filter = ' AND visible=1', sort = 'asked DESC,turn DESC,position DESC,key DESC';
@@ -259,13 +318,14 @@ export class OfflineArchive {
     const rows = await this.db.rows('SELECT 1 FROM records r WHERE r.account=? AND r.session=? AND r.needs_parts=1 AND NOT EXISTS(SELECT 1 FROM finished_records f WHERE f.account=r.account AND f.session=r.session AND f.key=r.key AND f.version=r.version) LIMIT 1', [account.id, session]);
     return rows.length > 0;
   }
-  async clear(account: ArchiveAccount, start: number, end: number): Promise<void> {
+  async clear(account: ArchiveAccount, start: number, end: number, eraseComposer: boolean = false): Promise<void> {
     await this.transaction(async () => {
       const current = await this.account(account.id);
       if (!current || current.epoch !== account.epoch) { throw new Error('离线身份已变化'); }
       await this.db.run('UPDATE accounts SET revision=revision+1 WHERE id=?', [current.id]);
       await this.db.run('INSERT INTO clears SELECT id,revision,?,? FROM accounts WHERE id=?', [start, end, current.id]);
       await this.db.run('DELETE FROM records WHERE account=? AND asked>=? AND asked<?', [current.id, start, end]);
+      if (eraseComposer) { await this.db.run('DELETE FROM composer WHERE account=?', [current.id]); }
       await this.db.run('UPDATE turns SET suppressed=1 WHERE account=? AND asked>=? AND asked<?', [current.id, start, end]);
       await this.db.run('DELETE FROM items WHERE account=? AND asked>=? AND asked<?', [current.id, start, end]);
       await this.db.run('DELETE FROM chunks WHERE account=? AND version NOT IN(SELECT version FROM items WHERE account=?)', [current.id, current.id]);

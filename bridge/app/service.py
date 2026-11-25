@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from bridge.features.endpoints.registry import codex_list_hosts
 from bridge.app.lifecycle import private_json
 from bridge.resources import source_text
+from bridge.features.sessions.offline_delivery import (
+    DeliveryBlocked, admit as admit_delivery, fingerprint as delivery_fingerprint, proof as delivery_proof, require_intent, waiting_for_turn)
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
 
 from bridge.features.terminals.manager import TerminalManager
@@ -33,7 +35,7 @@ from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
 from bridge.clients.codex.native_queue import read_native_queue
-from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times, prepend_saved_process
+from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, context_usage, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times, prepend_saved_process
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
 from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
@@ -100,6 +102,8 @@ class LiveSession:
         self.history_state = None
         self.saved_view = None
         self.saved_metadata = None
+        self.recorded_context_usage = None
+        self.context_usage_revision = None
         self.saved_title = None
         self.next_title_read = 0
         self.saved_file_changes = {}
@@ -248,8 +252,11 @@ class LiveSession:
                 saved_changes = self.saved_file_changes.get(turn['id'])
                 if turn.get('status') == 'completed' and not turn.get('fileChanges') and saved_changes:
                     turn['fileChanges'], turn['fileChangesBasis'] = saved_changes
-            if self.saved_view and result['contextUsage'] is None:
-                saved_usage = self.saved_view.get('contextUsage')
+            usage = result['contextUsage']
+            if self.connected and self.recorded_context_usage and (usage is None or usage['cached']):
+                result['contextUsage'] = dict(self.recorded_context_usage)
+            elif usage is None:
+                saved_usage = (self.saved_view or {}).get('contextUsage') or self.recorded_context_usage
                 if saved_usage:
                     result['contextUsage'] = {**saved_usage, 'cached': True}
             if self.saved_view:
@@ -4476,6 +4483,7 @@ class Bridge:
         with self._draft_remote_lock:
             self._draft_remote_cache[key] = (time.monotonic(), identity)
             self._draft_remote_pending.discard(key)
+        return identity
 
     def view(self, thread_id, attach=True, background=False, force=False):
         session = self.session(thread_id, attach=attach, background=background, force=force)
@@ -4870,6 +4878,24 @@ class Bridge:
 
         return probe, wait, .2 if self.local else 2
 
+    def _recent_revision(self, session):
+        with session.condition:
+            live_usage = context_usage(session.state or {})
+            needs_usage = session.connected and (live_usage is None or live_usage['cached'])
+            since = session.context_usage_revision
+        if not needs_usage:
+            return self.store.history_revision(session.id)
+        # Read the saved counter in the same request as the rollout revision.
+        # A complete owner timeline need not import message bodies to show it.
+        status = self.store.history_status(session.id, include_usage=True, known_revision=since)
+        usage = context_usage({'latestTokenUsageInfo': status.get('tokenUsage'), 'tokenUsageFromHistory': True})
+        with session.condition:
+            session.context_usage_revision = status['revision']
+            if usage is not None and session.recorded_context_usage != usage:
+                session.recorded_context_usage = usage
+                session.changed()
+        return status['revision']
+
     def _sync_history_source(self, session, mode, options):
         # History synchronization is passive. Use the already established owner
         # or bounded persistent history; explicit control reconnect is separate.
@@ -4880,7 +4906,7 @@ class Bridge:
             revision = session.sync_history_revision
         if mode in ('watch', 'recent') or refresh:
             try:
-                revision = self.store.history_revision(session.id)
+                revision = self._recent_revision(session) if mode == 'recent' else self.store.history_revision(session.id)
             except FileNotFoundError:
                 # A newly opened native session can be visible to its owner
                 # before its first rollout file is present.
@@ -5659,6 +5685,67 @@ class Bridge:
             result['capabilities'] = dict.fromkeys(result['capabilities'], False)
         return result
 
+    def _delivery_identity(self, session, *, fresh=False):
+        if not fresh or self.local:
+            return self._management_identity(session.id, refresh=not fresh)
+        with session.condition:
+            provider = (session.state or {}).get('modelProvider') or session.saved_provider
+        alias = self.cli_sessions.alias
+        if not provider or not alias:
+            return ''
+        home = str(self.cli_sessions.remote_home) if self.cli_sessions.remote_home else None
+        return self._probe_remote_draft_identity((self.host, alias, home, provider), alias, home, provider)
+
+    def _delivery_status(self, thread_id, submission_id, account, intent=None):
+        with self.goal_lock, self.submit_lock:
+            key = thread_id + ':' + submission_id
+            existing = self.submissions.get(key)
+            if key in self.goal_commands or existing and existing.get('deliveryAccount') != account:
+                return 'unknown'
+            if existing:
+                require_intent(existing.get('deliveryFingerprint'), intent)
+            return (existing.get('status') or 'unknown') if existing else 'notFound'
+
+    def _delivery_admission(self, session, *, fresh=False):
+        metadata = self.store.get(session.id)
+        identity = self._delivery_identity(session, fresh=fresh)
+        with session.condition:
+            access = self._access(session.origin, session)
+            state = session.state or {}
+            runtime = state.get('threadRuntimeStatus', {}).get('type')
+            turns = ordered_turns(state)
+            ready = bool(session.connected and session.owner and access['canSend'] and not access['readOnly']
+                         and runtime == 'idle' and not session.pending_requests())
+        with self.submit_lock:
+            ready = ready and not any(key.startswith(session.id + ':') and waiting_for_turn(row, turns, identity)
+                                      for key, row in self.submissions.items())
+        return identity, not metadata.get('archived') and ready, bool(metadata.get('archived'))
+
+    def offline_delivery(self, thread_id, submission_id, account, body=None):
+        session = self.session(thread_id, attach=False, background=True)
+        if body is None:
+            current, ready, archived = self._delivery_admission(session)
+            # Before a fresh owner snapshot, old indexes may not have the saved
+            # provider. A passive follow can establish it without opening a chat.
+            if (not archived and current in ('', account) and not session.connected
+                    and session.origin in ('desktop', 'ide')):
+                self._refresh_async(session)
+            status = self._delivery_status(thread_id, submission_id, account) if current == account else 'notFound'
+            return delivery_proof(current, account, ready=ready, status=status)
+        if body.get('plugins'):
+            raise DeliveryBlocked('此会话离线发送不支持插件')
+        current, ready, archived = self._delivery_admission(session)
+        intent = delivery_fingerprint(body)
+        if current == account:
+            status = self._delivery_status(thread_id, submission_id, account, intent)
+            if status != 'notFound':
+                return {'status': status, 'duplicate': True, 'id': submission_id}
+        admit_delivery(current, account, ready, archived)
+        return self.send(thread_id, body['text'], submission_id, skills=body.get('skills', []),
+                         work_mode=body.get('workMode'), attachments=body.get('attachments'),
+                         references=body.get('references'), ui_locale=body.get('uiLocale'),
+                         _delivery_account=account, _delivery_intent=intent)
+
     @operation
     def manage_messages(self, thread_id, body):
         uuid.UUID(thread_id)
@@ -5782,19 +5869,24 @@ class Bridge:
     @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
              plan_response=None, attachments=None, references=None, ui_locale=None, activation=None,
-             _async_response=None):
+             _async_response=None, _delivery_account=None, _delivery_intent=None):
         uuid.UUID(submission_id)
         identifiers = [] if attachments is None else attachments
-        files = self.uploads.resolve(thread_id, identifiers)
         references = [] if references is None else references
-        if references:
-            files += self.workspace(thread_id, 'references', {'references': references})
-        elif not isinstance(references, list):
-            raise ValueError('项目文件引用无效，请重新选择')
-        if len(files) > 10:
-            raise ValueError('每条消息最多添加 10 个不同附件')
-        if not isinstance(text, str) or (not text.strip() and not files) or len(text) > 100000:
-            raise ValueError("请输入 1–100000 字的消息")
+        try:
+            files = self.uploads.resolve(thread_id, identifiers)
+            if references:
+                files += self.workspace(thread_id, 'references', {'references': references})
+            elif not isinstance(references, list):
+                raise ValueError('项目文件引用无效，请重新选择')
+            if len(files) > 10:
+                raise ValueError('每条消息最多添加 10 个不同附件')
+            if not isinstance(text, str) or (not text.strip() and not files) or len(text) > 100000:
+                raise ValueError("请输入 1–100000 字的消息")
+        except (ValueError, FileNotFoundError) as exc:
+            if _delivery_account is not None:
+                raise DeliveryBlocked(str(exc)) from exc
+            raise
         if mode not in ("send", "steer", "queue"):
             raise ValueError("未知发送方式")
         if work_mode not in (None, "default", "plan", "goal"):
@@ -5833,7 +5925,10 @@ class Bridge:
                 result["activation"] = self._send_goal_activation(
                     session, response, "create", ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 return result
-        session = self._target(thread_id, **target_options)
+        if _delivery_account is not None:
+            session = self.session(thread_id, attach=False, background=True)
+        else:
+            session = self._target(thread_id, **target_options)
         access = self._access(session.origin, session)
         if work_mode is not None and not access['canUseModes']:
             raise ValueError('此会话暂不能切换工作模式')
@@ -5842,6 +5937,13 @@ class Bridge:
         selected = self._resolve_skills(session, [] if skills is None else skills)
         key = thread_id + ":" + submission_id
         with session.action_lock:
+            if _delivery_account is not None:
+                current, ready, archived = self._delivery_admission(session, fresh=True)
+                if current == _delivery_account:
+                    status = self._delivery_status(thread_id, submission_id, _delivery_account, _delivery_intent)
+                    if status != 'notFound':
+                        return {'status': status, 'duplicate': True, 'id': submission_id}
+                admit_delivery(current, _delivery_account, ready, archived)
             with self.submit_lock:
                 prior = self.submissions.get(key)
                 if prior:
@@ -5859,7 +5961,12 @@ class Bridge:
                     if not pending or self._async_reply_text(pending, response) != text:
                         raise ValueError('此请求已处理或已过期')
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
+                if _delivery_account is not None:
+                    turns = ordered_turns(session.state or {})
+                    before_turn = turns[-1].get('id') if turns else None
                 if active and mode == "send":
+                    if _delivery_account is not None:
+                        raise DeliveryBlocked('Codex 正在执行，请稍后投递', wait=True)
                     raise SubmissionRejected("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
                 if not active and mode == "steer":
                     raise SubmissionRejected("当前任务已经结束，请使用普通发送")
@@ -5896,6 +6003,10 @@ class Bridge:
                             record.get('phase') == 'released' and token in record.get('connections', ()))):
                         raise IPCError('目标 CLI 释放意图或连接已变化，请明确重新连接后发送；消息未入队。')
                 entry = {"text": text, "mode": mode, "skills": selected, "status": "queued" if mode == "queue" else "unknown", "at": time.time()}
+                if _delivery_account is not None:
+                    entry['deliveryAccount'] = _delivery_account
+                    entry['deliveryFingerprint'] = _delivery_intent
+                    entry['deliveryBeforeTurn'] = before_turn
                 if self.cli_scope.target is not None:
                     entry.update(origin=session.origin, runtime=session.runtime)
                     if session.runtime == 'cli' and self.cli_sessions.remote_home:

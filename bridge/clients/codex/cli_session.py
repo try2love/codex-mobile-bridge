@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from bridge.features.sessions.identity import same_cwd
+from bridge.features.sessions.model import context_usage
 from bridge.clients.codex.app_server import (
     AppServerError, AppServerUnavailable, AppServerReadTimeout, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
@@ -656,7 +657,7 @@ class CliSessions:
                 elif 'reasoningEffort' not in thread and 'latestReasoningEffort' in previous:
                     state['latestReasoningEffort'] = previous['latestReasoningEffort']
                 for key in ('latestThreadSettings', 'currentPermissions', 'latestCollaborationMode', 'threadGoal',
-                            'completedThreadGoal', 'turnPlan'):
+                            'completedThreadGoal', 'turnPlan', 'latestTokenUsageInfo'):
                     if key in previous:
                         state[key] = copy.deepcopy(previous[key])
                 if state.get('latestThreadSettings'):
@@ -1183,6 +1184,11 @@ class CliSessions:
                 self.metadata[thread_id]['goal'] = None
             elif method == 'turn/plan/updated':
                 state['turnPlan'] = copy.deepcopy(params.get('plan') or [])
+            elif method == 'thread/tokenUsage/updated':
+                usage = params.get('tokenUsage')
+                if context_usage({'latestTokenUsageInfo': usage}) is None:
+                    return
+                state['latestTokenUsageInfo'] = copy.deepcopy(usage)
             elif method == 'thread/status/changed':
                 state['threadRuntimeStatus'] = params.get('status') or state['threadRuntimeStatus']
             elif method == 'error':
@@ -1287,7 +1293,7 @@ class CliSessions:
             else:
                 return
             turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
-            if turn_id and any(turn['turnId'] == turn_id for turn in state['turns']):
+            if method != 'thread/tokenUsage/updated' and turn_id and any(turn['turnId'] == turn_id for turn in state['turns']):
                 revisions = self.turn_revisions.setdefault(thread_id, {})
                 revisions[turn_id] = revisions.get(turn_id, 0) + 1
             if not publish:

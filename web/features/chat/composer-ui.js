@@ -22,6 +22,12 @@ const ComposerUI = Object.freeze({
       node.hidden = !!value;
     }
   },
+  textButton(label, action) {
+    const button = this.node('button', 'secondary', this.t(label));
+    button.type = 'button';
+    button.onclick = action;
+    return button;
+  },
   icon(id, { permissionMode = '', collapsed = false, sendMode = 'queue' } = {}) {
     const icon = id === 'permissions' ? permissionIcon(permissionMode)
       : ComposerIcons.create(id === 'sendMode' ? sendMode : id);

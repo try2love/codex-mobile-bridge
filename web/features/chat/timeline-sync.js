@@ -22,16 +22,22 @@ function mergeChatSyncRows(loaded,incoming,{older=false,range=false}={}){
   return merged;
 }
 
+const chatSyncContextFields=['contextUsage','contextUsageStatus','lastPromptContextUsage'];
+
+function chatSyncContextPreview(meta){
+  return Object.fromEntries(chatSyncContextFields.filter(key=>Object.hasOwn(meta||{},key)).map(key=>[key,meta[key]]));
+}
+
 function carryChatSyncContext(current,previous){
   if(current.contextUsageStatus==='unsupported')return {...current,contextUsage:null};
-  if(!previous)return current;
+  if(!previous||current.draftAccountIdentity&&previous.draftAccountIdentity&&current.draftAccountIdentity!==previous.draftAccountIdentity)return current;
   const next={...current};
-  for(const key of ['contextUsage','contextUsageStatus','lastPromptContextUsage']){
+  for(const key of chatSyncContextFields){
     if(key==='contextUsageStatus'&&current.contextUsage)continue;
     if(!Object.hasOwn(next,key)&&Object.hasOwn(previous,key))next[key]=previous[key];
   }
   if(next.contextUsageStatus==='unsupported')next.contextUsage=null;
-  else if(!current.contextUsage&&previous.contextUsage&&(!Object.hasOwn(current,'contextUsage')||next.contextUsageStatus==='unavailable'))
+  else if(!current.contextUsage&&previous.contextUsage&&(!Object.hasOwn(current,'contextUsage')||next.contextUsageStatus==='unavailable'||current.loadingHistory===true))
     next.contextUsage={...previous.contextUsage,cached:true};
   return next;
 }
@@ -133,9 +139,22 @@ class ChatTimelineSync {
     }
   }
   accept(page,{cached=false,history=false,range=false,joined=false}={}){
+    if(cached&&!history){
+      const current=this.value?.session||this.value?.meta;
+      if(!current||current.loadingHistory&&!current.contextUsage&&current.contextUsageStatus!=='unsupported'){
+        this.previewContext=chatSyncContextPreview(page.session||page.meta);
+        if(this.previewContext.contextUsage||this.previewContext.lastPromptContextUsage)
+          this.host.renderCachedContext?.(this.previewContext);
+      }
+    }
     if(!cached&&!history){
       const field=page.session?'session':'meta';
-      this.value={...page,[field]:carryChatSyncContext(page[field]||{},this.value?.[field])};
+      const meta=page[field]||{};
+      const account=page.draftAccountIdentity;
+      const previous=this.value?.[field];
+      const context=previous?.loadingHistory?carryChatSyncContext(previous,this.previewContext):previous||this.previewContext;
+      const previousAccount=this.value?.draftAccountIdentity;
+      this.value={...page,[field]:carryChatSyncContext(meta,account&&previousAccount&&account!==previousAccount?null:context)};
       this.version=page.sourceVersion||this.version;
     }
     const deleted=new Set(page.deleted||[]);

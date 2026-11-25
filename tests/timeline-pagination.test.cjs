@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 test('chat readiness follows fresh content rendering and excludes pending, cached and history pages',()=>{
- const ctx=vm.createContext({window:{},BridgeI18n:{t:s=>s}});for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
+ const ctx=vm.createContext({window:{},BridgeI18n:{t:s=>s}});for(const file of ['activity','timeline-sync','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx);let ready=0,rendered=0;
  const ui=Object.assign(Object.create(Type.prototype),{active:()=>true,cached:false,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),container:{children:[],firstChild:null,replaceChildren(){}},sequence:0,following:true,abort:new AbortController(),capture(){},renderMeta(){rendered++;},refreshActions(){},historyStatus(){},restore(){},onReady(){assert.ok(rendered>0);ready++;}});
  const page={rows:[],files:[],sequence:1,meta:{loadingHistory:true}};
@@ -27,7 +27,7 @@ function scrollFixture(){
   addEventListener:(type,fn)=>listeners.set(type,fn),removeEventListener:type=>listeners.delete(type)};
  const container={children:Array.from({length:8},(_,index)=>({hidden:false,classList:{contains:()=>false},dataset:{key:'row-'+index},getBoundingClientRect:()=>({top:100+index*1000-viewport.scrollTop,bottom:1100+index*1000-viewport.scrollTop})}))};
  const document={documentElement:{dataset:{}}},ctx=vm.createContext({window:{},document,AbortController,URLSearchParams,clearTimeout,setTimeout,requestAnimationFrame:fn=>fn(),BridgeI18n:{t:s=>s},ResizeObserver:class{constructor(callback){resize=callback;}observe(){}disconnect(){}}});
- for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
+ for(const file of ['activity','timeline-sync','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx),ui=new Type({elements:{viewport,container,older:{},newer:{}},url:action=>'/fixture/'+action+'?scope=synthetic',renderMeta(){},renderText(){},status(){},request:(url,body,signal)=>{
   requests.push(url);return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('fixture disposed')),{once:true}));
  }});
@@ -72,6 +72,7 @@ function persistentFixture(){
  const ctx=vm.createContext({window,AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s},syncChatMessageNodes(container,nodes){container.children=nodes;}});
  vm.runInContext(fs.readFileSync('web/features/chat/activity.js','utf8'),ctx);
  ctx.syncChatMessageNodes=(container,nodes)=>{container.children=nodes;};
+ vm.runInContext(fs.readFileSync('web/features/chat/timeline-sync.js','utf8'),ctx);
  vm.runInContext(fs.readFileSync('web/features/chat/timeline.js','utf8'),ctx);const Type=vm.runInContext('ChatTimeline',ctx);
  const ui=Object.assign(Object.create(Type.prototype),{cacheKey:'synthetic-history',sequence:-1,epoch:'',generation:0,windowRevision:0,rows:new Map(),nodes:new Map(),files:new Map(),details:new Map(),abort:new AbortController(),older:{},newer:{},following:true,
   container:{children:[],replaceChildren(){this.children=[];}},viewport:{removeEventListener(){}},resize:{disconnect(){}},
@@ -101,10 +102,10 @@ test('temporary pages never persist while fresh empty history replaces the old p
 });
 
 test('showLogin clears persistent history even before the timeline feature has loaded',()=>{
- const source=fs.readFileSync('web/shell/app.js','utf8'),entry=source.slice(source.indexOf('function showLogin('),source.indexOf('\nasync function start('));let forgotten=0,replaced='';
- const context=vm.createContext({window:{BridgeSharedRelay:true,BridgeChatHistoryCache:{forget(){forgotten++;}}},sessionPins:{suspend(){}},clearQuoteComposer(){},clearCodexProvisionalDrafts(){},claudeCliAccessPanel:null,draftGateway:'old',codexDraftScope:'old',codexActiveAccountId:'old',$:()=>({}),location:{replace:value=>replaced=value}});
+ const source=fs.readFileSync('web/shell/app.js','utf8'),entry=source.slice(source.indexOf('function showLogin('),source.indexOf('\nasync function start('));let forgotten=0,replaced='',contextState='previous';
+ const context=vm.createContext({window:{BridgeSharedRelay:true,BridgeChatHistoryCache:{forget(){forgotten++;}}},sessionPins:{suspend(){}},renderCodexContext:value=>{contextState=value;},clearQuoteComposer(){},clearCodexProvisionalDrafts(){},claudeCliAccessPanel:null,draftGateway:'old',codexDraftScope:'old',codexActiveAccountId:'old',$:()=>({}),location:{replace:value=>replaced=value}});
  vm.runInContext("'use strict';"+entry,context);assert.equal(vm.runInContext('typeof ChatTimeline',context),'undefined');vm.runInContext('showLogin()',context);
- assert.equal(forgotten,1);assert.equal(replaced,'/relay/');
+ assert.equal(forgotten,1);assert.equal(contextState,null);assert.equal(replaced,'/relay/');
 });
 
 test('history intent survives a live reset while page is in flight',async()=>{
@@ -129,7 +130,7 @@ test('empty page with more history does not lose the current cursor or loop fore
 
 test('a live reset keeps the visible message during a mobile handoff and resumes following after release',()=>{
  const window={}, ctx=vm.createContext({window,BridgeI18n:{t:s=>s},requestAnimationFrame:cb=>cb()});
- for(const file of ['activity','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
+ for(const file of ['activity','timeline-sync','timeline'])vm.runInContext(fs.readFileSync('web/features/chat/'+file+'.js','utf8'),ctx);
  const Type=vm.runInContext('ChatTimeline',ctx),viewport={clientHeight:500,scrollHeight:2000,scrollTop:1500,getBoundingClientRect:()=>({top:0})};
  const node={hidden:false,getBoundingClientRect:()=>({top:800-viewport.scrollTop})};
  const timeline=Object.assign(Object.create(Type.prototype),{viewport,abort:{signal:{aborted:false}},nodes:new Map([['read-here',{node}]]),newer:{},capture:()=>({key:'read-here',offset:800-viewport.scrollTop})});

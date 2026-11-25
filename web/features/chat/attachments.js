@@ -67,8 +67,8 @@ function renderChatAttachments(node,items,{url,fileUrl,showToolImages=true,offli
   if(attachments.children.length)node.append(attachments);
 }
 class ChatAttachments {
-  constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail,chooseReference,canReference=()=>true,menuChoices=()=>[],canUpload=()=>true,anchor=()=>button}){
-    Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail,canUpload});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
+  constructor({root,button,input,upload,onChange,onDraftChange,preview,paste,drop,thumbnail,chooseReference,canReference=()=>true,menuChoices=()=>[],canUpload=()=>true,anchor=()=>button}){
+    Object.assign(this,{root,button,input,upload,onChange,onDraftChange,preview,thumbnail,canUpload});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
     button.onclick=()=>{
       if(!this.key||this.locked)return;
       const key=this.key,valid=action=>(...args)=>{if(this.key===key&&!this.locked)action(...args);};
@@ -93,12 +93,29 @@ class ChatAttachments {
   }
   open(key){this.key=key;this.error='';if(!this.drafts.has(key)){let saved=[];try{saved=JSON.parse(sessionStorage.getItem('attachments:'+key)||'[]');}catch{}this.drafts.set(key,saved.map(row=>({...row,status:'ready'})));}this.rows=this.drafts.get(key);this.render();}
   save(key,rows){try{sessionStorage.setItem('attachments:'+key,JSON.stringify(rows.filter(r=>r.status==='ready').map(({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind})=>({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind}))));}catch{}}
+  draftRows(){
+    return this.rows.map(({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind,status})=>
+      ({id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind,status:status==='ready'?'ready':'reselect'}));
+  }
+  restoreDraftRows(snapshot){
+    if(!this.key||!Array.isArray(snapshot))return;
+    const existing=new Map(this.rows.map(row=>[row.id,row]));
+    const restored=snapshot.filter(row=>typeof row?.id==='string'&&typeof row.name==='string').slice(0,10).map(row=>{
+      const {id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind}=row;
+      const draft={id,name,size,image,thumb,thumbWidth,thumbHeight,reference,kind};
+      return existing.get(id)||(row.status==='ready'?{...draft,status:'ready'}:{
+        ...draft,status:'failed',needsReselect:true,error:'文件尚未上传，请重新选择后上传。',
+      });
+    });
+    this.rows.splice(0,this.rows.length,...restored);
+    this.save(this.key,this.rows);this.render();
+  }
   addReference(info){
     if(!this.key||this.locked||!['file','directory'].includes(info.kind)||!info.path||!info.absolutePath)return false;
     if(this.rows.some(row=>row.reference?.absolutePath===info.absolutePath))return true;
     if(this.rows.length>=10){this.error='每条消息最多添加 10 个不同附件';this.render();return false;}
     this.rows.push({id:uuid(),name:info.name,size:info.size,kind:info.kind,status:'ready',reference:{path:info.path,absolutePath:info.absolutePath}});
-    this.error='';this.save(this.key,this.rows);this.render();return true;
+    this.error='';this.save(this.key,this.rows);this.render();this.onDraftChange?.();return true;
   }
   add(files){
     if(!this.key||this.locked||!this.canUpload())return;
@@ -111,7 +128,7 @@ class ChatAttachments {
       if(typeof File!=='undefined'&&file instanceof File&&typeof URL?.createObjectURL==='function')row.objectUrl=URL.createObjectURL(file);
       rows.push(row);
     }
-    this.render();this.uploadPending(key,rows);
+    this.render();this.onDraftChange?.();this.uploadPending(key,rows);
   }
   async uploadPending(key,rows){
     for(const row of rows.filter(r=>r.status==='pending')){
@@ -129,7 +146,7 @@ class ChatAttachments {
         }
       }
       catch(error){row.status='failed';row.error=error.message;}
-      if(this.drafts.get(key)===rows){this.save(key,rows);if(this.key===key)this.render();}
+      if(this.drafts.get(key)===rows){this.save(key,rows);if(this.key===key){this.render();this.onDraftChange?.();}}
     }
   }
   ready(){return this.rows.every(r=>r.status==='ready');}
@@ -187,12 +204,12 @@ class ChatAttachments {
       info.append(node('strong',row.name));
       const status=row.reference?t('电脑项目引用'):row.status==='ready'?t('已上传'):row.status==='failed'?t(row.error):t('正在上传…');
       info.append(node('small',(row.kind==='directory'?t('文件夹'):row.size/1024/1024>=1?(row.size/1024/1024).toFixed(1)+' MB':Math.ceil(row.size/1024)+' KB')+' · '+status,row.status==='failed'?'error':''));card.append(info);
-      if(row.status==='failed'){
+      if(row.status==='failed'&&!row.needsReselect){
         const retry=node('button',t('重试'),'plain');retry.type='button';retry.disabled=this.locked||!this.canUpload();
         retry.onclick=()=>{if(this.locked||!this.canUpload())return;row.status='pending';this.uploadPending(this.key,this.rows);};card.append(retry);
       }
-      const remove=node('button','×','attachment-remove');remove.type='button';remove.disabled=this.locked;remove.setAttribute('aria-label',t('移除附件')+' '+row.name);
-      remove.onclick=()=>{this.rows.splice(this.rows.indexOf(row),1);this.error='';this.save(this.key,this.rows);this.render();};card.append(remove);this.root.append(card);
+      const remove=node('button','×','attachment-remove');remove.type='button';remove.disabled=this.locked&&!globalThis.window?.OfflineChatReader?.enabled;remove.setAttribute('aria-label',t('移除附件')+' '+row.name);
+      remove.onclick=()=>{this.rows.splice(this.rows.indexOf(row),1);this.error='';this.save(this.key,this.rows);this.render();this.onDraftChange?.();};card.append(remove);this.root.append(card);
     }
     this.root.hidden=!this.rows.length&&!this.error;this.onChange?.();
   }

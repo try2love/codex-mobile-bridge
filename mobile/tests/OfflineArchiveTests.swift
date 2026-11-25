@@ -162,9 +162,61 @@ struct OfflineArchiveTests {
         let retained = try archive.account(id: account.id)!
         check(try retained.status == "unlinked" && archive.seed(retained, event: ["sessionId": "session"]).isEmpty, "retained content cannot be read from WebView")
         check((try archive.available(retained: true)).contains { $0.id == retained.id }, "retained archive should remain available for device verification")
+        try testComposer(archive, url: testURL)
         try testTransfer(archive)
         try testReclaimedBytes(archive, url: testURL)
         print("Offline archive persistence, transfer, date deletion, disk compaction, and lock checks passed")
+    }
+
+    static func testComposer(_ archive: OfflineArchive, url: URL) throws {
+        let route = "https://composer.example", alternate = "https://composer-route.example"
+        let owner = try archive.bind(address: route, name: "Composer", gateway: "composer", identity: "owner")
+        try archive.linkRoute(from: route, to: alternate)
+        let other = try archive.bind(address: "https://composer-other.example", name: "Other", gateway: "composer", identity: "other")
+        let session = #"["codex","local","unsynced"]"#
+        let read: [String: Any] = ["sessionId": session]
+        let value: [String: Any] = ["title": "Unsynced", "draft": ["text": "📝"], "outbox": [["id": "queued"]]]
+        let write: [String: Any] = ["sessionId": session, "revision": 0, "value": value]
+        check(try archive.composer(owner, action: "composerRead", input: read)["value"] is NSNull, "initial composer is empty")
+        check(try archive.composer(owner, action: "composerWrite", input: write)["applied"] as? Bool == true, "initial CAS succeeds")
+        check(try archive.composer(owner, action: "composerWrite", input: write)["applied"] as? Bool == false, "stale CAS returns a conflict")
+        let reopened = OfflineArchive(url: url)
+        let same = try reopened.account(address: alternate)!
+        check(try reopened.composer(same, action: "composerRead", input: read)["revision"] as? Int64 == 1, "reopens the same paired account and revision")
+        check(try reopened.composer(other, action: "composerRead", input: read)["value"] is NSNull, "another login cannot read")
+        _ = try archive.composer(owner, action: "composerWrite", input: ["sessionId": "", "revision": 0, "value": value])
+        check(try archive.composer(owner, action: "composerPending", input: [:])["sessions"] as? [String] == [session], "pending excludes layout")
+        check(try archive.hasContent(owner) && archive.sessions(owner).map(\.id) == [session], "uncached session appears by its stored draft")
+        let page = try archive.recordPage(owner, session: session, event: [:])
+        check(page?["title"] as? String == "Unsynced" && (page?["rows"] as? [[String: Any]])?.isEmpty == true, "unsynced session opens without fictional history")
+        try archive.status(owner, "loggedOut")
+        let retained = try archive.account(id: owner.id)!
+        check(try archive.composer(retained, action: "composerRead", input: read)["revision"] as? Int64 == 1, "authorized retained account can read")
+        let next: [String: Any] = ["sessionId": session, "revision": 1, "value": ["draft": NSNull(), "outbox": []]]
+        do { _ = try archive.composer(retained, action: "composerWrite", input: next); fatalError("retained account allowed to write") } catch {}
+        let valid = try archive.bind(address: route, name: "Composer", gateway: "composer", identity: "owner")
+        check(try archive.composer(valid, action: "composerWrite", input: next)["applied"] as? Bool == true, "reauthorized account can clear the draft")
+        check(try !archive.hasContent(valid) && archive.sessions(valid).isEmpty, "cleared composer and layout do not create a session")
+        let prepared: [(String, [String: Any])] = [
+            ("Attachments", ["attachmentDrafts": [["id": "upload", "name": "draft.txt", "status": "ready"]]]),
+            ("Skills", ["skills": ["check-notes"]]),
+            ("Plan", ["workMode": "plan"]),
+            ("Goal", ["workMode": "goal"])
+        ]
+        for (index, (title, fields)) in prepared.enumerated() {
+            let preparedSession = "[\"codex\",\"local\",\"prepared-\(index)\"]"
+            let draft = fields.merging(["text": ""]) { saved, _ in saved }
+            let value: [String: Any] = ["title": title, "draft": draft, "outbox": [] as [Any]]
+            _ = try archive.composer(valid, action: "composerWrite",
+                                     input: ["sessionId": preparedSession, "revision": 0, "value": value])
+            check(try archive.sessions(valid).contains { $0.id == preparedSession }, "prepared draft is listed without history")
+            let page = try archive.recordPage(valid, session: preparedSession, event: [:])
+            check(page?["title"] as? String == title && (page?["rows"] as? [[String: Any]])?.isEmpty == true, "prepared draft opens with empty history")
+        }
+        check(try archive.composer(valid, action: "composerPending", input: [:])["sessions"] as? [String] == [], "prepared draft does not become pending delivery")
+        _ = try archive.unlink(address: route, erase: true)
+        let rebound = try archive.bind(address: route, name: "Composer", gateway: "composer", identity: "owner")
+        check(try archive.composer(rebound, action: "composerRead", input: read)["value"] is NSNull, "unlink with deletion erases the composer")
     }
 
     static func testTransfer(_ archive: OfflineArchive) throws {
