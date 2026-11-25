@@ -99,6 +99,7 @@ class LiveSession:
         self.state = None
         self.history_state = None
         self.saved_view = None
+        self.saved_metadata = None
         self.saved_title = None
         self.next_title_read = 0
         self.saved_file_changes = {}
@@ -209,6 +210,9 @@ class LiveSession:
     def set_history(self, state):
         self.history_state = state
         self.saved_view = normalize_state(state, False, image_cache=self.tool_image_cache, item_limit=self.timeline_limit)
+        # Native message clocks and turn labels have their own bounded query;
+        # a smaller body window must not discard metadata for already visible rows.
+        self.saved_metadata = state.get('_historyMetadata') or self.saved_view
         # Complete native patch evidence is retained by the saved reader even
         # when its messages are outside the current presentation window.
         self.saved_file_changes = {
@@ -250,8 +254,9 @@ class LiveSession:
                     result['contextUsage'] = {**saved_usage, 'cached': True}
             if self.saved_view:
                 if self.connected and result.get('id') == self.id:
-                    merge_saved_message_times(result, self.saved_view)
-                saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
+                    merge_saved_message_times(result, self.saved_metadata or self.saved_view)
+                saved_labels = {turn['id']: turn for turn in (self.saved_metadata or self.saved_view)['turns']
+                                if turn.get('status') != 'inProgress' or (turn.get('_recordedReplyLabel') or {}).get('model')}
                 for turn in result['turns']:
                     saved = saved_labels.get(turn['id'])
                     label_known = (self.history_state or {}).get('historyReadSource') not in ('native-index', 'native-index-retained') or saved and saved.get('model')
@@ -3629,7 +3634,8 @@ class Bridge:
                 time_key = tuple((turn['id'], turn.get('status'), message['id'], message['kind'], message['role'])
                                  for turn in session.timeline_view()['turns'] if turn.get('actionable', True)
                                  for message in turn['messages']
-                                 if message['role'] in ('user', 'assistant') and message.get('timestamp') is None
+                                 if message['role'] in ('user', 'assistant') and (message.get('timestamp') is None or
+                                     message['role'] == 'assistant' and not message.get('model') and not (turn.get('_recordedReplyLabel') or {}).get('model'))
                                  and isinstance(message.get('id'), str) and message['id'] and not message.get('_syntheticId'))
                 if not time_key:
                     return

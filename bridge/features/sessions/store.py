@@ -16,6 +16,17 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
+def _indexed_item_clock(row, item_id):
+    if not isinstance(item_id, str) or not item_id or 'item_id' not in row.keys() or row['item_id'] != item_id:
+        return {}
+    for field, source in (('completed_at_ms', 'native-index-item-completed'),
+                          ('started_at_ms', 'native-index-item-started')):
+        value = row[field] if field in row.keys() else None
+        if type(value) in (int, float) and value > 0:
+            return {'timestamp': value, '_timestampSource': source}
+    return {}
+
+
 def recorded_turn_label(payload):
     collaboration = payload.get('collaboration_mode')
     settings = collaboration.get('settings') if isinstance(collaboration, dict) else None
@@ -812,9 +823,16 @@ class SessionStore:
                     matches.append(path)
         return matches[0] if len(matches) == 1 else None
 
-    def _index_tail(self, conn, rollout, thread_id, size, limit, segments=None):
+    def _index_tail(self, conn, rollout, thread_id, size, limit, segments=None, *, metadata=False):
         # Newer rollouts can be branches: their filename supplies the physical
         # index key, while every segment's header identifies the logical chat.
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(thread_items)')}
+        extras = [name for name in ('item_id', 'item_type', 'started_at_ms', 'completed_at_ms') if name in columns]
+        if metadata and not {'item_id', 'item_type'} <= columns:
+            return []
+        fields = ['thread_id', 'turn_id', *([] if metadata else ['item_json']), *extras]
+        message_filter = ("AND item_type IN ('AgentMessage','agentMessage','assistantMessage','UserMessage','userMessage','steeringUserMessage') "
+                          if metadata else '')
         segment = thread_id
         header = self._segment_header(rollout)
         if header.get('history_base'):
@@ -842,8 +860,8 @@ class SessionStore:
                 return None
             clause = '' if end is None else 'AND rollout_ordinal < ? AND COALESCE(updated_at_ordinal, rollout_ordinal) < ? '
             args = (segment,) if end is None else (segment, end, end)
-            rows.extend(conn.execute('SELECT thread_id, turn_id, item_json FROM thread_items WHERE thread_id=? '
-                                     + clause + 'ORDER BY rollout_ordinal DESC LIMIT ?',
+            rows.extend(conn.execute('SELECT ' + ', '.join(fields) + ' FROM thread_items WHERE thread_id=? '
+                                     + clause + message_filter + 'ORDER BY rollout_ordinal DESC LIMIT ?',
                                      (*args, limit - len(rows))))
             if len(rows) >= limit or not header.get('history_base'):
                 return rows
@@ -1013,30 +1031,70 @@ class SessionStore:
                     return None
                 more = len(rows) > item_limit
                 selected = list(reversed(rows[:item_limit]))
-                turns = {}
-                for row in selected:
-                    if row['turn_id'] not in turns:
+                metadata_rows = self._index_tail(conn, rollout, thread_id, rollout_stat.st_size,
+                                                 100, segments, metadata=True) or []
+                turns, headers = {}, {}
+
+                def header_for(row):
+                    if row['turn_id'] not in headers:
                         header = conn.execute('SELECT turn_id, status, error_json, started_at, first_user_item_id, '
                                               + ('rollout_byte_offset ' if has_offsets else 'NULL AS rollout_byte_offset ')
                                               + 'FROM thread_turns WHERE thread_id=? AND turn_id=?',
                                               (row['thread_id'], row['turn_id'])).fetchone()
                         if header is None:
-                            return None
+                            raise ValueError('Native item has no turn header')
                         path, size = segments[row['thread_id']]
                         if path is not None and type(header['rollout_byte_offset']) is int:
                             sources[row['turn_id']] = (path, header['rollout_byte_offset'], size)
                         # Native index clocks use Unix seconds, like thread/read.
                         # Normalize here before joining rollout ISO completion times.
-                        turns[row['turn_id']] = {'turnId': row['turn_id'], 'status': header['status'],
+                        headers[row['turn_id']] = {'turnId': row['turn_id'], 'status': header['status'],
                                                 'turnStartedAtMs': header['started_at'] * 1000 if header['started_at'] else None,
                                                 '_firstUserItemId': header['first_user_item_id'],
-                                                '_itemsComplete': not (more and row['turn_id'] == rows[item_limit]['turn_id']),
                                                 'error': json.loads(header['error_json']) if header['error_json'] else None,
                                                 'items': []}
+                    return headers[row['turn_id']]
+
+                for row in selected:
+                    if row['turn_id'] not in turns:
+                        turns[row['turn_id']] = {**header_for(row), 'items': [],
+                                                '_itemsComplete': not (more and row['turn_id'] == rows[item_limit]['turn_id'])}
                     item = json.loads(row['item_json'])
                     if not isinstance(item, dict) or not isinstance(item.get('type'), str):
                         return None
+                    if item.get('type') in ('agentMessage', 'assistantMessage', 'userMessage', 'steeringUserMessage') and item.get('timestamp') is None:
+                        item.update(_indexed_item_clock(row, item.get('id')))
                     turns[row['turn_id']]['items'].append(item)
+                metadata_turns = {}
+                for row in reversed(metadata_rows):
+                    if not isinstance(row['item_id'], str) or not row['item_id']:
+                        continue
+                    kind = {'AgentMessage': 'agentMessage', 'UserMessage': 'userMessage'}.get(row['item_type'], row['item_type'])
+                    role = 'assistant' if kind in ('agentMessage', 'assistantMessage') else 'user'
+                    native = header_for(row)
+                    turn = metadata_turns.setdefault(row['turn_id'], {
+                        'id': row['turn_id'], 'status': native['status'], 'startedAt': native['turnStartedAtMs'],
+                        'model': None, 'effort': None, 'messages': []})
+                    turn['messages'].append({'id': row['item_id'], 'kind': kind, 'role': role,
+                                             **_indexed_item_clock(row, row['item_id'])})
+                metadata_keys = {(turn['id'], item['id'], item['kind'])
+                                 for turn in metadata_turns.values() for item in turn['messages']}
+                # Older body pages already loaded their own native metadata.
+                # Keep those fields as well, without expanding the independent
+                # adjacent-message query or rereading any additional bodies.
+                for native in turns.values():
+                    turn = metadata_turns.setdefault(native['turnId'], {
+                        'id': native['turnId'], 'status': native['status'], 'startedAt': native['turnStartedAtMs'],
+                        'model': None, 'effort': None, 'messages': []})
+                    for item in native['items']:
+                        kind = item.get('type')
+                        if (kind not in ('agentMessage', 'assistantMessage', 'userMessage', 'steeringUserMessage')
+                                or not isinstance(item.get('id'), str) or not item['id']):
+                            continue
+                        if (native['turnId'], item.get('id'), kind) in metadata_keys:
+                            continue
+                        turn['messages'].append({'kind': kind, 'role': 'assistant' if kind in ('agentMessage', 'assistantMessage') else 'user',
+                                                 **{k: item[k] for k in ('id', 'timestamp', '_timestampSource', '_syntheticId') if k in item}})
                 for turn in turns.values():
                     calls = {item.get('call_id', item.get('id')) for item in turn['items']
                              if item.get('type') in ('function_call', 'custom_tool_call')}
@@ -1074,6 +1132,14 @@ class SessionStore:
                                 break
             for turn in turns.values():
                 turn['_recordedReplyLabel'] = labels.get(turn['turnId'], {})
+            for turn in metadata_turns.values():
+                turn['_recordedReplyLabel'] = labels.get(turn['id'], {})
+                if turn['id'] in completed_turns:
+                    turn['completedAt'] = completed_turns[turn['id']]
+                for item in turn['messages']:
+                    key = (turn['id'], item['id'], item['kind'], item['role'])
+                    if item.get('timestamp') is None and key in message_times:
+                        item['timestamp'], item['_timestampSource'] = message_times[key]
             apply_rollout_message_times(turns.values(), message_times)
             for turn in turns.values():
                 if turn['status'] in ('completed', 'interrupted', 'failed') and turn['turnId'] in completed_turns:
@@ -1084,6 +1150,7 @@ class SessionStore:
             return {'id': thread_id, 'title': meta.get('name') or meta.get('title'), 'cwd': meta['cwd'],
                     'modelProvider': meta.get('model_provider'), 'latestModel': meta.get('model'),
                     'latestTokenUsageInfo': token_usage, 'tokenUsageFromHistory': True,
+                    **({'_historyMetadata': {'id': thread_id, 'turns': list(metadata_turns.values())}} if metadata_turns else {}),
                     'turns': list(turns.values()), 'turnsPagination': {'hasLoadedOldest': not more},
                     'requests': [], 'threadRuntimeStatus': {'type': 'notLoaded'}, 'historyReadSource': 'native-index'}
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
