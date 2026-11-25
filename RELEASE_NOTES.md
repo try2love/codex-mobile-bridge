@@ -2,6 +2,10 @@
 
 本次预览版重点改进长会话阅读、完整历史传输与离线使用，并继续完善 Codex 原生连接、额度展示和文件管理。建议同时更新网关和手机 App，以使用完整的离线功能。
 
+**2026-11-26 桌面更新补丁**：同一 Preview 4 Release 更新桌面安装包。修复 Mac 旧连接凭据待迁移时的更新超时回滚，并为 Windows 补充 Codex 运行时占用预检。从 Preview 3 升级的 Windows 用户仍需先结束任务、正常退出 Codex，以及使用本地连接的 ZCode。Mac 更新后若提示旧凭据待迁移，请在电脑端连接设置中显式迁移并重启网关。
+
+此前下载或安装过 Preview 4 的用户，请在“历史版本与安装包”中点击“刷新”，重新选择 Preview 4 并安装；普通“检查更新”不会提示同版本补丁。请勿先卸载或清除数据。桌面产品源码为 [660defca](https://github.com/try2love/codex-mobile-bridge/commit/660defca47657ed2215765c0e825dc029e84b84b)，Mac ARM64 使用产品代码相同、只补充测试与验收工具的 [91e6730a](https://github.com/try2love/codex-mobile-bridge/commit/91e6730a839e91fd20013157ac3310ce559827aa)。保留原 tag，GitHub 自动源码归档仍对应首次发布；手机安装包不变。
+
 - **完整历史传输与离线阅读**：支持将已保存的会话正文、中间过程和附件下载到手机，复用已有内容、断点续传并恢复未完成任务。离线记录支持按日期清理并回收存储空间。
 - **离线草稿与待发消息**：断网后仍可继续输入，将消息存入待发队列，同时保留下一条草稿。重连后核对原网关、账号和会话，按顺序投递；明确未发送的失败消息可原位编辑或移除，发送结果未知时继续核对，避免重复发送。
 - **长会话加载与展示**：优先展示已有内容，减少缓存读写对前台阅读的影响；完善旧历史补全、过程分页和附件链接，修复部分回复的模型、时间信息缺失，以及新一轮开始后历史显示不完整的问题。关联 [#258](https://github.com/try2love/codex-mobile-bridge/issues/258)。
@@ -22,6 +26,10 @@
 ### English
 
 This preview focuses on long-chat reading, full-history transfers and offline use, with further improvements to Codex native connections, quota displays and file management. Update both the gateway and mobile app for the complete offline feature set.
+
+**Desktop hotfix — November 26, 2026:** the same Preview 4 release receives replacement desktop packages. The hotfix prevents macOS update rollback when legacy connection credentials await migration and adds Windows checks for Codex runtimes holding the installation open. Windows users upgrading from Preview 3 must still finish tasks and quit Codex normally, plus ZCode if using the local connection. If macOS reports pending legacy credentials, explicitly migrate them in the computer's connection settings and restart the gateway.
+
+If you previously downloaded or installed Preview 4, refresh History and installation packages, select Preview 4 again and install it; ordinary Check for updates does not announce same-version patches. Do not uninstall or clear data. Desktop product source: [660defca](https://github.com/try2love/codex-mobile-bridge/commit/660defca47657ed2215765c0e825dc029e84b84b). Mac ARM64 uses [91e6730a](https://github.com/try2love/codex-mobile-bridge/commit/91e6730a839e91fd20013157ac3310ce559827aa), with identical product code and changes only to tests and acceptance tools. The original tag and automatic GitHub source archives remain at the initial release; mobile packages are unchanged.
 
 - **Full-history transfers and offline reading:** download saved messages, intermediate processes and attachments to your phone, reuse existing content, resume interrupted transfers and recover unfinished tasks. Remove offline records by date and reclaim their storage.
 - **Offline drafts and outbox:** keep typing while disconnected, queue a message and retain a separate draft for the next one. After reconnection, verify the original gateway, account and chat before delivering in order. Edit explicitly unsent failures in place or remove them; continue checking unknown results to avoid duplicate sends.
