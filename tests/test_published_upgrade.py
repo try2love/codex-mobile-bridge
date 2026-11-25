@@ -85,7 +85,8 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         self.assertEqual(product['version'], prepare.VERSION)
         self.assertEqual(prepare.VERSION, '2.2.2-preview.4')
         self.assertEqual(prepare.BASELINES, (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True),
-                                           ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True)))
+                                           ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True),
+                                           ('2.2.2-preview.4', 'preview4', True)))
         self.assertEqual(prepare.BASE, 'd79a89c0b58f212323dac2a28b8d99baa32bd281')
         workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text(encoding='utf-8')
         self.assertIn('fetch-depth: 0', workflow)
@@ -114,14 +115,14 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
                 run(version='2.2.2-preview.3')
 
     @unittest.skipUnless(hasattr(hashlib, 'file_digest'), 'Published package downloads use Python 3.13')
-    def test_official_preview3_is_downloaded_and_verified_without_dropping_older_baselines(self):
+    def test_official_preview4_includes_original_zip_and_digest_without_dropping_older_baselines(self):
         source, repository, suffix = 'a'*40, 'try2love/codex-mobile-bridge', 'Windows-x64-Setup.exe'
         run = {'head_sha': source, 'path': '.github/workflows/desktop.yml', 'status': 'completed',
                'conclusion': 'success', 'html_url': 'https://github.com/' + repository + '/actions/runs/123'}
         releases, content = {}, {}
         for version, _, prerelease in prepare.BASELINES:
             names = ['bridge-update.json', 'Codex-Mobile-Bridge-' + version + '-' + suffix]
-            if version == '2.2.1':
+            if version in ('2.2.1', prepare.VERSION):
                 names.append('Codex-Mobile-Bridge-' + version + '-Windows-x64.zip')
             prefix = 'https://github.com/' + repository + '/releases/download/v' + version + '/'
             for name in names:
@@ -146,13 +147,16 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
             provenance = json.loads((work/'provenance.json').read_text())
             self.assertEqual([row['version'] for row in provenance['baselines']], [row[0] for row in prepare.BASELINES])
             self.assertEqual(provenance['source'], source)
-            self.assertEqual(len(downloads.call_args_list), 13)
+            self.assertEqual(len(downloads.call_args_list), 17)
             self.assertEqual({call.args[0] for call in downloads.call_args_list}, set(content))
             for version, directory, _ in prepare.BASELINES:
                 package = 'Codex-Mobile-Bridge-' + version + '-' + suffix
                 self.assertEqual((work/directory/package).read_bytes(), content[
                     'https://github.com/' + repository + '/releases/download/v' + version + '/' + package])
                 self.assertTrue((work/directory/'release.json').exists())
+            name = 'Codex-Mobile-Bridge-' + prepare.VERSION + '-Windows-x64.zip'
+            original = (work/'preview4'/name).read_bytes()
+            self.assertEqual(provenance['baselines'][-1]['sha256'][name], hashlib.sha256(original).hexdigest())
 
     def test_acceptance_platform_selector_preserves_all_or_selects_windows_only(self):
         workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text(encoding='utf-8')

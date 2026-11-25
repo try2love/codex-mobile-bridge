@@ -39,13 +39,58 @@ test('upgrade receipts cannot report success without the real matching ACK and r
   await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:false}})),/restored gateway/);
   assert.equal((await verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}}))).acknowledged,true);
 });
+test('same-version source proof rejects a patched ZIP with the original digest or mismatched official metadata',async t=>{
+  const {originalPreview4Proof}=require('../scripts/smoke-published-upgrade.cjs');
+  const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-original-preview4-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  await fs.mkdir(path.join(directory,'preview4'));
+  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Original official Preview4 ZIP'),version='2.2.2-preview.4';
+  const name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256=createHash('sha256').update(bytes).digest('hex');
+  const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',assets:{'win32-x64':{name,size:bytes.length,sha256}}}));
+  await fs.writeFile(path.join(directory,'preview4','bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,keys.privateKey).toString('base64')}));
+  await fs.writeFile(path.join(directory,'preview4',name),bytes);
+  const asset={name,size:bytes.length,digest:'sha256:'+sha256,browser_download_url:'https://github.com/try2love/codex-mobile-bridge/releases/download/v'+version+'/'+name};
+  const file=path.join(directory,'preview4','release.json');
+  await fs.writeFile(file,JSON.stringify({tag_name:'v'+version,assets:[asset]}));
+  const candidate={sha256:'a'.repeat(64)};
+  assert.equal((await originalPreview4Proof(directory,candidate,'win32','x64',keys.publicKey)).sha256,sha256);
+  await assert.rejects(originalPreview4Proof(directory,{sha256},'win32','x64',keys.publicKey),/different from original/);
+  await fs.writeFile(file,JSON.stringify({tag_name:'v'+version,assets:[{...asset,digest:'sha256:'+'b'.repeat(64)}]}));
+  await assert.rejects(originalPreview4Proof(directory,candidate,'win32','x64',keys.publicKey),/official API digest/);
+});
+test('same-version UI refresh replaces cached catalogue metadata before selection',async()=>{
+  const {selectSameVersionHotfix}=require('../scripts/smoke-published-upgrade.cjs');
+  const renderer=sync.readFileSync(path.join(__dirname,'../desktop/shell/renderer.js'),'utf8');
+  const load=renderer.slice(renderer.indexOf('async function loadUpdateVersions('),renderer.indexOf('async function selectUpdateVersion('));
+  const version='2.2.2-preview.4',name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256='a'.repeat(64);
+  const list=id=>({current:version,releases:[{version,assets:[{id,name,format:'zip'}]}]});
+  const refresh={hidden:false,disabled:false,scrollIntoView(){},getBoundingClientRect:()=>({x:0,y:0,width:100,height:30}),contains:element=>element===refresh};
+  const select={value:'',dispatchEvent(){context.updateVersionsState.version=select.value;context.snapshot={update:{state:'available',selected:true,current:version,version}};}};
+  const context=vm.createContext({innerWidth:1000,innerHeight:800,Event:class{},
+    document:{getElementById:id=>id==='update-versions-refresh'?refresh:select,elementFromPoint:()=>refresh},
+    updateVersionsState:{value:list('original'),version:'',loading:false,selecting:false},snapshot:{update:{}},
+    acceptance:{requests:[],updater:{catalogueAssets:new Map([['new',{asset:{sha256}}]])}},
+    tab(){},renderUpdateVersions(){},updateCacheBusy:()=>false,updateCacheState:{deleting:false},
+    updateVersionAsset:()=>null,updateVersionRelease:()=>null,
+    api:{updateVersions:async()=>{context.acceptance.requests.push('https://api.github.com/repos/try2love/codex-mobile-bridge/releases?per_page=100&page=1');return list('new');}}});
+  vm.runInContext(load,context);refresh.onclick=()=>context.loadUpdateVersions(true);
+  const ui={evaluate:expression=>vm.runInContext(expression,context),call:async(method,event)=>{
+    assert.equal(method,'Input.dispatchMouseEvent');if(event.type==='mouseReleased')await refresh.onclick();
+  }},main={evaluate:expression=>vm.runInContext(expression,context)};
+  const selected=await selectSameVersionHotfix(ui,main,{name,sha256});
+  assert.equal(selected.version,version);assert.equal(context.acceptance.requests.length,1);
+  assert.equal(context.updateVersionsState.value.releases[0].assets[0].id,'new');
+  // A cached/no-op refresh cannot satisfy the acceptance helper.
+  refresh.onclick=async()=>{};
+  await assert.rejects(selectSameVersionHotfix(ui,main,{name,sha256}),/force refresh must fetch/);
+});
 test('candidate transport lets a Preview3 updater authenticate and install Preview4 as a normal update',async t=>{
   const {prepareCandidateRelease}=require('../scripts/smoke-published-upgrade.cjs');
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-forward-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   for(const [version,folder] of [['2.2.1','old'],['2.2.2-preview.1','preview1'],['2.2.2-preview.2','preview2'],['2.2.2-preview.3','preview3']]){
     await fs.mkdir(path.join(directory,folder));
-    await fs.writeFile(path.join(directory,folder,'release.json'),JSON.stringify({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),assets:[]}));
+    await fs.writeFile(path.join(directory,folder,'release.json'),JSON.stringify({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),published_at:'2026-11-01T00:00:00Z',assets:[]}));
   }
   await fs.mkdir(path.join(directory,'candidate'));
   const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic CI ZIP'),version='2.2.2-preview.4';
@@ -74,6 +119,22 @@ test('candidate transport lets a Preview3 updater authenticate and install Previ
   const unknown=new module.exports.Updater({...options,key:generateKeyPairSync('ed25519').publicKey});
   assert.equal((await unknown.check({manual:true})).state,'error');assert.match(unknown.status().message,/签名/);
   assert.equal(applied,1);
+  const originalBytes=Buffer.from('Original same-version cached ZIP'),originalSha=createHash('sha256').update(originalBytes).digest('hex');
+  const downloads=path.join(directory,'same-version-downloads');await fs.mkdir(downloads);
+  const originalCache=path.join(downloads,`verified-${version}-win32-x64-${originalSha}.zip`);await fs.writeFile(originalCache,originalBytes);
+  let sameVersionApplied=0;
+  const same=new module.exports.Updater({...options,current:version,directory:downloads,install:async candidate=>{
+    assert.equal(candidate.transition.intent,'switch-version');assert.equal(candidate.transition.from,version);assert.equal(candidate.transition.to,version);
+    assert.equal(candidate.asset.sha256,sha256);assert.deepEqual(await fs.readFile(candidate.archive),bytes);sameVersionApplied++;
+  }});
+  assert.equal((await same.check({manual:true})).state,'current','ordinary update does not discover a same-version patch');
+  const list=await same.listVersions(),selected=await same.selectVersion(list.releases.find(row=>row.version===version).assets[0].id);
+  assert.equal(selected.current,version);assert.equal(selected.version,version);assert.equal(selected.requiresConfirmation,true);
+  await assert.rejects(same.install({candidateId:selected.candidateId}),/确认/);
+  context.acceptance.requests.length=0;
+  assert.equal((await same.install({candidateId:selected.candidateId,confirmed:true})).state,'restarting');
+  assert.equal(sameVersionApplied,1);assert.deepEqual(await fs.readFile(originalCache),originalBytes);
+  assert.equal(context.acceptance.requests.filter(url=>url.endsWith('/'+name)).length,1,'new digest downloads new bytes rather than the original cache');
 });
 test('acceptance mouse click scrolls an offscreen history action into view and verifies its hit target',async()=>{
   let y=1280,clicks=0,pressed=false,covered=false,disabled=false;
@@ -125,8 +186,8 @@ test('baseline expectations respect old Linux support and published preview mani
     assert.deepEqual(baselinePolicy('2.2.2-preview.1',platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false});
   }
   for(const version of ['2.2.1','2.2.2-preview.1'])assert.deepEqual(baselinePolicy(version,'linux'),{state:'unsupported',includeCandidate:false,previewDiscoveryTested:false});
-  for(const version of ['2.2.2-preview.2','2.2.2-preview.3'])for(const platform of ['darwin','win32','linux'])assert.deepEqual(baselinePolicy(version,platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true});
-  assert.throws(()=>baselinePolicy('2.2.2-preview.4','darwin'),/Unknown official baseline/);
+  for(const version of ['2.2.2-preview.2','2.2.2-preview.3','2.2.2-preview.4'])for(const platform of ['darwin','win32','linux'])assert.deepEqual(baselinePolicy(version,platform),{state:'current',includeCandidate:false,previewDiscoveryTested:false,channelDiscoveryTested:true});
+  assert.throws(()=>baselinePolicy('2.2.2-preview.5','darwin'),/Unknown official baseline/);
 });
 test('credential acceptance runs the production source worker and blocks stable and preview3 before any backup',async t=>{
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-credential-'));
