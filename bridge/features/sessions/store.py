@@ -16,6 +16,26 @@ from pathlib import Path
 ROLLOUT_TIME_BYTES = 2 * 1024 * 1024
 
 
+def project_root_key(path):
+    """Compare registered roots for display without resolving filesystem paths."""
+    if not isinstance(path, str) or not path:
+        return None
+    windows = path.replace('\\', '/')
+    if windows.startswith('//?/'):
+        extended = windows[4:]
+        if extended[:4].lower() == 'unc/':
+            windows = '//' + extended[4:]
+        elif re.match(r'^[A-Za-z]:/', extended):
+            windows = extended
+    drive = re.match(r'^/?([A-Za-z]:/.*)$', windows)
+    if drive:
+        return 'windows', drive[1].rstrip('/').lower()
+    if (path.startswith(('\\\\', '//')) and not windows.startswith(('//?/', '//./'))
+            and re.match(r'^//[^/]+/[^/]+', windows)):
+        return 'windows', windows.rstrip('/').lower()
+    return 'posix', path.rstrip('/') or '/'
+
+
 def _indexed_item_clock(row, item_id):
     if not isinstance(item_id, str) or not item_id or 'item_id' not in row.keys() or row['item_id'] != item_id:
         return {}
@@ -51,6 +71,27 @@ def _recorded_token_usage(payload):
     used = last.get('total_tokens') if isinstance(last, dict) else None
     if type(used) is int and used >= 0:
         return {'last': {'totalTokens': used}, 'modelContextWindow': info.get('model_context_window')}
+    return None
+
+
+def _rollout_metadata_tail(path, size):
+    offset = max(0, size - ROLLOUT_TIME_BYTES)
+    with path.open('rb') as stream:
+        stream.seek(offset)
+        raw = stream.read(size - offset)
+    # At a bounded start, the first record may already be partial.
+    return raw.partition(b'\n')[2] if offset else raw
+
+
+def _last_recorded_usage(raw, thread_id):
+    lines = (line for line in reversed(raw.splitlines()) if b'"token_count"' in line)
+    for record in _records(lines):
+        payload = record.get('payload')
+        if (record.get('type') == 'event_msg' and isinstance(payload, dict) and
+                payload.get('type') == 'token_count' and payload.get('thread_id', thread_id) == thread_id):
+            usage = _recorded_token_usage(payload)
+            if usage is not None:
+                return usage
     return None
 
 
@@ -348,7 +389,8 @@ class SessionStore:
                 bool(database and Path(str(database) + '-shm').exists()), exc)
             raise StoreUnavailable("暂时无法读取 Codex 会话数据库，请稍后重试或重新打开电脑 Codex。") from exc
 
-    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=(), exclude_sources=(), transfer=False):
+    def list(self, query="", limit=100, offset=0, archived=False, source='all', pinned_ids=(), exclude_sources=(),
+             transfer=False, project_roots=False, project_scope=False):
         if source not in ('all', 'desktop', 'cli', 'ide'):
             raise ValueError('不支持的会话来源')
         labels, matches = self._cli_inputs(query)
@@ -397,10 +439,23 @@ class SessionStore:
             rows = conn.execute("SELECT " + ",".join(fields) + " FROM threads WHERE " + " AND ".join(where) + " ORDER BY " + priority + recency + " DESC, id DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
             result = []
             native_projects = None
-            if 'project_id' in columns and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").fetchone():
+            project_tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('projects', 'project_roots')")}
+            root_projects = {}
+            if 'project_id' in columns and 'projects' in project_tables:
                 identifiers = list({row['project_id'] for row in rows if row['project_id']})
                 native_projects = {row['id']: dict(row) for row in conn.execute(
                     'SELECT id,name FROM projects WHERE id IN (' + ','.join('?' for _ in identifiers) + ')', identifiers)} if identifiers else {}
+            if project_roots and {'projects', 'project_roots'} <= project_tables and 'cwd' in columns:
+                directories = {project_root_key(row['cwd']) for row in rows if row['cwd'] and
+                               ('project_id' not in columns or not row['project_id'])}
+                if directories:
+                    conn.create_function('bridge_list_directory', 1, lambda path: project_root_key(path) in directories)
+                    for project in conn.execute('SELECT roots.path, p.id, p.name FROM project_roots AS roots '
+                                                'JOIN projects AS p ON p.id = roots.project_id '
+                                                'WHERE bridge_list_directory(roots.path)'):
+                        root_projects.setdefault(project_root_key(project['path']), []).append(
+                            {'id': project['id'], 'name': project['name']})
             for row in rows:
                 item = dict(row)
                 rollout_path = item.pop('rollout_path', None)
@@ -416,6 +471,12 @@ class SessionStore:
                     item['lastUserInputAt'] = self.last_user_input(rollout_path, item['id'])
                 if native_projects is not None:
                     item['_nativeProject'] = native_projects.get(item.get('project_id'))
+                    if project_scope and item['_nativeProject'] is not None:
+                        item['_nativeProjectHome'] = str(self.home)
+                if root_projects and not item.get('project_id'):
+                    candidates = root_projects.get(project_root_key(item.get('cwd')))
+                    if candidates:
+                        item['_nativeRootProjects'] = candidates
                 origin = self._origin(item)
                 if self.source == 'cli' and self._matches(item):
                     origin = 'cli'
@@ -884,6 +945,9 @@ class SessionStore:
         return None
 
     def history_revision(self, thread_id):
+        return self.history_status(thread_id)['revision']
+
+    def history_status(self, thread_id, *, include_usage=False, known_revision=None):
         rollout = Path(self.get(thread_id)['rollout_path']).resolve()
         if not self._rollout_in_home(rollout):
             raise ValueError('会话记录路径不在 Codex 数据目录中')
@@ -891,9 +955,13 @@ class SessionStore:
             stat = rollout.stat()
         except FileNotFoundError:
             saved = _retained_index_module().pin(self.home, thread_id)
-            return ['native-index-retained', *saved['file'], saved['end'], *saved['signature'],
-                    *(saved['lastTurn'].get(key) for key in ('status', 'started_at', 'completed_at', 'error_json'))]
-        return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+            return {'revision': ['native-index-retained', *saved['file'], saved['end'], *saved['signature'],
+                    *(saved['lastTurn'].get(key) for key in ('status', 'started_at', 'completed_at', 'error_json'))]}
+        revision = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+        result = {'revision': revision}
+        if include_usage and revision != known_revision:
+            result['tokenUsage'] = _last_recorded_usage(_rollout_metadata_tail(rollout, stat.st_size), thread_id)
+        return result
 
     def transfer_snapshot(self, thread_id):
         """Pin the existing rollout prefix. A later append cannot enter this read."""
@@ -1166,15 +1234,8 @@ class SessionStore:
             if key in self.history_cache:
                 self.history_cache.move_to_end(key)
                 return result(self.history_cache[key])
-        with rollout.open('rb') as stream:
-            offset = max(0, stat.st_size - ROLLOUT_TIME_BYTES)
-            stream.seek(offset)
-            raw = stream.read(ROLLOUT_TIME_BYTES)
-        if offset:
-            raw = raw.partition(b'\n')[2]  # The first record may start before the bounded tail.
-        usage = next((value for record in _records(line for line in reversed(raw.splitlines()) if b'"token_count"' in line)
-                      if record.get('type') == 'event_msg' and (payload := record.get('payload') or {}).get('type') == 'token_count'
-                      and (value := _recorded_token_usage(payload)) is not None), None)
+        raw = _rollout_metadata_tail(rollout, stat.st_size)
+        usage = _last_recorded_usage(raw, thread_id)
         times = (*rollout_message_times(raw, thread_id, True, True), usage)
         with self.history_lock:
             self.history_cache[key] = times

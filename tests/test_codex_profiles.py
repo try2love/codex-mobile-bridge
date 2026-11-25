@@ -111,6 +111,21 @@ class IdeProfileTests(CliBridgeFixture):
         self.assertEqual(rows[0]['hostLabel'], 'IDE fixture')
         self.cli.attach.assert_not_called()
 
+    def test_project_grouping_uses_the_selected_profiles_own_registry(self):
+        cwd = self.native_state['cwd']
+        self.bridge.hosts.state = lambda: {'local-projects': {'profile': {
+            'id': 'profile', 'name': 'Profile project', 'rootPaths': [cwd]}}}
+        primary_home = self.home / 'primary-home'
+        primary_home.mkdir()
+        primary = Bridge(primary_home, primary_home / 'data', codex_bin=__file__)
+        self.addCleanup(primary.close)
+        primary.hosts.state = lambda: {'local-projects': {'primary': {
+            'id': 'primary', 'name': 'Primary project', 'rootPaths': [cwd]}}}
+        primary.entries.get = lambda host: self.bridge
+        rows = primary.list(source='ide', entry=self.bridge.host)
+        self.assertEqual([(row['id'], row['projectKey']) for row in rows],
+                         [(self.thread_id, self.bridge.host + '|profile')])
+
     def test_explicit_headless_attach_keeps_identity_and_local_filesystem(self):
         session = self.bridge.activate(self.thread_id)
         self.assertTrue(session.connected)

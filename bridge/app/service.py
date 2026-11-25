@@ -3141,6 +3141,10 @@ class Bridge:
                 options = dict(limit=limit + offset, archived=archived, query=query, source=source,
                                **({'exclude_sources': excluded} if excluded else {}),
                                **({"pinned_ids": sorted(pins)} if pin_order else {}))
+                if bridge.host == 'local' or bridge.host.startswith('codex:'):
+                    options['project_roots'] = True
+                elif isinstance(bridge.store, RemoteStore):
+                    options['project_scope'] = True
                 rows = ([] if source == 'wsl' else bridge.store.poll('list', options) if remote else
                         bridge.store.list(**options))
                 rows = self.hosts.decorate(rows, bridge.host, label, bridge.organization_commands.native_memberships())
