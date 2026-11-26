@@ -2015,3 +2015,52 @@ class AntigravitySafetyTests(unittest.TestCase):
             self.assertEqual(legacy_detail['session']['model'], 'gemini-4-hydrogen')
             self.assertEqual(legacy_detail['session']['effort'], 'xhigh')
             self.assertEqual(legacy_detail['session']['modelDisplayName'], 'Gemini 4 Hydrogen')
+
+    def test_resolve_session_uses_indexed_lookup_and_invalidates_stale_entries(self):
+        adapter = self.adapter()
+        sid = gateway_id('app', CID)
+        listed = adapter.store.list_sessions()
+        self.assertEqual([item['id'] for item in listed], [sid])
+
+        # Subsequent resolve_session hits the O(1) index without rescanning all sessions.
+        with mock.patch.object(adapter.store, 'list_sessions', side_effect=AssertionError('unexpected full list scan')):
+            resolved = adapter.store.resolve_session(sid)
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved['nativeId'], CID)
+            self.assertEqual(resolved['title'], 'Task')
+
+        # Cold brain session is indexed on first fallback lookup and later picks up DB rows.
+        cold_cid = str(uuid.uuid4())
+        cold_sid = gateway_id('app', cold_cid)
+        _write_transcript(self.root, cold_cid, [{'step_index': 0, 'type': 'USER_INPUT', 'content': 'cold start'}])
+        cold_resolved = adapter.store.resolve_session(cold_sid)
+        self.assertIsNotNone(cold_resolved)
+        self.assertFalse(cold_resolved['runtimeKnown'])
+        with mock.patch.object(adapter.store, 'list_sessions', side_effect=AssertionError('unexpected full list scan')):
+            self.assertEqual(adapter.store.resolve_session(cold_sid)['nativeId'], cold_cid)
+
+        (self.root / 'conversation_summaries.db').unlink(missing_ok=True)
+        _create_surface_db(self.root, [
+            self.row,
+            (cold_cid, 'Flushed Task', '', 1, '2026-11-08T03:00:00Z', '[]',
+             'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION',
+             '', '', 0, 0, 0, ''),
+        ])
+        with mock.patch.object(adapter.store, 'list_sessions', side_effect=AssertionError('unexpected full list scan')):
+            flushed = adapter.store.resolve_session(cold_sid)
+            self.assertTrue(flushed['runtimeKnown'])
+            self.assertEqual(flushed['title'], 'Flushed Task')
+
+        # Subagent rows are excluded from top-level indexed resolution, and deleted rows invalidate the cache.
+        child_cid = str(uuid.uuid4())
+        child_sid = gateway_id('app', child_cid)
+        adapter.store._remember_sids({child_sid: ('app', self.root, child_cid)})
+        (self.root / 'conversation_summaries.db').unlink(missing_ok=True)
+        _create_surface_db(self.root, [
+            (child_cid, 'Child Task', '', 1, '2026-11-08T04:00:00Z', '[]',
+             'CASCADE_RUN_STATUS_IDLE', 'CORTEX_TRAJECTORY_SOURCE_CONVERSATION',
+             '', CID, 1, 0, 0, ''),
+        ])
+        self.assertIsNone(adapter.store.resolve_session(child_sid))
+        self.assertIsNone(adapter.store.resolve_session(sid))
+        self.assertNotIn(sid, adapter.store._sid_index)

@@ -157,11 +157,29 @@ def _cap_large_fields(step):
 class AntigravityStore:
     """Discover and read local Antigravity surfaces without mutating state."""
 
+    _SUMMARY_COLUMNS = (
+        'conversation_id, title, preview, step_count, last_modified_time, '
+        'workspace_uris, status, source, project_id, parent_conversation_id, '
+        'nesting_depth, not_fully_idle, killed'
+    )
+    _MAX_SID_INDEX = 4096
+
     def __init__(self, scratch_dir, home=None):
         self.scratch_dir = Path(scratch_dir)
         self.home = Path(home).expanduser().resolve() if home else Path.home().resolve()
         self._transcript_cache = OrderedDict()
         self._cache_lock = threading.Lock()
+        self._sid_index = OrderedDict()
+
+    def _remember_sids(self, mapping):
+        if not mapping:
+            return
+        with self._cache_lock:
+            for sid, target in mapping.items():
+                self._sid_index[sid] = target
+                self._sid_index.move_to_end(sid)
+            while len(self._sid_index) > self._MAX_SID_INDEX:
+                self._sid_index.popitem(last=False)
 
     def surfaces(self):
         """Return existing surface directories in priority order (2.0 -> IDE -> CLI)."""
@@ -274,14 +292,40 @@ class AntigravityStore:
             'runtimeKnown': True,
         }
 
+    def _cold_brain_summary(self, surface, cid):
+        candidate_dir = surface['root'] / 'brain' / cid
+        if candidate_dir.is_symlink() or not candidate_dir.is_dir():
+            return None
+        transcript = candidate_dir / '.system_generated/logs/transcript.jsonl'
+        mtime = transcript.stat().st_mtime if transcript.is_file() else 0.0
+        annotation = read_annotation_pbtxt(surface['root'], cid)
+        return {
+            'id': gateway_id(surface['key'], cid),
+            'nativeId': cid,
+            'surfaceDirKey': surface['key'],
+            'surfaceRoot': str(surface['root']),
+            'provider': 'antigravity',
+            'host': 'local',
+            'backend': surface['key'],
+            'title': str(annotation.get('title') or '').strip() or f'聊天 {cid[:8]}',
+            'cwd': '',
+            'projectId': f'{surface["key"]}:unassigned',
+            'projectName': surface['name'],
+            'updatedAt': mtime,
+            'archived': bool(annotation.get('archived')),
+            'status': 'idle',
+            'notFullyIdle': False,
+            'stepCount': 0,
+            'runtimeKnown': False,
+        }
+
     def list_sessions(self):
         """Return all top-level conversations across discovered surfaces."""
         sessions = []
         seen_native = set()
+        index_updates = {}
         sql = (
-            'SELECT conversation_id, title, preview, step_count, last_modified_time, '
-            'workspace_uris, status, source, project_id, parent_conversation_id, '
-            'nesting_depth, not_fully_idle, killed '
+            f'SELECT {self._SUMMARY_COLUMNS} '
             'FROM conversation_summaries '
             'WHERE nesting_depth = 0 AND (parent_conversation_id IS NULL OR parent_conversation_id = "") '
             'ORDER BY last_modified_time DESC LIMIT 300'
@@ -297,13 +341,46 @@ class AntigravityStore:
                 summary = self._row_to_summary(surface['key'], surface['root'], row, fts_archived=fts_archived)
                 if summary is not None:
                     sessions.append(summary)
+                    index_updates[summary['id']] = (surface['key'], surface['root'], cid)
         sessions.sort(key=lambda item: item.get('updatedAt', 0), reverse=True)
+        self._remember_sids(index_updates)
         return sessions
+
+    def _resolve_indexed_session(self, sid):
+        with self._cache_lock:
+            cached = self._sid_index.get(sid)
+        if not cached:
+            return None
+        dir_key, root, cid = cached
+        surface = next((s for s in self.surfaces() if s['key'] == dir_key and s['root'] == root), None)
+        if surface is not None:
+            db_path = root / 'conversation_summaries.db'
+            rows, fts_archived = self._query_summaries_with_archived(
+                db_path,
+                f'SELECT {self._SUMMARY_COLUMNS} FROM conversation_summaries '
+                'WHERE conversation_id = ? AND nesting_depth = 0 '
+                'AND (parent_conversation_id IS NULL OR parent_conversation_id = "") LIMIT 1',
+                (cid,),
+            )
+            if rows:
+                summary = self._row_to_summary(dir_key, root, rows[0], fts_archived=fts_archived)
+                if summary is not None:
+                    return summary
+            cold = self._cold_brain_summary(surface, cid)
+            if cold is not None:
+                return cold
+        with self._cache_lock:
+            if self._sid_index.get(sid) == cached:
+                self._sid_index.pop(sid, None)
+        return None
 
     def resolve_session(self, sid):
         """Find a conversation by its source-scoped gateway UUID."""
         if not isinstance(sid, str) or not re.fullmatch(r'[0-9a-fA-F-]{36}', sid):
             return None
+        indexed = self._resolve_indexed_session(sid)
+        if indexed is not None:
+            return indexed
         for item in self.list_sessions():
             if item['id'] == sid:
                 return item
@@ -325,10 +402,16 @@ class AntigravityStore:
             cid = self._read_db(db_path, find_id, None)
             if cid:
                 rows, archived = self._query_summaries_with_archived(
-                    db_path, 'SELECT * FROM conversation_summaries WHERE conversation_id = ? '
-                    'AND nesting_depth = 0 AND (parent_conversation_id IS NULL OR parent_conversation_id = "")', (cid,))
+                    db_path,
+                    f'SELECT {self._SUMMARY_COLUMNS} FROM conversation_summaries WHERE conversation_id = ? '
+                    'AND nesting_depth = 0 AND (parent_conversation_id IS NULL OR parent_conversation_id = "")',
+                    (cid,),
+                )
                 if rows:
-                    return self._row_to_summary(surface['key'], surface['root'], rows[0], fts_archived=archived)
+                    summary = self._row_to_summary(surface['key'], surface['root'], rows[0], fts_archived=archived)
+                    if summary is not None:
+                        self._remember_sids({sid: (surface['key'], surface['root'], cid)})
+                        return summary
         # Also check brain/<cid> directory if session was just created before summary flush
         for surface in self.surfaces():
             for candidate_dir in (surface['root'] / 'brain').glob('*') if (surface['root'] / 'brain').is_dir() else ():
@@ -336,28 +419,10 @@ class AntigravityStore:
                 if not re.fullmatch(r'[0-9a-fA-F-]{36}', cid) or candidate_dir.is_symlink():
                     continue
                 if gateway_id(surface['key'], cid) == sid:
-                    transcript = candidate_dir / '.system_generated/logs/transcript.jsonl'
-                    mtime = transcript.stat().st_mtime if transcript.is_file() else 0.0
-                    annotation = read_annotation_pbtxt(surface['root'], cid)
-                    return {
-                        'id': gateway_id(surface['key'], cid),
-                        'nativeId': cid,
-                        'surfaceDirKey': surface['key'],
-                        'surfaceRoot': str(surface['root']),
-                        'provider': 'antigravity',
-                        'host': 'local',
-                        'backend': surface['key'],
-                        'title': str(annotation.get('title') or '').strip() or f'聊天 {cid[:8]}',
-                        'cwd': '',
-                        'projectId': f'{surface["key"]}:unassigned',
-                        'projectName': surface['name'],
-                        'updatedAt': mtime,
-                        'archived': bool(annotation.get('archived')),
-                        'status': 'idle',
-                        'notFullyIdle': False,
-                        'stepCount': 0,
-                        'runtimeKnown': False,
-                    }
+                    cold = self._cold_brain_summary(surface, cid)
+                    if cold is not None:
+                        self._remember_sids({sid: (surface['key'], surface['root'], cid)})
+                        return cold
         return None
 
     def is_native_busy(self, surface_root, conversation_id):
