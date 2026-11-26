@@ -626,6 +626,84 @@ class AntigravityDiscoveryTests(unittest.TestCase):
             self.assertEqual(discovered['antigravity']['installations']['app']['executable'], str(appimage_file))
             self.assertEqual(discovered['antigravity']['version'], '2.33.0')
 
+    def test_daemon_hub_discovery_falls_back_for_token_and_port_with_safety_checks(self):
+        _, mac_image = self.bundle()
+        win_image = self.home/'Programs/Antigravity/resources/bin/language_server.exe'
+        win_image.parent.mkdir(parents=True)
+        win_image.write_bytes(b'fixture')
+
+        daemon_dir = self.home/'.gemini/antigravity/daemon'
+        daemon_dir.mkdir(parents=True)
+        # Other PID, bool PID, invalid token, and oversized files are ignored.
+        (daemon_dir/'hub_11111.json').write_text(json.dumps({
+            'pid': 999, 'httpPort': 11111, 'csrfToken': 'z'*36,
+        }))
+        (daemon_dir/'hub_22222.json').write_text(json.dumps({
+            'pid': True, 'httpPort': 22222, 'csrfToken': 'y'*36,
+        }))
+        (daemon_dir/'hub_33333.json').write_text('x' * 20000)
+        (daemon_dir/'hub_44444.json').write_text(json.dumps({
+            'pid': 123, 'httpPort': 44444, 'csrfToken': 'h'*36,
+        }))
+        target = daemon_dir/'outside.json'
+        target.write_text(json.dumps({'pid': 1, 'httpPort': 55555, 'csrfToken': 's'*36}))
+        (daemon_dir/'hub_55555.json').symlink_to(target)
+
+        args = ['--standalone', '--app_data_dir', 'antigravity']
+        win_identity = {'pid': 123, 'uid': 1, 'image': str(win_image), 'birth': [1, 2]}
+        with mock.patch.object(native.sys, 'platform', 'win32'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=win_identity), \
+                mock.patch.object(native, '_listener', side_effect=lambda _p, port, _img: port == 44444):
+            value = native.endpoint('app', self.home)
+            self.assertEqual(value['address'], 'http://127.0.0.1:44444')
+            self.assertEqual(value['token'], 'h'*36)
+
+        # macOS also falls back to hub_*.json for both token and port when env & logs lack them.
+        mac_identity = {'pid': 123, 'uid': 1, 'image': str(mac_image), 'birth': [1, 2]}
+        with mock.patch.object(native.sys, 'platform', 'darwin'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch('bridge.platforms.macos.codex_daemon_env._environment', return_value={}), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=mac_identity), \
+                mock.patch.object(native, '_listener', side_effect=lambda _p, port, _img: port == 44444):
+            value = native.endpoint('app', self.home)
+            self.assertEqual(value['address'], 'http://127.0.0.1:44444')
+            self.assertEqual(value['token'], 'h'*36)
+
+        # Listener ownership and process generation checks still block mismatched or changed processes.
+        with mock.patch.object(native.sys, 'platform', 'win32'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', side_effect=[win_identity, {**win_identity, 'birth': [2, 3]}]), \
+                mock.patch.object(native, '_listener', return_value=True):
+            with self.assertRaises(ValueError):
+                native.endpoint('app', self.home)
+
+        with mock.patch.object(native.sys, 'platform', 'win32'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=win_identity), \
+                mock.patch.object(native, '_listener', return_value=False):
+            with self.assertRaises(ValueError):
+                native.endpoint('app', self.home)
+
+        # Boolean PID 1 must never match integer pid=1.
+        self.assertEqual(native._daemon_hub_info(self.home, 'antigravity', 1), (None, set()))
+
+        # Invalid token format in hub JSON cannot bypass token validation.
+        (daemon_dir/'hub_44444.json').write_text(json.dumps({
+            'pid': 123, 'httpPort': 44444, 'csrfToken': 'short!',
+        }))
+        with mock.patch.object(native.sys, 'platform', 'win32'), \
+                mock.patch.object(Path, 'home', return_value=self.home), \
+                mock.patch.object(native, '_candidates', return_value=[(123, args)]), \
+                mock.patch.object(native, '_identity', return_value=win_identity), \
+                mock.patch.object(native, '_listener', return_value=True):
+            with self.assertRaises(ValueError):
+                native.endpoint('app', self.home)
+
 
 if __name__ == '__main__':
     unittest.main()

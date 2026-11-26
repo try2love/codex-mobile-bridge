@@ -639,6 +639,55 @@ def _csrf_token(pid, args):
     return None
 
 
+_MAX_HUB_DISCOVERY_BYTES = 16384
+
+
+def _daemon_hub_info(home, data_name, pid):
+    """Read bounded csrfToken and httpPort for a verified PID from daemon/hub_*.json."""
+    if type(pid) is not int or pid <= 0:
+        return None, set()
+    surface_dir = Path(home)/'.gemini'/data_name
+    daemon_dir = surface_dir/'daemon'
+    if surface_dir.is_symlink() or daemon_dir.is_symlink() or not daemon_dir.is_dir():
+        return None, set()
+    candidates = []
+    try:
+        for entry in daemon_dir.glob('hub_*.json'):
+            try:
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                info = entry.stat()
+                if hasattr(os, 'getuid') and info.st_uid != os.getuid():
+                    continue
+                if not 0 < info.st_size <= _MAX_HUB_DISCOVERY_BYTES:
+                    continue
+                candidates.append((info.st_mtime_ns, entry))
+            except OSError:
+                continue
+    except OSError:
+        return None, set()
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    for _, path in candidates[:16]:
+        try:
+            with path.open('rb') as stream:
+                raw = stream.read(_MAX_HUB_DISCOVERY_BYTES + 1)
+            if len(raw) > _MAX_HUB_DISCOVERY_BYTES:
+                continue
+            data = json.loads(raw.decode('utf-8'))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict) or type(data.get('pid')) is not int or data.get('pid') != pid:
+            continue
+        token = data.get('csrfToken')
+        valid_token = token if (isinstance(token, str) and re.fullmatch(r'[A-Za-z0-9_-]{16,256}', token)) else None
+        ports = set()
+        http_port = data.get('httpPort')
+        if type(http_port) is int and 1024 <= http_port <= 65535:
+            ports.add(http_port)
+        return valid_token, ports
+    return None, set()
+
+
 def endpoint(surface, home):
     """Return one same-user, same-surface server, or fail without contacting it."""
     if Path(home).resolve() != Path.home().resolve():
@@ -657,6 +706,9 @@ def endpoint(surface, home):
         if not _trusted_image(before['image'], pid=before['pid']):
             continue
         token = _csrf_token(before['pid'], args)
+        hub_token, hub_ports = _daemon_hub_info(home, data_name, before['pid'])
+        if not token:
+            token = hub_token
         if not token or not re.fullmatch(r'[A-Za-z0-9_-]{16,256}', token):
             continue
         # Read only the matching product's log. A log port alone is never
@@ -673,7 +725,7 @@ def endpoint(surface, home):
             logs = [Path(os.environ.get('APPDATA', ''))/('Antigravity' if surface == 'app' else 'Antigravity IDE')/'logs/language_server.log']
         else:
             logs = [Path(home)/'.config'/('Antigravity' if surface == 'app' else 'Antigravity IDE')/'logs/language_server.log']
-        ports = set()
+        ports = set(hub_ports)
         for log in logs:
             if log.is_file():
                 ports.update(_log_ports(log))
