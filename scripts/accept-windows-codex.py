@@ -431,7 +431,7 @@ def main():
             record = desktop_runtime._read(desktop_runtime.directory(home)/'active.json')
             desktop_runtime.verify_record(record)
             if (record.get('ready') is not True or record.get('home') != str(home.resolve())
-                    or record.get('cli') != str(runtime.resolve())
+                    or record.get('cli') != str(Path(runtime).resolve())
                     or record.get('app', {}).get('pid') != after['mainPids'][0]):
                 raise RuntimeError('Restarted native connection ownership did not match the selected profile')
             unchanged_fixture()
