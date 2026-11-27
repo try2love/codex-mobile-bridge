@@ -49,12 +49,27 @@ $rows=@(foreach($window in $windows) {
         $row.types=@($items | Group-Object {$_.Current.ControlType.ProgrammaticName} | ForEach-Object {@{type=$_.Name;count=$_.Count}})
         $row.signInVisible=@($items | Where-Object {$_.Current.Name -match '^(Sign in|Log in|Log in with ChatGPT|登录|使用 ChatGPT 登录)$'}).Count -gt 0
         $row.buttons=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | ForEach-Object {$_.Current.Name})
+        $row.buttonStates=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | ForEach-Object {
+            @{name=$_.Current.Name;enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen;pidMatches=$_.Current.ProcessId -eq $target}
+        })
         $row.menus=@($items | Where-Object {$_.Current.AutomationId -like 'application-menu-*'} | ForEach-Object {
             @{id=$_.Current.AutomationId;type=$_.Current.ControlType.ProgrammaticName;
               enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen;pidMatches=$_.Current.ProcessId -eq $target;
               patterns=@($_.GetSupportedPatterns() | ForEach-Object {$_.ProgrammaticName})}
         })
         if($advance -and $row.buttons -contains 'About personalized suggestions') {
+            $roles=@($items | Where-Object {$_.Current.ProcessId -eq $target -and
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::RadioButton -and
+                $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
+            $row.onboardingRoles=@($roles | ForEach-Object {$_.Current.Name})
+            if($roles.Count -gt 0) {
+                $selection=$null
+                if($roles[0].TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$selection) -and
+                    -not $selection.Current.IsSelected) {
+                    # Choose a fictional role only in this guarded, account-free hosted profile.
+                    $selection.Select()
+                }
+            }
             $next=@($items | Where-Object {$_.Current.ProcessId -eq $target -and
                 $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
                 $_.Current.Name -eq 'Continue' -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
