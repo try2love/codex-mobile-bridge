@@ -30,6 +30,34 @@ def powershell(command):
         base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
 
 
+def inspect_menu(helper, pid):
+    """Read only this empty test App's window shape and known menu selectors."""
+    return json.loads(powershell("$helper='"+str(helper).replace("'", "''")+"'; $target="+str(pid)+r'''
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+$type=[Reflection.Assembly]::LoadFrom($helper).GetType('CodexQuit')
+$flags=[Reflection.BindingFlags]'NonPublic,Static'
+$windows=$type.GetMethod('Windows',$flags).Invoke($null,@([int]$target))
+$rows=@(foreach($window in $windows) {
+    $row=@{class=$window.ClassName;visible=$window.Visible;tool=$window.Tool;cloaked=$window.Cloaked;
+        owned=$window.Owner -ne [IntPtr]::Zero;hasTitle=-not [string]::IsNullOrWhiteSpace($window.Title);
+        selected=$type.GetMethod('MainWindow',$flags).Invoke($null,@($window))}
+    if($window.ClassName -eq 'Chrome_WidgetWin_1' -and $window.Visible) {
+        $root=[Windows.Automation.AutomationElement]::FromHandle($window.Handle)
+        $items=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $row.types=@($items | Group-Object {$_.Current.ControlType.ProgrammaticName} | ForEach-Object {@{type=$_.Name;count=$_.Count}})
+        $row.signInVisible=@($items | Where-Object {$_.Current.Name -match '^(Sign in|Log in|Log in with ChatGPT|登录|使用 ChatGPT 登录)$'}).Count -gt 0
+        $row.menus=@($items | Where-Object {$_.Current.AutomationId -like 'application-menu-*'} | ForEach-Object {
+            @{id=$_.Current.AutomationId;type=$_.Current.ControlType.ProgrammaticName;
+              enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen;pidMatches=$_.Current.ProcessId -eq $target;
+              patterns=@($_.GetSupportedPatterns() | ForEach-Object {$_.ProgrammaticName})}
+        })
+    }
+    $row
+})
+ConvertTo-Json -InputObject $rows -Depth 8 -Compress
+'''))
+
+
 class Gateway:
     def __init__(self, executable, data, log):
         self.log = log.open('w', encoding='utf-8')
@@ -211,6 +239,12 @@ def main():
                 state = bridge.initialize(request)
                 acknowledged = True
             if state.get('phase') != 'complete':
+                helpers = list(distribution.rglob('codex-quit-helper.exe'))
+                if len(helpers) == 1:
+                    try:
+                        result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0])
+                    except Exception as error:
+                        result['menuObservationError'] = type(error).__name__
                 raise RuntimeError('Actual initialization failed: '+str(state.get('error')))
             after = ready_owner()
             current = {pid: desktop_runtime.process_identity(pid) for pid in after['mainPids']}
