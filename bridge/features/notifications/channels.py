@@ -606,7 +606,6 @@ class Notifications:
         self.desktop_sessions = desktop_sessions
         self.desktop_poll_at = 0
         self.desktop_details = {}
-        self.desktop_cursor = 0
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
         self.delivery_wakeup = threading.Event()
@@ -1297,12 +1296,22 @@ class Notifications:
         logging.debug('notification stage=desktop-list work_ms=%.1f count=%d', (time.monotonic() - listed) * 1000, len(rows))
         if not rows:
             return False
-        # Rotate bounded history reads so one large client's history cannot block
-        # permission notifications or continuously reread every idle transcript.
-        offset = self.desktop_cursor % len(rows)
-        rows = rows[offset:] + rows[:offset]
-        self.desktop_cursor = (offset + 8) % len(rows)
+        # Prioritize active or recently changed sessions so cold-cache backfill
+        # never starves live completion notifications behind idle chats.
         changed, reads = False, 0
+        active_or_changed, cold_candidates = [], []
+
+        def dispatch_turns(item_row, item_current, item_title, turns):
+            nonlocal changed
+            previews = ({t['turnId']: self._answer_preview(t) for t in turns if t.get('turnId')}
+                        if config.get('includeAnswer') else {})
+            for channel, target in targets.items():
+                keys = self._completion_pending({**item_current, 'title': item_title}, turns, target)
+                changed = self._dispatch(config, item_row, item_title, channel, target, keys, True,
+                                         answer_previews=previews) or changed
+                keys = self._attention_pending({**item_current, 'title': item_title}, turns, target)
+                changed = self._dispatch(config, item_row, item_title, channel, target, keys, 'attention') or changed
+
         for row in rows:
             if self.closed.is_set():
                 break
@@ -1326,9 +1335,20 @@ class Notifications:
             key = (row['host'], row['id'])
             signature = (row.get('updatedAt'), row.get('status'), row.get('error'))
             cached = self.desktop_details.get(key)
-            if cached is None or cached[0] != signature or row.get('status') == 'active':
-                if reads >= 8:
-                    continue
+            if row.get('status') == 'active' or (cached is not None and cached[0] != signature):
+                active_or_changed.append((row, selected, current, title, key, signature))
+            elif cached is None:
+                cold_candidates.append((row, selected, current, title, key, signature))
+            else:
+                dispatch_turns(row, current, title, cached[1])
+
+        cold_candidates.sort(key=lambda item: float(item[0].get('updatedAt') or 0), reverse=True)
+        for is_cold, batch in ((False, active_or_changed), (True, cold_candidates)):
+            for row, selected, current, title, key, signature in batch:
+                if self.closed.is_set():
+                    break
+                if is_cold and reads >= 8:
+                    break
                 reads += 1
                 try:
                     read_started = time.monotonic()
@@ -1341,12 +1361,7 @@ class Notifications:
                     self.desktop_details[key] = cached
                 except (OSError, ValueError):
                     continue
-            for channel, target in targets.items():
-                keys = self._completion_pending({**current, 'title': title}, cached[1], target)
-                previews = {t['turnId']: self._answer_preview(t) for t in cached[1] if t.get('turnId')} if config.get('includeAnswer') else {}
-                changed = self._dispatch(config, row, title, channel, target, keys, True, answer_previews=previews) or changed
-                keys = self._attention_pending({**current, 'title': title}, cached[1], target)
-                changed = self._dispatch(config, row, title, channel, target, keys, 'attention') or changed
+                dispatch_turns(row, current, title, cached[1])
         return changed
 
     def _status(self, channel=None, **values):
