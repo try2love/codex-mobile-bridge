@@ -175,10 +175,28 @@ def main():
         bridge.accounts({'action': 'configure', 'desktopExecutable': str(executable)})
         result['packagedGateway'] = True
         result['gatewayPackageSha256'] = hashlib.sha256(packages[0].read_bytes()).hexdigest()
+        def ready_owner():
+            previous = None
+            deadline = time.monotonic()+30
+            while time.monotonic() < deadline:
+                observed = inspect_client(descriptor)
+                result['lastOwnerObservation'] = observed
+                if (not observed.get('unknown') and len(observed.get('mainPids', [])) == 1
+                        and observed == previous):
+                    return observed
+                previous = observed
+                time.sleep(1)
+            # Record only process kinds from this empty test App, never argv or
+            # another process's environment, to distinguish startup from failure.
+            from bridge.platforms.windows.desktop import commands
+            observed_commands = commands(result['lastOwnerObservation']['pids'])
+            result['ownerProcessKinds'] = [
+                {'pid': pid, 'commandAvailable': bool(command),
+                 'electronChild': '--type' in (command or ''), 'utilityHost': '--expose-internals' in (command or '')}
+                for pid, command in observed_commands.items()]
+            raise RuntimeError('Real desktop owner did not become stable within 30 seconds')
         for attempt in range(2):
-            before = inspect_client(descriptor)
-            if before.get('unknown') or len(before.get('mainPids', [])) != 1:
-                raise RuntimeError('Cannot establish the single real desktop owner')
+            before = ready_owner()
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
@@ -194,9 +212,7 @@ def main():
                 acknowledged = True
             if state.get('phase') != 'complete':
                 raise RuntimeError('Actual initialization failed: '+str(state.get('error')))
-            after = inspect_client(descriptor)
-            if after.get('unknown') or len(after.get('mainPids', [])) != 1:
-                raise RuntimeError('Restarted native owner is unavailable')
+            after = ready_owner()
             current = {pid: desktop_runtime.process_identity(pid) for pid in after['mainPids']}
             if previous == current or set(before['pids']) & set(after['pids']):
                 raise RuntimeError('Initialization did not replace the original native processes')
