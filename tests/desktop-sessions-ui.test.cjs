@@ -2294,3 +2294,18 @@ test('desktop account change saves the previous draft before invalidating the ma
  await view.accountChanged(view.provider,{activeId:'old'},{activeId:'new'});
  assert.deepEqual(Array.from(ui.run('window.offlineAccountActions')),['save',view.provider+'|local','refresh']);
 });
+
+test('uploadBinary converts Blob payloads to ArrayBuffer and maps AbortError to retry message',async()=>{
+ const ui=await opened(),view=ui.view;
+ const buffer=new Uint8Array([1,2,3,4]).buffer;
+ ui.run('globalThis.Blob=class { constructor(buf){ this._buf=buf; } arrayBuffer(){ return Promise.resolve(this._buf); } };');
+ const blob=ui.run('new Blob(new Uint8Array([1,2,3,4]).buffer)');
+ const ok=await view.uploadBinary('/api/uploads',blob,'image/png');
+ assert.equal(ok.image,true);
+ const upload=ui.calls.find(c=>c.upload).upload;
+ assert.ok(upload.body instanceof ArrayBuffer);
+ assert.equal(upload.body.byteLength,buffer.byteLength);
+ assert.ok(upload.signal);
+ ui.setUploadHandler(async()=>{throw Object.assign(Error('aborted'),{name:'AbortError'});});
+ await assert.rejects(()=>view.uploadBinary('/api/uploads',blob,'image/png'),/附件上传中断，请重试/);
+});

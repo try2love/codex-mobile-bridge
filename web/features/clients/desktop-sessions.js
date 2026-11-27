@@ -910,7 +910,20 @@ class DesktopSessionsView {
     finally{const current=currentWrite();if(current)this.invalidateReads(provider);if(stopping)this.stopping=false;else{this.pendingWrites.delete(write);this.busy=this.pendingWrites.size>0;}this.updateComposer();if(current&&provider===this.provider)this.refresh();}
   }
   attachmentUrl(key,id,action){const [provider,sid]=JSON.parse(key);return this.path('uploads/'+encodeURIComponent(id)+'/'+action,sid,provider);}
-  async uploadBinary(url,data,type){const response=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':type||'application/octet-stream','X-CSRF-Token':this.csrf()},body:data});const result=await response.json();if(!response.ok){if(response.status===401)this.onUnauthorized();throw Error(result.error||BridgeI18n.t('附件上传失败，请重试'));}return result;}
+  async uploadBinary(url,data,type){
+    const controller=typeof AbortController==='function'?new AbortController():null;
+    const timer=controller?setTimeout(()=>controller.abort(),45000):0;
+    try{
+      const payload=typeof Blob!=='undefined'&&data instanceof Blob&&typeof data.arrayBuffer==='function'?await data.arrayBuffer():data;
+      const response=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':type||'application/octet-stream','X-CSRF-Token':this.csrf()},body:payload,...(controller?{signal:controller.signal}:{})});
+      const result=await response.json();
+      if(!response.ok){if(response.status===401)this.onUnauthorized();throw Error(result.error||BridgeI18n.t('附件上传失败，请重试'));}
+      return result;
+    }catch(error){
+      if(error?.name==='AbortError')throw Error(BridgeI18n.t('附件上传中断，请重试'));
+      throw error;
+    }finally{if(timer)clearTimeout(timer);}
+  }
   uploadAttachment(key,id,file){const [provider,sid]=JSON.parse(key);return this.uploadBinary(this.path('uploads',sid,provider)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),file,'application/octet-stream');}
   requestLimitMessage(){return 'Claude 单次消息与图片编码后不能超过 10 MiB，请减少附件';}
   overRequestLimit(rows){
