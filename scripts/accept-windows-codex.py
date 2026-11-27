@@ -31,10 +31,11 @@ def powershell(command):
         base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
 
 
-def inspect_menu(helper, pid, *, advance_onboarding=False):
+def inspect_menu(helper, pid, *, advance_onboarding=False, skip_tutorial=False):
     """Inspect this empty test App; optionally continue its known first-run page once."""
     return json.loads(powershell("$helper='"+str(helper).replace("'", "''")+"'; $target="+str(pid)+
-        "; $advance="+('$true' if advance_onboarding else '$false')+r'''
+        "; $advance="+('$true' if advance_onboarding else '$false')+
+        "; $skip="+('$true' if skip_tutorial else '$false')+r'''
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
 $type=[Reflection.Assembly]::LoadFrom($helper).GetType('CodexQuit')
 $flags=[Reflection.BindingFlags]'NonPublic,Static'
@@ -77,6 +78,19 @@ $rows=@(foreach($window in $windows) {
                 $invoke=$null
                 if($next[0].TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
                     $row.onboardingContinued=$true
+                    $invoke.Invoke()
+                }
+            }
+        }
+        if($skip -and $row.buttons -contains 'Leave a note on my Desktop' -and
+            $row.buttons -contains 'Turn this spreadsheet into a chart') {
+            $skipButton=@($items | Where-Object {$_.Current.ProcessId -eq $target -and
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+                $_.Current.Name -eq 'Skip' -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
+            if($skipButton.Count -eq 1) {
+                $invoke=$null
+                if($skipButton[0].TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
+                    $row.tutorialSkipped=$true
                     $invoke.Invoke()
                 }
             }
@@ -295,6 +309,7 @@ def main():
                 for pid, command in observed_commands.items()]
             raise RuntimeError('Real desktop owner did not become stable within 30 seconds')
         continued_onboarding = False
+        skipped_tutorial = False
         for attempt in range(2):
             before = ready_owner()
             helpers = list(distribution.rglob('codex-quit-helper.exe'))
@@ -303,9 +318,12 @@ def main():
             deadline = time.monotonic()+60
             while time.monotonic() < deadline:
                 result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0],
-                    advance_onboarding=attempt == 0 and not continued_onboarding)
+                    advance_onboarding=attempt == 0 and not continued_onboarding,
+                    skip_tutorial=attempt == 0 and not skipped_tutorial)
                 if any(window.get('onboardingContinued') for window in result['menuObservation']):
                     continued_onboarding = result['onboardingContinued'] = True
+                if any(window.get('tutorialSkipped') for window in result['menuObservation']):
+                    skipped_tutorial = result['tutorialSkipped'] = True
                 if any(window.get('menus') for window in result['menuObservation']):
                     break
                 time.sleep(3)
