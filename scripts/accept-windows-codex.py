@@ -5,8 +5,10 @@ import base64
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -26,6 +28,42 @@ def powershell(command):
     command = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "+command
     return subprocess.check_output(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
         base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
+
+
+class Gateway:
+    def __init__(self, executable, data, log):
+        self.log = log.open('w', encoding='utf-8')
+        self.process = subprocess.Popen([str(executable), 'management-stream', '--data-dir', str(data)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True, encoding='utf-8')
+        self.responses = queue.Queue()
+        def read():
+            for line in self.process.stdout:
+                self.responses.put(line)
+        threading.Thread(target=read, daemon=True).start()
+
+    def accounts(self, payload):
+        self.process.stdin.write(json.dumps({'action': 'accounts', 'payload': payload})+'\n')
+        self.process.stdin.flush()
+        result = json.loads(self.responses.get(timeout=100))
+        if not result.get('ok'):
+            raise RuntimeError(result.get('error') or 'Packaged management request failed')
+        return result['result']
+
+    def initialize(self, request):
+        value = self.accounts(request)
+        deadline = time.monotonic()+100
+        while time.monotonic() < deadline:
+            state = value.get('switch', {})
+            if state.get('phase') in ('complete', 'failed'):
+                return state
+            time.sleep(1)
+            value = self.accounts({'action': 'list'})
+        raise RuntimeError('Packaged initialization did not settle; no forced termination was sent')
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=40)
+        self.log.close()
 
 
 def main():
@@ -96,7 +134,6 @@ def main():
         from bridge.clients.lifecycle import inspect_client, stop_client
         from bridge.clients.codex import desktop_runtime
         from bridge.platforms.windows import codex_launch
-        from bridge.app.service import Bridge
         home, data = work/'home', work/'gateway'
         home.mkdir(); data.mkdir()
         ordinary_environment = codex_launch.get_environment()
@@ -120,9 +157,24 @@ def main():
             raise RuntimeError('Fresh official App did not start')
         # Let the real first-launch menu become accessible; no sign-in is performed.
         time.sleep(8)
-        bridge = Bridge(home, data, codex_bin=runtime, observation_enabled=lambda: False)
-        manager = bridge.accounts
-        manager.index['desktopExecutable'] = str(executable)
+        packages = list((ROOT/'.tmp/windows-official-artifact').rglob('Codex-Mobile-Bridge-2.2.2-Windows-x64.zip'))
+        if len(packages) != 1:
+            raise RuntimeError('Exact CI Windows gateway package is missing')
+        distribution = work/'gateway-package'
+        with zipfile.ZipFile(packages[0]) as package:
+            for item in package.infolist():
+                if not (distribution/item.filename).resolve().is_relative_to(distribution.resolve()):
+                    raise RuntimeError('Unsafe gateway archive member')
+            package.extractall(distribution)
+        workers = list(distribution.rglob('codex-mobile-gateway.exe'))
+        if len(workers) != 1:
+            raise RuntimeError('Packaged gateway runtime is not unique')
+        (data/'desktop.json').write_text(json.dumps({'codexHome': str(home), 'codexBin': str(runtime),
+            'autoStart': False, 'lan': False, 'tunnel': False, 'connections': []}), encoding='utf-8')
+        bridge = Gateway(workers[0], data, work/'gateway-stderr.log')
+        bridge.accounts({'action': 'configure', 'desktopExecutable': str(executable)})
+        result['packagedGateway'] = True
+        result['gatewayPackageSha256'] = hashlib.sha256(packages[0].read_bytes()).hexdigest()
         for attempt in range(2):
             before = inspect_client(descriptor)
             if before.get('unknown') or len(before.get('mainPids', [])) != 1:
@@ -130,22 +182,18 @@ def main():
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
-            manager.initialize_desktop_runtime(request)
-            manager.thread.join(100)
-            if manager.thread.is_alive():
-                raise RuntimeError('Initialization did not settle; no forced termination was sent')
+            state = bridge.initialize(request)
             acknowledged = False
-            if manager.state.get('phase') == 'failed' and manager.state.get('taskStateUnavailable'):
+            if state.get('phase') == 'failed' and state.get('taskStateUnavailable'):
                 # This newly created profile has no login or chats. Exercise the
                 # existing explicit unavailable-state confirmation without faking an audit.
                 if (home/'auth.json').exists() or list(home.glob('sessions/**/*.jsonl')):
                     raise RuntimeError('Fresh-profile unavailable-state confirmation is no longer safe')
                 request.update(requestId=str(uuid.uuid4()), acknowledgeUnavailable=True)
-                manager.initialize_desktop_runtime(request)
-                manager.thread.join(100)
+                state = bridge.initialize(request)
                 acknowledged = True
-            if manager.thread.is_alive() or manager.state.get('phase') != 'complete':
-                raise RuntimeError('Actual initialization failed: '+str(manager.state.get('error')))
+            if state.get('phase') != 'complete':
+                raise RuntimeError('Actual initialization failed: '+str(state.get('error')))
             after = inspect_client(descriptor)
             if after.get('unknown') or len(after.get('mainPids', [])) != 1:
                 raise RuntimeError('Restarted native owner is unavailable')
