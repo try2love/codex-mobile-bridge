@@ -250,6 +250,17 @@ def main():
             if changes or sessions or LocalApi.posts:
                 result['fixtureObservation'] = {'changedFiles': changes, 'sessionFiles': sessions,
                                                 'syntheticApiPosts': LocalApi.posts}
+                if 'config.toml' in changes:
+                    def leaves(value, prefix=''):
+                        flattened = {}
+                        for key, item in value.items():
+                            path = prefix+'.'+key if prefix else key
+                            flattened.update(leaves(item, path) if isinstance(item, dict) else {path: item})
+                        return flattened
+                    old = leaves(tomllib.loads(fixtures['config.toml'].decode('utf-8')))
+                    new = leaves(tomllib.loads((home/'config.toml').read_text(encoding='utf-8')))
+                    result['fixtureObservation']['configChangedKeys'] = sorted(
+                        key for key in old.keys() | new.keys() if old.get(key) != new.get(key))
                 raise RuntimeError('Isolated account/configuration changed or a conversation request was made')
         ordinary_environment = codex_launch.get_environment()
         environment_observed = True
@@ -355,13 +366,29 @@ def main():
             else:
                 raise RuntimeError('Official App workbench menu did not become available in the hosted profile')
             if attempt == 0:
-                # Capture only after the official workbench has completed onboarding.
-                fixtures = {name: (home/name).read_bytes() for name in fixtures}
+                # Workbench visibility precedes asynchronous first-run settings.
+                # Establish a stable baseline before the gateway lifecycle action.
+                snapshot = {name: (home/name).read_bytes() for name in fixtures}
+                stable_since = time.monotonic()
+                deadline = stable_since+30
+                while time.monotonic() < deadline:
+                    time.sleep(1)
+                    current = {name: (home/name).read_bytes() for name in fixtures}
+                    if current != snapshot:
+                        snapshot, stable_since = current, time.monotonic()
+                    if time.monotonic()-stable_since >= 10:
+                        break
+                else:
+                    raise RuntimeError('Native first-run configuration did not settle before initialization')
+                fixtures = snapshot
+                result['configBaselineStableSeconds'] = 10
             unchanged_fixture()
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
             state = bridge.initialize(request)
+            result.setdefault('initializationStates', []).append({
+                key: state[key] for key in ('phase', 'error', 'taskStateUnavailable') if key in state})
             acknowledged = False
             if state.get('phase') == 'failed' and state.get('taskStateUnavailable'):
                 # This newly created profile has no login or chats. Exercise the
@@ -369,6 +396,8 @@ def main():
                 unchanged_fixture()
                 request.update(requestId=str(uuid.uuid4()), acknowledgeUnavailable=True)
                 state = bridge.initialize(request)
+                result['initializationStates'].append({
+                    key: state[key] for key in ('phase', 'error', 'taskStateUnavailable') if key in state})
                 acknowledged = True
             if state.get('phase') != 'complete':
                 helpers = list(distribution.rglob('codex-quit-helper.exe'))
