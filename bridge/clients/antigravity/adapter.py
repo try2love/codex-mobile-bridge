@@ -849,7 +849,17 @@ class Antigravity:
                 raise ResumePreflightBlocked('请选择原会话中可分支的消息')
             new_cid = self.cli.fork_conversation(cid, step_index, cwd=row.get('cwd'), surface=surface,
                                                  expected_identity=expected_identity)
-            return {'status': 'ready', 'result': {'id': gateway_id(surface, new_cid)}}
+            new_key = gateway_id(surface, new_cid)
+            with self._lock:
+                src_settings = dict(self._settings.get(key) or {})
+            if src_settings:
+                self._update_session_settings(
+                    new_key,
+                    model=src_settings.get('model', _UNSET),
+                    effort=src_settings.get('effort', _UNSET),
+                    work_mode=src_settings.get('workMode', _UNSET),
+                )
+            return {'status': 'ready', 'result': {'id': new_key}}
         if action == 'queue-action':
             if not self.hooks:
                 raise ValueError('排队连接不可用')
@@ -893,8 +903,9 @@ class Antigravity:
                 surface=surface, cid=cid, model=session['model'], effort=session['effort'], cwd=row.get('cwd'),
             )
             before_send = begin_turn if self.hooks and not waiting_by_cid.get(cid) and not self.hooks.has_pending_approvals(key) else None
-            self._send_prompt_or_items(cid, prompt, model=session['model'], effort=session['effort'], surface=surface,
-                                       items=items, media=media, turn_generation=turn_generation, before_send=before_send)
+            self._send_prompt_or_items(cid, prompt, model=session['model'] or None, effort=session['effort'] or None,
+                                       surface=surface, items=items, media=media,
+                                       turn_generation=turn_generation, before_send=before_send)
             return {'status': 'accepted', 'delivery': 'native'}
         if action == 'revert':
             step_index = body.get('stepIndex')

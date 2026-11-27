@@ -209,6 +209,38 @@ class AntigravityForkTests(unittest.TestCase):
             with self.assertRaises(BridgeUnavailable):
                 adapter.call('fork', sid, {'messageId': '4'})
 
+    def test_fork_inherits_parent_model_effort_and_work_mode_and_send_normalizes_empty_model(self):
+        adapter = Antigravity(self.directory, home=self.home)
+        self.addCleanup(adapter.close)
+        sid = gateway_id('app', CID)
+        child_sid = gateway_id('app', CHILD_CID)
+        adapter._update_session_settings(sid, model='MODEL_TEST', effort='high', work_mode='plan')
+        def fake_rpc(method, payload=None, *, surface='app', expected_identity=None):
+            if method == 'GetAllCascadeTrajectories':
+                return {'trajectorySummaries': {CID: {'status': 'CASCADE_RUN_STATUS_IDLE'}}}
+            if method == 'ForkConversation':
+                return {'newCascadeId': CHILD_CID, 'forkedAtStepIndex': 4,
+                        'projectEnvInfo': {'workspaceUris': [self.workspace.resolve().as_uri()]}}
+            return {}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'source_identity', return_value='source', create=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=fake_rpc):
+            res = adapter.call('fork', sid, {'messageId': '4'})
+            self.assertEqual(res['result']['id'], child_sid)
+        self.assertEqual(adapter._settings.get(child_sid), {
+            'model': 'MODEL_TEST', 'effort': 'high', 'workMode': 'plan',
+        })
+        sent = {}
+        with mock.patch.object(adapter.cli, 'available', return_value=True), \
+                mock.patch.object(adapter.cli, 'call_ls_rpc', return_value={}), \
+                mock.patch.object(adapter.cli, 'slash_commands', return_value=[]), \
+                mock.patch.object(adapter.cli, 'send_user_message',
+                                  side_effect=lambda cid, prompt, **kw: sent.update(kw)):
+            adapter._update_session_settings(sid, model='', effort='', work_mode='default')
+            adapter.call('send', sid, {'text': 'hello'})
+        self.assertIsNone(sent['model'])
+        self.assertNotIn('effort', sent)
+
 
 if __name__ == '__main__':
     unittest.main()
