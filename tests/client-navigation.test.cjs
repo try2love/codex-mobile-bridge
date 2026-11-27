@@ -578,3 +578,16 @@ test('account management owns the shared connection chooser and releases its sta
  nav.pending.add('zcode');for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).disabled,true);
  nav.pending.clear();nav.clients[0].connectionMode='private-pipe';for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).client.connectionMode,'private-pipe');release();assert.equal(nav.accountManagementRenderers.size,0);
 });
+
+test('background status poll suppresses error toast after clients are known while explicit refresh notifies',async()=>{
+ const {nav}=fixture(),notices=[];nav.notify=text=>notices.push(text);
+ nav.request=async()=>{throw Error('客户端状态读取超时，请重试。');};
+ nav.clientsKnown=false;
+ await nav.poll();
+ assert.equal(notices.length,1);
+ nav.clientsKnown=true;
+ await nav.poll();
+ assert.equal(notices.length,1);
+ await nav.refresh();
+ assert.equal(notices.length,2);
+});

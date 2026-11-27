@@ -218,11 +218,11 @@ class ClientNavigation {
     else{if(id&&this.view.previewOnly)this.view.confirmCachedList();this.paint();}
     this.onClientStates?.(this.clients);
   }
-  async refresh(){
+  async refresh({silent=false}={}){
     if(this.loading||this.pending.size||this.choosing||document.getElementById('app').hidden)return;
     this.loading=true;const revision=this.revision;
-    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',undefined,signal),{timeout:this.statusTimeout??10000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision===this.revision){this.statusPending=data.pending===true;if(data.refreshError)throw Error(data.refreshError);if(!this.statusPending){ClientLifecycle.reconcile(this.operationFailures,this.managementClients(data.clients));this.applyClients(data);}}}
-    catch(error){this.notify(error.message);}finally{this.loading=false;this.paint();}
+    try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',undefined,signal),{timeout:this.statusTimeout??25000,uncertain:false,message:'客户端状态读取超时，请重试。'});if(revision===this.revision){this.statusPending=data.pending===true;if(data.refreshError)throw Error(data.refreshError);if(!this.statusPending){ClientLifecycle.reconcile(this.operationFailures,this.managementClients(data.clients));this.applyClients(data);}}}
+    catch(error){if(!(silent&&this.clientsKnown))this.notify(error.message);}finally{this.loading=false;this.paint();}
     if(this.clientsKnown&&this.pendingChatLink&&!document.getElementById('app').hidden){const {hash,openCodex}=this.pendingChatLink;this.pendingChatLink=null;try{await this.openChatLink(hash,openCodex);}catch(error){this.notify(error.message);}}
   }
   clear(){this.revision++;this.clients=[];this.clientsKnown=false;this.enabledClients=null;this.pendingChatLink=null;this.choosing=null;this.pending.clear();this.operationFailures?.clear();this.swipeSnapshots.clear();}
@@ -235,7 +235,7 @@ class ClientNavigation {
   }
   poll(fast=false){
     if(document.hidden||document.getElementById('app').hidden||this.hasUncertain()||(fast&&!this.statusPending&&!this.managementClients().some(client=>ClientLifecycle.connection(client).waiting)))return;
-    return this.refresh();
+    return this.refresh({silent:true});
   }
   connection(client){return ClientLifecycle.connection({...client,pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled});}
   managementClients(clients=this.clients){return clients.flatMap(client=>client.id==='codex'&&client.entries?.length?client.entries.map(entry=>({...entry,id:entry.id==='desktop'?'codex':entry.id,parentId:'codex'})):client.id==='claude'&&client.entries?.length?[{...client,enabled:client.nativeEnabled??client.enabled,parentId:'claude'},...client.entries.map(entry=>({...entry,parentId:'claude'}))]:[client]);}
