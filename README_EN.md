@@ -17,7 +17,7 @@
   <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Windows downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fwindows.json&amp;style=flat"></a>
 </p>
 
-<p align="center"><sub>Platform counts include installation assets from all published stable and preview releases (iOS includes its source archive and IPA), excluding update metadata and checksums. Repeat downloads and updater downloads count; these are not user or installation counts. Updated daily.</sub></p>
+<p align="center"><sub>Platform counts include installation assets from all published stable and preview releases (iOS includes its source archive and IPA), excluding update metadata and checksums. Repeat downloads and updater downloads count. Updated daily.</sub></p>
 
 # Codex Mobile Bridge · A remote workbench for desktop agents
 
