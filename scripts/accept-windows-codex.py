@@ -380,6 +380,11 @@ def main():
                         break
                 else:
                     raise RuntimeError('Native first-run configuration did not settle before initialization')
+                settled_config = tomllib.loads(snapshot['config.toml'].decode('utf-8'))
+                if (json.loads(snapshot['auth.json']) != actual_auth
+                        or settled_config.get('model_provider') != actual_config.get('model_provider')
+                        or settled_config.get('model_providers') != actual_config.get('model_providers')):
+                    raise RuntimeError('Native first-run settings changed the isolated authentication or provider')
                 fixtures = snapshot
                 result['configBaselineStableSeconds'] = 10
             unchanged_fixture()
