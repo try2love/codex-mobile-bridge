@@ -33,7 +33,9 @@ def main():
     environment_observed = False
     try:
         archive = work/'official.msix'
-        with urllib.request.urlopen(URL, timeout=90) as response, archive.open('wb') as output:
+        request = urllib.request.Request(URL, headers={
+            'User-Agent': 'Codex-Mobile-Bridge-Release-Acceptance/2.2.2'})
+        with urllib.request.urlopen(request, timeout=90) as response, archive.open('wb') as output:
             if response.headers.get('x-ms-meta-package_identity') != 'OpenAI.Codex':
                 raise RuntimeError('Unexpected official package identity')
             result['officialVersion'] = response.headers.get('x-ms-meta-package_version')
