@@ -11,6 +11,9 @@ on:
       acceptance_only:
         type: boolean
         default: false
+      native_codex_acceptance:
+        type: boolean
+        default: false
       candidate_run_id:
         type: string
         default: ''
@@ -40,6 +43,10 @@ on:
         default: ''
       acceptance_only:
         description: Validate an existing build from official stable and preview1 packages without rebuilding
+        type: boolean
+        default: false
+      native_codex_acceptance:
+        description: Only verify real official Windows Codex initialization in a fresh hosted profile
         type: boolean
         default: false
       candidate_run_id:
@@ -80,8 +87,40 @@ permissions:
   contents: read
   actions: read
 jobs:
+  native-codex:
+    if: inputs.native_codex_acceptance == true && inputs.acceptance_only != true
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check exact native acceptance source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          assert re.fullmatch('[0-9a-f]{40}', source), 'Exact source SHA required'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+          PY
+      - run: python -m pip install -r requirements-desktop.txt
+      - run: python scripts/build-client-helpers.py
+      - name: Real official Codex normal exit, initialization and restart
+        run: python -B scripts/accept-windows-codex.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-official-codex-acceptance
+          path: .tmp/windows-official-codex/result.json
+          if-no-files-found: error
   published-upgrade:
-    if: inputs.acceptance_only == true
+    if: inputs.acceptance_only == true && inputs.native_codex_acceptance != true
     uses: ./.github/workflows/upgrade-acceptance.yml
     secrets:
       UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
@@ -90,7 +129,7 @@ jobs:
       candidate_run_id: ${{ inputs.candidate_run_id }}
       target_os: ${{ inputs.acceptance_target_os }}
   package:
-    if: inputs.acceptance_only != true
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true
     strategy:
       fail-fast: false
       matrix:
@@ -209,7 +248,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
-    if: inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'
     strategy:
       fail-fast: false
       matrix:
@@ -285,7 +324,7 @@ jobs:
           path: .tmp/linux-app-*/desktop-*.png
 
   reuse:
-    if: inputs.acceptance_only != true && (inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse')
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true && (inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse')
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

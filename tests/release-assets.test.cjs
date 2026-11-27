@@ -84,8 +84,10 @@ test('release caller grants reusable desktop read permissions and keeps ordinary
   assert.deepEqual(release.jobs.release.permissions,{contents:'write'});
   assert.equal(build.with.acceptance_only,undefined);
   for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.acceptance_only.default,false);
-  assert.equal(desktop.jobs.package.if,'inputs.acceptance_only != true');
-  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'");
+  assert.equal(desktop.jobs.package.if,'inputs.acceptance_only != true && inputs.native_codex_acceptance != true');
+  for(const entry of ['workflow_call','workflow_dispatch'])assert.equal(desktop.on[entry].inputs.native_codex_acceptance.default,false);
+  assert.equal(desktop.jobs['native-codex'].if,'inputs.native_codex_acceptance == true && inputs.acceptance_only != true');
+  assert.equal(desktop.jobs.linux.if,"inputs.acceptance_only != true && inputs.native_codex_acceptance != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'");
   assert.equal(desktop.on.workflow_dispatch.inputs.build_target.default,'all');
   assert.deepEqual(desktop.on.workflow_dispatch.inputs.build_target.options,['all','intel','mac-windows-reuse','windows-reuse','mac-arm-reuse']);
   assert.equal(desktop.on.workflow_call.inputs.build_target.default,'all');

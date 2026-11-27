@@ -14,6 +14,7 @@ BASELINES = (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True),
              ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True),
              ('2.2.2-preview.4', 'preview4', True))
 ACCEPTANCE_FILES = {'scripts/prepare-upgrade-acceptance.py', 'scripts/smoke-published-upgrade.cjs',
+                    'scripts/accept-windows-codex.py', 'tests/test_windows_official_acceptance.py',
                     'scripts/smoke-macos.cjs', 'tests/macos-smoke-readiness.test.cjs',
                     '.github/workflows/upgrade-acceptance.yml', '.github/workflows/desktop.yml',
                     '.github/workflows/mobile.yml', '.github/workflows/tests.yml',
