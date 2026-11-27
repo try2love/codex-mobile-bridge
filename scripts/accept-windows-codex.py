@@ -416,12 +416,28 @@ def main():
             current = {pid: desktop_runtime.process_identity(pid) for pid in after['mainPids']}
             if previous == current or set(before['pids']) & set(after['pids']):
                 raise RuntimeError('Initialization did not replace the original native processes')
-            client = desktop_runtime.connect(home, runtime)
-            if client is None:
-                raise RuntimeError('Restart did not establish a real native connection')
-            client.close()
+            # The packaged initialization already performs the real metadata
+            # handshake in wait_ready(native_runtime=True). Windows deliberately
+            # rejects a source Python process at this same-image-only pipe.
+            # Independently verify the restarted UI and live owner record here.
+            deadline = time.monotonic()+60
+            while time.monotonic() < deadline:
+                result['restartedMenuObservation'] = inspect_menu(helpers[0], after['mainPids'][0])
+                if any(window.get('menus') for window in result['restartedMenuObservation']):
+                    break
+                time.sleep(2)
+            else:
+                raise RuntimeError('Restarted native workbench did not become visible')
+            record = desktop_runtime._read(desktop_runtime.directory(home)/'active.json')
+            desktop_runtime.verify_record(record)
+            if (record.get('ready') is not True or record.get('home') != str(home.resolve())
+                    or record.get('cli') != str(runtime.resolve())
+                    or record.get('app', {}).get('pid') != after['mainPids'][0]):
+                raise RuntimeError('Restarted native connection ownership did not match the selected profile')
             unchanged_fixture()
             result['checks'].append({'normalQuit': True, 'newNativeOwner': True, 'nativeConnection': True,
+                                     'packagedNativeHandshake': True, 'liveNativeOwnerRecord': True,
+                                     'nativeUiReady': True,
                                      'unavailableStateExplicitlyConfirmed': acknowledged})
         result['ok'] = True
     except Exception as error:
