@@ -188,8 +188,11 @@ def main():
             (home/name).write_bytes(contents)
         result['syntheticAuthOnly'] = True
         def unchanged_fixture():
-            if (any((home/name).read_bytes() != contents for name, contents in fixtures.items())
-                    or list(home.glob('sessions/**/*.jsonl')) or LocalApi.posts):
+            changes = [name for name, contents in fixtures.items() if (home/name).read_bytes() != contents]
+            sessions = len(list(home.glob('sessions/**/*.jsonl')))
+            if changes or sessions or LocalApi.posts:
+                result['fixtureObservation'] = {'changedFiles': changes, 'sessionFiles': sessions,
+                                                'syntheticApiPosts': LocalApi.posts}
                 raise RuntimeError('Isolated account/configuration changed or a conversation request was made')
         ordinary_environment = codex_launch.get_environment()
         environment_observed = True
@@ -243,8 +246,6 @@ def main():
                 or actual_config.get('model_providers', {}).get('isolated_acceptance', {}).get('base_url')
                     != f'http://127.0.0.1:{api.server_port}/v1'):
             raise RuntimeError('Native first-run profile no longer selects the isolated API')
-        fixtures = {name: (home/name).read_bytes() for name in fixtures}
-        unchanged_fixture()
         def ready_owner():
             previous = None
             deadline = time.monotonic()+30
@@ -268,8 +269,20 @@ def main():
         for attempt in range(2):
             before = ready_owner()
             helpers = list(distribution.rglob('codex-quit-helper.exe'))
-            if len(helpers) == 1:
+            if len(helpers) != 1:
+                raise RuntimeError('Packaged native quit helper is not unique')
+            deadline = time.monotonic()+60
+            while time.monotonic() < deadline:
                 result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0])
+                if any(window.get('menus') for window in result['menuObservation']):
+                    break
+                time.sleep(3)
+            else:
+                raise RuntimeError('Official App workbench menu did not become available in the hosted profile')
+            if attempt == 0:
+                # Capture only after the official workbench has completed onboarding.
+                fixtures = {name: (home/name).read_bytes() for name in fixtures}
+            unchanged_fixture()
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
