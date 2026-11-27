@@ -99,6 +99,25 @@ struct Index {
     this.getUIContext().getPromptAction().showToast({ message, duration: 2200 });
   }
 
+  private showWebDialog(url: string, title: string, message: string, cancellable: boolean,
+    confirm: () => void, cancel: () => void): boolean {
+    if (!this.guard.accepts(url, this.controller.getUrl())) { cancel(); return true; }
+    const generation = this.guard.generation;
+    const text = (message || '').slice(0, 500);
+    const prompt = cancellable
+      ? this.getUIContext().getPromptAction().showDialog({
+          title, message: text, buttons: [{ text: '取消', color: '#64748B' }, { text: '确定', color: '#2563EB' }]
+        })
+      : this.getUIContext().getPromptAction().showDialog({
+          title, message: text, buttons: [{ text: '确定', color: '#2563EB' }]
+        });
+    prompt.then(result => {
+      if (!this.guard.accepts(this.controller.getUrl(), this.controller.getUrl(), generation)) { cancel(); return; }
+      if (!cancellable || result.index === 1) { confirm(); } else { cancel(); }
+    }).catch(() => { cancel(); });
+    return true;
+  }
+
   private async connect(raw: string): Promise<void> {
     if (!this.ready || this.opening || (this.webUrl && !this.controllerAttached)) { return; }
     this.opening = true;
@@ -263,6 +282,16 @@ struct Index {
                 if (result === null) { event.result.handleCancel(); } else { event.result.handlePromptConfirm(result); }
               } catch { event.result.handleCancel(); }
               return true;
+            })
+            .onConfirm((event) => {
+              if (!event) { return false; }
+              return this.showWebDialog(event.url, '确认操作', event.message, true,
+                () => { event.result.handleConfirm(); }, () => { event.result.handleCancel(); });
+            })
+            .onAlert((event) => {
+              if (!event) { return false; }
+              return this.showWebDialog(event.url, '提示', event.message, false,
+                () => { event.result.handleConfirm(); }, () => { event.result.handleCancel(); });
             })
             .onLoadIntercept((event) => {
               if (!event) { return true; }
