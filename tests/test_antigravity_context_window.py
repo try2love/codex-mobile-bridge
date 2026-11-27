@@ -98,13 +98,21 @@ class AntigravityContextWindowAndTurnTests(unittest.TestCase):
 
         # RPC failure after cache invalidation must not break detail view
         adapter.cli._invalidate_trajectories_cache('app')
+        failed_calls = []
+        def failing_rpc(m, p=None, *, surface='app'):
+            failed_calls.append(m)
+            if m == 'GetCascadeTrajectoryGeneratorMetadata':
+                raise BridgeUnavailable('down')
+            return {}
         with mock.patch.object(adapter.cli, 'available', return_value=True), \
-                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=lambda m, p=None, *, surface='app': (
-                    (_ for _ in ()).throw(BridgeUnavailable('down'))
-                    if m == 'GetCascadeTrajectoryGeneratorMetadata' else {}
-                )):
+                mock.patch.object(adapter.cli, 'call_ls_rpc', side_effect=failing_rpc):
             detail = adapter.call('detail', sid)
             self.assertIsNone(detail['session']['contextUsage']['contextWindow'])
+            self.assertEqual(failed_calls.count('GetCascadeTrajectoryGeneratorMetadata'), 1)
+            # Subsequent poll with unchanged stepCount reuses negative cache instead of hammering RPC
+            detail = adapter.call('detail', sid)
+            self.assertIsNone(detail['session']['contextUsage']['contextWindow'])
+            self.assertEqual(failed_calls.count('GetCascadeTrajectoryGeneratorMetadata'), 1)
 
         # Transcript without token counters still synthesizes contextUsage from estimatedTokensUsed
         adapter.cli._invalidate_trajectories_cache('app')

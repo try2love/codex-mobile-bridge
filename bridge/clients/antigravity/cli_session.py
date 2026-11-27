@@ -698,11 +698,16 @@ class AntigravityCli:
             cached = self._context_window_cache.get(cache_key)
             if max_age > 0 and cached and cached[1] == step_count and (now - cached[0]) < max_age:
                 return dict(cached[2]) if isinstance(cached[2], dict) else None
-        res = self.call_ls_rpc(
-            'GetCascadeTrajectoryGeneratorMetadata',
-            {'cascadeId': conversation_id},
-            surface=surface,
-        )
+        try:
+            res = self.call_ls_rpc(
+                'GetCascadeTrajectoryGeneratorMetadata',
+                {'cascadeId': conversation_id},
+                surface=surface,
+            )
+        except BridgeUnavailable:
+            with self._lock:
+                self._context_window_cache[cache_key] = (time.monotonic(), step_count, None)
+            raise
         entries = res.get('generatorMetadata') or res.get('generator_metadata')
         found = None
         if isinstance(entries, list):
