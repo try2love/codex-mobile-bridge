@@ -241,7 +241,10 @@ class CodexQuit {
                 if(trigger.TryGetCurrentPattern(ExpandCollapsePattern.Pattern,out openPattern)) {
                     var expand=(ExpandCollapsePattern)openPattern;
                     if(expand.Current.ExpandCollapseState!=ExpandCollapseState.LeafNode)openMenu=()=>expand.Expand();
-                } else if(trigger.TryGetCurrentPattern(InvokePattern.Pattern,out openPattern)) {
+                }
+                // LeafNode exposes an inactive ExpandCollapse pattern. Its
+                // Invoke action can still open the application's lazy menu.
+                if(openMenu==null&&trigger.TryGetCurrentPattern(InvokePattern.Pattern,out openPattern)) {
                     var invoke=(InvokePattern)openPattern;openMenu=()=>invoke.Invoke();
                 }
             }

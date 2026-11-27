@@ -433,6 +433,32 @@ class DesktopRuntimeAccountsTests(unittest.TestCase):
         self.mocks['stop'].assert_called_once()
         self.mocks['launcher_settings'].assert_called_once_with(self.app.executable)
 
+    def test_windows_normal_initialize_waits_for_exit_before_configuring_and_restarting(self):
+        self.mocks['identity'].return_value = {'pid': 41, 'image': os.path.normcase(str(self.app.executable)), 'created': 12345, 'session': 1, 'parent': 10}
+        order = []
+        self.mocks['stop'].side_effect = lambda *a, **kw: order.append('normal-quit')
+        self.manager.wait_stopped.side_effect = lambda: order.append('exited')
+        self.mocks['configure'].side_effect = lambda *a: order.append('configure')
+        self.app.start.side_effect = lambda: order.append('start')
+        self.manager.wait_ready.side_effect = lambda *a, **kw: order.append('ready')
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.platforms.windows.codex_daemon_env.read_process_environment', return_value=({'CODEX_HOME': str(self.home)}, None)), \
+             patch('bridge.platforms.windows.desktop.commands', return_value={41: str(self.app.executable)}):
+            self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'complete')
+        self.assertEqual(order, ['normal-quit', 'exited', 'configure', 'start', 'ready'])
+
+    def test_windows_unconfirmed_quit_never_configures_or_launches_a_second_app(self):
+        self.mocks['identity'].return_value = {'pid': 41, 'image': os.path.normcase(str(self.app.executable)), 'created': 12345, 'session': 1, 'parent': 10}
+        self.mocks['stop'].side_effect = ValueError('native confirmation pending')
+        with patch.object(accounts_module, 'sys', SimpleNamespace(platform='win32')), \
+             patch('bridge.platforms.windows.codex_daemon_env.read_process_environment', return_value=({'CODEX_HOME': str(self.home)}, None)), \
+             patch('bridge.platforms.windows.desktop.commands', return_value={41: str(self.app.executable)}):
+            self.run_initialization()
+        self.assertEqual(self.manager.state['phase'], 'failed')
+        self.mocks['configure'].assert_not_called()
+        self.app.start.assert_not_called()
+
     def test_pending_gateway_submission_blocks_initialization_before_worker(self):
         self.bridge.submissions['chat:submission'] = {'status': 'unknown', 'title': 'Pending chat'}
         with self.assertRaisesRegex(ValueError, 'Pending chat'):

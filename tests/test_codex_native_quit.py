@@ -169,9 +169,10 @@ function render(){
   if(mode==='duplicate')content.innerHTML+='<div role="menuitem" tabindex="0" class="quit">'+label+' '+accelerator+'</div>';
   for(const item of document.querySelectorAll('.quit'))item.addEventListener('click',()=>window.fixture.quit());
 }
-file.addEventListener('click',()=>file.getAttribute('aria-expanded')==='false'?open():close());
+file.addEventListener('click',()=>content.hidden?open():close());
+if(mode==='invoke-menu'){file.removeAttribute('aria-haspopup');file.removeAttribute('aria-expanded');}
 function close(){file.setAttribute('aria-expanded','false');content.hidden=true;content.replaceChildren();}
-if(!['closed-menu','delayed-menu','closed-cancelled','cancel-after-open','duplicate-trigger'].includes(mode)){file.setAttribute('aria-expanded','true');content.hidden=false;render();}
+if(!['closed-menu','invoke-menu','delayed-menu','closed-cancelled','cancel-after-open','duplicate-trigger'].includes(mode)){file.setAttribute('aria-expanded','true');content.hidden=false;render();}
 if(mode==='duplicate-trigger')file.parentElement.append(file.cloneNode(true));
 </script>'''
 
@@ -222,7 +223,7 @@ class CodexNativeQuit(unittest.TestCase):
         (app/'main.js').write_text(MAIN, encoding='utf-8')
         (app/'preload.js').write_text(PRELOAD, encoding='utf-8')
         state = target/'resources'
-        for mode in ('normal', 'hidden', 'closed-menu', 'delayed-menu', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'wrong-creation', 'closed-cancelled', 'cancel-after-open', 'duplicate-trigger'):
+        for mode in ('normal', 'hidden', 'closed-menu', 'invoke-menu', 'delayed-menu', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'wrong-creation', 'closed-cancelled', 'cancel-after-open', 'duplicate-trigger'):
             with self.subTest(mode=mode):
                 for name in ('stop', 'ready.json', 'dispatches.log', 'reopens.log', 'expands.log'):
                     (state/name).unlink(missing_ok=True)
@@ -252,13 +253,13 @@ class CodexNativeQuit(unittest.TestCase):
                     rows = [json.loads(line) for line in output.splitlines()]
                     reply = rows[-1]
                     sent = (state/'dispatches.log').read_text().splitlines() if (state/'dispatches.log').exists() else []
-                    expected = mode in ('normal', 'closed-menu', 'delayed-menu', 'pending')
+                    expected = mode in ('normal', 'closed-menu', 'invoke-menu', 'delayed-menu', 'pending')
                     self.assertEqual(len(sent), int(expected), output)
                     self.assertEqual(sum(row.get('quitPhase') == 'dispatching' for row in rows), int(expected), output)
-                    opened = mode in ('closed-menu', 'delayed-menu', 'cancel-after-open')
+                    opened = mode in ('closed-menu', 'invoke-menu', 'delayed-menu', 'cancel-after-open')
                     self.assertEqual(sum(row.get('quitPhase') == 'opening-menu' for row in rows), int(opened), output)
                     self.assertEqual(reply['pid'], pid)
-                    if mode in ('normal', 'closed-menu', 'delayed-menu'):
+                    if mode in ('normal', 'closed-menu', 'invoke-menu', 'delayed-menu'):
                         # The helper may finish before Electron's child cleanup.
                         # Independently require actual normal exit, without stop.
                         self.assertIn(reply['quitState'], ('exited', 'submitted'), output)
