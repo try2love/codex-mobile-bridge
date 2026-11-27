@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="23501" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="launch-controller">
+    <device id="retina6_12" orientation="portrait" appearance="light"/>
+    <dependencies>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23501"/>
+        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <scenes><scene sceneID="launch-scene">
+        <objects>
+            <viewController id="launch-controller" sceneMemberID="viewController">
+                <view key="view" contentMode="scaleToFill" id="launch-view">
+                    <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                    <subviews>
+                        <imageView userInteractionEnabled="NO" contentMode="scaleAspectFit" image="Brand" translatesAutoresizingMaskIntoConstraints="NO" id="launch-icon">
+                            <rect key="frame" x="148.5" y="378" width="96" height="96"/>
+                            <constraints>
+                                <constraint firstAttribute="width" constant="96" id="icon-width"/>
+                                <constraint firstAttribute="height" constant="96" id="icon-height"/>
+                            </constraints>
+                        </imageView>
+                    </subviews>
+                    <viewLayoutGuide key="safeArea" id="safe-area"/>
+                    <color key="backgroundColor" red="0.98" green="0.98" blue="0.976" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                    <constraints>
+                        <constraint firstItem="launch-icon" firstAttribute="centerX" secondItem="launch-view" secondAttribute="centerX" id="center-x"/>
+                        <constraint firstItem="launch-icon" firstAttribute="centerY" secondItem="launch-view" secondAttribute="centerY" id="center-y"/>
+                    </constraints>
+                </view>
+            </viewController>
+            <placeholder placeholderIdentifier="IBFirstResponder" id="first-responder" sceneMemberID="firstResponder"/>
+        </objects>
+    </scene></scenes>
+    <resources><image name="Brand" width="256" height="256"/></resources>
+</document>

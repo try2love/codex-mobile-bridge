@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root" android:layout_width="match_parent"
+    android:layout_height="match_parent" android:background="@color/canvas"
+    android:orientation="vertical">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp"
+            android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="8dp">
+            <ImageView android:layout_width="24dp" android:layout_height="24dp"
+                android:src="@drawable/brand" android:importantForAccessibility="no" />
+            <TextView android:id="@+id/site_title" android:layout_width="0dp"
+                android:layout_height="wrap_content" android:layout_weight="1"
+                android:layout_marginStart="10dp" android:textColor="@color/brand"
+                android:text="Codex 手机助手" android:textSize="13sp"
+                android:maxLines="1" android:ellipsize="middle" />
+            <LinearLayout android:id="@+id/home_connection" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:layout_marginStart="8dp"
+                android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone">
+                <ProgressBar android:id="@+id/home_spinner" style="?android:attr/progressBarStyleSmall"
+                    android:layout_width="10dp" android:layout_height="10dp" android:layout_marginEnd="4dp"
+                    android:indeterminateTint="#557aa7" />
+                <TextView android:id="@+id/home_connection_text" android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" android:textSize="10sp" android:maxLines="1" />
+            </LinearLayout>
+            <Button android:id="@+id/scan" style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content" android:layout_height="48dp"
+                android:minWidth="0dp" android:paddingStart="12dp" android:paddingEnd="12dp"
+                android:drawableStart="@drawable/ic_scan" android:drawablePadding="6dp"
+                android:text="扫码连接" android:textSize="13sp" />
+            <Button android:id="@+id/menu" style="?android:attr/borderlessButtonStyle"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:visibility="gone"
+                android:text="⋯" android:textSize="24sp" android:contentDescription="连接菜单" />
+        </LinearLayout>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1">
+    <LinearLayout android:id="@+id/browser" android:orientation="vertical"
+        android:layout_width="match_parent" android:layout_height="match_parent"
+        android:visibility="gone">
+        <ProgressBar android:id="@+id/progress" style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent" android:layout_height="3dp"
+            android:max="100" android:visibility="invisible" />
+        <FrameLayout android:layout_width="match_parent" android:layout_height="0dp"
+            android:layout_weight="1">
+            <WebView android:id="@+id/web" android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+            <LinearLayout android:id="@+id/error_panel" android:layout_width="match_parent"
+                android:layout_height="match_parent" android:orientation="vertical"
+                android:gravity="center" android:padding="32dp" android:background="@color/canvas"
+                android:visibility="gone">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="暂时无法连接" android:textSize="24sp" android:textStyle="bold"
+                    android:textColor="@color/brand" />
+                <TextView android:id="@+id/connection_error" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                    android:gravity="center" android:textColor="#666666" android:textSize="15sp" />
+                <Button android:id="@+id/retry" android:layout_width="match_parent"
+                    android:layout_height="56dp" android:layout_marginTop="24dp"
+                    android:text="重新连接" android:textColor="#FFFFFF"
+                    android:backgroundTint="@color/brand" />
+                <Button android:id="@+id/error_settings" style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="match_parent" android:layout_height="56dp"
+                    android:text="修改连接地址" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+    <ScrollView android:id="@+id/setup" android:layout_width="match_parent"
+        android:layout_height="match_parent" android:fillViewport="true" android:background="@color/canvas">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center_horizontal"
+            android:paddingStart="28dp" android:paddingEnd="28dp" android:paddingTop="36dp"
+            android:paddingBottom="28dp">
+            <ImageView android:layout_width="76dp" android:layout_height="76dp"
+                android:src="@drawable/brand" android:importantForAccessibility="no" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="22dp" android:text="随时，继续对话"
+                android:textColor="@color/brand" android:textSize="28sp" android:textStyle="bold" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:text="连接电脑上的 Codex 手机助手"
+                android:textColor="#727272" android:textSize="15sp" />
+            <RadioGroup android:id="@+id/modes" android:layout_width="match_parent"
+                android:layout_height="52dp" android:layout_marginTop="32dp" android:orientation="horizontal">
+                <RadioButton android:id="@+id/temporary" android:layout_width="0dp"
+                    android:layout_height="match_parent" android:layout_weight="1"
+                    android:layout_marginEnd="4dp" android:button="@null" android:gravity="center"
+                    android:background="@drawable/mode_background" android:textColor="@color/mode_text"
+                    android:textSize="15sp" android:text="临时访问" />
+                <RadioButton android:id="@+id/fixed" android:layout_width="0dp"
+                    android:layout_height="match_parent" android:layout_weight="1"
+                    android:layout_marginStart="4dp" android:button="@null" android:gravity="center"
+                    android:background="@drawable/mode_background" android:textColor="@color/mode_text"
+                    android:textSize="15sp" android:text="固定域名" />
+            </RadioGroup>
+            <TextView android:id="@+id/mode_hint" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:layout_marginTop="14dp"
+                android:textSize="13sp" android:textColor="#727272" android:lineSpacingExtra="4dp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="24dp" android:text="连接地址" android:textSize="14sp"
+                android:textColor="@color/brand" />
+            <EditText android:id="@+id/address" android:layout_width="match_parent"
+                android:layout_height="56dp" android:layout_marginTop="10dp"
+                android:background="@drawable/input_background" android:paddingStart="16dp"
+                android:paddingEnd="16dp" android:singleLine="true" android:inputType="textUri"
+                android:importantForAutofill="no" android:imeOptions="actionGo"
+                android:textSize="16sp" android:hint="https://…" />
+            <Button android:id="@+id/paste" style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content" android:layout_height="48dp"
+                android:layout_gravity="end" android:text="粘贴地址" />
+            <CheckBox android:id="@+id/auto_connect" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="48dp"
+                android:text="下次打开自动连接" android:textSize="14sp" />
+            <TextView android:id="@+id/address_error" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:textColor="#B3261E"
+                android:accessibilityLiveRegion="polite" android:visibility="gone" />
+            <Button android:id="@+id/connect" android:layout_width="match_parent"
+                android:layout_height="58dp" android:layout_marginTop="14dp"
+                android:backgroundTint="@color/brand" android:textColor="#FFFFFF"
+                android:text="连接并开始聊天" android:textSize="16sp" />
+            <Button android:id="@+id/resume" style="?android:attr/borderlessButtonStyle"
+                android:layout_width="match_parent" android:layout_height="48dp"
+                android:text="返回当前聊天" android:visibility="gone" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="24dp" android:gravity="center"
+                android:text="登录时勾选「记住登录」，同一地址下 30 天免输密码。\n电脑、Codex 和助手需保持运行。"
+                android:textColor="#888888" android:textSize="12sp" android:lineSpacingExtra="5dp" />
+        </LinearLayout>
+    </ScrollView>
+    </FrameLayout>
+</LinearLayout>

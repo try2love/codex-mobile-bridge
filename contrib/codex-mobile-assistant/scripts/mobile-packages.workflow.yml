@@ -1,0 +1,77 @@
+name: Build mobile packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Packages to build
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - android
+          - ios
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    if: ${{ inputs.platform != 'ios' }}
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobile/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Prepare Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK
+        run: '"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexMobile-Android-APK
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    if: ${{ inputs.platform != 'android' }}
+    name: iOS unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobile/ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build iPhone app
+        run: |
+          xcodebuild -project CodexMobile.xcodeproj -scheme CodexMobile \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        run: bash package-trollstore.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexMobile-iOS-unsigned-IPA
+          path: mobile/ios/package/CodexMobile-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

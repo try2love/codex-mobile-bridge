@@ -1,0 +1,11 @@
+# Windows launcher dependencies, known build environment: Python 3.13
+bcrypt==5.0.0
+cffi==2.1.1
+cryptography==50.0.1
+customtkinter==5.2.2
+darkdetect==0.8.0
+invoke==3.0.3
+paramiko==4.0.0
+pillow==12.2.0
+pycparser==3.0
+PyNaCl==1.6.2

@@ -1,0 +1,14 @@
+* text=auto
+*.py text eol=lf
+*.pyw text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.command text eol=lf
+*.png binary
+*.ico binary
+*.woff2 binary
+*.woff binary
+*.ttf binary

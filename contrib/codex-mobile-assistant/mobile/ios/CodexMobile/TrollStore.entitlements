@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.private.persona-mgmt</key><true/>
+    <key>com.apple.private.security.no-sandbox</key><true/>
+    <key>com.apple.private.security.storage.AppDataContainers</key><true/>
+    <key>platform-application</key><true/>
+    <!-- Platform apps need explicit access to the surfaces used by WKWebView. -->
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>IOSurfaceRoot</string>
+        <string>IOSurfaceRootUserClient</string>
+        <string>IOSurfaceSendRight</string>
+        <string>AGXDevice</string>
+        <string>AGXDeviceUserClient</string>
+        <string>AGXSharedUserClient</string>
+        <string>AGXGLContext</string>
+        <string>AGXCommandQueue</string>
+        <string>IOGPUDeviceUserClient</string>
+    </array>
+    <key>com.apple.security.exception.iokit-user-client-class</key>
+    <array>
+        <string>IOSurfaceRoot</string>
+        <string>IOSurfaceRootUserClient</string>
+        <string>IOSurfaceSendRight</string>
+        <string>AGXDevice</string>
+        <string>AGXDeviceUserClient</string>
+        <string>AGXSharedUserClient</string>
+        <string>AGXGLContext</string>
+        <string>AGXCommandQueue</string>
+        <string>IOGPUDeviceUserClient</string>
+    </array>
+</dict>
+</plist>
