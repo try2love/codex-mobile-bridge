@@ -31,11 +31,12 @@ def powershell(command):
         base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
 
 
-def inspect_menu(helper, pid, *, advance_onboarding=False, skip_tutorial=False):
+def inspect_menu(helper, pid, *, advance_onboarding=False, skip_tutorial=False, confirm_skip=False):
     """Inspect this empty test App; optionally continue its known first-run page once."""
     return json.loads(powershell("$helper='"+str(helper).replace("'", "''")+"'; $target="+str(pid)+
         "; $advance="+('$true' if advance_onboarding else '$false')+
-        "; $skip="+('$true' if skip_tutorial else '$false')+r'''
+        "; $skip="+('$true' if skip_tutorial else '$false')+
+        "; $confirmSkip="+('$true' if confirm_skip else '$false')+r'''
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
 $type=[Reflection.Assembly]::LoadFrom($helper).GetType('CodexQuit')
 $flags=[Reflection.BindingFlags]'NonPublic,Static'
@@ -92,6 +93,19 @@ $rows=@(foreach($window in $windows) {
                 $invoke=$null
                 if($skipButton[0].TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
                     $row.tutorialSkipped=$true
+                    $invoke.Invoke()
+                }
+            }
+        }
+        if($confirmSkip -and $row.texts -contains 'Skip setup?' -and
+            $row.texts -contains ("You"+[char]0x2019+"ll go straight to ChatGPT") -and $row.buttons -contains 'Keep setting up') {
+            $confirm=@($items | Where-Object {$_.Current.ProcessId -eq $target -and
+                $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and
+                $_.Current.Name -eq 'Go to ChatGPT' -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen})
+            if($confirm.Count -eq 1) {
+                $invoke=$null
+                if($confirm[0].TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
+                    $row.tutorialSkipConfirmed=$true
                     $invoke.Invoke()
                 }
             }
@@ -311,6 +325,7 @@ def main():
             raise RuntimeError('Real desktop owner did not become stable within 30 seconds')
         continued_onboarding = False
         skipped_tutorial = False
+        confirmed_tutorial_skip = False
         for attempt in range(2):
             before = ready_owner()
             helpers = list(distribution.rglob('codex-quit-helper.exe'))
@@ -320,7 +335,8 @@ def main():
             while time.monotonic() < deadline:
                 result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0],
                     advance_onboarding=attempt == 0 and not continued_onboarding,
-                    skip_tutorial=attempt == 0 and not skipped_tutorial)
+                    skip_tutorial=attempt == 0 and not skipped_tutorial,
+                    confirm_skip=attempt == 0 and skipped_tutorial and not confirmed_tutorial_skip)
                 for window in result['menuObservation']:
                     if window.get('selected'):
                         page = {key: window.get(key, []) for key in ('buttons', 'texts', 'onboardingRoles')}
@@ -331,6 +347,8 @@ def main():
                     continued_onboarding = result['onboardingContinued'] = True
                 if any(window.get('tutorialSkipped') for window in result['menuObservation']):
                     skipped_tutorial = result['tutorialSkipped'] = True
+                if any(window.get('tutorialSkipConfirmed') for window in result['menuObservation']):
+                    confirmed_tutorial_skip = result['tutorialSkipConfirmed'] = True
                 if any(window.get('menus') for window in result['menuObservation']):
                     break
                 time.sleep(3)
