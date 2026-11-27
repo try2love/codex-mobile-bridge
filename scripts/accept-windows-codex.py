@@ -230,6 +230,21 @@ def main():
         bridge.accounts({'action': 'configure', 'desktopExecutable': str(executable)})
         result['packagedGateway'] = True
         result['gatewayPackageSha256'] = hashlib.sha256(packages[0].read_bytes()).hexdigest()
+        # Establish the preservation baseline after the native App's first-run
+        # normalization, while verifying that it still selects only our fake API.
+        import tomllib
+        actual_auth = json.loads((home/'auth.json').read_bytes())
+        actual_config = tomllib.loads((home/'config.toml').read_text(encoding='utf-8'))
+        result['firstRunNormalizedFiles'] = [name for name, contents in fixtures.items()
+                                             if (home/name).read_bytes() != contents]
+        if (actual_auth.get('OPENAI_API_KEY') != 'isolated-acceptance-not-a-real-key'
+                or actual_auth.get('tokens')
+                or actual_config.get('model_provider') != 'isolated_acceptance'
+                or actual_config.get('model_providers', {}).get('isolated_acceptance', {}).get('base_url')
+                    != f'http://127.0.0.1:{api.server_port}/v1'):
+            raise RuntimeError('Native first-run profile no longer selects the isolated API')
+        fixtures = {name: (home/name).read_bytes() for name in fixtures}
+        unchanged_fixture()
         def ready_owner():
             previous = None
             deadline = time.monotonic()+30
@@ -252,6 +267,9 @@ def main():
             raise RuntimeError('Real desktop owner did not become stable within 30 seconds')
         for attempt in range(2):
             before = ready_owner()
+            helpers = list(distribution.rglob('codex-quit-helper.exe'))
+            if len(helpers) == 1:
+                result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0])
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
