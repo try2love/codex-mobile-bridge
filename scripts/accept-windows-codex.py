@@ -2,6 +2,7 @@
 """Real official Codex lifecycle acceptance on a disposable hosted Windows runner."""
 import hashlib
 import base64
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,7 @@ $rows=@(foreach($window in $windows) {
         $items=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         $row.types=@($items | Group-Object {$_.Current.ControlType.ProgrammaticName} | ForEach-Object {@{type=$_.Name;count=$_.Count}})
         $row.signInVisible=@($items | Where-Object {$_.Current.Name -match '^(Sign in|Log in|Log in with ChatGPT|登录|使用 ChatGPT 登录)$'}).Count -gt 0
+        $row.buttons=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | ForEach-Object {$_.Current.Name})
         $row.menus=@($items | Where-Object {$_.Current.AutomationId -like 'application-menu-*'} | ForEach-Object {
             @{id=$_.Current.AutomationId;type=$_.Current.ControlType.ProgrammaticName;
               enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen;pidMatches=$_.Current.ProcessId -eq $target;
@@ -100,7 +102,7 @@ def main():
     work.mkdir(parents=True, exist_ok=False)
     result = {'ok': False, 'source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'officialDownload': URL, 'modelMessages': 0, 'accountImported': False, 'checks': []}
-    bridge = app = None
+    bridge = app = api = None
     ordinary_environment = None
     environment_observed = False
     installed_package = None
@@ -164,6 +166,31 @@ def main():
         from bridge.platforms.windows import codex_launch
         home, data = work/'home', work/'gateway'
         home.mkdir(); data.mkdir()
+        class LocalApi(BaseHTTPRequestHandler):
+            posts = 0
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                self.send_response(404); self.end_headers()
+            def do_POST(self):
+                type(self).posts += 1
+                self.send_response(503); self.end_headers()
+        api = ThreadingHTTPServer(('127.0.0.1', 0), LocalApi)
+        threading.Thread(target=api.serve_forever, daemon=True).start()
+        fixtures = {
+            'auth.json': json.dumps({'OPENAI_API_KEY': 'isolated-acceptance-not-a-real-key'}).encode(),
+            'config.toml': ('model_provider = "isolated_acceptance"\ncli_auth_credentials_store = "file"\n'
+                '[model_providers.isolated_acceptance]\nname = "Isolated acceptance"\n'
+                f'base_url = "http://127.0.0.1:{api.server_port}/v1"\n'
+                'wire_api = "responses"\nrequires_openai_auth = true\n').encode(),
+        }
+        for name, contents in fixtures.items():
+            (home/name).write_bytes(contents)
+        result['syntheticAuthOnly'] = True
+        def unchanged_fixture():
+            if (any((home/name).read_bytes() != contents for name, contents in fixtures.items())
+                    or list(home.glob('sessions/**/*.jsonl')) or LocalApi.posts):
+                raise RuntimeError('Isolated account/configuration changed or a conversation request was made')
         ordinary_environment = codex_launch.get_environment()
         environment_observed = True
         if ordinary_environment:
@@ -183,7 +210,7 @@ def main():
             time.sleep(.5)
         else:
             raise RuntimeError('Fresh official App did not start')
-        # Let the real first-launch menu become accessible; no sign-in is performed.
+        # Let the real first-launch menu become accessible; no real sign-in is performed.
         time.sleep(8)
         packages = list((ROOT/'.tmp/windows-official-artifact').rglob('Codex-Mobile-Bridge-2.2.2-Windows-x64.zip'))
         if len(packages) != 1:
@@ -233,8 +260,7 @@ def main():
             if state.get('phase') == 'failed' and state.get('taskStateUnavailable'):
                 # This newly created profile has no login or chats. Exercise the
                 # existing explicit unavailable-state confirmation without faking an audit.
-                if (home/'auth.json').exists() or list(home.glob('sessions/**/*.jsonl')):
-                    raise RuntimeError('Fresh-profile unavailable-state confirmation is no longer safe')
+                unchanged_fixture()
                 request.update(requestId=str(uuid.uuid4()), acknowledgeUnavailable=True)
                 state = bridge.initialize(request)
                 acknowledged = True
@@ -254,8 +280,7 @@ def main():
             if client is None:
                 raise RuntimeError('Restart did not establish a real native connection')
             client.close()
-            if (home/'auth.json').exists() or list(home.glob('sessions/**/*.jsonl')):
-                raise RuntimeError('Acceptance unexpectedly created account or conversation data')
+            unchanged_fixture()
             result['checks'].append({'normalQuit': True, 'newNativeOwner': True, 'nativeConnection': True,
                                      'unavailableStateExplicitlyConfirmed': acknowledged})
         result['ok'] = True
@@ -264,6 +289,9 @@ def main():
         result['error'] = str(error).replace(str(ROOT), '<checkout>').replace(str(Path.home()), '<runner>')
         raise
     finally:
+        if api:
+            api.shutdown(); api.server_close()
+            result['syntheticApiPosts'] = LocalApi.posts
         if bridge:
             bridge.close()
         if app:
