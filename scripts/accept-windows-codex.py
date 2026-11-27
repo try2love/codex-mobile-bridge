@@ -334,6 +334,17 @@ def main():
                  'electronChild': '--type' in (command or ''), 'utilityHost': '--expose-internals' in (command or '')}
                 for pid, command in observed_commands.items()]
             raise RuntimeError('Real desktop owner did not become stable within 30 seconds')
+        def owner_snapshot():
+            deadline = time.monotonic()+30
+            while time.monotonic() < deadline:
+                observed = ready_owner()
+                try:
+                    identities = {pid: desktop_runtime.process_identity(pid) for pid in observed['pids']}
+                except ProcessLookupError:
+                    continue  # Native startup children may finish between two reads.
+                if inspect_client(descriptor) == observed:
+                    return observed, identities
+            raise RuntimeError('Native process identity snapshot did not stabilize')
         continued_onboarding = False
         skipped_tutorial = False
         confirmed_tutorial_skip = False
@@ -388,8 +399,8 @@ def main():
                 fixtures = snapshot
                 result['configBaselineStableSeconds'] = 10
             unchanged_fixture()
-            previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
-            previous_processes = {pid: desktop_runtime.process_identity(pid) for pid in before['pids']}
+            before, previous_processes = owner_snapshot()
+            previous = {pid: previous_processes[pid] for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
             state = bridge.initialize(request)
@@ -414,16 +425,6 @@ def main():
                         result['menuObservationError'] = type(error).__name__
                 raise RuntimeError('Actual initialization failed: '+str(state.get('error')))
             after = ready_owner()
-            current = {pid: desktop_runtime.process_identity(pid) for pid in after['mainPids']}
-            current_processes = {pid: desktop_runtime.process_identity(pid) for pid in after['pids']}
-            retained = [pid for pid in previous_processes.keys() & current_processes.keys()
-                        if previous_processes[pid] == current_processes[pid]]
-            result.setdefault('processReplacement', []).append({
-                'mainIdentityChanged': previous != current,
-                'reusedPidCount': len(previous_processes.keys() & current_processes.keys())-len(retained),
-                'unchangedNativeProcessCount': len(retained)})
-            if previous == current or retained:
-                raise RuntimeError('Initialization did not replace the original native processes')
             # The packaged initialization already performs the real metadata
             # handshake in wait_ready(native_runtime=True). Windows deliberately
             # rejects a source Python process at this same-image-only pipe.
@@ -436,6 +437,18 @@ def main():
                 time.sleep(2)
             else:
                 raise RuntimeError('Restarted native workbench did not become visible')
+            ready, current_processes = owner_snapshot()
+            if ready['mainPids'] != after['mainPids']:
+                raise RuntimeError('Restarted native workbench owner changed during verification')
+            current = {pid: current_processes[pid] for pid in ready['mainPids']}
+            retained = [pid for pid in previous_processes.keys() & current_processes.keys()
+                        if previous_processes[pid] == current_processes[pid]]
+            result.setdefault('processReplacement', []).append({
+                'mainIdentityChanged': previous != current,
+                'reusedPidCount': len(previous_processes.keys() & current_processes.keys())-len(retained),
+                'unchangedNativeProcessCount': len(retained)})
+            if previous == current or retained:
+                raise RuntimeError('Initialization did not replace the original native processes')
             record = desktop_runtime._read(desktop_runtime.directory(home)/'active.json')
             desktop_runtime.verify_record(record)
             if (record.get('ready') is not True or record.get('home') != str(home.resolve())
