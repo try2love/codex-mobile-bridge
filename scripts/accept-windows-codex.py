@@ -389,6 +389,7 @@ def main():
                 result['configBaselineStableSeconds'] = 10
             unchanged_fixture()
             previous = {pid: desktop_runtime.process_identity(pid) for pid in before['mainPids']}
+            previous_processes = {pid: desktop_runtime.process_identity(pid) for pid in before['pids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
                        'requestId': str(uuid.uuid4())}
             state = bridge.initialize(request)
@@ -414,7 +415,14 @@ def main():
                 raise RuntimeError('Actual initialization failed: '+str(state.get('error')))
             after = ready_owner()
             current = {pid: desktop_runtime.process_identity(pid) for pid in after['mainPids']}
-            if previous == current or set(before['pids']) & set(after['pids']):
+            current_processes = {pid: desktop_runtime.process_identity(pid) for pid in after['pids']}
+            retained = [pid for pid in previous_processes.keys() & current_processes.keys()
+                        if previous_processes[pid] == current_processes[pid]]
+            result.setdefault('processReplacement', []).append({
+                'mainIdentityChanged': previous != current,
+                'reusedPidCount': len(previous_processes.keys() & current_processes.keys())-len(retained),
+                'unchangedNativeProcessCount': len(retained)})
+            if previous == current or retained:
                 raise RuntimeError('Initialization did not replace the original native processes')
             # The packaged initialization already performs the real metadata
             # handshake in wait_ready(native_runtime=True). Windows deliberately
