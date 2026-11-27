@@ -125,3 +125,25 @@ class DesktopNotificationTests(unittest.TestCase):
     def test_disabled_app_blocks_queued_mobile_push(self):
         self.desktop.enabled.return_value = False
         self.assertFalse(self.manager._push_allowed({'threadId': 'same-native-id', 'host': 'desktop:claude', 'kind': 'request'}))
+
+    def test_active_and_newest_cold_chats_are_not_starved_by_older_idle_chats(self):
+        cold_idle = [
+            {**self.rows[0], 'id': f'cold-{i}', 'updatedAt': 100 - i}
+            for i in range(15)
+        ]
+        changed_row = {**self.rows[1], 'id': 'changed-tail', 'updatedAt': 10}
+        active_row = {**self.rows[0], 'id': 'active-tail', 'status': 'active', 'updatedAt': 1}
+        self.rows[:] = [changed_row]
+        self.scan()
+        self.rows[:] = [*cold_idle, changed_row, active_row]
+        changed_row['updatedAt'] = 11
+        self.turns['deepseek'].append({'turnId': 'finished-tail', 'status': 'completed'})
+        self.desktop.call.reset_mock()
+        events = self.scan()
+        called_ids = [call.args[2] for call in self.desktop.call.call_args_list]
+        self.assertIn('changed-tail', called_ids[:2])
+        self.assertIn('active-tail', called_ids[:2])
+        self.assertEqual([e['threadId'] for e in events], ['changed-tail'])
+        # Cold backfill picks the newest idle chats first (updatedAt 100..95) within the budget of 8 total reads.
+        self.assertIn('cold-0', called_ids)
+        self.assertNotIn('cold-14', called_ids)
