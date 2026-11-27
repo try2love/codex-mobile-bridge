@@ -22,6 +22,12 @@ def require_hosted_windows():
         raise RuntimeError('Only a disposable GitHub-hosted Windows runner is allowed')
 
 
+def powershell(command):
+    command = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "+command
+    return subprocess.check_output(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+        base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
+
+
 def main():
     require_hosted_windows()
     work = ROOT/'.tmp/windows-official-codex'
@@ -31,6 +37,7 @@ def main():
     bridge = app = None
     ordinary_environment = None
     environment_observed = False
+    installed_package = None
     try:
         archive = work/'official.msix'
         request = urllib.request.Request(URL, headers={
@@ -51,21 +58,36 @@ def main():
                     raise RuntimeError('Unsafe official archive member')
             package.extractall(unpacked)
         # Use signed original binaries, with no unpacked-asar edits or replacement UI.
-        applications = [p for name in ('ChatGPT.exe', 'Codex.exe') for p in unpacked.rglob(name)
-                        if (p.parent/'resources/app.asar').is_file()]
+        sys.path.insert(0, str(ROOT))
+        from bridge.platforms.windows.discovery_ext import _package_entries
+        applications = list(_package_entries(unpacked, ('ChatGPT.exe', 'Codex.exe')))
         if len(applications) != 1:
             raise RuntimeError('Official desktop executable is not unique')
-        executable = applications[0]
+        executable, application_id = applications[0]
+        relative_executable = executable.relative_to(unpacked)
+        executable_digest = hashlib.sha256(executable.read_bytes()).hexdigest()
         quoted = str(executable).replace("'", "''")
         command = ("$s=Get-AuthenticodeSignature -LiteralPath '"+quoted+"'; "
                    '@{status=[string]$s.Status;subject=$s.SignerCertificate.Subject} | ConvertTo-Json -Compress')
-        signature = subprocess.check_output(['powershell', '-NoProfile', '-NonInteractive', '-EncodedCommand',
-            base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
-        signature = json.loads(signature)
+        signature = json.loads(powershell(command))
         if signature['status'] != 'Valid' or 'OpenAI' not in signature['subject']:
             raise RuntimeError('Official executable signing identity could not be verified')
         result['signature'] = signature
-        sys.path.insert(0, str(ROOT))
+        # Exercise the real registered MSIX entry and execution alias, not an
+        # extracted binary that would bypass the production package checks.
+        existing = powershell("@(Get-AppxPackage -Name OpenAI.Codex).Count")
+        if existing.strip() != '0':
+            raise RuntimeError('Hosted runner already has an official Codex package')
+        archive_path = str(archive).replace("'", "''")
+        powershell("Add-AppxPackage -Path '"+archive_path+"'")
+        installed = json.loads(powershell("Get-AppxPackage -Name OpenAI.Codex | "
+            'Select-Object PackageFullName,InstallLocation | ConvertTo-Json -Compress'))
+        installed_package = installed['PackageFullName']
+        executable = Path(installed['InstallLocation'])/relative_executable
+        if hashlib.sha256(executable.read_bytes()).hexdigest() != executable_digest:
+            raise RuntimeError('Installed GUI differs from the verified official executable')
+        result['officialApplicationId'] = application_id
+        result['registeredPackageInstalled'] = True
         from bridge.clients.desktop_app import DesktopApp
         from bridge.clients.lifecycle import inspect_client, stop_client
         from bridge.clients.codex import desktop_runtime
@@ -153,6 +175,10 @@ def main():
                 result['cleanupError'] = str(error).replace(str(ROOT), '<checkout>')
         if environment_observed:
             codex_launch.set_environment(ordinary_environment)
+        if installed_package and (app is None or result.get('cleanupNormalQuit')):
+            name = installed_package.replace("'", "''")
+            powershell("Remove-AppxPackage -Package '"+name+"'")
+            result['testPackageRemoved'] = True
         (work/'result.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
         print(json.dumps(result, indent=2))
 
