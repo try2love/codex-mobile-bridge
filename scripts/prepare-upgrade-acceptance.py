@@ -8,8 +8,8 @@ import re
 import subprocess
 import urllib.request
 
-BASE = 'd79a89c0b58f212323dac2a28b8d99baa32bd281'
-VERSION = '2.2.2-preview.4'
+BASE = '173bac1f583b29aaf4a3d80921218b6e3371b6bb'
+VERSION = '2.2.2'
 BASELINES = (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True),
              ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True),
              ('2.2.2-preview.4', 'preview4', True))
@@ -76,7 +76,7 @@ def main():
         assets = {row['name']: row for row in release['assets']}
         names = {'Codex-Mobile-Bridge-' + version + '-' + suffix}
         # Windows uses NSIS for manual bootstrap, ZIP for the genuine Updater.
-        if suffix == 'Windows-x64-Setup.exe' and version in ('2.2.1', VERSION):
+        if suffix == 'Windows-x64-Setup.exe' and version in ('2.2.1', '2.2.2-preview.4'):
             names.add('Codex-Mobile-Bridge-' + version + '-Windows-x64.zip')
         filenames = ['SHA256SUMS.txt', 'bridge-update.json', *sorted(names)]
         for filename in filenames:
@@ -102,7 +102,7 @@ def main():
     (work / 'provenance.json').write_text(json.dumps({'source': source, 'candidateRun': run['html_url'],
         'buildSource': build_source, 'sourceEquivalentChanges': build_changes,
         'baselines': baselines, 'acceptanceOnlyChanges': changed,
-        'mode': 'original-preview3-and-preview4-updaters-to-ci-preview4-on-macos-windows; older-baselines-manual; updater-return-stable',
+        'mode': 'original-preview3-and-preview4-updaters-to-ci-stable-on-macos-windows; older-baselines-manual; updater-return-previous-stable',
         'candidateManifest': 'same-run CI signature using original shipped public key; no release publication',
         'catalogue': 'fixture release directory; original official baseline manifests/packages and signed CI candidate'}, indent=2) + '\n')
     print('Verified official stable and preview1 through original preview4 packages and exact candidate build provenance')

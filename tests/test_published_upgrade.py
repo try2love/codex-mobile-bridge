@@ -19,7 +19,7 @@ spec.loader.exec_module(prepare)
 
 
 class PublishedUpgradeProvenanceTests(unittest.TestCase):
-    def rejected(self, message, *, source='a'*40, head=None, version='2.2.2-preview.4', changed='', conclusion='success'):
+    def rejected(self, message, *, source='a'*40, head=None, version='2.2.2', changed='', conclusion='success'):
         run = {'head_sha': head or source, 'path': '.github/workflows/desktop.yml',
                'status': 'completed', 'conclusion': conclusion}
         with patch.dict(os.environ, {'SOURCE_REF': source, 'CANDIDATE_RUN_ID': '123'}), \
@@ -36,7 +36,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
     def test_branch_name_is_not_an_immutable_source(self):
         self.rejected('exact 40-character', source='release/v2.2.2-preview')
 
-    def test_source_outside_reviewed_preview3_history_stops_before_version_or_api_reads(self):
+    def test_source_outside_reviewed_preview4_history_stops_before_version_or_api_reads(self):
         with patch.dict(os.environ, {'SOURCE_REF': 'a'*40}), \
                 patch.object(prepare.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'git')), \
                 patch.object(prepare.subprocess, 'check_output') as source, \
@@ -59,6 +59,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         self.rejected('Unexpected frozen product version', version='2.2.2-preview.1')
         self.rejected('Unexpected frozen product version', version='2.2.2-preview.2')
         self.rejected('Unexpected frozen product version', version='2.2.2-preview.3')
+        self.rejected('Unexpected frozen product version', version='2.2.2-preview.4')
 
     def test_unbuilt_product_changes_are_rejected(self):
         self.rejected('differs from product', changed='bridge/app/service.py\n')
@@ -80,14 +81,14 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         with patch.dict(os.environ, {'SOURCE_ONLY': 'true'}):
             self.rejected('differs from product', changed='desktop/main.cjs\n')
 
-    def test_preview4_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
+    def test_stable_guard_uses_actual_product_version_and_full_history_acceptance_checkout(self):
         product = json.loads((ROOT/'package.json').read_text(encoding='utf-8'))
         self.assertEqual(product['version'], prepare.VERSION)
-        self.assertEqual(prepare.VERSION, '2.2.2-preview.4')
+        self.assertEqual(prepare.VERSION, '2.2.2')
         self.assertEqual(prepare.BASELINES, (('2.2.1', 'old', False), ('2.2.2-preview.1', 'preview1', True),
                                            ('2.2.2-preview.2', 'preview2', True), ('2.2.2-preview.3', 'preview3', True),
                                            ('2.2.2-preview.4', 'preview4', True)))
-        self.assertEqual(prepare.BASE, 'd79a89c0b58f212323dac2a28b8d99baa32bd281')
+        self.assertEqual(prepare.BASE, '173bac1f583b29aaf4a3d80921218b6e3371b6bb')
         workflow = (ROOT/'.github/workflows/upgrade-acceptance.yml').read_text(encoding='utf-8')
         self.assertIn('fetch-depth: 0', workflow)
 
@@ -98,7 +99,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         for block in blocks:
             code = compile(textwrap.dedent(block.split('\n          PY', 1)[0]), 'intel-source-guard', 'exec')
             source = 'a'*40
-            def run(requested=source, checkout=source, version='2.2.2-preview.4'):
+            def run(requested=source, checkout=source, version='2.2.2'):
                 with patch.dict(os.environ, {'SOURCE_REF': requested}), \
                         patch('subprocess.check_output', return_value=checkout+'\n'), \
                         patch('builtins.open', return_value=io.StringIO(json.dumps({'version': version}))):
@@ -122,7 +123,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
         releases, content = {}, {}
         for version, _, prerelease in prepare.BASELINES:
             names = ['bridge-update.json', 'Codex-Mobile-Bridge-' + version + '-' + suffix]
-            if version in ('2.2.1', prepare.VERSION):
+            if version in ('2.2.1', '2.2.2-preview.4'):
                 names.append('Codex-Mobile-Bridge-' + version + '-Windows-x64.zip')
             prefix = 'https://github.com/' + repository + '/releases/download/v' + version + '/'
             for name in names:
@@ -154,7 +155,7 @@ class PublishedUpgradeProvenanceTests(unittest.TestCase):
                 self.assertEqual((work/directory/package).read_bytes(), content[
                     'https://github.com/' + repository + '/releases/download/v' + version + '/' + package])
                 self.assertTrue((work/directory/'release.json').exists())
-            name = 'Codex-Mobile-Bridge-' + prepare.VERSION + '-Windows-x64.zip'
+            name = 'Codex-Mobile-Bridge-2.2.2-preview.4-Windows-x64.zip'
             original = (work/'preview4'/name).read_bytes()
             self.assertEqual(provenance['baselines'][-1]['sha256'][name], hashlib.sha256(original).hexdigest())
 

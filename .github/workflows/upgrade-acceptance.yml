@@ -143,7 +143,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb xauth dbus-x11 libgtk-3-0 libnss3 libgbm1 libasound2 libxss1 libsecret-1-0
-      - name: Original Preview3 updater to signed CI Preview4 and stable return with failure recovery
+      - name: Original Preview3 and Preview4 updaters to signed CI stable and previous-stable return
         if: runner.os != 'Linux'
         run: node scripts/smoke-published-upgrade.cjs
       - name: Real Debian bootstrap and explicit manual stable return

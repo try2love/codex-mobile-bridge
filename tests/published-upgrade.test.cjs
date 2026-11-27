@@ -10,7 +10,7 @@ test('candidate transport requires the CI signature and exact ZIP bytes',async t
   const {prepareCandidateRelease}=require('../scripts/smoke-published-upgrade.cjs');
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-candidate-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
-  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic candidate ZIP'),version='2.2.2-preview.4';
+  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic candidate ZIP'),version='2.2.2';
   const name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256=createHash('sha256').update(bytes).digest('hex');
   const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',assets:{'win32-x64':{name,size:bytes.length,sha256}}}));
   await fs.mkdir(path.join(directory,'candidate'));
@@ -19,7 +19,7 @@ test('candidate transport requires the CI signature and exact ZIP bytes',async t
   await fs.writeFile(archive,bytes);
   const result=await prepareCandidateRelease(directory,'win32','x64',keys.publicKey);
   assert.equal(result.asset.name,name);assert.equal(result.asset.sha256,sha256);
-  assert.equal(result.release.tag_name,'v'+version);
+  assert.equal(result.release.tag_name,'v'+version);assert.equal(result.release.prerelease,false);
   assert.equal(result.release.assets.find(row=>row.name===name).digest,'sha256:'+sha256);
   await assert.rejects(prepareCandidateRelease(directory,'win32','x64',generateKeyPairSync('ed25519').publicKey),/签名/);
   await fs.writeFile(archive,Buffer.alloc(bytes.length));
@@ -29,7 +29,7 @@ test('upgrade receipts cannot report success without the real matching ACK and r
   const {verifyUpgradeReceipt}=require('../scripts/smoke-published-upgrade.cjs');
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-ack-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
-  const plan={token:'synthetic-token',version:'2.2.2-preview.4',dataDir:directory,runtime:{running:true}};
+  const plan={token:'synthetic-token',version:'2.2.2',dataDir:directory,runtime:{running:true}};
   await fs.writeFile(path.join(directory,'plan.json'),JSON.stringify(plan));
   await fs.writeFile(path.join(directory,'result.json'),JSON.stringify({state:'updated',version:plan.version}));
   await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}})),{code:'ENOENT'});
@@ -39,7 +39,7 @@ test('upgrade receipts cannot report success without the real matching ACK and r
   await assert.rejects(verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:false}})),/restored gateway/);
   assert.equal((await verifyUpgradeReceipt(path.join(directory,'plan.json'),async()=>({runtime:{running:true}}))).acknowledged,true);
 });
-test('same-version source proof rejects a patched ZIP with the original digest or mismatched official metadata',async t=>{
+test('Preview4 baseline proof rejects identical candidate bytes or mismatched official metadata',async t=>{
   const {originalPreview4Proof}=require('../scripts/smoke-published-upgrade.cjs');
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-original-preview4-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
@@ -62,7 +62,7 @@ test('same-version UI refresh replaces cached catalogue metadata before selectio
   const {selectSameVersionHotfix}=require('../scripts/smoke-published-upgrade.cjs');
   const renderer=sync.readFileSync(path.join(__dirname,'../desktop/shell/renderer.js'),'utf8');
   const load=renderer.slice(renderer.indexOf('async function loadUpdateVersions('),renderer.indexOf('async function selectUpdateVersion('));
-  const version='2.2.2-preview.4',name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256='a'.repeat(64);
+  const version='2.2.2',name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256='a'.repeat(64);
   const list=id=>({current:version,releases:[{version,assets:[{id,name,format:'zip'}]}]});
   const refresh={hidden:false,disabled:false,scrollIntoView(){},getBoundingClientRect:()=>({x:0,y:0,width:100,height:30}),contains:element=>element===refresh};
   const select={value:'',dispatchEvent(){context.updateVersionsState.version=select.value;context.snapshot={update:{state:'available',selected:true,current:version,version}};}};
@@ -84,7 +84,7 @@ test('same-version UI refresh replaces cached catalogue metadata before selectio
   refresh.onclick=async()=>{};
   await assert.rejects(selectSameVersionHotfix(ui,main,{name,sha256}),/force refresh must fetch/);
 });
-test('candidate transport lets a Preview3 updater authenticate and install Preview4 as a normal update',async t=>{
+test('candidate transport authenticates the stable release and preserves same-version cache verification',async t=>{
   const {prepareCandidateRelease}=require('../scripts/smoke-published-upgrade.cjs');
   const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/acceptance-forward-'));
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
@@ -93,7 +93,7 @@ test('candidate transport lets a Preview3 updater authenticate and install Previ
     await fs.writeFile(path.join(directory,folder,'release.json'),JSON.stringify({tag_name:'v'+version,draft:false,prerelease:version.includes('-'),published_at:'2026-11-01T00:00:00Z',assets:[]}));
   }
   await fs.mkdir(path.join(directory,'candidate'));
-  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic CI ZIP'),version='2.2.2-preview.4';
+  const keys=generateKeyPairSync('ed25519'),bytes=Buffer.from('Synthetic CI ZIP'),version='2.2.2';
   const name=`Codex-Mobile-Bridge-${version}-Windows-x64.zip`,sha256=createHash('sha256').update(bytes).digest('hex');
   const payload=Buffer.from(JSON.stringify({schema:1,version,dataFormat:'bridge-data-v1',assets:{'win32-x64':{name,size:bytes.length,sha256}}}));
   await fs.writeFile(path.join(directory,'candidate','bridge-update.json'),JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,keys.privateKey).toString('base64')}));
@@ -194,7 +194,7 @@ test('credential acceptance runs the production source worker and blocks stable 
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   const files=paths(path.join(directory,'app'));
   await fs.mkdir(path.dirname(files.metadata),{recursive:true});
-  await fs.writeFile(files.metadata,JSON.stringify({version:'2.2.2-preview.4',dataFormat:'bridge-data-v1'}));
+  await fs.writeFile(files.metadata,JSON.stringify({version:'2.2.2',dataFormat:'bridge-data-v1'}));
   const {runWorker}=require('../desktop/shared/controller.cjs');
   const result=await credentialBoundaryProof(files,directory,(options,action,payload)=>runWorker({...options,
     executable:process.platform==='win32'?'python':'python3',prefix:['-B',path.join(__dirname,'../desktop.py')]},action,payload));
