@@ -314,20 +314,45 @@ test('disabled connection ignores stale online status',async()=>{
   await ui.poll();assert.equal(status.textContent,'已配置但未启用');
 });
 
-test('an updated gateway keeps the legacy credential notice visible until restart clears it',async()=>{
+test('migration notice is visible before startup and disappears after verified migration',async()=>{
   for(const language of ['zh-CN','en']){
     const ui=await renderer(language),notice=ui.nodes.get('credential-migration');
     assert.equal(notice.hidden,true);
-    ui.value.runtime.running=true;
-    ui.value.externalStatus={legacy:{state:'credentials-required'}};
+    ui.value.credentialMigrations=['legacy'];
     await ui.poll();assert.equal(notice.hidden,false);
-    assert.match(notice.textContent,language==='en'?/Migrate.*restart/:/迁移.*重启/);
-    await ui.poll();assert.equal(notice.hidden,false,'normal refresh must not dismiss the required action');
-    ui.value.externalStatus={legacy:{state:'ready'}};
-    await ui.poll();assert.equal(notice.hidden,true);
-    ui.value.externalStatus={legacy:{state:'credentials-required'}};ui.value.runtime.running=false;
-    await ui.poll();assert.equal(notice.hidden,true,'stopped gateway must not show stale connector state');
+    assert.match(ui.nodes.get('migrate-all-credentials').textContent,language==='en'?/Migrate/:/一键迁移/);
+    const calls=[];
+    ui.api.connectionCredentials=async value=>{calls.push(value);ui.value.credentialMigrations=[];return {};};
+    await ui.nodes.get('migrate-all-credentials').click();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{id:'legacy',migrate:true}]);
+    assert.equal(notice.hidden,true);
+    assert.equal(ui.value.runtime.running,false,'migration must not start or stop the gateway');
+    ui.value.runtime.running=true;ui.value.externalStatus={legacy:{state:'credentials-required'}};
+    await ui.poll();assert.equal(notice.hidden,true,'old connector status cannot resurrect a completed migration');
   }
+});
+
+test('one-click migration is serial, keeps partial success, and retries only remaining entries',async()=>{
+  const ui=await renderer();ui.value.credentialMigrations=['one','two'];await ui.poll();
+  const calls=[];let release;
+  ui.api.connectionCredentials=async({id})=>{calls.push(id);if(id==='one'){await new Promise(resolve=>release=resolve);ui.value.credentialMigrations=['two'];return {};}throw Error('Keychain cancelled');};
+  const button=ui.nodes.get('migrate-all-credentials'),pending=button.click();
+  await new Promise(setImmediate);await button.click();assert.deepEqual(calls,['one']);assert.equal(button.disabled,true);
+  release();await pending;
+  assert.deepEqual(calls,['one','two']);assert.equal(ui.nodes.get('credential-migration').hidden,false);
+  assert.match(ui.nodes.get('credential-migration-state').textContent,/Keychain cancelled/);
+  assert.equal(button.disabled,false);
+  ui.api.connectionCredentials=async({id})=>{calls.push(id);ui.value.credentialMigrations=[];return {};};
+  await button.click();assert.deepEqual(calls,['one','two','two']);assert.equal(ui.nodes.get('credential-migration').hidden,true);
+});
+
+test('migration preserves unsaved credential drafts and does not overwrite them',async()=>{
+  const ui=await renderer();ui.value.credentialMigrations=['one'];await ui.poll();
+  ui.run("connectionSecretDraft.set('one',{changed:true,secrets:{password:'unsaved'},revision:1})");
+  ui.api.connectionCredentials=async()=>assert.fail('must save the draft first');
+  await ui.nodes.get('migrate-all-credentials').click();
+  assert.match(ui.nodes.get('credential-migration-state').textContent,/请先保存/);
+  assert.equal(ui.run("connectionSecretDraft.get('one').secrets.password"),'unsaved');
 });
 
 test('fixed-entry retry replaces an earlier error in card and summary across polling',async()=>{

@@ -166,7 +166,9 @@ function updateDirty(){
     const saved=key==='localAccess'?snapshot?.preferences?.localAccess!==false:!!snapshot?.preferences?.[key];
     status.textContent=t($(id).checked!==saved?'待保存':saved?'已启用':'已配置但未启用');
   }
-  document.querySelectorAll('[data-connection-action]').forEach(button=>button.disabled=dirty||busyActions.size>0||(!['inspect','diagnostics','credentials','clearCredentials','tailscaleInspect','tailscaleAuthorize'].includes(button.dataset.connectionAction)&&!connectionDraft.find(c=>c.id===button.dataset.connection)?.enabled));
+  document.querySelectorAll('[data-connection-action]').forEach(button=>button.disabled=dirty||busyActions.size>0||(!['inspect','diagnostics','credentials','clearCredentials','migrateCredentials','tailscaleInspect','tailscaleAuthorize'].includes(button.dataset.connectionAction)&&!connectionDraft.find(c=>c.id===button.dataset.connection)?.enabled));
+  renderCredentialMigration();
+  $('choose-data').disabled=cloudflaredBusy||credentialMigrationBusy;
 }
 let toastTimer;
 function dismissToast(){clearTimeout(toastTimer);$('toast').hidden=true;}
@@ -286,8 +288,8 @@ function render(value,watchRevision=watchPanel.revision){
   if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts'&&!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
   const appearanceChanged=snapshot?.dataDir!==value.dataDir;
   snapshot=value;if(appearanceChanged)void updateAppearance();const running=value.runtime.running;
-  $('credential-migration').hidden=!running||!Object.values(value.externalStatus||{}).some(row=>row.state==='credentials-required');
-  $('credential-migration').textContent=t('部分连接需要迁移旧凭据。请在连接设置中迁移后重启网关；其他可用连接不受影响。');
+  if(appearanceChanged)credentialMigrationError='';
+  renderCredentialMigration();
   if(!networkAdaptationBusy){if(typeof value.networkAdaptation?.enabled==='boolean')networkAdaptationError='';renderNetworkAdaptation(value.networkAdaptation??null);}
   if(running||value.runtime.portOccupied)startingUntil=0;
   const starting=Date.now()<startingUntil;
@@ -425,6 +427,7 @@ for(const id of ['project-home'])$(id).onclick=()=>api.open(id).catch(e=>feedbac
 for(const id of ['pushplus-home','pushplus-verify','pushplus-limits'])$(id).onclick=()=>api.open(id).catch(e=>feedback(e.message,true));
 $('generate-topic').onclick=()=>{input('ntfy-topic','codex-'+crypto.randomUUID().replaceAll('-',''));updateDirty();};
 $('credentials').onclick=()=>api.open('credentials').catch(e=>feedback(e.message,true));
+$('migrate-all-credentials').onclick=migrateAllCredentials;
 $('open-data').onclick=()=>api.open('data').catch(e=>feedback(e.message,true));
 $('choose-data').onclick=async()=>{try{if(await api.choose('data')){dirty=false;await refresh();feedback(t('已切换网关目录，原来的网关进程继续运行。'));}}catch(e){feedback(e.message,true);}};
 for(const button of document.querySelectorAll('[data-pick]'))button.onclick=async()=>{try{const selected=await api.choose(button.dataset.kind);if(selected){input(button.dataset.pick,selected);updateDirty();}}catch(e){feedback(e.message,true);}};
@@ -440,7 +443,7 @@ function renderCloudflared(){
   $('cloudflared-progress').textContent=progress?.message?t(progress.message)+(progress.total?' '+Math.floor(100*progress.received/progress.total)+'%':''):'';
   $('install-cloudflared').disabled=cloudflaredBusy||!!snapshot?.runtime.running;
   $('check-cloudflared').disabled=cloudflaredBusy;
-  $('choose-data').disabled=cloudflaredBusy;
+  $('choose-data').disabled=cloudflaredBusy||credentialMigrationBusy;
   const enabled=connectionDraft.some(c=>c.enabled&&c.accessMode==='quick');
   $('quick-tunnel-state').hidden=!enabled;$('quick-setup').hidden=!enabled;
   $('quick-tunnel-state').textContent=quickTunnelMessage();

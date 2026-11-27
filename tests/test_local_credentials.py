@@ -94,10 +94,30 @@ class MacCredentialsTests(unittest.TestCase):
         value = desktop.snapshot();value['preferences'].update(codexHome=str(self.directory),connections=[entry()])
         desktop.save(value);write_json(self.directory/'connection-vault.json', {'test-server':True})
         with patch.object(secrets, 'backend', side_effect=AssertionError('No automatic Keychain')):
+            self.assertEqual(desktop.snapshot()['credentialMigrations'], ['test-server'])
             self.assertEqual(desktop.read_credentials({'id':'test-server'}), {'migrationRequired':True})
             desktop.connection_credentials({'id':'test-server','secrets':{'password':'private-fixture'}})
             self.assertEqual(desktop.read_credentials({'id':'test-server'}), {'password':'private-fixture'})
+            self.assertEqual(desktop.snapshot()['credentialMigrations'], [])
             self.assertNotIn('private-fixture',json.dumps(desktop.snapshot()))
+
+    def test_migration_status_ignores_orphans_unused_secrets_and_other_platforms(self):
+        rows = [{'id': 'old', 'accessMode': 'cloudflare', 'enabled': False},
+                {'id': 'saved', 'accessMode': 'server', 'sshAuth': 'password'},
+                {'id': 'alias', 'accessMode': 'server', 'sshAuth': 'config'},
+                {'id': 'plain', 'accessMode': 'external'}]
+        secrets.save(self.directory, 'saved', {'password': 'private-fixture'})
+        index = {'old': True, 'saved': 'gateway-v1', 'alias': True, 'plain': True, 'orphan': True}
+        write_json(self.directory/'connection-vault.json', index)
+        with patch.object(secrets, 'backend', side_effect=AssertionError('No automatic Keychain')):
+            self.assertEqual(secrets.pending_migrations(self.directory, rows), ['old'])
+            # A local save can precede the final index write; do not offer a false migration.
+            index['saved'] = True
+            write_json(self.directory/'connection-vault.json', index)
+            self.assertEqual(secrets.pending_migrations(self.directory, rows), ['old'])
+            with patch.object(secrets.sys, 'platform', 'win32'):
+                self.assertEqual(secrets.pending_migrations(self.directory, rows), [])
+        self.assertEqual(json.loads((self.directory/'connection-vault.json').read_text()), index)
 
     def test_missing_ciphertext_cannot_silently_create_a_partial_replacement(self):
         secrets.save(self.directory, 'one', {'password':'original'})

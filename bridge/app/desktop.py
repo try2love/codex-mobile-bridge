@@ -214,6 +214,7 @@ class Desktop:
         notification_urls = entry_urls(preferences, hosts, quick_url, external,
                                        lan_addresses=static_addresses) if runtime['running'] else []
         notifications = settings(self.data_dir)
+        from bridge.features.accounts.secrets import pending_migrations
         return {'preferences': preferences, 'auth': {'username': config['auth'].get('username', 'admin'), 'mode': config['auth']['mode'], 'sessionHours': config['auth'].get('sessionHours', 12)},
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken']), **visible_webhook(notifications)},
                 'watches': self.notification_watches({'action': 'list'}, preferences=preferences)['watches'],
@@ -222,6 +223,7 @@ class Desktop:
                 'addressNotificationStatus': read_status_json(self.data_dir/'address-notifications.json', {}),
                 'notificationStatus': read_status_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
+                'credentialMigrations': pending_migrations(self.data_dir, preferences['connections']),
                 'networkInterfaces': rows, 'networkStatus': network_status,
                 'networkAdaptation': {**adaptation_settings(self.data_dir),
                                       'running': runtime['running']},

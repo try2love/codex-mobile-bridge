@@ -13,6 +13,26 @@ class LegacyCredentialsRequired(ValueError):
     pass
 
 
+def pending_migrations(data_dir, connections):
+    """Private desktop metadata only; never probe the system Keychain."""
+    if sys.platform != 'darwin':
+        return []
+    index = read_json(Path(data_dir)/'connection-vault.json', {})
+    candidates = [row['id'] for row in connections
+                  if index.get(row['id']) and index[row['id']] != 'gateway-v1'
+                  and (row['accessMode'] == 'cloudflare' or
+                       row['accessMode'] == 'server' and row.get('sshAuth') in ('password', 'key'))]
+    if not candidates:
+        return []
+    from bridge.features.accounts.local_vault import LocalVault
+    try:
+        values = local_values(data_dir, LocalVault(data_dir, 'connections'))
+    except Exception:
+        # A damaged local vault needs repair, not a legacy migration.
+        return []
+    return [key for key in candidates if key not in values]
+
+
 def local_values(data_dir, vault):
     vault.bind(Path(data_dir)/'connection-vault.json')
     raw = vault.read()

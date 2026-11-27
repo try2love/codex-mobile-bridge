@@ -3,6 +3,41 @@ const connectionSecretDraft=new Map();
 const connectionSetupState=new Map();
 const connectionExpanded=new Map();
 const connectionAdvancedExpanded=new Map();
+let credentialMigrationBusy=false,credentialMigrationError='';
+function renderCredentialMigration(){
+  const pending=snapshot?.credentialMigrations||[];
+  $('credential-migration').hidden=!pending.length&&!credentialMigrationBusy;
+  $('credential-migration-text').textContent=t('部分连接仍使用旧凭据。迁移后可继续使用，无需重新配对。');
+  $('credential-migration-state').textContent=credentialMigrationBusy?t('正在迁移凭据，请完成可能出现的 macOS 钥匙串授权。'):credentialMigrationError||t('点击后读取旧钥匙串并保存到当前网关，原凭据会保留。');
+  const button=$('migrate-all-credentials');
+  button.textContent=t(credentialMigrationBusy?'正在迁移…':'一键迁移凭据');
+  button.disabled=dirty||busyActions.size>0||!pending.length;
+  button.setAttribute('aria-busy',String(credentialMigrationBusy));
+}
+async function migrateAllCredentials(){
+  if(dirty||busyActions.size||!(snapshot?.credentialMigrations||[]).length)return;
+  const directory=snapshot.dataDir,key='migrate-all-credentials';
+  credentialMigrationBusy=true;credentialMigrationError='';busyActions.add(key);updateDirty();
+  try{
+    const current=await api.snapshot();
+    if(current.dataDir!==directory||snapshot?.dataDir!==directory)return;
+    const ids=current.credentialMigrations||[];
+    if(ids.some(id=>connectionSecretDraft.get(id)?.changed))throw Error(t('请先保存已填写的凭据，再迁移旧凭据。'));
+    for(const id of ids){
+      if(snapshot?.dataDir!==directory)return;
+      await api.connectionCredentials({id,migrate:true});
+      const draft=connectionSecretDraft.get(id);
+      if(draft){draft.migrationRequired=false;draft.loaded=false;draft.revision++;}
+    }
+    feedback(t(current.runtime.running?'连接凭据已迁移。请重启网关以恢复相关连接。':'连接凭据已迁移。现在可以启动网关。'));
+  }catch(error){
+    if(snapshot?.dataDir===directory){credentialMigrationError=t(error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));feedback(credentialMigrationError,true);}
+  }finally{
+    try{const current=await api.snapshot();if(current.dataDir===directory&&snapshot?.dataDir===directory)render(current);}
+    catch(error){if(snapshot?.dataDir===directory){credentialMigrationError=t(error.message);feedback(error.message,true);}}
+    credentialMigrationBusy=false;busyActions.delete(key);updateDirty();
+  }
+}
 function connectionLabel(mode){return t({quick:'临时 HTTPS · Cloudflare',cloudflare:'固定域名 · Cloudflare Tunnel',server:'固定域名 · 自有服务器 + SSH',external:'已有穿透 / 反向代理',nas:'已有穿透 / 反向代理',tailscale:'固定 HTTPS · Tailscale'}[mode]);}
 function normalizeExternalUrl(value){
   const trimmed=value.trim();

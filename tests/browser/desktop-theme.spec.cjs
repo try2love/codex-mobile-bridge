@@ -50,3 +50,28 @@ test('desktop shell follows system colors without losing settings, controls or r
   await expect(page.locator('#username')).toHaveValue('unsaved-theme-draft');
   await expect(page.locator('#theme-dialog')).toBeVisible();
 });
+
+
+test('credential migration notice stays readable and the action remains reachable at narrow widths',async({page,baseURL},info)=>{
+  await page.goto('/__fixture_health');await page.setContent(shell());
+  for(const [i,file] of files.entries()){
+    const url=baseURL+'/__fixture_migration_style_'+i+'.css';
+    await page.route(url,route=>route.fulfill({path:path.join(root,file),contentType:'text/css'}));await page.addStyleTag({url});
+  }
+  for(const language of ['zh','en'])for(const theme of ['light','dark']){
+    await page.emulateMedia({colorScheme:theme});
+    await page.evaluate(language=>{
+      const notice=document.getElementById('credential-migration');notice.hidden=false;
+      document.getElementById('credential-migration-text').textContent=language==='zh'?'部分连接仍使用旧凭据。迁移后可继续使用，无需重新配对。':'Some connections use legacy credentials. Migrate them to continue without pairing again.';
+      document.getElementById('credential-migration-state').textContent=language==='zh'?'点击后读取旧钥匙串并保存到当前网关，原凭据会保留。':'Read from the old Keychain and save to this gateway. The original credentials will be kept.';
+      document.getElementById('migrate-all-credentials').textContent=language==='zh'?'一键迁移凭据':'Migrate credentials';
+    },language);
+    await expect(page.locator('#migrate-all-credentials')).toBeVisible();
+    const layout=await page.locator('#credential-migration').evaluate(notice=>{
+      const button=notice.querySelector('button').getBoundingClientRect(),box=notice.getBoundingClientRect();
+      return {overflow:notice.scrollWidth>notice.clientWidth,buttonInside:button.left>=box.left&&button.right<=box.right&&button.bottom<=box.bottom};
+    });
+    expect(layout).toEqual({overflow:false,buttonInside:true});
+    await page.screenshot({path:info.outputPath('migration-'+language+'-'+theme+'.png')});
+  }
+});
