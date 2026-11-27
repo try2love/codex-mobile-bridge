@@ -50,6 +50,7 @@ $rows=@(foreach($window in $windows) {
         $row.types=@($items | Group-Object {$_.Current.ControlType.ProgrammaticName} | ForEach-Object {@{type=$_.Name;count=$_.Count}})
         $row.signInVisible=@($items | Where-Object {$_.Current.Name -match '^(Sign in|Log in|Log in with ChatGPT|登录|使用 ChatGPT 登录)$'}).Count -gt 0
         $row.buttons=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | ForEach-Object {$_.Current.Name})
+        $row.texts=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Text} | ForEach-Object {$_.Current.Name})
         $row.buttonStates=@($items | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | ForEach-Object {
             @{name=$_.Current.Name;enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen;pidMatches=$_.Current.ProcessId -eq $target}
         })
@@ -320,6 +321,12 @@ def main():
                 result['menuObservation'] = inspect_menu(helpers[0], before['mainPids'][0],
                     advance_onboarding=attempt == 0 and not continued_onboarding,
                     skip_tutorial=attempt == 0 and not skipped_tutorial)
+                for window in result['menuObservation']:
+                    if window.get('selected'):
+                        page = {key: window.get(key, []) for key in ('buttons', 'texts', 'onboardingRoles')}
+                        pages = result.setdefault('onboardingPages', [])
+                        if page not in pages and len(pages) < 12:
+                            pages.append(page)
                 if any(window.get('onboardingContinued') for window in result['menuObservation']):
                     continued_onboarding = result['onboardingContinued'] = True
                 if any(window.get('tutorialSkipped') for window in result['menuObservation']):
