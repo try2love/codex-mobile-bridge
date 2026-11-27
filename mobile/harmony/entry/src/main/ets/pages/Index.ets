@@ -1,7 +1,7 @@
 import { webview } from '@kit.ArkWeb';
 import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { common } from '@kit.AbilityKit';
-import { picker, statvfs } from '@kit.CoreFileKit';
+import { fileIo, picker, statvfs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { ComputerStore } from '../services/ComputerStore';
 import { GatewayUrl } from '../services/GatewayUrl';
@@ -21,6 +21,11 @@ import { NetworkPolicy } from '../services/NetworkPolicy';
 import { HistoryTransfer } from '../services/HistoryTransfer';
 import { SystemBars } from '../services/SystemBars';
 import { TaskNotifications } from '../services/TaskNotifications';
+
+interface StagedUploads {
+  chosen: string[];
+  copied: string[];
+}
 
 @Entry
 @Component
@@ -63,6 +68,7 @@ struct Index {
   });
   private controllerAttached: boolean = false;
   private appForeground: boolean = true;
+  private stagedUploads: string[] = [];
   private foregroundChanged = (foreground: boolean): void => {
     this.appForeground = foreground;
     this.notifications.visibility(foreground);
@@ -93,6 +99,38 @@ struct Index {
   aboutToDisappear(): void {
     (getContext(this) as common.UIAbilityContext).eventHub.off('bridge-foreground', this.foregroundChanged);
     this.guard.foreground = false; this.downloads.cancel(); this.offline.detach(); this.network.stop(); this.notifications.detach();
+    this.cleanupStagedUploads();
+  }
+
+  private cleanupStagedUploads(paths?: string[]): void {
+    const targets = paths ?? this.stagedUploads;
+    for (let i = 0; i < targets.length; i++) {
+      try { fileIo.unlinkSync(targets[i]); } catch {}
+    }
+    if (!paths) { this.stagedUploads = []; }
+  }
+
+  private stageSelectedUploads(context: common.UIAbilityContext, uris: string[]): StagedUploads {
+    const chosen: string[] = [];
+    const copied: string[] = [];
+    for (let i = 0; i < uris.length; i++) {
+      const uri = uris[i];
+      const dotIdx = uri.lastIndexOf('.');
+      const rawExt = dotIdx >= 0 ? uri.slice(dotIdx).replace(/[^a-zA-Z0-9.]/g, '') : '';
+      const ext = rawExt.length > 0 && rawExt.length <= 8 ? rawExt : '';
+      const destPath = context.cacheDir + '/bridge-upload-' + util.generateRandomUUID() + ext;
+      try {
+        const src = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
+        try {
+          fileIo.copyFileSync(src.fd, destPath);
+          chosen.push(destPath);
+          copied.push(destPath);
+        } finally { fileIo.closeSync(src); }
+      } catch {
+        chosen.push(uri);
+      }
+    }
+    return { chosen, copied };
   }
 
   private toast(message: string): void {
@@ -295,8 +333,19 @@ struct Index {
               const generation = this.guard.generation;
               const options = new picker.DocumentSelectOptions();
               options.maxSelectNumber = event.fileSelector.getMode() === FileSelectorMode.FileOpenMultipleMode ? 10 : 1;
-              new picker.DocumentViewPicker(getContext(this) as common.UIAbilityContext).select(options).then(files => {
-                event.result.handleFileList(this.guard.accepts(this.controller.getUrl(), this.controller.getUrl(), generation) ? files : []);
+              const context = getContext(this) as common.UIAbilityContext;
+              new picker.DocumentViewPicker(context).select(options).then(files => {
+                if (!files || !files.length || !this.guard.accepts(this.controller.getUrl(), this.controller.getUrl(), generation)) {
+                  event.result.handleFileList([]); return;
+                }
+                this.cleanupStagedUploads();
+                const staged = this.stageSelectedUploads(context, files);
+                if (!this.guard.accepts(this.controller.getUrl(), this.controller.getUrl(), generation)) {
+                  this.cleanupStagedUploads(staged.copied);
+                  event.result.handleFileList([]); return;
+                }
+                this.stagedUploads = staged.copied;
+                event.result.handleFileList(staged.chosen);
               }).catch(() => { event.result.handleFileList([]); });
               return true;
             })
