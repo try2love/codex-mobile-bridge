@@ -54,6 +54,31 @@ def native_bootstrap_additions(before, after):
     return sorted(added)
 
 
+def preserved_user_configuration(before, after, launcher):
+    """Native Node REPL reconciliation refreshes only these runtime references."""
+    old, new = config_leaves(before), config_leaves(after)
+    cli = 'mcp_servers.node_repl.env.CODEX_CLI_PATH'
+    pipe = 'mcp_servers.node_repl.env.SKY_CUA_NATIVE_PIPE_DIRECTORY'
+    runtime_keys = {cli, pipe}
+    stable_old = {key: value for key, value in old.items() if key not in runtime_keys}
+    stable_new = {key: value for key, value in new.items() if key not in runtime_keys}
+    if stable_old != stable_new or any(type(value) is not type(stable_new[key]) for key, value in stable_old.items()):
+        raise RuntimeError('Native restart changed user configuration outside generated runtime references')
+    if not isinstance(new.get(cli), str) or os.path.normcase(str(Path(new[cli]).resolve())) != os.path.normcase(str(Path(launcher).resolve())):
+        raise RuntimeError('Native tool configuration does not use the verified packaged launcher')
+    prefix = r'\\.\pipe\codex-computer-use-'
+    value = new.get(pipe)
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise RuntimeError('Native computer-use pipe is not an official generated endpoint')
+    try:
+        valid = str(uuid.UUID(value[len(prefix):])) == value[len(prefix):]
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError('Native computer-use pipe generation is invalid')
+    return sorted(key for key in runtime_keys if old.get(key) != new.get(key))
+
+
 def inspect_menu(helper, pid, *, advance_onboarding=False, skip_tutorial=False, confirm_skip=False):
     """Inspect this empty test App; optionally continue its known first-run page once."""
     return json.loads(powershell("$helper='"+str(helper).replace("'", "''")+"'; $target="+str(pid)+
@@ -267,8 +292,13 @@ def main():
         for name, contents in fixtures.items():
             (home/name).write_bytes(contents)
         result['syntheticAuthOnly'] = True
-        def unchanged_fixture():
+        def unchanged_fixture(*, native_runtime=False):
             changes = [name for name, contents in fixtures.items() if (home/name).read_bytes() != contents]
+            if native_runtime and 'config.toml' in changes:
+                result['nativeRuntimeConfigChanges'] = preserved_user_configuration(
+                    tomllib.loads(fixtures['config.toml'].decode('utf-8')),
+                    tomllib.loads((home/'config.toml').read_text(encoding='utf-8')), workers[0])
+                changes.remove('config.toml')
             sessions = len(list(home.glob('sessions/**/*.jsonl')))
             if changes or sessions or LocalApi.posts:
                 result['fixtureObservation'] = {'changedFiles': changes, 'sessionFiles': sessions,
@@ -415,7 +445,7 @@ def main():
                     raise RuntimeError('Native first-run settings changed the isolated authentication or provider')
                 fixtures = snapshot
                 result['configBaselineStableSeconds'] = 10
-            unchanged_fixture()
+            unchanged_fixture(native_runtime=attempt > 0)
             before, previous_processes = owner_snapshot()
             previous = {pid: previous_processes[pid] for pid in before['mainPids']}
             request = {'action': 'initializeDesktopRuntime', 'confirmed': True, 'tasksConfirmed': True,
@@ -440,7 +470,7 @@ def main():
                     if (home/'auth.json').read_bytes() != fixtures['auth.json']:
                         raise RuntimeError('Native first-run bootstrap changed the isolated authentication')
                     fixtures['config.toml'] = config
-                unchanged_fixture()
+                unchanged_fixture(native_runtime=attempt > 0)
                 before, previous_processes = owner_snapshot()
                 previous = {pid: previous_processes[pid] for pid in before['mainPids']}
                 request.update(requestId=str(uuid.uuid4()), acknowledgeUnavailable=True)
@@ -487,7 +517,7 @@ def main():
                     or record.get('cli') != str(Path(runtime).resolve())
                     or record.get('app', {}).get('pid') != after['mainPids'][0]):
                 raise RuntimeError('Restarted native connection ownership did not match the selected profile')
-            unchanged_fixture()
+            unchanged_fixture(native_runtime=True)
             result['checks'].append({'normalQuit': True, 'newNativeOwner': True, 'nativeConnection': True,
                                      'packagedNativeHandshake': True, 'liveNativeOwnerRecord': True,
                                      'nativeUiReady': True,
