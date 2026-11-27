@@ -4,11 +4,11 @@
 
 **[v2.2.1 发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)** · [完整更新说明](../RELEASE_NOTES.md) · [桌面客户端接入](../docs/deepseek-harness.md)
 
-## v2.2.2-preview.4
+## v2.2.2
 
-[Preview 4 下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.4)支持完整历史断点传输、离线正文与过程阅读、离线草稿和待发消息。建议网关和手机一起更新。Android 版本为 **2.2.2-preview.4**、build **92**，沿用 v2.2.1 与此前 2.2.2 预览版的应用标识和持久签名，覆盖安装保留连接与草稿；iOS marketing version 为 **2.2.2**、build **92**，使用自己的原签名身份覆盖安装。请勿先卸载。HarmonyOS 仍为实验源码，未完成 HAP 与真机验收。
+[v2.2.2 下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2)支持完整历史断点传输、离线正文与过程阅读、离线草稿和待发消息。建议网关和手机一起更新。Android 版本为 **2.2.2**、build **93**，沿用 v2.2.1 与此前 2.2.2 预览版的应用标识和持久签名，覆盖安装保留连接与草稿；iOS marketing version 为 **2.2.2**、build **93**，使用自己的原签名身份覆盖安装。请勿先卸载。
 
-[Download Preview 4](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.4) for resumable full-history transfer, offline messages/processes, drafts and queued messages. Update the gateway and mobile app together. Android **2.2.2-preview.4/build 92** retains the application and signing identities used by v2.2.1 and previous 2.2.2 previews. iOS uses marketing version **2.2.2/build 92** and requires your existing signing identity. Install over the existing app to preserve connections and drafts. HarmonyOS remains experimental source without HAP or physical-device acceptance.
+[Download v2.2.2](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2) for resumable full-history transfer, offline messages/processes, drafts and queued messages. Update the gateway and mobile App together. Android **2.2.2/build 93** retains the application and signing identities used by v2.2.1 and previous 2.2.2 previews. iOS uses marketing version **2.2.2/build 93** and requires your existing signing identity. Install over the existing App to preserve connections and drafts.
 
 ## v2.2.1 安装 / Installation
 

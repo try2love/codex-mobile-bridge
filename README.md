@@ -21,7 +21,7 @@
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.2-preview.4：** [预览版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2-preview.4) · [更新说明](RELEASE_NOTES.md)。新增完整历史断点传输、离线阅读与待发消息，改进 Codex 原生连接、额度、文件及 Git 管理。建议同时更新网关和手机 App；使用新版凭据格式的 macOS 配置回退旧版前须恢复兼容凭据。稳定版仍为 [v2.2.1](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)。
+> **v2.2.2 正式版：** [下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex App 原生连接；支持完整历史下载、离线阅读与待发消息，完善 Antigravity、网关版本管理及一键迁移旧凭据。请覆盖安装，保留原连接和草稿。
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
@@ -937,7 +937,7 @@ python3 -B -m unittest discover -s tests -v
 
 ## 致谢
 
-感谢 [@a32556376](https://github.com/a32556376) 的 [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256) 额度恢复继续方案、[@windowmmk](https://github.com/windowmmk) 的 [PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257) 额度展示与 [PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250) 原生发现改进，以及 [@Aplier](https://github.com/Aplier) 的 [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245)、[#246](https://github.com/try2love/codex-mobile-bridge/pull/246)、[#247](https://github.com/try2love/codex-mobile-bridge/pull/247) Antigravity 改进和 [PR #248](https://github.com/try2love/codex-mobile-bridge/pull/248) HarmonyOS 实验客户端。采纳范围与后续适配见 [Preview 4 更新说明](RELEASE_NOTES.md)，相关提交保留原作者贡献署名。
+感谢 [@a32556376](https://github.com/a32556376) 的 [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256) 额度恢复继续方案、[@windowmmk](https://github.com/windowmmk) 的 [PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257) 额度展示与 [PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250) 原生发现改进，以及 [@ufomaker](https://github.com/ufomaker) 的 [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245)、[#246](https://github.com/try2love/codex-mobile-bridge/pull/246)、[#247](https://github.com/try2love/codex-mobile-bridge/pull/247) Antigravity 改进和 [PR #248](https://github.com/try2love/codex-mobile-bridge/pull/248) HarmonyOS 实验客户端。采纳范围与后续适配见 [v2.2.2 更新说明](RELEASE_NOTES.md)，相关提交保留原作者贡献署名。
 
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
 
