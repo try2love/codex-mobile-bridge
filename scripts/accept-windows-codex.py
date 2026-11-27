@@ -38,7 +38,11 @@ def main():
     ordinary_environment = None
     environment_observed = False
     installed_package = None
+    # The Actions pwsh -> Python -> Windows PowerShell chain otherwise inherits
+    # incompatible PowerShell 7 modules. This changes only this test process.
+    module_path = os.environ.pop('PSModulePath', None)
     try:
+        powershell('Get-Command Get-AuthenticodeSignature,Add-AppxPackage,Get-AppxPackage,Remove-AppxPackage | Out-Null')
         archive = work/'official.msix'
         request = urllib.request.Request(URL, headers={
             'User-Agent': 'Codex-Mobile-Bridge-Release-Acceptance/2.2.2'})
@@ -179,6 +183,8 @@ def main():
             name = installed_package.replace("'", "''")
             powershell("Remove-AppxPackage -Package '"+name+"'")
             result['testPackageRemoved'] = True
+        if module_path is not None:
+            os.environ['PSModulePath'] = module_path
         (work/'result.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
         print(json.dumps(result, indent=2))
 
