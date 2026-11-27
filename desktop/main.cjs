@@ -1,15 +1,17 @@
 'use strict';
-const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net,nativeImage}=require('electron');
+const {app,BrowserWindow,ipcMain,dialog,shell,clipboard,Tray,Menu,net,nativeImage,nativeTheme}=require('electron');
 const path=require('node:path');
 const fs=require('node:fs');
 const {pathToFileURL}=require('node:url');
 const {runWorker,workerFor,createSnapshotWorker,createManagementWorker}=require('./shared/controller.cjs');
 const {pairingImage}=require('./features/connections/qr.cjs');
 const {createTray}=require('./shell/tray.cjs');
+const {createIconTheme}=require('./shell/icons.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
+const {readAppearance,saveAppearance}=require('./shell/appearance.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
-const {Updater,allowedMirrorUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
+const {Updater,allowedMirrorUrl,allowedCatalogueUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {relaunchMacUpdate,restoreMacUpdate}=require('./features/updates/mac-handoff.cjs');
 relaunchMacUpdate({app,process});
 const {createLoginStartup,restoreDevelopmentEnvironment}=require('./login-startup.cjs');
@@ -24,12 +26,13 @@ const root=path.resolve(__dirname,'..');
 // An explicit data directory also keeps test caches inside the project.
 if(process.env.CMB_DATA_DIR)app.setPath('userData',path.join(path.resolve(process.env.CMB_DATA_DIR),'desktop-runtime'));
 let window,dataDir,tray,quitting=false,snapshotPending,lastSnapshot,updateQuitting=false;
-let installPending,installStatus={},updater,workerWrites=0,officialRemote;
+const iconTheme=createIconTheme({app,nativeTheme,nativeImage,platform:process.platform,assetsDir:path.join(__dirname,'assets'),getWindow:()=>window,getTray:()=>tray});
+let installPending,installStatus={},updater,workerWrites=0,officialRemote,updateConfirmation=false,updateStarting=false,cacheDeleting=false,startupCleanup=Promise.resolve();
 const snapshotWorker=createSnapshotWorker();
 const managementWorker=createManagementWorker();
 let connectionSecrets={},setupPending=false;
 const entry=pathToFileURL(path.join(__dirname,'index.html')).href;
-function releaseTray(){officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
+function releaseTray(){iconTheme.dispose();officialRemote?.dispose();snapshotWorker.close();managementWorker.close();quitting=true;tray?.dispose();tray=null;}
 function officialService(){
   if(!officialRemote){
     const {OfficialRemote}=require('./features/zcode-official/controller.cjs');
@@ -48,6 +51,32 @@ function restoreOfficialService(){
 function updateTarget(){return process.platform==='darwin'?path.resolve(process.execPath,'../../..'):path.dirname(process.execPath);}
 let handoff=null;
 function currentHandoff(){return activeUpdateHandoff(process.env,updateTarget(),app.getVersion(),process.pid);}
+function readSavedDataDir(file){
+  try{
+    const parsed=JSON.parse(fs.readFileSync(file,'utf8'));
+    const candidate=parsed?.dataDir;
+    // Whitespace may be part of an existing directory name; validate without rewriting it.
+    if(typeof candidate==='string'&&candidate.trim())return candidate;
+    throw Error('缺少有效的 dataDir 字段');
+  }catch(error){
+    throw Error(`无法恢复已保存的数据目录，请检查或恢复 ${file}：${error.message}`);
+  }
+}
+function saveDataDir(targetDir){
+  const userDir=app.getPath('userData');
+  fs.mkdirSync(userDir,{recursive:true});
+  const file=path.join(userDir,'bridge-location.json');
+  const payload=JSON.stringify({dataDir:targetDir});
+  // 先写同目录临时文件再原子重命名，避免写入中途进程退出留下损坏的 JSON
+  const temporary=`${file}.${process.pid||'tmp'}.tmp`;
+  try{
+    fs.writeFileSync(temporary,payload,{mode:0o600});
+    fs.renameSync(temporary,file);
+  }catch(error){
+    try{fs.unlinkSync?.(temporary);}catch{}
+    throw error;
+  }
+}
 function loadDataDir(){
   handoff=currentHandoff();
   if(handoff)return handoff.dataDir;
@@ -56,9 +85,19 @@ function loadDataDir(){
     return path.resolve(process.env.CMB_UPDATE_DATA_DIR);
   if(process.env.CMB_DATA_DIR)return path.resolve(process.env.CMB_DATA_DIR);
   const saved=path.join(app.getPath('userData'),'bridge-location.json');
-  if(fs.existsSync(saved))return JSON.parse(fs.readFileSync(saved,'utf8')).dataDir;
+  if(fs.existsSync(saved)){
+    const configured=readSavedDataDir(saved);
+    if(configured)return configured;
+  }
   const local=path.join(process.resourcesPath,'bridge-data-dir.txt');
-  if(app.isPackaged&&fs.existsSync(local))return fs.readFileSync(local,'utf8').trim();
+  if(app.isPackaged&&fs.existsSync(local)){
+    try{
+      const configured=fs.readFileSync(local,'utf8').trim();
+      if(configured)return configured;
+    }catch(error){
+      if(error?.code!=='ENOENT'&&typeof console!=='undefined')console?.warn?.('无法读取随包数据目录配置，将回退默认目录：',error);
+    }
+  }
   return app.isPackaged?path.join(app.getPath('userData'),'gateway'):path.join(root,'.local');
 }
 function authorize(event){
@@ -89,14 +128,26 @@ function worker(action,payload){
   return action==='snapshot'?snapshotPending:result;
 }
 async function installUpdate(candidate){
+  if(process.platform==='linux'||candidate.manualInstall){
+    await worker('update-backup',{target:updateTarget(),version:candidate.version,transition:candidate.transition,...(candidate.manualInstall?{manualInstall:true}:{})});
+    if(candidate.manualRelease){await shell.openExternal(candidate.releasePage);return {state:'manual-release'};}
+    // Preserve the configured data location before an external installer replaces
+    // the bundle; opening an installer is not proof that installation completed.
+    saveDataDir(dataDir);
+    if(/\.(AppImage|zip)$/.test(candidate.asset.name)){
+      shell.showItemInFolder(candidate.archive);return {state:'downloaded'};
+    }
+    const error=await shell.openPath(candidate.archive);
+    if(error){shell.showItemInFolder(candidate.archive);return {state:'downloaded'};}
+    return {state:'installer-handoff'};
+  }
   snapshotWorker.close();managementWorker.close();
   const target=updateTarget();
   const token=randomUUID();
   const prepared=await worker('update-prepare',{archive:candidate.archive,sha256:candidate.asset.sha256,version:candidate.version,
-    platform:process.platform,arch:process.arch,target,parentPid:process.pid,token});
+    platform:process.platform,arch:process.arch,target,parentPid:process.pid,token,transition:candidate.transition});
   // Preserve selected data location even when an old local bundle carried it inside Resources.
-  fs.mkdirSync(app.getPath('userData'),{recursive:true});
-  fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+  saveDataDir(dataDir);
   const log=fs.openSync(path.join(dataDir,'desktop-update.log'),'a',0o600);
   // A Windows process locks its cwd. Use a stable directory outside both the
   // installation being replaced and the transaction cleaned up on a later update.
@@ -122,13 +173,36 @@ async function installUpdate(candidate){
   }
   throw Error('无法启动应用更新进程。');
 }
+function appearance(theme){
+  if(theme!==undefined)saveAppearance(dataDir,theme);
+  nativeTheme.themeSource=readAppearance(dataDir);
+  return {theme:nativeTheme.themeSource};
+}
 function setupUpdater(){
+  const updateDirectory=path.join(app.getPath('userData'),'updates');
+  const updateTools=require('./features/updates/updater.cjs');
+  startupCleanup.catch(()=>{});
+  // Remove incomplete downloads left by a crash. Complete verified packages
+  // remain available until the user explicitly deletes them.
+  const packageName=require(path.join(root,'package.json')).name;
+  const supported=app.isPackaged&&['codex-mobile-bridge-desktop','codex-mobile-bridge-test'].includes(packageName)&&['darwin','win32','linux'].includes(process.platform);
+  const installSupported=supported&&packageName==='codex-mobile-bridge-desktop';
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
-    fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:path.join(app.getPath('userData'),'updates'),
-    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32'].includes(process.platform),
-    preflight:process.platform==='win32'?()=>worker('update-preflight',{target:updateTarget()}):undefined,install:installUpdate});
-  setTimeout(()=>updater.check(),5000).unref();
-  setInterval(()=>updater.check(),6*60*60*1000).unref();
+    fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:updateDirectory,
+    catalogueFetch:cloudflared.electronFetch(net,allowedCatalogueUrl),
+    skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.platform==='linux'?(process.env.APPIMAGE?'AppImage':'deb'):'zip',
+    supported,installSupported,
+    preflight:process.platform==='win32'?async()=>{
+      await startupCleanup;
+      await updateTools.cleanDownloadStaging(updateDirectory);
+      await worker('update-preflight',{target:updateTarget()});
+    }:undefined,install:installUpdate});
+  startupCleanup=updateTools.cleanDownloadStaging(updateDirectory);
+  startupCleanup.catch(()=>{});
+  if(installSupported){
+    setTimeout(()=>updater.check(),5000).unref();
+    setInterval(()=>updater.check(),6*60*60*1000).unref();
+  }
 }
 function showWindow(){
   if(!window)createWindow();
@@ -136,12 +210,74 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
-  ipcMain.handle('bridge:check-update',event=>{authorize(event);return updater.check({manual:true});});
+  ipcMain.handle('bridge:appearance',(event,theme)=>{authorize(event);return appearance(theme);});
+  ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
-  ipcMain.handle('bridge:install-update',event=>{
+  ipcMain.handle('bridge:update-versions',async(event,payload)=>{
     authorize(event);
-    if(installPending||workerWrites||setupPending||updateManaged())throw Error('请等待当前操作完成后再更新。');
-    return updater.install();
+    if(payload?.action==='list')return updater.listVersions();
+    if(payload?.action!=='select')throw Error('更新版本请求无效。');
+    if(updater.busy||updateStarting||updateConfirmation||cacheDeleting||updateManaged())throw Error('请等待当前操作完成后再更新。');
+    return updater.selectVersion(payload.id);
+  });
+  ipcMain.handle('bridge:download-update',async(event,payload)=>{
+    authorize(event);
+    if(updater.busy||updateStarting||updateConfirmation||cacheDeleting||updateManaged())throw Error('请等待当前操作完成后再更新。');
+    const candidateId=payload?.candidateId;
+    if(!candidateId||updater.status().candidateId!==candidateId)throw Error('请先检查更新。');
+    updateStarting=true;
+    try{
+      await startupCleanup;
+      return await updater.download({candidateId});
+    }finally{updateStarting=false;}
+  });
+  ipcMain.handle('bridge:update-cache',async(event,payload)=>{
+    authorize(event);
+    const inUse=()=>updater.busy||updateStarting||updateConfirmation||updateManaged();
+    const listing=()=>updater.cacheStatus({inUse:inUse()||cacheDeleting});
+    if(payload?.action==='list')return listing();
+    if(payload?.action!=='delete')throw Error('更新缓存请求无效。');
+    if(inUse()||cacheDeleting)throw Error('请等待应用更新完成后再删除缓存。');
+    cacheDeleting=true;
+    try{
+      await startupCleanup;
+      if(inUse())throw Error('请等待应用更新完成后再删除缓存。');
+      const selection=updater.cacheSelection(payload.ids),size=selection.files.reduce((total,file)=>total+file.entry.size,0);
+      const answer=await dialog.showMessageBox(window,{type:'warning',title:t('更新下载缓存'),message:t('确认删除所选缓存？'),
+        detail:t('将删除 {count} 个更新包，释放 {size}。').replace('{count}',String(selection.files.length)).replace('{size}',`${(size/1024/1024).toFixed(2)} MB`),
+        buttons:[t('取消'),t('删除所选缓存')],defaultId:0,cancelId:0,noLink:true});
+      if(answer.response!==1)return {...updater.cacheStatus({inUse:inUse()}),cancelled:true};
+      if(inUse())throw Error('请等待应用更新完成后再删除缓存。');
+      const deleted=updater.deleteCache(selection);
+      return {...updater.cacheStatus(),deleted};
+    }finally{cacheDeleting=false;}
+  });
+  ipcMain.handle('bridge:install-update',async(event,payload)=>{
+    authorize(event);
+    if(updater.status().canInstall===false)throw Error('Test 版支持下载和缓存管理，请手动安装所选版本。');
+    const blocked=()=>installPending||workerWrites||setupPending||cacheDeleting||updateManaged();
+    if(blocked()||updateConfirmation||updateStarting)throw Error('请等待当前操作完成后再更新。');
+    const value=updater.status(),candidateId=payload?.candidateId;
+    if(!candidateId||value.candidateId!==candidateId)throw Error('请先检查更新。');
+    updateStarting=true;
+    try{
+      if(value.requiresConfirmation){
+        updateConfirmation=true;
+        const choosing=value.intent==='switch-version',manual=process.platform==='linux'||value.manualInstall;
+        const answer=await dialog.showMessageBox(window,{type:'warning',title:t('应用更新'),
+          message:t(choosing?'确认切换到所选版本？':value.intent==='return-stable'?'确认返回稳定版？':'确认安装预览版？'),
+          detail:`${value.current} → ${value.version}${value.assetName?'\n'+value.assetName:''}\n\n${t(choosing?(manual?'安装包校验后会备份网关配置，并交由系统安装器或你手动完成替换。旧版可能无法识别较新的配置功能；安装完成前，当前版本继续运行。':'切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。'):manual?(value.manualRelease?'此版本缺少签名的 Linux 更新包信息，将打开官方发布页供你手动下载。':'下载通过签名与摘要校验后，由系统安装器或你手动完成替换。安装完成前，当前版本继续运行。'):value.intent==='return-stable'?'返回稳定版会替换当前应用并重启。已保存的配置和登录会保留。':'预览版可能存在未解决的问题。安装会替换当前应用并重启。')}`,
+          buttons:[t('取消'),t(choosing?(manual?'下载并打开安装包':'切换版本并重启'):manual?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
+        if(answer.response!==1)return updater.status();
+        if(blocked())throw Error('请等待当前操作完成后再更新。');
+        await startupCleanup;
+        if(blocked())throw Error('请等待当前操作完成后再更新。');
+        return await updater.install({candidateId,confirmed:true});
+      }
+      await startupCleanup;
+      if(blocked())throw Error('请等待当前操作完成后再更新。');
+      return await updater.install({candidateId});
+    }finally{updateConfirmation=false;updateStarting=false;}
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});
   ipcMain.handle('bridge:set-language',(event,value)=>{
@@ -161,7 +297,10 @@ function register(){
       if(service!==officialRemote||service.disposed)throw Error('网关资料目录已变化，请重新打开管理页。');
       if(payload.action==='zcode-official-state')return service.status();
       if(payload.action==='zcode-official-save')return service.save(payload.link);
+      if(payload.action==='zcode-official-migrate')return service.migrateLogin();
       if(payload.action==='zcode-official-login')return service.login(payload.link);
+      if(payload.action==='zcode-official-browser-login')return service.login(payload.link,{external:true});
+      if(payload.action==='zcode-official-login-receipt')return service.completeLoginReceipt(payload.receipt);
       if(payload.action==='zcode-official-connect'){
         if(service.localLink(payload.link).url!==service.targetLink())throw Error('远控链接已变化，请先保存连接配置。');
         await worker('desktop-sessions',{action:'toggle-client',provider:'zcode',enabled:true,connectionMode:'official-remote'});
@@ -215,13 +354,20 @@ function register(){
     if(updater?.busy)throw Error('正在更新应用，请稍候。');
     const current=await worker('snapshot');
     if(!current.preferences.connections.some(c=>c.id===value?.id))throw Error('请先保存连接配置。');
+    if(value.migrate===true){
+      if(Object.keys(value).some(key=>!['id','migrate'].includes(key)))throw Error('连接凭据迁移格式不正确');
+      const previous=connectionSecrets[value.id];
+      const result=await worker('connection-credentials',{id:value.id,migrate:true});
+      if(connectionSecrets[value.id]===previous)delete connectionSecrets[value.id];
+      return result;
+    }
     const secret=value.secrets;
     if(!secret||typeof secret!=='object'||Object.keys(secret).some(key=>!['password','passphrase','tunnelToken','clear'].includes(key)))throw Error('连接凭据格式不正确');
     for(const [key,text] of Object.entries(secret))if(key!=='clear'&&(typeof text!=='string'||text.length>16384||text.includes('\0')))throw Error('连接凭据格式不正确');
     if(secret.clear){await worker('connection-credentials',{id:value.id,secrets:{clear:true}});delete connectionSecrets[value.id];}
     else if(value.remember){await worker('connection-credentials',{id:value.id,secrets:secret});delete connectionSecrets[value.id];}
     else connectionSecrets[value.id]={...connectionSecrets[value.id],...secret};
-    return {message:value.remember?'连接凭据已保存到系统凭据存储。':'连接凭据仅保留在本次 App 运行内存中。'};
+    return {message:value.remember?'连接凭据已保存。':'连接凭据仅保留在本次 App 运行内存中。'};
   });
   ipcMain.handle('bridge:copy-server-diagnostics',async(event,value)=>{
     authorize(event);const result=await worker('server-setup',{id:value.id,action:'diagnostics',language:value.language});
@@ -263,7 +409,7 @@ function register(){
     authorize(event);
     const grant=await worker('pairing',payload);
     if(payload.action!=='create')return grant;
-    try{return await pairingImage(grant);}
+    try{return await pairingImage(payload.purpose==='history-transfer'?{...grant,url:grant.url+'&transfer=local'}:grant);}
     catch(error){await worker('pairing',{action:'revoke',id:grant.id});throw error;}
   });
   ipcMain.handle('bridge:export-deployment',async(event,payload)=>{
@@ -296,8 +442,7 @@ function register(){
       installStatus={};connectionSecrets={};
       const changed=selected!==dataDir;
       if(changed){officialRemote?.dispose();officialRemote=null;}
-      publishLanguage(selected,language);dataDir=selected;fs.mkdirSync(app.getPath('userData'),{recursive:true});
-      fs.writeFileSync(path.join(app.getPath('userData'),'bridge-location.json'),JSON.stringify({dataDir}),{mode:0o600});
+      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);appearance();
       if(changed)restoreOfficialService();
     }
     return selected;
@@ -344,12 +489,20 @@ async function acknowledgeUpdate(){
   try{
     if(process.platform==='darwin')await restoreMacUpdate({handoff,env:process.env,pid:process.pid,worker,stillManaged:updateManaged});
     await worker('snapshot');
-    if(updateManaged()&&handoff.dataDir===dataDir)
+    if(updateManaged()&&handoff.dataDir===dataDir){
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
-  }catch{} // Missing acknowledgement makes the independent helper restore the old app.
+    }
+  }catch(error){
+    // The previous updater also reads this file. Keep its rollback decision,
+    // but retain the real startup failure instead of a silent ACK timeout.
+    if(updateManaged())try{
+      fs.appendFileSync(path.join(handoff.transaction,'new-app.log'),
+        'Update startup failed: '+String(error?.message||error).slice(0,2000)+'\n',{mode:0o600});
+    }catch{}
+  }
 }
 function createWindow(hidden=false){
-  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -360,27 +513,39 @@ function createWindow(hidden=false){
   window.on('closed',()=>{window=null;});
   return window;
 }
+let startupReady=false;
 if(!app.requestSingleInstanceLock())app.quit();
 else{
-  app.on('second-instance',(_event,argv)=>{if(!loginStartup.hidden(argv))showWindow();});
+  // 仅在启动初始化完成且未进入退出流程时显示窗口，防止未就绪或启动失败时拉起半残界面
+  app.on('second-instance',(_event,argv)=>{if(startupReady&&!quitting&&!loginStartup.hidden(argv))showWindow();});
+  // 单元测试替身只实现 app.whenReady().then(...) 而未提供 .catch()，因此必须在 async 回调内部 try/catch 兜底；
+  // 一旦启动关键路径抛错，显式弹窗并清理退出，避免单实例锁被无窗口僵尸进程长期占用
   app.whenReady().then(async()=>{
-    language=normalize(app.getLocale());
-    try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-    dataDir=loadDataDir();publishLanguage(dataDir,language);
-    setupUpdater();register();
-    if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
-    if(['win32','darwin'].includes(process.platform)){
-      const icon=process.platform==='darwin'?nativeImage.createFromPath(path.join(__dirname,'assets/trayTemplate.png')):path.join(__dirname,'assets/icon.ico');
-      if(process.platform==='darwin')icon.setTemplateImage(true);
-      tray=createTray({Tray,Menu,icon,show:showWindow,worker,t,
-        open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
-        onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
+    try{
+      language=normalize(app.getLocale());
+      try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
+      dataDir=loadDataDir();publishLanguage(dataDir,language);appearance();
+      setupUpdater();register();
+      if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
+      if(['win32','darwin'].includes(process.platform)){
+        tray=createTray({Tray,Menu,icon:iconTheme.trayIcon(),show:showWindow,worker,t,
+          open:url=>shell.openExternal(url),copy:url=>clipboard.writeText(url),quit:()=>app.quit(),
+          onError:error=>{showWindow();dialog.showErrorBox(t('网关操作未完成'),t(error.message));}});
+      }
+      startupReady=true;
+      createWindow(!!tray&&loginStartup.hidden(process.argv,true));
+      iconTheme.start();
+      restoreOfficialService();
+    }catch(error){
+      startupReady=false;
+      if(typeof console!=='undefined')console?.error?.(error);
+      try{dialog?.showErrorBox?.(t('网关操作未完成'),t(error?.message||String(error)));}catch{}
+      releaseTray();
+      app.quit?.();
     }
-    createWindow(!!tray&&loginStartup.hidden(process.argv,true));
-    restoreOfficialService();
   });
   app.on('before-quit',releaseTray);
-  app.on('activate',showWindow);
+  app.on('activate',()=>{if(startupReady&&!quitting)showWindow();});
   // Closing the controller leaves the gateway running for the phone.
   app.on('window-all-closed',()=>app.quit());
 }

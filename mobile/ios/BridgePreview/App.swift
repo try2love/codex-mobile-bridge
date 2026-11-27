@@ -1,11 +1,30 @@
 import Network
 import UIKit
+import LocalAuthentication
 import PhotosUI
 @preconcurrency import WebKit
 import AVFoundation
 import UserNotifications
 import UniformTypeIdentifiers
 import Security
+import Darwin
+
+private enum MobileClientIdentity {
+    static let userAgent: String = {
+        var hardware = utsname()
+        let identified = uname(&hardware) == 0
+        let size = MemoryLayout.size(ofValue: hardware.machine)
+        let model = identified ? withUnsafePointer(to: &hardware.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: size) { String(cString: $0) }
+        } : "iPhone"
+        let version = Bundle.main.object(forInfoDictionaryKey: "BridgeReleaseVersion") as? String ??
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let encoded = model.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return "BridgeMobile/\(version)-iOS BridgeModel/\(encoded) BridgeOS/\(os.majorVersion).\(os.minorVersion).\(os.patchVersion) BridgeBuild/\(build)"
+    }()
+}
 
 private enum DeviceBinding {
     struct Credential: Codable { let name: String; let token: String; var cookie: String { name + "=" + token } }
@@ -130,11 +149,23 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     private var session: URLSession?
     private var data = Data()
     private var completion: ((Bool) -> Void)?
+    private var address = ""
+    private var deadline: TimeInterval = 0
+    private var slowConfirmation = false
     func start(_ origin: String, completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: origin + "/api/auth") else { completion(false); return }
+        cancel()
+        address = origin; deadline = ProcessInfo.processInfo.systemUptime + 12; slowConfirmation = false
         self.completion = completion
+        attempt(timeout: 4)
+    }
+    private func attempt(timeout: TimeInterval) {
+        let budget = min(timeout, deadline - ProcessInfo.processInfo.systemUptime)
+        guard budget > 0 else { completion?(false); completion = nil; return }
+        let origin = address
+        guard let url = URL(string: origin + "/api/auth") else { completion?(false); completion = nil; return }
+        data.removeAll(keepingCapacity: true)
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 4; config.timeoutIntervalForResource = 5
+        config.timeoutIntervalForRequest = budget; config.timeoutIntervalForResource = budget
         config.httpShouldSetCookies = false; config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil); self.session = session
         var request = URLRequest(url: url); request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -144,31 +175,447 @@ final class GatewayReachability: NSObject, URLSessionDataDelegate {
     func cancel() { completion = nil; session?.invalidateAndCancel(); session = nil }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard self.session === session else { completionHandler(.cancel); return }
         completionHandler((response as? HTTPURLResponse)?.statusCode == 200 && response.expectedContentLength <= 16384 ? .allow : .cancel)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive bytes: Data) {
+        guard self.session === session else { return }
         guard data.count + bytes.count <= 16384 else { dataTask.cancel(); return }; data.append(bytes)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard self.session === session else { return }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let online = (value?["relay"] as? Bool != true || value?["online"] as? Bool == true) && error == nil && (task.response as? HTTPURLResponse)?.statusCode == 200 && value?["authenticated"] is Bool && value?["passwordless"] is Bool && !(value?["instanceId"] as? String ?? "").isEmpty
         session.finishTasksAndInvalidate()
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; self.completion?(online); self.completion = nil; self.session = nil
+            guard let self, self.session === session, self.completion != nil else { return }
+            let failure = error as NSError?
+            if !self.slowConfirmation && failure?.domain == NSURLErrorDomain && failure?.code == NSURLErrorTimedOut {
+                self.slowConfirmation = true; self.attempt(timeout: 8); return
+            }
+            self.completion?(online); self.completion = nil; self.session = nil
         }
     }
 }
 
-final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
+private final class OfflineReaderResources: NSObject, WKURLSchemeHandler {
+    static let scheme = "bridge-offline"
+    static let document = URL(string: scheme + "://reader/offline-reader.html")!
+    private let directory: URL
+    private let resources: [String: String]
+
+    init(bundle: Bundle) throws {
+        guard let root = bundle.resourceURL?.appendingPathComponent("offline-shell", isDirectory: true) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        directory = root.resolvingSymlinksInPath().standardizedFileURL
+        resources = try JSONDecoder().decode([String: String].self,
+                    from: Data(contentsOf: directory.appendingPathComponent("manifest.json")))
+        guard resources["/"] == "index.html", resources["/offline-reader.html"] == "index.html" else { throw CocoaError(.fileReadCorruptFile) }
+        super.init()
+    }
+
+    static func isDocument(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.scheme == scheme && url.host == "reader" && ["/", "/index.html", "/offline-reader.html"].contains(url.path) &&
+            url.port == nil && url.user == nil && url.password == nil
+    }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        guard task.request.httpMethod == "GET", let url = task.request.url,
+              url.scheme == Self.scheme, url.host == "reader",
+              url.user == nil, url.password == nil, url.port == nil,
+              let relative = resources[url.path], !relative.hasPrefix("/") else {
+            task.didFailWithError(URLError(.unsupportedURL)); return
+        }
+        let file = directory.appendingPathComponent(relative).resolvingSymlinksInPath().standardizedFileURL
+        guard file.path.hasPrefix(directory.path + "/"), let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
+            task.didFailWithError(URLError(.fileDoesNotExist)); return
+        }
+        let types = ["html": "text/html", "css": "text/css", "js": "text/javascript", "mjs": "text/javascript",
+                     "json": "application/json", "webmanifest": "application/manifest+json", "svg": "image/svg+xml",
+                     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+                     "ico": "image/x-icon", "gif": "image/gif", "woff": "font/woff", "woff2": "font/woff2",
+                     "ttf": "font/ttf", "otf": "font/otf", "wasm": "application/wasm"]
+        let mime = types[file.pathExtension.lowercased()] ?? "application/octet-stream"
+        let csp = "default-src 'none'; script-src bridge-offline:; style-src bridge-offline: 'unsafe-inline'; img-src bridge-offline: data: blob:; font-src bridge-offline: data:; connect-src bridge-offline:; manifest-src bridge-offline:; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'"
+        guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": mime, "Content-Length": String(data.count), "Content-Security-Policy": csp
+        ]) else { task.didFailWithError(URLError(.cannotParseResponse)); return }
+        task.didReceive(response)
+        task.didReceive(data)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+}
+
+final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate, UIDocumentInteractionControllerDelegate, PHPickerViewControllerDelegate, UIAdaptivePresentationControllerDelegate, WKScriptMessageHandler {
     private var web: WKWebView?
-    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String)?
+    private var nativeMainNavigation: (web: WKWebView, generation: Int, url: String, navigationType: WKNavigationType)?
     private var origin = ""
+    private let offlineArchive = OfflineArchive()
+    private var offlineDocument = 0
+    private var offlineWiFi = false
+    private var transferPath: NWPath?
+    private var networkEpoch = UUID().uuidString
+    private var offlineBinding: (document: Int, cookie: String, legacyLogin: String, account: OfflineArchive.Account)?
+    private var offlineAuthorization: (account: Int64, context: LAContext)?
+    private var pendingOfflineReader: (() -> Void)?
+    private weak var offlineReader: WKWebView?
+    private var readerAccount: OfflineArchive.Account?
+    private var readerAddress: String?
+    private var readerAuthenticated = false
+    private var readerSawUnavailable = false
+    private var readerReconnecting = false
+    private var webNetworkHint: Bool?
+    private var removingOfflineRoutes = Set<String>()
+    private var offlineForeground: Bool { UIApplication.shared.applicationState == .active }
+    private var offlinePrefetch: Bool { offlineForeground && offlineWiFi && webNetworkHint != false }
+    private var allowHistoryTransfer: Bool { offlineWiFi && webNetworkHint != false }
+    private var historyTransferActive = false
+    private static let transferCommands: Set<String> = [
+        "transferStats", "transferTaskLoad", "transferTaskSave", "transferCached", "transferChunkHas",
+        "transferChunkGet", "transferChunkPut", "transferChunkFetch", "transferRecordCommit",
+        "transferAttachmentCommit", "transferSessionComplete", "transferAttachment", "transferAttachmentOpen"
+    ]
+    private func resetOfflineDocument() { offlineDocument += 1; offlineBinding = nil }
+    private func pushOfflineState(foreground: Bool? = nil) {
+        guard let web, connectionError == nil, let url = web.url, GatewayURL.same(url, documentAddress) else { return }
+        let visible = foreground ?? offlineForeground
+        var state: [String: Any] = ["foreground": visible, "allowPrefetch": visible && offlineWiFi && webNetworkHint != false,
+                                    "allowTransfer": allowHistoryTransfer, "networkEpoch": networkEpoch]
+        if let webNetworkHint { state["networkAvailable"] = webNetworkHint }
+        sendOffline(web, ["state": state])
+    }
+    private func notifyWebNetwork(_ online: Bool, repeatHint: Bool = false) {
+        guard repeatHint || webNetworkHint != online else { return }
+        webNetworkHint = online
+        guard let web, pageReady, web.url.map({ GatewayURL.same($0, documentAddress) }) == true else { return }
+        pushOfflineState()
+    }
+    private func sendOffline(_ web: WKWebView, _ response: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: response), let json = String(data: data, encoding: .utf8) else { return }
+        web.evaluateJavaScript("window.CodexBridgeNativeOffline?.receive('" + clipboardToken + "'," + json + ")")
+    }
+    private func rejectedOfflineStatus(_ auth: [String: Any]) -> String {
+        let status = auth["authStatus"] as? String ?? ""
+        return ["expired", "revoked", "unknownRejected"].contains(status) ? status : "unknownRejected"
+    }
+    private func markOfflineStatus(_ address: String, _ status: String) {
+        if address == documentAddress { offlineBinding = nil }
+        OfflineArchive.queue.async { [weak self, offlineArchive] in
+            guard let account = try? offlineArchive.account(address: address) else { return }
+            try? offlineArchive.status(account, status)
+            if status == "revoked" || status == "unknownRejected" {
+                DispatchQueue.main.async { self?.closeOfflineReader(account.id) }
+            }
+        }
+    }
+    private func cancelOfflineAuthorization() {
+        offlineAuthorization?.context.invalidate()
+        offlineAuthorization = nil
+        pendingOfflineReader = nil
+    }
+    private func resumeOfflineReader() {
+        guard offlineForeground, let pendingOfflineReader else { return }
+        self.pendingOfflineReader = nil
+        pendingOfflineReader()
+    }
+    @objc private func offlineBackground() {
+        cancelOfflineAuthorization()
+        if readerAuthenticated, let id = readerAccount?.id { closeOfflineReader(id) }
+    }
+    private func closeOfflineReader(_ id: Int64) {
+        if offlineAuthorization?.account == id { cancelOfflineAuthorization() }
+        guard readerAccount?.id == id else { return }
+        offlineReader?.isHidden = true
+        if offlineForeground { home() }
+        else {
+            dropOfflineReader()
+            pendingOfflineReader = { [weak self] in self?.home() }
+        }
+    }
+    private func offlineCommand(_ event: [String: Any], id: String, web: WKWebView) {
+        let document = offlineDocument, address = documentAddress, name = computerName(origin)
+        let type = event["type"] as? String ?? "", status = event["status"] as? String ?? ""
+        let gateway = event["gatewayId"] as? String ?? "", identity = event["identity"] as? String ?? ""
+        func current() -> Bool {
+            self.web === web && document == self.offlineDocument && self.connectionError == nil &&
+            self.offlineForeground && !self.removingOfflineRoutes.contains(address) && web.url.map { GatewayURL.same($0, address) && GatewayURL.apiPath($0, address) == "/" } == true
+        }
+        func respond(_ value: [String: Any]?) {
+            guard current() else { return }
+            self.sendOffline(web, ["id": id, "ok": value != nil, "value": value as Any? ?? NSNull()])
+        }
+        func finish(_ account: OfflineArchive.Account, legacyLogin: String, cookie: HTTPCookie?) {
+            var legacyScope = ""
+            if !legacyLogin.isEmpty, let scope = event["legacyScope"] as? String, scope.utf8.count <= 8192,
+               let legacy = try? JSONSerialization.jsonObject(with: Data(scope.utf8)) as? [String],
+               let session = event["sessionId"] as? String,
+               let parts = try? JSONSerialization.jsonObject(with: Data(session.utf8)) as? [String],
+               parts.count == 3, legacy.first == legacyLogin, legacy.last == parts.last {
+                let codex = parts[0] == "codex" || parts[0] == "wsl"
+                if codex ? legacy.count == 3 && legacy[1] == parts[1] : legacy.count == 4 && legacy[2] == parts[0] {
+                    legacyScope = scope
+                }
+            }
+            let authorizedLegacyScope = legacyScope
+            guard current() else { return }
+            let prefetch = self.offlinePrefetch
+            let allowedNetwork = self.allowHistoryTransfer
+            let networkAvailable = self.webNetworkHint
+            let networkEpoch = self.networkEpoch
+            let archive = self.offlineArchive
+            OfflineArchive.queue.async {
+                do {
+                    guard let entry = try archive.account(id: account.id), entry.status == "valid" else { DispatchQueue.main.async { respond(nil) }; return }
+                    if OfflineArchive.composerActions.contains(type) {
+                        let result = try archive.composer(entry, action: type, input: event)
+                        DispatchQueue.main.async { respond(result) }
+                        return
+                    }
+                    if Self.transferCommands.contains(type) {
+                        if type == "transferChunkFetch" {
+                            if let reason = try archive.transferAdmission(entry, event) {
+                                DispatchQueue.main.async { respond(["saved": false, "reason": reason]) }
+                            } else if try archive.freeBytes() < 2_097_152 {
+                                DispatchQueue.main.async { respond(["saved": false, "reason": "space"]) }
+                            } else {
+                                DispatchQueue.main.async {
+                                    guard current(), let cookie else { respond(nil); return }
+                                    self.fetchHistoryChunk(event, address: address, cookie: cookie, account: entry, respond: respond)
+                                }
+                            }
+                        } else if type == "transferAttachmentOpen" {
+                            let file = try archive.exportTransferAttachment(entry, event, name: Self.offlineAttachmentName(event))
+                            DispatchQueue.main.async {
+                                respond(["opened": file.map { self.openOfflineAttachment($0, current: current) } ?? false])
+                            }
+                        } else {
+                            let result = try Self.historyTransferResult(archive, entry, type, event,
+                                allowedNetwork: allowedNetwork, networkAvailable: networkAvailable, networkEpoch: networkEpoch)
+                            DispatchQueue.main.async { respond(result) }
+                        }
+                        return
+                    }
+                    archive.scheduleMigration(entry, session: event["sessionId"] as? String)
+                    if (type == "auth" || type == "appearance"), let appearance = event["appearance"] as? [String: Any] {
+                        try archive.saveAppearance(entry, appearance)
+                    }
+                    if type == "appearance" { DispatchQueue.main.async { respond(["saved": true]) }; return }
+                    if type == "merge" {
+                        let source = event["source"] as? String
+                        guard source == "manual" || source == "live" || (source == "prefetch" && prefetch) else { DispatchQueue.main.async { respond(nil) }; return }
+                        try archive.merge(entry, event: event, manual: source == "manual", legacyScope: authorizedLegacyScope)
+                    }
+                    if type == "list" || type == "session" {
+                        let payload = try self.offlinePayload(archive, account: entry, action: type, input: event)
+                        DispatchQueue.main.async { respond(payload) }
+                        return
+                    }
+                    if type == "read" {
+                        if event["page"] as? Bool == true, let session = event["sessionId"] as? String {
+                            let page = try archive.recordPage(entry, session: session, event: event)
+                            DispatchQueue.main.async { respond(["page": page as Any? ?? NSNull()]) }
+                            return
+                        }
+                        if event["body"] != nil {
+                            let part = try archive.body(entry, event: event)
+                            DispatchQueue.main.async { respond(["body": part as Any? ?? NSNull()]) }
+                            return
+                        }
+                        let turns = try archive.seed(entry, event: event)
+                        DispatchQueue.main.async { respond(["turns": turns]) }
+                        return
+                    }
+                    let session = event["sessionId"] as? String ?? ""
+                    let tombstones = try archive.tombstones(entry, session: session)
+                    let hasCache = session.isEmpty ? nil : try archive.hasCachedSession(entry, session: session)
+                    DispatchQueue.main.async {
+                        var state: [String: Any] = ["recordPages": 1, "foreground": self.offlineForeground, "allowPrefetch": self.offlinePrefetch,
+                                                    "allowTransfer": self.allowHistoryTransfer, "networkEpoch": self.networkEpoch,
+                                                    "clearRevision": entry.clearRevision, "tombstones": tombstones]
+                        if let hasCache { state["hasCachedSession"] = hasCache }
+                        if let network = self.webNetworkHint { state["networkAvailable"] = network }
+                        respond(state)
+                    }
+                } catch { DispatchQueue.main.async { respond(nil) } }
+            }
+        }
+        if type == "auth", status != "valid" {
+            guard ["expired", "loggedOut", "revoked", "unknownRejected"].contains(status) else { respond(nil); return }
+            offlineBinding = nil
+            let archive = offlineArchive
+            OfflineArchive.queue.async {
+                if let account = try? archive.account(address: address), account.matches(gateway, identity) || (gateway.isEmpty && identity.isEmpty) {
+                    try? archive.status(account, status)
+                    if status == "revoked" || status == "unknownRejected" {
+                        DispatchQueue.main.async { self.closeOfflineReader(account.id) }
+                    }
+                }
+                DispatchQueue.main.async { respond(["foreground": self.offlineForeground, "allowPrefetch": false]) }
+            }
+            return
+        }
+        guard Self.transferCommands.contains(type) || OfflineArchive.composerActions.contains(type) || ["state", "auth", "merge", "read", "list", "session", "appearance"].contains(type), (1...256).contains(gateway.utf8.count), (1...256).contains(identity.utf8.count) else { respond(nil); return }
+        binding(address) { cookie in
+            guard current() else { respond(nil); return }
+            if type != "auth", let binding = self.offlineBinding, document == binding.document, cookie?.value == binding.cookie,
+               binding.account.matches(gateway, identity) {
+                finish(binding.account, legacyLogin: binding.legacyLogin, cookie: cookie)
+                return
+            }
+            if type == "list" || type == "session" { respond(nil); return }
+            self.fetch(address: address, route: "/api/auth") { result in
+                guard current(), case .success(let auth) = result else { respond(nil); return }
+                guard auth["authenticated"] as? Bool == true else {
+                    self.markOfflineStatus(address, self.rejectedOfflineStatus(auth))
+                    respond(nil); return
+                }
+                guard let scope = auth["sessionSync"] as? [String: Any], scope["version"] as? Int == 1,
+                      scope["gatewayId"] as? String == gateway, scope["identity"] as? String == identity else { respond(nil); return }
+                self.binding(address) { after in
+                    guard current(), let after, cookie == nil || after.value == cookie?.value else { respond(nil); return }
+                    OfflineArchive.queue.async {
+                        do {
+                            let account = try self.offlineArchive.bind(address: address, name: name, gateway: gateway, identity: identity)
+                            DispatchQueue.main.async {
+                                guard current() else { return }
+                                let legacyLogin = auth["listCacheIdentity"] as? String ?? ""
+                                self.offlineBinding = (document, after.value, legacyLogin, account)
+                                finish(account, legacyLogin: legacyLogin, cookie: after)
+                            }
+                        } catch { DispatchQueue.main.async { respond(nil) } }
+                    }
+                }
+            }
+        }
+    }
+
     private var channelCatalogTimer:Timer?
     private var channelMonitor: NWPathMonitor?
     private var channelTicket = 0
     private var channelCookieOwners=[String:UUID]()
     private var channelSignature = ""
     private var channelWiFi = false
+    private static func historyTransferResult(_ archive: OfflineArchive, _ account: OfflineArchive.Account,
+                                               _ type: String, _ event: [String: Any],
+                                               allowedNetwork: Bool, networkAvailable: Bool?, networkEpoch: String) throws -> [String: Any] {
+        switch type {
+        case "transferStats":
+            return ["recordBatch": 1, "freeBytes": try archive.freeBytes(), "clearRevision": account.clearRevision,
+                    "allowTransfer": allowedNetwork, "networkAvailable": networkAvailable ?? false, "networkEpoch": networkEpoch]
+        case "transferTaskLoad": return try archive.transferTask(account)
+        case "transferTaskSave": return try archive.saveTransferTask(account, event)
+        case "transferCached": return try archive.transferCached(account, event)
+        case "transferChunkHas":
+            return ["present": try archive.transferChunkHas(account, version: OfflineArchive.transferVersion(event),
+                                                            index: OfflineArchive.transferIndex(event))]
+        case "transferChunkGet":
+            let data = try archive.transferChunk(account, version: OfflineArchive.transferVersion(event), index: OfflineArchive.transferIndex(event))
+            return ["data": data?.base64EncodedString() as Any? ?? NSNull()]
+        case "transferChunkPut":
+            guard let encoded = event["data"] as? String, encoded.utf8.count <= 700_000,
+                  let data = Data(base64Encoded: encoded), let hash = event["sha256"] as? String
+            else { throw OfflineArchive.Failure.invalidContent }
+            return try archive.putTransferChunk(account, event, data: data, hash: hash)
+        case "transferRecordCommit": return try archive.commitTransfer(account, event, attachment: false)
+        case "transferAttachmentCommit": return try archive.commitTransfer(account, event, attachment: true)
+        case "transferSessionComplete": return try archive.completeTransferSession(account, event)
+        case "transferAttachment": return try archive.transferAttachment(account, event) ?? [:]
+        default: throw OfflineArchive.Failure.invalidContent
+        }
+    }
+
+    private func fetchHistoryChunk(_ event: [String: Any], address: String, cookie: HTTPCookie,
+                                   account: OfflineArchive.Account, respond: @escaping ([String: Any]?) -> Void) {
+        func reject(_ reason: String) { respond(["saved": false, "reason": reason]) }
+        guard !historyTransferActive else { reject("busy"); return }
+        let sameOverride = event["allowMetered"] as? Bool == true && event["networkEpoch"] as? String == networkEpoch
+        guard webNetworkHint != false, allowHistoryTransfer || sameOverride else {
+            reject("network"); return
+        }
+        guard let route = event["url"] as? String, route.utf8.count <= 512,
+              let components = URLComponents(string: route), components.scheme == nil, components.host == nil, components.fragment == nil,
+              components.percentEncodedPath == "/api/history-transfer/content",
+              let fields = components.queryItems, fields.count == 4,
+              Set(fields.map(\.name)) == Set(["id", "item", "offset", "length"]),
+              fields.first(where: { $0.name == "id" })?.value?.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil,
+              fields.first(where: { $0.name == "item" })?.value?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+              let index = try? OfflineArchive.transferIndex(event),
+              let version = try? OfflineArchive.transferVersion(event),
+              let total = event["bytes"] as? Int64, let offset = event["offset"] as? Int64,
+              offset >= 0, offset < total, offset == index * Int64(OfflineArchive.transferChunkBytes),
+              fields.first(where: { $0.name == "offset" })?.value == String(offset),
+              let length = fields.first(where: { $0.name == "length" })?.value.flatMap(Int64.init),
+              length == min(Int64(OfflineArchive.transferChunkBytes), total - offset) || length == Int64(OfflineArchive.transferChunkBytes),
+              let url = URL(string: address + route), GatewayURL.same(url, address) else { reject("integrity"); return }
+        historyTransferActive = true
+        let expected = Int(min(Int64(OfflineArchive.transferChunkBytes), total - offset))
+        let range = "bytes \(offset)-\(offset + Int64(expected) - 1)/\(total)"
+        let archive = offlineArchive
+        var background = UIBackgroundTaskIdentifier.invalid
+        var requestTask: Task<Void, Never>?
+        func finishBackground() {
+            if background != .invalid {
+                UIApplication.shared.endBackgroundTask(background)
+                background = .invalid
+            }
+        }
+        background = UIApplication.shared.beginBackgroundTask(withName: "Finish history chunk") {
+            requestTask?.cancel()
+            finishBackground()
+        }
+        requestTask = Task {
+            defer { self.historyTransferActive = false; finishBackground() }
+            let config = URLSessionConfiguration.ephemeral
+            config.httpShouldSetCookies = false
+            config.httpCookieStorage = nil
+            config.urlCredentialStorage = nil
+            config.urlCache = nil
+            config.timeoutIntervalForRequest = 20
+            config.timeoutIntervalForResource = 30
+            let client = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
+            defer { client.invalidateAndCancel() }
+            var request = URLRequest(url: url)
+            request.setValue(cookie.name + "=" + cookie.value, forHTTPHeaderField: "Cookie")
+            request.setValue(GatewayURL.httpOrigin(address), forHTTPHeaderField: "Origin")
+            request.setValue("BridgeMobile/0.1-iOS", forHTTPHeaderField: "User-Agent")
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            do {
+                let (incoming, response) = try await client.bytes(for: request)
+                guard let http = response as? HTTPURLResponse, http.url == url else { reject("network"); return }
+                if http.statusCode == 401 || http.statusCode == 403 { reject("permission"); return }
+                if http.statusCode == 404 || http.statusCode == 409 || http.statusCode == 410 { reject("manifest"); return }
+                if (500...599).contains(http.statusCode) { reject("network"); return }
+                guard http.statusCode == 206, http.value(forHTTPHeaderField: "Content-Range") == range,
+                      http.value(forHTTPHeaderField: "ETag") == "\"sha256-" + version + "\"",
+                      let hash = http.value(forHTTPHeaderField: "X-Chunk-SHA256"),
+                      hash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+                      (event["sha256"] as? String).map({ $0 == hash }) ?? true else { reject("integrity"); return }
+                var data = Data(capacity: expected)
+                for try await byte in incoming {
+                    guard data.count < expected else { reject("integrity"); return }
+                    data.append(byte)
+                }
+                guard data.count == expected else { reject("integrity"); return }
+                let completed = data
+                let result: [String: Any]? = await withCheckedContinuation { continuation in
+                    OfflineArchive.queue.async {
+                        let linked = try? archive.account(address: address)
+                        guard linked?.id == account.id else {
+                            continuation.resume(returning: ["saved": false, "reason": "permission"])
+                            return
+                        }
+                        continuation.resume(returning: try? archive.putTransferChunk(account, event, data: completed, hash: hash))
+                    }
+                }
+                respond(result)
+            } catch { reject("network") }
+        }
+    }
+
     private func watchChannels() {
         guard channelMonitor == nil else { return }
         channelCatalogTimer=Timer.scheduledTimer(withTimeInterval:30,repeats:true){[weak self] _ in
@@ -178,6 +625,19 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         channelMonitor = monitor
         monitor.pathUpdateHandler = { [weak self, weak monitor] path in
             guard let self, self.channelMonitor === monitor else { return }
+            if self.transferPath != path {
+                self.transferPath = path
+                self.networkEpoch = UUID().uuidString
+            }
+            self.offlineWiFi = path.status == .satisfied && path.usesInterfaceType(.wifi) && !path.isExpensive && !path.isConstrained
+            self.notifyWebNetwork(path.status == .satisfied, repeatHint: true)
+            if let reader = self.offlineReader, self.readerAddress != nil {
+                if path.status != .satisfied { self.readerSawUnavailable = true }
+                else if self.readerSawUnavailable && self.offlineForeground {
+                    self.readerSawUnavailable = false
+                    reader.evaluateJavaScript("window.OfflineChatReader?.reconnect()")
+                }
+            }
             let signature=path.availableInterfaces.filter{path.usesInterfaceType($0.type)}.map{$0.name}.sorted().joined(separator:"|")
             guard signature != self.channelSignature else{return}
             self.channelSignature=signature
@@ -536,6 +996,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 defaults.set(channelRecord(address) ?? d,forKey:"channels:"+next);defaults.set(root.name,forKey:"cookieName:"+next)
                 defaults.set(saved.filter{$0 != address && $0 != next}+[next],forKey:"origins")
                 release()
+                OfflineArchive.queue.async { [offlineArchive] in try? offlineArchive.linkRoute(from: address, to: next) }
                 if view==nil || !pageReady {connect(url,address:next);arrivingVia=next}
                 else{origin=next;defaults.set(next,forKey:"active");routeNotice(MobileStrings.text("已切换连接信道")+" · "+next)}
                 return true
@@ -598,6 +1059,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private let downloadPanel = DownloadPanel()
     private var exportPicker: UIDocumentPickerViewController?
     private var openDocument: UIDocumentInteractionController?
+    private var offlineAttachmentDocument: UIDocumentInteractionController?
     private var downloadBottom: NSLayoutConstraint?
     private lazy var downloads: DownloadManager = {
         let manager = DownloadManager()
@@ -702,6 +1164,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         downloadPanel.render(downloadState)
         if let active = defaults.string(forKey: "active"), saved.contains(active) { openSaved(active) } else { home() }
         NotificationCenter.default.addObserver(self, selector: #selector(active), name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(offlineBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(inactive), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged), name: UIResponder.keyboardWillHideNotification, object: nil)
@@ -858,7 +1321,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { pendingEntry=nil;routeTraffic.removeAll();uu.scope = ""; uuAvailability = "checking"; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { webNetworkHint=nil;cancelOfflineAuthorization();dropOfflineReader();resetOfflineDocument();pendingEntry=nil;routeTraffic.removeAll();uu.scope = ""; uuAvailability = "checking"; hideEntryProgress();pageReady=false;rollbackPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -1043,7 +1506,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     if auth["authenticated"] as? Bool == true, auth["trustedDevice"] as? Bool == true,
                        (auth["cookieName"] as? String ?? "codex_mobile_session") == cookie.name {
                         DeviceBinding.save(address, .init(name: cookie.name, token: cookie.value))
-                    } else if auth["authenticated"] as? Bool == false { DeviceBinding.clear(address) }
+                    } else if auth["authenticated"] as? Bool == false {
+                        self.markOfflineStatus(address, self.rejectedOfflineStatus(auth))
+                        DeviceBinding.clear(address)
+                    }
                     if auth["authenticated"] as? Bool==true && self.arrivingVia==address {self.arrivingVia=nil;self.routeNotice(MobileStrings.text("已切换连接信道")+" · "+address)}
                     let platform = (auth["computer"] as? [String:Any])?["platform"] as? String ?? ""
                     self.uu.scope = auth["authenticated"] as? Bool == true && ["Darwin","Windows"].contains(platform)
@@ -1097,7 +1563,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func loadNative(_ web: WKWebView, _ request: URLRequest) {
         guard self.web === web, connectionError == nil else { return }
-        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString) }
+        nativeMainNavigation = request.url.map { (web, generation, $0.absoluteString, .other) }
         web.load(request)
     }
     private func recoverConnection() { if !checkChannels(failure: true) { recoverLegacy() } }
@@ -1163,7 +1629,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         catch { info(error.localizedDescription); return }
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
         clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address); subtitle.text = MobileStrings.text("正在连接 · ") + computerName(address)
-        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
+        let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = MobileClientIdentity.userAgent
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
         configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -1182,6 +1648,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         #endif
         let clipboardScript = scripts.clipboard.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken).replacingOccurrences(of: "'__BRIDGE_NATIVE_LANGUAGE__'", with: "\"" + nativeLanguage + "\"")
         configuration.userContentController.addUserScript(WKUserScript(source: clipboardScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        let offlineScript = scripts.offline.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken)
+        configuration.userContentController.addUserScript(WKUserScript(source: offlineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let systemBarsScript = scripts.systemBars.replacingOccurrences(of: "__BRIDGE_CLIPBOARD_TOKEN__", with: clipboardToken)
         configuration.userContentController.addUserScript(WKUserScript(source: systemBarsScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         let web = WKWebView(frame: .zero, configuration: configuration); self.web = web; web.scrollView.contentInsetAdjustmentBehavior = .never; web.navigationDelegate = self; web.uiDelegate = self; web.allowsBackForwardNavigationGestures = true; web.customUserAgent = nil; page.addArrangedSubview(web); gatewayMenuTop = gatewayMenu.topAnchor.constraint(equalTo: web.topAnchor, constant: 4); gatewayMenuTop?.isActive = true; loadWithRecovery(web, url: url, address: address, ticket: generation)
@@ -1193,8 +1661,12 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         connectionDeadline = deadline; DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: deadline)
         web.scrollView.pinchGestureRecognizer?.isEnabled = false
     }
-    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString) }; web.reload() } }
+    @objc private func refresh() { routeAttempted = false; if documentAddress != origin,let uri=web?.url,GatewayURL.same(uri,documentAddress),let next=URL(string:origin+uri.absoluteString.dropFirst(documentAddress.count)){connect(next,address:origin);return};if let web { nativeMainNavigation = web.url.map { (web, generation, $0.absoluteString, .reload) }; web.reload() } }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if webView === offlineReader {
+            decisionHandler(response.isForMainFrame && OfflineReaderResources.isDocument(response.response.url) ? .allow : .cancel)
+            return
+        }
         let status = (response.response as? HTTPURLResponse)?.statusCode ?? 0
         if let peer=peerViews[webView] {decisionHandler((response.response.url?.absoluteString.components(separatedBy:"#").first==peer.next+"/mobile-channel" && status==200) ? .allow:.cancel);return}
         let recover = webView === web && response.isForMainFrame && response.response.url.map { GatewayURL.same($0, documentAddress) } == true && ConnectionDiscovery.retryableStatus(status)
@@ -1204,6 +1676,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { decisionHandler(.cancel); return }
+        if webView === offlineReader {
+            decisionHandler(action.targetFrame?.isMainFrame == true && OfflineReaderResources.isDocument(url) ? .allow : .cancel)
+            return
+        }
         if let peer=peerViews[webView]{decisionHandler(action.request.url?.absoluteString==peer.document ? .allow:.cancel);return}
         if webView===web,action.sourceFrame.isMainFrame,action.targetFrame==nil,let peer=pendingPeer,url.absoluteString==peer.document{decisionHandler(.allow);return}
         if action.targetFrame?.isMainFrame == false {
@@ -1213,7 +1689,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let expected = nativeMainNavigation
             nativeMainNavigation = nil
             if !action.sourceFrame.isMainFrame {
-                guard action.navigationType == .other, expected?.generation == generation,
+                guard action.navigationType == expected?.navigationType, expected?.generation == generation,
                       expected?.url == url.absoluteString, GatewayURL.same(url, documentAddress) else { decisionHandler(.cancel); return }
             }
         } else if !action.sourceFrame.isMainFrame { decisionHandler(.cancel); return }
@@ -1233,6 +1709,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             let a = UIAlertController(title: MobileStrings.text("在浏览器打开外部链接？"), message: url.host, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel)); a.addAction(UIAlertAction(title: MobileStrings.text("打开"), style: .default) { _ in UIApplication.shared.open(url) }); present(a, animated: true)
         }
     }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if webView === web { resetOfflineDocument() }
+    }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard webView === web, connectionError == nil, let url = webView.url, GatewayURL.same(url, documentAddress) else { return }
         channelTicket+=1;rollbackPeer()
@@ -1247,18 +1726,25 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             return
         }
         if nativeMainNavigation?.web === webView { nativeMainNavigation = nil }; guard webView === web, connectionError == nil, let url = webView.url, GatewayURL.same(url, documentAddress) else { return }; hideEntryProgress();pageReady=true;subtitle.isHidden = true; registerNativePush(); rememberConnection()
-        syncWebTheme()
+        syncWebTheme(); pushOfflineState()
         if let snapshot = pendingStorage, let encoded = try? JSONEncoder().encode(snapshot) { pendingStorage = nil; webView.evaluateJavaScript("(()=>{const data=JSON.parse(" + String(decoding:encoded,as:UTF8.self) + ");if(data.version===2){window.BridgeMobileHandoff?.restore(data);return;}for(const [k,v] of Object.entries(data))if(typeof v==='string')localStorage.setItem(k,v);location.reload();})()", completionHandler: nil) }
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if nativeMainNavigation?.web === webView { nativeMainNavigation = nil }; guard webView === web, connectionError == nil else { return }
         let failure = error as NSError
         guard failure.domain != NSURLErrorDomain || failure.code != NSURLErrorCancelled else { return }
-        subtitle.isHidden = false; subtitle.text = MobileStrings.text("连接失败，请检查电脑和地址后刷新")
+        if !pageReady {
+            subtitle.isHidden = false
+            subtitle.text = MobileStrings.text("连接失败，请检查电脑和地址后刷新")
+        }
         showConnectionError(status: nil)
         recoverConnection()
     }
     private func showConnectionError(status: Int?) {
         guard connectionError == nil, let route = requestedRoute else { return }
+        if pageReady, web != nil {
+            notifyWebNetwork(false)
+            return
+        }
         pendingEntry=nil;connectionDeadline?.cancel(); connectionDeadline = nil
         hideEntryProgress();let address = origin, ticket = generation
         updateSystemBars(reset: true); web?.isHidden = true; subtitle.isHidden = true; gatewayMenu.isHidden = true
@@ -1271,14 +1757,55 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         content.addArrangedSubview(hero)
         content.addArrangedSubview(card([button(MobileStrings.text("重试"), symbol: "arrow.clockwise", primary: true) { [weak self] in
             guard let self, ticket == self.generation, self.saved.contains(address) else { return }; self.openComputer(address,route)
+        }, button(MobileStrings.text("离线聊天"), symbol: "tray.full") { [weak self] in self?.offlineList(address)
         }, button(MobileStrings.text("管理这台电脑"),symbol:"slider.horizontal.3"){[weak self] in self?.manageComputer(address)
         }, button(MobileStrings.text("返回电脑列表"), symbol: "desktopcomputer") { [weak self] in self?.home() }]))
+        if saved.contains(address) { offlineList(address, automatic: true) }
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if webView === offlineReader, let id = readerAccount?.id { closeOfflineReader(id) }
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if nativeMainNavigation?.web === webView { nativeMainNavigation = nil }; guard webView === web else { return }; recoverConnection() }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) { guard frame.isMainFrame else { completionHandler(); return }; let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("好"), style: .default) { _ in completionHandler() }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) { guard frame.isMainFrame else { completionHandler(false); return }; let a = UIAlertController(title: nil, message: message, preferredStyle: .alert); a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { _ in completionHandler(false) }); a.addAction(UIAlertAction(title: MobileStrings.text("确认"), style: .default) { _ in completionHandler(true) }); present(a, animated: true) }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         guard webView===web else{completionHandler(nil);return}
+        if prompt == "codexbridge-offline:" + clipboardToken {
+            guard connectionError == nil, offlineForeground, frame.isMainFrame,
+                  let source = frame.request.url, GatewayURL.same(source, documentAddress), GatewayURL.apiPath(source, documentAddress) == "/",
+                  let current = webView.url, GatewayURL.same(current, documentAddress), GatewayURL.apiPath(current, documentAddress) == "/",
+                  let value = defaultText, value.utf8.count <= 2_000_000,
+                  let event = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+                  let id = event["requestId"] as? String, id.range(of: "^[0-9]{1,16}$", options: .regularExpression) != nil
+            else { completionHandler(nil); return }
+            completionHandler("queued")
+            offlineCommand(event, id: id, web: webView)
+            return
+        }
+        if prompt == "codexbridge-display:" + clipboardToken {
+            guard connectionError == nil, UIApplication.shared.applicationState == .active, frame.isMainFrame,
+                  let source = frame.request.url, GatewayURL.same(source, documentAddress),
+                  let current = webView.url, GatewayURL.same(current, documentAddress),
+                  let value = defaultText, let data = value.data(using: .utf8),
+                  let command = try? JSONSerialization.jsonObject(with: data) as? [String:Any],
+                  let requestID = command["id"] as? String, requestID.range(of: "^[0-9]+$", options: .regularExpression) != nil,
+                  let identity = gatewayIdentity(origin) else { completionHandler(nil); return }
+            let address = documentAddress, screen = generation, token = clipboardToken
+            completionHandler("queued")
+            DisplayStorage.queue.async {
+                var result: Any = NSNull(); var ok = false
+                if let credential = DeviceBinding.load(GatewayChannels.vault(identity)) {
+                    do { result = try DisplayStorage.execute(binding: identity + "\0" + credential.token, command: command); ok = true } catch {}
+                }
+                let response: [String:Any] = ["id":requestID,"ok":ok,"value":result]
+                guard let encoded = try? JSONSerialization.data(withJSONObject: response), let json = String(data: encoded, encoding: .utf8) else { return }
+                DispatchQueue.main.async { [weak self, weak webView] in
+                    guard let self, let webView, webView === self.web, screen == self.generation, token == self.clipboardToken,
+                          UIApplication.shared.applicationState == .active, let current = webView.url, GatewayURL.same(current,address) else { return }
+                    webView.evaluateJavaScript("window.BridgeMobileStorage?.receive('" + token + "'," + json + ")")
+                }
+            }; return
+        }
         if prompt == "codexbridge-upload-source:" + clipboardToken {
             guard webView === web, connectionError == nil, UIApplication.shared.applicationState == .active,
                   frame.isMainFrame, let source = frame.request.url, GatewayURL.same(source, documentAddress),
@@ -1348,6 +1875,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             guard webView === web, UIApplication.shared.applicationState == .active, frame.isMainFrame,
                   let source = frame.request.url, GatewayURL.same(source, documentAddress),
                   let current = webView.url, GatewayURL.same(current, documentAddress) else { completionHandler(nil); return }
+            markOfflineStatus(documentAddress, "loggedOut")
             bindingRevision += 1
             clearChannels(origin);DeviceBinding.clear(origin)
             binding(origin) { cookie in if let cookie { WKWebsiteDataStore.default().httpCookieStore.delete(cookie) } }
@@ -1417,6 +1945,28 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             openDocument = nil; info(MobileStrings.text("暂无可打开此文件的应用"))
         }
     }
+    private static func offlineAttachmentName(_ event: [String: Any]) -> String {
+        DownloadManager.filename(String((event["name"] as? String ?? "").prefix(256)))
+    }
+    private func openOfflineAttachment(_ file: URL, current: () -> Bool) -> Bool {
+        guard current(), presentedViewController == nil else {
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+            return false
+        }
+        let document = UIDocumentInteractionController(url: file)
+        document.delegate = self
+        offlineAttachmentDocument = document
+        if document.presentPreview(animated: true) || document.presentOpenInMenu(from: view.bounds, in: view, animated: true) { return true }
+        closeOfflineAttachment(document)
+        return false
+    }
+    private func closeOfflineAttachment(_ document: UIDocumentInteractionController) {
+        guard document === offlineAttachmentDocument else { return }
+        if let file = document.url { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        offlineAttachmentDocument = nil
+    }
+    func documentInteractionControllerDidEndPreview(_ controller: UIDocumentInteractionController) { closeOfflineAttachment(controller) }
+    func documentInteractionControllerDidDismissOpenInMenu(_ controller: UIDocumentInteractionController) { closeOfflineAttachment(controller) }
     func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController { self }
     private func saveDownload() {
         guard downloadState.phase == .complete, let file = downloadState.file, presentedViewController == nil else { return }
@@ -1512,7 +2062,15 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let address = activeChannel(original)
         connect(target, address: address)
     }
-    private func fetch(address requestedAddress: String? = nil, after: Int? = nil, poll: Int? = nil, route: String = "/api/mobile/events", body: [String: Any]? = nil, csrf: String? = nil, _ done: @escaping (Result<[String: Any], Error>) -> Void) {
+    private static func offlineHTTPRejection(_ value: [String: Any], code: Int) -> String? {
+        if let status = value["authStatus"] as? String,
+           ["revoked", "expired", "unknownRejected"].contains(status) { return status }
+        if code == 401 && (value["code"] as? String == "unauthenticated" || value["authenticated"] as? Bool == false) {
+            return "unknownRejected"
+        }
+        return nil
+    }
+    private func fetch(address requestedAddress: String? = nil, after: Int? = nil, poll: Int? = nil, route: String = "/api/mobile/events", body: [String: Any]? = nil, csrf: String? = nil, offlineReconnect: Bool = false, _ done: @escaping (Result<[String: Any], Error>) -> Void) {
         let address = requestedAddress ?? origin, ticket = generation
         func valid() -> Bool { ticket == self.generation && (poll.map { self.pollCurrent($0) } ?? true) }
         let query = after.map { "?after=\(max(0, $0))" } ?? ""
@@ -1529,6 +2087,14 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 let result: Result<[String: Any], Error>
                 if let error { result = .failure(error) }
                 else if code == 200, let data, data.count <= 512000, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { result = .success(value) }
+                else if offlineReconnect, code == 401 || code == 403,
+                        let response = response as? HTTPURLResponse, response.url == target,
+                        response.mimeType == "application/json",
+                        let data, data.count <= 8192,
+                        let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                        let status = Self.offlineHTTPRejection(value, code: code ?? 0) {
+                    result = .success(["authenticated": false, "authStatus": status])
+                }
                 else { result = .failure(NSError(domain: "Bridge", code: code ?? 0, userInfo: [NSLocalizedDescriptionKey: code == 401 || code == 403 ? MobileStrings.text("登录已失效，请重新连接电脑") : MobileStrings.text("请使用配套电脑 Preview，并检查连接")])) }
                 DispatchQueue.main.async {
                     guard valid() else { return }
@@ -1634,8 +2200,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { if let entry=pendingEntry,entry.interrupted,web==nil,UIApplication.shared.applicationState == .active {openComputer(entry.address,entry.url)};watchChannels(); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { pendingEntry?.interrupted=true;rollbackPeer();cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func active() { resumeOfflineReader(); pushOfflineState(foreground: true); if let entry=pendingEntry,entry.interrupted,web==nil,UIApplication.shared.applicationState == .active {openComputer(entry.address,entry.url)};watchChannels(); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func inactive() { offlineWiFi = false;pushOfflineState(foreground: false);pendingEntry?.interrupted=true;rollbackPeer();cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func cancelSync() {
         pollGeneration += 1; pollTasks.values.forEach { $0.cancel() }; pollTasks.removeAll(); polling.removeAll()
     }
@@ -1756,8 +2322,410 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     }
+    private func offlineList(_ address: String, automatic: Bool = false) {
+        let ticket = generation
+        loadOffline({ archive in
+            guard let account = try archive.account(address: address), try archive.hasContent(account) else { return nil }
+            return account
+        }) { (account: OfflineArchive.Account?) in
+            guard self.generation == ticket, self.connectionError != nil, self.saved.contains(address) else { return }
+            if let account {
+                if !automatic || !account.locked { self.offlineBrowse(account, address: address) }
+            } else if !automatic { self.info(MobileStrings.text("此电脑暂无离线缓存")) }
+        }
+    }
+    private func loadOffline<Value>(_ operation: @escaping (OfflineArchive) throws -> Value,
+                                    requireForeground: Bool = true, done: @escaping (Value) -> Void) {
+        let archive = offlineArchive
+        OfflineArchive.queue.async { [weak self] in
+            do {
+                let value = try operation(archive)
+                DispatchQueue.main.async { guard !requireForeground || self?.offlineForeground == true else { return }; done(value) }
+            } catch {
+                DispatchQueue.main.async { if self?.offlineForeground == true { self?.info(MobileStrings.text("无法读取离线缓存")) } }
+            }
+        }
+    }
+    private func offlineRetained() {
+        loadOffline({ archive in try archive.available(retained: false).filter { try archive.hasContent($0) } }) { accounts in
+            let (page, content) = self.sheet(MobileStrings.text("保留的离线记录"))
+            if accounts.isEmpty { content.addArrangedSubview(self.label(MobileStrings.text("暂无保留的离线记录"), secondary: true)) }
+            for account in accounts {
+                content.addArrangedSubview(self.button(account.name, symbol: "desktopcomputer") { [weak self, weak page] in
+                    page?.dismiss(animated: true) { self?.offlineBrowse(account) }
+                })
+            }
+            content.addArrangedSubview(self.button(MobileStrings.text("清除离线缓存"), symbol: "trash") { [weak self, weak page] in
+                page?.dismiss(animated: true) { self?.offlineClearSelection() }
+            })
+        }
+    }
+    private func offlineBrowse(_ account: OfflineArchive.Account, address: String? = nil) {
+        if account.locked {
+            let alert = UIAlertController(title: account.name,
+                message: MobileStrings.text("登录状态需要验证。请使用原账号重新连接并打开要恢复的会话。"), preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: MobileStrings.text("关闭"), style: .cancel))
+            alert.addAction(UIAlertAction(title: MobileStrings.text("清除缓存"), style: .destructive) { [weak self] _ in self?.offlineClearSelection() })
+            present(alert, animated: true)
+        } else if account.status == "valid" { offlineSessions(account.id, address: address) }
+        else {
+            let context = LAContext()
+            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
+                info(MobileStrings.text("请先设置系统屏幕锁")); return
+            }
+            cancelOfflineAuthorization()
+            offlineAuthorization = (account.id, context)
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: MobileStrings.text("使用设备屏幕锁验证身份")) { [weak self, weak context] success, _ in
+                DispatchQueue.main.async {
+                    guard let self, let context, self.offlineAuthorization?.context === context else { return }
+                    guard success else { self.cancelOfflineAuthorization(); return }
+                    // LocalAuthentication can reply before its system sheet has released the foreground.
+                    self.pendingOfflineReader = { [weak self, weak context] in
+                        guard let context else { return }
+                        self?.offlineSessions(account.id, address: address, authorization: context)
+                    }
+                    self.resumeOfflineReader()
+                }
+            }
+        }
+    }
+    private func offlineSessions(_ id: Int64, address: String?, authorization: LAContext? = nil) {
+        let authenticated = authorization != nil
+        let ticket = generation
+        loadOffline({ archive -> OfflineArchive.Account? in
+            let linked = try address.flatMap { try archive.account(address: $0) }
+            guard let account = try archive.account(id: id), !account.locked,
+                  account.status == "valid" || authenticated,
+                  address == nil || linked?.id == id else { return nil }
+            return account
+        }, requireForeground: !authenticated) { account in
+            guard self.generation == ticket else { return }
+            if let authorization {
+                guard self.offlineAuthorization?.context === authorization else { return }
+                guard self.offlineForeground else {
+                    self.pendingOfflineReader = { [weak self, weak authorization] in
+                        guard let authorization else { return }
+                        self?.offlineSessions(id, address: address, authorization: authorization)
+                    }
+                    return
+                }
+                self.cancelOfflineAuthorization()
+            }
+            guard let account else { return }
+            self.showOfflineReader(account, address: address, authenticated: authenticated)
+        }
+    }
+
+    private func showOfflineReader(_ account: OfflineArchive.Account, address: String?, authenticated: Bool) {
+        let resources: OfflineReaderResources
+        do { resources = try OfflineReaderResources(bundle: .main) }
+        catch { info(MobileStrings.text("无法读取离线缓存")); return }
+        clear()
+        navigation(home: false)
+        gatewayMenu.isHidden = true
+        subtitle.isHidden = true
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.applicationNameForUserAgent = MobileClientIdentity.userAgent
+        configuration.userContentController.addUserScript(WKUserScript(source: WebScripts.fixedViewport, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        configuration.setURLSchemeHandler(resources, forURLScheme: OfflineReaderResources.scheme)
+        configuration.userContentController.add(self, name: "offlineChat")
+        let reader = WKWebView(frame: .zero, configuration: configuration)
+        reader.navigationDelegate = self
+        reader.allowsLinkPreview = false
+        reader.scrollView.contentInsetAdjustmentBehavior = .never
+        readerAccount = account
+        readerAddress = address
+        readerAuthenticated = authenticated
+        readerSawUnavailable = channelMonitor?.currentPath.status == .unsatisfied
+        offlineReader = reader
+        page.addArrangedSubview(reader)
+        watchChannels()
+        reader.load(URLRequest(url: OfflineReaderResources.document))
+    }
+
+    private func dropOfflineReader() {
+        if let reader = offlineReader {
+            reader.configuration.userContentController.removeScriptMessageHandler(forName: "offlineChat")
+            reader.stopLoading()
+            reader.navigationDelegate = nil
+        }
+        offlineReader = nil
+        readerAccount = nil
+        readerAddress = nil
+        readerAuthenticated = false
+        readerSawUnavailable = false
+        readerReconnecting = false
+    }
+
+    private func offlinePayload(_ archive: OfflineArchive, account: OfflineArchive.Account,
+                                action: String, input: [String: Any]) throws -> [String: Any]? {
+        archive.scheduleMigration(account, session: input["sessionId"] as? String)
+        if action == "list" {
+            let language = (defaults.string(forKey: "bridge-language") ?? Locale.preferredLanguages.first ?? "zh").hasPrefix("en") ? "en" : "zh"
+            let sessions = try archive.sessions(account).map {
+                ["id": $0.id, "title": $0.title, "syncedAt": $0.syncedAt] as [String: Any]
+            }
+            return ["name": account.name, "lang": language, "sessions": sessions, "composerWritable": account.status == "valid"]
+        }
+        guard let id = input["sessionId"] as? String, id.utf8.count <= 4096 else { return nil }
+        return try archive.recordPage(account, session: id, event: input)
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "offlineChat", let reader = offlineReader, message.webView === reader,
+              controller === reader.configuration.userContentController, message.frameInfo.isMainFrame,
+              OfflineReaderResources.isDocument(message.frameInfo.request.url), OfflineReaderResources.isDocument(reader.url),
+              offlineForeground, let visit = readerAccount, let input = message.body as? [String: Any],
+              let id = input["id"] as? String, !id.isEmpty, id.utf8.count <= 64, let action = input["action"] as? String else { return }
+        if action == "close" { home(); return }
+        guard OfflineArchive.composerActions.contains(action) || ["list", "session", "reconnect", "attachment", "attachmentOpen"].contains(action) else { return }
+        let address = readerAddress, authenticated = readerAuthenticated
+        let displayIdentity = address.flatMap { gatewayIdentity($0) }
+        let nativeTheme: [String: Any] = ["theme": theme, "dark": traitCollection.userInterfaceStyle == .dark]
+        if let address, !saved.contains(address) || removingOfflineRoutes.contains(address) { home(); return }
+        let sessionId = input["sessionId"] as? String, before = input["before"] as? String
+        guard (sessionId?.utf8.count ?? 0) <= 4096, (before?.utf8.count ?? 0) <= 8192 else { return }
+        OfflineArchive.queue.async { [weak self, offlineArchive] in
+            var authorized = false
+            var result: [String: Any] = ["error": "offline-unavailable"]
+            var attachment: URL?
+            do {
+                let linked = try address.flatMap { try offlineArchive.account(address: $0) }
+                if let account = try offlineArchive.account(id: visit.id),
+                   account.matches(visit.gateway, visit.identity), account.epoch == visit.epoch,
+                   !account.locked, account.status == "valid" || (authenticated && account.status == visit.status),
+                   address == nil || linked?.id == visit.id {
+                    authorized = true
+                    switch action {
+                    case "list", "session":
+                        if let payload = try self?.offlinePayload(offlineArchive, account: account, action: action, input: input) {
+                            result = payload
+                            if action == "list" {
+                                let bound = displayIdentity.flatMap { identity -> [String: Any]? in
+                                    DisplayStorage.queue.sync {
+                                        guard let credential = DeviceBinding.load(GatewayChannels.vault(identity)) else { return nil }
+                                        return (try? DisplayStorage.execute(binding: identity + "\0" + credential.token,
+                                            command: ["op": "read", "key": "appearance"])) as? [String: Any]
+                                    }
+                                }
+                                result["appearance"] = try bound ?? offlineArchive.appearance(account)
+                                result["nativeTheme"] = nativeTheme
+                            }
+                        }
+                    case "attachment":
+                        result = try offlineArchive.transferAttachment(account, input) ?? [:]
+                    case "attachmentOpen":
+                        attachment = try offlineArchive.exportTransferAttachment(account, input, name: Self.offlineAttachmentName(input))
+                    case "reconnect":
+                        if let sessionId, try offlineArchive.recordPage(account, session: sessionId, event: [:]) == nil {
+                            authorized = false
+                        }
+                    case "composerRead", "composerWrite", "composerPending":
+                        result = try offlineArchive.composer(account, action: action, input: input)
+                    default: break
+                    }
+                }
+            } catch {}
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let current = { self.offlineReader === reader && self.offlineForeground }
+                if action == "attachmentOpen", let attachment {
+                    let opened = self.openOfflineAttachment(attachment, current: current)
+                    if current() { self.replyOfflineReader(reader, id: id, result: ["opened": opened]) }
+                    return
+                }
+                guard current() else { return }
+                guard authorized else { self.home(); return }
+                if action == "reconnect" {
+                    self.reconnectOffline(reader, requestId: id, visit: visit, address: address, sessionId: sessionId,
+                                          anchor: input["anchor"] as? [String: Any])
+                } else {
+                    self.replyOfflineReader(reader, id: id, result: result)
+                }
+            }
+        }
+    }
+
+    private func replyOfflineReader(_ reader: WKWebView, id: String, result: [String: Any]) {
+        guard reader === offlineReader, offlineForeground else { return }
+        reader.callAsyncJavaScript("window.OfflineChatReader?.receive(id, reply)", arguments: ["id": id, "reply": result],
+                                   in: nil, in: .page) { _ in }
+    }
+
+    private func reconnectOffline(_ reader: WKWebView, requestId: String, visit: OfflineArchive.Account, address: String?,
+                                  sessionId: String?, anchor: [String: Any]?) {
+        guard let address, saved.contains(address), let root = URL(string: address + "/") else {
+            replyOfflineReader(reader, id: requestId, result: ["error": "offline-unavailable"]); return
+        }
+        guard !readerReconnecting else {
+            replyOfflineReader(reader, id: requestId, result: ["error": "offline-unavailable"]); return
+        }
+        let target: (URL, String)?
+        if let sessionId {
+            target = offlineReconnectTarget(address, sessionId: sessionId, anchor: anchor)
+            guard target != nil else { replyOfflineReader(reader, id: requestId, result: ["error": "offline-unavailable"]); return }
+        } else { target = nil }
+        readerReconnecting = true
+        let fail = { [weak self, weak reader] in
+            guard let self, let reader, self.offlineReader === reader else { return }
+            self.readerReconnecting = false
+            self.replyOfflineReader(reader, id: requestId, result: ["error": "offline-unavailable"])
+        }
+        let reject = { [weak self] (auth: [String: Any]) in
+            guard let self else { return }
+            self.markOfflineStatus(address, self.rejectedOfflineStatus(auth))
+            DeviceBinding.clear(address)
+            self.home()
+        }
+        fetch(address: address, route: "/api/auth", offlineReconnect: true) { [weak self, weak reader] response in
+            guard let self, let reader, self.offlineReader === reader, self.offlineForeground else { fail(); return }
+            guard case .success(let auth) = response else { fail(); return }
+            guard auth["authenticated"] as? Bool == true,
+                  let scope = auth["sessionSync"] as? [String: Any], scope["version"] as? Int == 1,
+                  scope["gatewayId"] as? String == visit.gateway, scope["identity"] as? String == visit.identity else {
+                if auth["authenticated"] as? Bool == false {
+                    reject(auth)
+                } else { fail() }
+                return
+            }
+            guard let (url, proof) = target else { self.openComputer(address, root); return }
+            self.fetch(address: address, route: proof, offlineReconnect: true) { [weak self, weak reader] result in
+                guard let self, let reader, self.offlineReader === reader, self.offlineForeground,
+                      case .success(let page) = result else { fail(); return }
+                if page["authenticated"] as? Bool == false { reject(page); return }
+                guard page["index"] is [[String: Any]] else { fail(); return }
+                self.openComputer(address, url)
+            }
+        }
+    }
+
+    private func offlineReconnectTarget(_ address: String, sessionId: String, anchor: [String: Any]?) -> (URL, String)? {
+        guard let tuple = (try? JSONSerialization.jsonObject(with: Data(sessionId.utf8))) as? [String], tuple.count == 3 else { return nil }
+        let provider = tuple[0], host = tuple[1], identifier = tuple[2]
+        let family = String(provider.split(separator: ":").first ?? "")
+        var query = [URLQueryItem(name: "mode", value: "recent"), URLQueryItem(name: "indexOnly", value: "1"),
+                     URLQueryItem(name: "limit", value: "1")]
+        let routeHost: String, path: String
+        if ["claude", "deepseek", "zcode", "antigravity"].contains(family) {
+            guard provider == family || provider.range(of: #"^(claude|deepseek):[a-f0-9]{32}$"#, options: .regularExpression) != nil else { return nil }
+            routeHost = "desktop:" + provider
+            path = "/api/desktop-sessions/" + family + "/sync"
+            query.append(URLQueryItem(name: "sessionId", value: identifier))
+            if provider != family { query.append(URLQueryItem(name: "entry", value: provider)) }
+        } else {
+            guard UUID(uuidString: identifier) != nil, family == "codex" || family == "wsl" else { return nil }
+            routeHost = host
+            path = "/api/sessions/" + identifier + "/sync"
+            query.append(URLQueryItem(name: "host", value: host))
+        }
+        // URLComponents leaves '+' literal in query values. Encode it to avoid
+        // server-side form decoding changing an exact provider session ID.
+        var proof = URLComponents()
+        proof.path = path
+        proof.queryItems = query
+        guard let base = try? GatewayURL.chat(address, thread: identifier, host: routeHost),
+              var route = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        if let key = anchor?["key"] as? String, key.range(of: #"^[A-Za-z0-9_-]{1,128}$"#, options: .regularExpression) != nil,
+           let offset = anchor?["offset"] as? Double, offset.isFinite, abs(offset) <= 100_000 {
+            var position: [String: Any] = ["key": key, "offset": offset]
+            if let turnId = anchor?["turnId"] as? String, !turnId.isEmpty, turnId.utf8.count <= 512 { position["turnId"] = turnId }
+            if let questionKey = anchor?["questionKey"] as? String,
+               questionKey.range(of: #"^[A-Za-z0-9_-]{1,128}$"#, options: .regularExpression) != nil {
+                position["questionKey"] = questionKey
+            }
+            if let json = try? JSONSerialization.data(withJSONObject: position) {
+                route.queryItems = [URLQueryItem(name: "offlineAnchor", value: String(decoding: json, as: UTF8.self))]
+            }
+        }
+        guard let target = route.url, let encoded = proof.percentEncodedQuery else { return nil }
+        return (target, proof.percentEncodedPath + "?" + encoded.replacingOccurrences(of: "+", with: "%2B"))
+    }
+    private func offlineDate(_ time: Int64) -> String {
+        Date(timeIntervalSince1970: Double(time) / 1000).formatted(date: .abbreviated, time: .shortened)
+    }
+    private func offlineClearSelection() {
+        loadOffline({ try $0.available(retained: false) }) { accounts in
+            guard !accounts.isEmpty else { self.info(MobileStrings.text("没有可清除的离线缓存")); return }
+            let (navigation, content) = self.sheet(MobileStrings.text("选择要清除缓存的电脑"))
+            var selection = Set<Int64>()
+            for account in accounts {
+                content.addArrangedSubview(self.sourceSwitch(self.label(account.name), name: account.name, on: false) { selected in
+                    if selected { selection.insert(account.id) } else { selection.remove(account.id) }
+                })
+            }
+            content.addArrangedSubview(self.button(MobileStrings.text("继续"), symbol: "arrow.right") { [weak self, weak navigation] in
+                guard !selection.isEmpty else { return }
+                navigation?.dismiss(animated: true) { self?.offlineClearDates(Array(selection)) }
+            })
+        }
+    }
+    private func offlineClearDates(_ ids: [Int64]) {
+        let (navigation, content) = sheet(MobileStrings.text("按原始提问日期清除"))
+        let calendar = Calendar.current
+        let start = UIDatePicker(), end = UIDatePicker()
+        for picker in [start, end] { picker.datePickerMode = .date; picker.preferredDatePickerStyle = .compact }
+        start.accessibilityLabel = MobileStrings.text("开始日期")
+        end.accessibilityLabel = MobileStrings.text("结束日期")
+        content.addArrangedSubview(card([label(MobileStrings.text("开始日期")), start, label(MobileStrings.text("结束日期")), end]))
+        content.addArrangedSubview(button(MobileStrings.text("清除选定日期"), symbol: "calendar") { [weak self, weak navigation] in
+            let first = calendar.startOfDay(for: start.date), last = calendar.startOfDay(for: end.date)
+            guard first <= last, let limit = calendar.date(byAdding: .day, value: 1, to: last) else {
+                let alert = UIAlertController(title: MobileStrings.text("结束日期不能早于开始日期"), message: nil, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: MobileStrings.text("好"), style: .cancel))
+                navigation?.present(alert, animated: true); return
+            }
+            self?.confirmOfflineClear(ids, start: Int64(first.timeIntervalSince1970 * 1000), end: Int64(limit.timeIntervalSince1970 * 1000),
+                dates: first.formatted(date: .abbreviated, time: .omitted) + " – " + last.formatted(date: .abbreviated, time: .omitted), from: navigation)
+        })
+        content.addArrangedSubview(button(MobileStrings.text("全部日期"), symbol: "trash") { [weak self, weak navigation] in
+            self?.confirmOfflineClear(ids, start: .min, end: .max, dates: MobileStrings.text("全部日期"), from: navigation)
+        })
+    }
+    private func confirmOfflineClear(_ ids: [Int64], start: Int64, end: Int64, dates: String, from navigation: UINavigationController?) {
+        let alert = UIAlertController(title: MobileStrings.text("清除离线缓存？"),
+            message: dates + "\n\n" + MobileStrings.text("选定日期内的整轮聊天会从本机缓存移除。"), preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
+        alert.addAction(UIAlertAction(title: MobileStrings.text("清除"), style: .destructive) { [weak self, weak navigation] _ in
+            navigation?.dismiss(animated: true) {
+                guard let self else { return }
+                let progress = UIAlertController(title: nil, message: MobileStrings.text("正在释放空间…"), preferredStyle: .alert)
+                self.present(progress, animated: false)
+                OfflineArchive.queue.async { [weak self] in
+                    let result = Result {
+                        let archive = self?.offlineArchive
+                        guard let archive else { return Int64(0) }
+                        let scopes = try archive.legacyScopes(ids, from: start, before: end)
+                        let shared = try DisplayStorage.queue.sync { try DisplayStorage.forgetHistory(scopes) }
+                        return try shared + archive.clearTurns(ids, from: start, before: end)
+                    }
+                    DispatchQueue.main.async {
+                        progress.dismiss(animated: true) {
+                            guard let self else { return }
+                            self.pushOfflineState()
+                            switch result {
+                            case .success(let released):
+                                self.routeNotice(String(format: MobileStrings.text("清理完成，已释放 %.2f MB"), Double(released) / 1_000_000))
+                            case .failure:
+                                self.info(MobileStrings.text("无法更新离线缓存，请重试"))
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        navigation?.present(alert, animated: true)
+    }
     @objc private func settings() {
         let (sheet, content) = sheet(MobileStrings.text("设置"))
+        content.addArrangedSubview(card([
+            button(MobileStrings.text("保留的离线记录"), symbol: "tray.full") { [weak self, weak sheet] in
+                sheet?.dismiss(animated: true) { self?.offlineRetained() }
+            },
+            button(MobileStrings.text("清除离线缓存"), symbol: "trash") { [weak self, weak sheet] in
+                sheet?.dismiss(animated: true) { self?.offlineClearSelection() }
+            }
+        ]))
         content.addArrangedSubview(label(MobileStrings.text("外观与显示"), size: 19, weight: .semibold))
         let themes = ["system", "light", "dark"]
         let choice = UISegmentedControl(items: ["跟随系统", "浅色", "深色"].map(MobileStrings.text))
@@ -1885,24 +2853,59 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private func confirmRemove(_ address: String? = nil) {
         let target = address ?? origin
-        let a = UIAlertController(title: MobileStrings.text("移除这台电脑？"), message: target + "\n\n" + MobileStrings.text("清除本机保存的连接和登录状态，电脑上的聊天不受影响。"), preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel))
-        a.addAction(UIAlertAction(title: MobileStrings.text("移除"), style: .destructive) { _ in
-            let revision = self.generation
-            self.downloads.cancel(origin: target)
-            self.revokeConnection(target) {
-                self.clearChannels(target);DeviceBinding.clear(target)
-                if target == self.origin, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
-                self.defaults.set(self.saved.filter { $0 != target }, forKey: "origins"); self.computerSnapshots.removeValue(forKey: target)
-                if self.defaults.string(forKey: "active") == target { self.defaults.removeObject(forKey: "active") }
-                self.defaults.removeObject(forKey: "notificationsMuted:" + target); self.defaults.removeObject(forKey: "connection:" + target); self.defaults.removeObject(forKey: "cursor:" + target); self.defaults.removeObject(forKey: "stream:" + target); self.defaults.removeObject(forKey: "name:" + target); self.defaults.removeObject(forKey: "last-opened:" + target)
-                WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-                    for cookie in cookies where self.cookieMatches(cookie, address: target) { WKWebsiteDataStore.default().httpCookieStore.delete(cookie) }
+        let (page, content) = sheet(MobileStrings.text("移除这台电脑？"))
+        var deleteCache = false
+        content.addArrangedSubview(label(target, size: 16, weight: .semibold))
+        content.addArrangedSubview(label(MobileStrings.text("清除本机保存的连接和登录状态，电脑上的聊天不受影响。"), secondary: true))
+        let cacheLabel = MobileStrings.text("同时删除缓存")
+        content.addArrangedSubview(sourceSwitch(label(cacheLabel), name: cacheLabel, on: false) { deleteCache = $0 })
+        let remove = button(MobileStrings.text("移除"), symbol: "trash") { [weak self, weak page] in
+            page?.dismiss(animated: true) { self?.removeConnection(target, eraseCache: deleteCache) }
+        }
+        remove.tintColor = .systemRed
+        content.addArrangedSubview(remove)
+        content.addArrangedSubview(button(MobileStrings.text("取消"), symbol: "xmark") { [weak page] in page?.dismiss(animated: true) })
+    }
+    private func removeConnection(_ target: String, eraseCache: Bool) {
+        let revision = generation
+        let addresses = [target, target == origin ? documentAddress : target]
+        removingOfflineRoutes.formUnion(addresses)
+        if target == origin { resetOfflineDocument() }
+        downloads.cancel(origin: target)
+        let archive = offlineArchive
+        OfflineArchive.queue.async {
+            do {
+                if eraseCache, let account = try archive.account(address: target) {
+                    let scopes = try archive.legacyScopes([account.id], from: .min, before: .max)
+                    try DisplayStorage.queue.sync { try DisplayStorage.forgetHistory(scopes) }
                 }
-                if self.origin == target { self.origin = "" }
-                if self.generation == revision { self.home() }
+                let retained = try archive.unlink(address: target, erase: eraseCache)
+                DispatchQueue.main.async {
+                    self.finishRemoveConnection(target, revision: revision, offlineAddresses: addresses)
+                    if retained { self.routeNotice(MobileStrings.text("已保留离线聊天记录")) }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.removingOfflineRoutes.subtract(addresses)
+                    self.info(MobileStrings.text("无法更新离线缓存，请重试"))
+                }
             }
-        }); present(a, animated: true)
+        }
+    }
+    private func finishRemoveConnection(_ target: String, revision: Int, offlineAddresses: [String]) {
+        revokeConnection(target) {
+            self.clearChannels(target);DeviceBinding.clear(target)
+            if target == self.origin, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
+            self.defaults.set(self.saved.filter { $0 != target }, forKey: "origins"); self.computerSnapshots.removeValue(forKey: target)
+            if self.defaults.string(forKey: "active") == target { self.defaults.removeObject(forKey: "active") }
+            self.defaults.removeObject(forKey: "notificationsMuted:" + target); self.defaults.removeObject(forKey: "connection:" + target); self.defaults.removeObject(forKey: "cursor:" + target); self.defaults.removeObject(forKey: "stream:" + target); self.defaults.removeObject(forKey: "name:" + target); self.defaults.removeObject(forKey: "last-opened:" + target)
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                for cookie in cookies where self.cookieMatches(cookie, address: target) { WKWebsiteDataStore.default().httpCookieStore.delete(cookie) }
+            }
+            if self.origin == target { self.origin = "" }
+            if self.generation == revision { self.home() }
+            self.removingOfflineRoutes.subtract(offlineAddresses)
+        }
     }
     private func scan() {
         AVCaptureDevice.requestAccess(for: .video) { allowed in DispatchQueue.main.async { guard allowed else { self.info(MobileStrings.text("未获得相机权限，请粘贴网关地址。")); return }; let scanner = Scanner(); scanner.result = { [weak self] value in self?.dismiss(animated: true) { self?.choose(value) } }; self.present(scanner, animated: true) } }
@@ -2012,6 +3015,49 @@ enum ComputerNotificationSummary {
 
 enum MobileStrings {
     static let values: [String: String] = [
+        "离线聊天": "Offline chats",
+        "离线会话": "Offline session",
+        "保留的离线记录": "Retained offline history",
+        "暂无保留的离线记录": "No retained offline history",
+        "清除离线缓存": "Clear offline cache",
+        "同时删除缓存": "Also delete the cache",
+        "已保留离线聊天记录": "Offline chats were kept",
+        "此电脑暂无离线缓存": "No offline cache for this computer",
+        "暂无可以查看的离线会话": "No offline sessions available",
+        "登录状态需要验证。请使用原账号重新连接并打开要恢复的会话。": "Sign in with the original account and open each session you want to restore.",
+        "查看离线聊天": "View offline chats",
+        "使用设备屏幕锁验证身份": "Verify your identity to view saved offline chats",
+        "请先设置系统屏幕锁": "Set up a device screen lock first",
+        "系统身份验证不可用": "Device authentication is unavailable",
+        "最后同步": "Last synced",
+        "只读 · 最后同步": "Read-only · Last synced",
+        "本机缓存可能缺少部分聊天记录": "This device may be missing parts of the chat",
+        "本机仅保存了部分内容": "Only part of this content is available offline",
+        "提问": "Question",
+        "回答": "Answer",
+        "过程": "Activity",
+        "执行过程": "Activity",
+        "执行完成": "Completed",
+        "执行失败": "Failed",
+        "执行中断": "Interrupted",
+        "执行错误": "Error",
+        "无法读取离线缓存": "Could not read the offline cache",
+        "无法更新离线缓存，请重试": "Could not update the offline cache. Try again.",
+        "没有可清除的离线缓存": "No offline cache to clear",
+        "选择要清除缓存的电脑": "Select computers to clear",
+        "按原始提问日期清除": "Clear by original question date",
+        "选择日期范围": "Select a date range",
+        "清除选定日期": "Clear selected dates",
+        "全部日期": "All dates",
+        "开始日期": "Start date",
+        "结束日期": "End date",
+        "结束日期不能早于开始日期": "End date cannot be before the start date",
+        "清除离线缓存？": "Clear offline cache?",
+        "选定日期内的整轮聊天会从本机缓存移除。": "Entire chat turns within the selected dates will be removed from this device.",
+        "正在释放空间…": "Freeing space…",
+        "清理完成，已释放 %.2f MB": "Cleanup complete. Freed %.2f MB.",
+        "清除缓存": "Clear cache",
+        "清除": "Clear",
         "UU 请求正在处理中": "A UU request is already in progress",
         "请安装或更新 UU 远程至 4.42.0 及以上版本": "Install or update UU Remote to version 4.42.0 or later",
         "无法打开 UU 远程": "Could not open UU Remote",

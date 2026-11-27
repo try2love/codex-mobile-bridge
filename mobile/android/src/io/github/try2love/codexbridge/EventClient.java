@@ -72,6 +72,39 @@ final class EventClient {
   request(origin,"/api/mobile/push",new JSONObject().put("kind","fcm").put("token",token).put("deviceId",id).put("sourceIcon",true),auth.getString("csrf"));
   prefs.edit().putBoolean("pushRegistered:"+origin,true).apply();
  }
+ static final class OfflineVerification {
+  final JSONObject value;
+  final String rejection;
+  OfflineVerification(JSONObject value,String rejection){this.value=value;this.rejection=rejection;}
+ }
+ static OfflineVerification verifyOffline(String origin,String path,String cookie)throws Exception {
+  if(!GatewayURL.origin(origin).equals(origin)||cookie==null||cookie.isEmpty())throw new IOException("Invalid binding");
+  HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();
+  c.setInstanceFollowRedirects(false);c.setConnectTimeout(7000);c.setReadTimeout(10000);
+  c.setRequestProperty("Cookie",cookie);c.setRequestProperty("Origin",GatewayURL.httpOrigin(origin));c.setRequestProperty("User-Agent",USER_AGENT);
+  try{
+   int code=c.getResponseCode();
+   if(code!=200&&code!=401&&code!=403)throw new HttpFailure(code);
+   String type=c.getContentType();
+   if(type==null||!"application/json".equalsIgnoreCase(type.split(";",2)[0].trim()))throw new HttpFailure(code);
+   ByteArrayOutputStream out=new ByteArrayOutputStream();
+   try(InputStream in=code==200?c.getInputStream():c.getErrorStream()){
+    if(in==null)throw new HttpFailure(code);
+    byte[] block=new byte[4096];int n;
+    while((n=in.read(block))!=-1){if(out.size()+n>65536)throw new IOException("响应过大");out.write(block,0,n);}
+   }
+   JSONObject message=new JSONObject(out.toString("UTF-8"));
+   if(code==200&&(!"/api/auth".equals(path)||!Boolean.FALSE.equals(message.opt("authenticated"))))
+    return new OfflineVerification(message,null);
+   String status=message.optString("authStatus");
+   if(status.equals("expired")||status.equals("revoked")||status.equals("loggedOut")||status.equals("unknownRejected"))
+    return new OfflineVerification(null,status);
+   if(code==401&&(Boolean.FALSE.equals(message.opt("authenticated"))||"unauthenticated".equals(message.optString("code")))
+       ||code==200&&Boolean.FALSE.equals(message.opt("authenticated")))
+    return new OfflineVerification(null,"unknownRejected");
+   throw new HttpFailure(code);
+  }finally{c.disconnect();}
+ }
  static JSONObject request(String origin,String path,JSONObject body,String csrf)throws Exception {
   if(!GatewayURL.origin(origin).equals(origin))throw new IOException("连接地址无效");
   HttpURLConnection c=(HttpURLConnection)new URL(origin+path).openConnection();c.setInstanceFollowRedirects(false);c.setConnectTimeout(7000);c.setReadTimeout(10000);

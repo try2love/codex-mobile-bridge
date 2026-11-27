@@ -166,6 +166,44 @@ class DisabledObserversTests(unittest.TestCase):
         bridge.remote_bridges['ssh:test'].suspend_observation.assert_called_once_with()
         bridge.cli_sessions.close.assert_not_called()
 
+    def test_maintenance_loop_survives_missing_session_and_continues_healthy_sessions(self):
+        # 某个会话的元数据缺失（_attach -> store.get 抛 KeyError）时，后台维护线程不应退出，
+        # 且同一轮及后续轮次中的其他健康会话仍需继续得到维护。
+        bridge = Bridge.__new__(Bridge)
+        bridge.host = 'local'
+        bridge.observation_enabled = lambda: True
+        bridge.store = Mock()
+        bridge.store.get.side_effect = KeyError('missing-sid')
+        bridge.hosts = None
+        bridge.accounts = None
+        bridge.lock = threading.Lock()
+        bridge.submit_lock = threading.Lock()
+        bridge.submissions = {}
+        bridge.released_cli = SimpleNamespace(contains=lambda _: False)
+        bridge.ipc = Mock(client_id=None)
+
+        missing = LiveSession('missing-sid')
+        missing.watched = True
+        missing.activity_only = True
+        healthy = LiveSession('healthy-sid')
+        healthy.viewers = 1
+        bridge.live = {'missing-sid': missing, 'healthy-sid': healthy}
+
+        closed_calls = 0
+        def fake_wait(timeout):
+            nonlocal closed_calls
+            closed_calls += 1
+            return closed_calls > 2
+        bridge.closed = SimpleNamespace(
+            wait=fake_wait,
+            is_set=lambda: closed_calls > 2,
+        )
+        refreshed = []
+        bridge._refresh_async = lambda session: refreshed.append(session.id)
+
+        bridge._maintain()
+        self.assertEqual(refreshed, ['healthy-sid', 'healthy-sid'])
+
     def test_disabled_cached_watch_is_not_selected_and_independent_watch_remains(self):
         notifications = Notifications.__new__(Notifications)
         notifications.desktop_sessions = self.manager

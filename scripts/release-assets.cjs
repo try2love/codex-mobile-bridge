@@ -40,8 +40,9 @@ function verifyRelease(directory,{write=false,key=publicKey}={}){
     if(!stat.isFile()||stat.size===0)throw Error('Release asset must be a nonempty regular file: '+name);
   }
   const bytes=fs.readFileSync(path.join(directory,'bridge-update.json'));
-  for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){
-    const {asset}=manifest(bytes,key,{current:'0.0.0-preview.0',platform,arch,expected:version});
+  for(const [platform,arch,format] of [['darwin','arm64'],['darwin','x64'],['win32','x64'],
+    ['linux','x64','deb'],['linux','x64','AppImage'],['linux','arm64','deb'],['linux','arm64','AppImage']]){
+    const {asset}=manifest(bytes,key,{current:'0.0.0-preview.0',platform,arch,format,expected:version});
     const file=path.join(directory,asset.name);
     if(fs.statSync(file).size!==asset.size||digest(file)!==asset.sha256)throw Error('Signed update asset mismatch: '+asset.name);
   }

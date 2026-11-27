@@ -80,6 +80,15 @@ class RegistryTests(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     validate(method, root+action)
 
+    def test_offline_delivery_has_the_same_provider_boundary_as_send(self):
+        paths = ['/api/sessions/' + THREAD + '/delivery'] + [
+            '/api/desktop-sessions/' + provider + '/delivery' for provider in ('claude', 'deepseek', 'antigravity')]
+        for method in ('GET', 'POST'):
+            for path in paths:
+                validate(method, path)
+            with self.assertRaises(PermissionError):
+                validate(method, '/api/desktop-sessions/zcode/delivery')
+
     def test_protocol_v2_routes_and_management_boundary(self):
         validate('GET', '/api/sessions/diagnostics')
         validate('GET', '/api/sessions/diagnostics?thread=' + THREAD)
@@ -121,6 +130,12 @@ class RegistryTests(unittest.TestCase):
                         validate(method, '/api/desktop-sessions/'+provider+'/'+action)
             with self.assertRaises(PermissionError):
                 validate('GET', '/api/desktop-sessions/'+provider+'/send')
+        for method, action in [('GET', 'create-models'), ('GET', 'tasks'), ('GET', 'catalog?section=commands&sessionId=native-session'),
+                               ('POST', 'resume'), ('POST', 'compact'), ('POST', 'goal'), ('POST', 'queue-action')]:
+            validate(method, '/api/desktop-sessions/antigravity/' + action)
+        for method, action in [('POST', 'work-mode'), ('GET', 'compact'), ('POST', 'eval')]:
+            with self.assertRaises(PermissionError):
+                validate(method, '/api/desktop-sessions/antigravity/' + action)
         for path in ('/api/clients/scan', '/api/desktop-sessions/codex/list', '/api/desktop-sessions/arbitrary/list'):
             with self.assertRaises(PermissionError):
                 validate('POST', path)
@@ -370,6 +385,11 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(owners[0], owners[1])
             self.assertEqual(owners[0], owners[2])
         self.assertEqual(uploads, [data, data])
+        initialize = {'provider': 'codex', 'enabled': True, 'initializeDesktop': True,
+                      'requestId': 'fixture', 'confirmed': True, 'tasksConfirmed': True}
+        self.assertEqual((await self.client.post('/api/clients', json=initialize, headers=p)).status, 200)
+        self.assertIn(('toggle', initialize), calls)
+        self.assertEqual((await self.client.post('/api/accounts/desktop-runtime', json=initialize, headers=p)).status, 403)
         self.assertEqual((await self.client.post('/api/clients', json={'provider': 'deepseek', 'enabled': False}, headers=p)).status, 200)
         self.assertEqual((await self.client.get('/api/desktop-sessions/deepseek/list', headers=p)).status, 400)
         for path in ('/api/clients/scan', '/api/desktop-sessions/deepseek/install', '/api/desktop-sessions/claude/eval'):

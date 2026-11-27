@@ -4,6 +4,14 @@ import argparse
 import json
 import os
 import sys
+if sys.argv[1:2] == ['codex-desktop-launch']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.codex.desktop_runtime_windows import ordinary_run
+    arguments = options.arguments[1:] if options.arguments[:1] == ['--'] else options.arguments
+    raise SystemExit(ordinary_run(options.configuration, arguments))
 if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
     from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
     raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))
@@ -58,10 +66,11 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-apply'])
+    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-backup', 'update-apply'])
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
+    parser.add_argument('--defer-legacy-credentials', action='store_true')
     args = parser.parse_args()
     desktop = Desktop(args.data_dir)
     if args.action == 'management-stream':
@@ -97,7 +106,8 @@ def main():
     if args.action == 'serve':
         import run
         sys.argv = [sys.argv[0], *desktop.argv()]
-        run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {})
+        run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {},
+                 defer_legacy_credentials=args.defer_legacy_credentials and sys.platform == 'darwin')
         return
     try:
         if args.action == 'update-preflight':
@@ -106,6 +116,9 @@ def main():
         elif args.action == 'update-prepare':
             from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
+        elif args.action == 'update-backup':
+            from bridge.features.updates.gateway import backup_configuration
+            result = backup_configuration(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))
         elif args.action == 'update-apply':
             from bridge.features.updates.gateway import apply
             result = apply(args.plan)

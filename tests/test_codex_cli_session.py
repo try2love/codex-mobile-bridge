@@ -119,9 +119,67 @@ class CliSessionTests(unittest.TestCase):
         emit('item/started', turnId='turn-1', item=user)
         emit('item/started', turnId='turn-1', item={**reply, 'timestamp': stamp + 1000})
         emit('item/completed', turnId='turn-1', item=reply)
-        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': [reply]})
-        rows = normalize_state(self.states[-1][1])['turns'][0]['messages']
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed', 'items': [reply],
+                                     'completedAt': stamp / 1000 + 125})
+        turn = normalize_state(self.states[-1][1])['turns'][0]
+        self.assertEqual(turn['startedAt'], stamp)
+        self.assertEqual(turn['completedAt'], stamp + 125000)
+        rows = turn['messages']
         self.assertEqual([row.get('timestamp') for row in rows], [stamp, stamp + 1000])
+
+    def test_streamed_agent_text_survives_empty_item_replacements(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='streamed reply')
+        emit('item/completed', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+        emit('turn/completed', turn={'id': 'turn-1', 'status': 'completed',
+                                     'items': [{'id': 'reply', 'type': 'agentMessage', 'text': ''}]})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'streamed reply')
+
+    def test_late_agent_started_event_does_not_erase_delta(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/agentMessage/delta', turnId='turn-1', itemId='reply', delta='early reply')
+        emit('item/started', turnId='turn-1', item={'id': 'reply', 'type': 'agentMessage', 'text': ''})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['text'], 'early reply')
+
+    def test_empty_reasoning_completion_keeps_deltas_only_without_summary(self):
+        self.sessions.attach('thread-a', explicit=True)
+        def emit(method, **params):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', **params}})
+        emit('turn/started', turn={'id': 'turn-1', 'status': 'inProgress', 'items': []})
+        emit('item/started', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        emit('item/reasoning/textDelta', turnId='turn-1', itemId='reason', delta='reason delta')
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': [], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], ['reason delta'])
+        emit('item/completed', turnId='turn-1', item={'id': 'reason', 'type': 'reasoning', 'summary': ['safe summary'], 'content': []})
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['summary'], ['safe summary'])
+        self.assertEqual(self.states[-1][1]['turns'][0]['items'][0]['content'], [])
+
+    def test_thread_snapshot_turn_clocks_convert_native_seconds_without_inventing_completion(self):
+        stamp = 1794211440000
+        self.fake.thread['turns'] = [
+            {'id': 'done', 'status': 'completed', 'startedAt': stamp / 1000, 'completedAt': stamp / 1000 + 125},
+            {'id': 'active', 'status': 'inProgress', 'startedAt': stamp / 1000 + 126}]
+        self.sessions.attach('thread-a', explicit=True)
+        turns = normalize_state(self.states[-1][1])['turns']
+        self.assertEqual((turns[0]['startedAt'], turns[0]['completedAt']), (stamp, stamp + 125000))
+        self.assertIsNone(turns[1]['completedAt'])
+
+    def test_resuming_same_native_turn_clears_previous_completion_clock(self):
+        self.sessions.attach('thread-a', explicit=True)
+        for method, turn in (
+                ('turn/completed', {'id': 'turn-1', 'status': 'completed', 'completedAt': 1794211565}),
+                ('turn/started', {'id': 'turn-1', 'status': 'inProgress', 'startedAt': 1794211566})):
+            self.sessions._event({'method': method, 'params': {'threadId': 'thread-a', 'turn': turn}})
+        self.assertNotIn('turnCompletedAtMs', self.states[-1][1]['turns'][0])
+        self.assertIsNone(normalize_state(self.states[-1][1])['turns'][0]['completedAt'])
 
     def test_passive_attach_does_not_connect_or_resume(self):
         self.sessions._start_daemon = Mock()
@@ -643,6 +701,35 @@ class CliSessionTests(unittest.TestCase):
         except Exception as exc:
             errors.append(exc)
 
+    def test_native_token_usage_is_published_and_survives_thread_refresh(self):
+        self.fake.thread['turns'] = [{'id': 'turn-1', 'status': 'inProgress', 'items': []}]
+        self.sessions.attach('thread-a', explicit=True)
+        usage = {'last': {'totalTokens': 17}, 'total': {'totalTokens': 240}, 'modelContextWindow': 100}
+
+        def emit(info, thread='thread-a'):
+            self.sessions._event({'method': 'thread/tokenUsage/updated',
+                                  'params': {'threadId': thread, 'turnId': 'turn-1', 'tokenUsage': info}})
+
+        emit(usage)
+        self.assertEqual(self.states[-1][1].get('latestTokenUsageInfo'), usage)
+        published = len(self.states)
+        emit({'total': {'totalTokens': 55}})
+        emit({'last': {'totalTokens': 99}}, thread='unrelated')
+        self.assertEqual(len(self.states), published)
+
+        # A count can arrive during thread/read while its returned turn advances.
+        # The count and completed turn must both survive that refresh.
+        self.fake.thread['turns'][0]['status'] = 'completed'
+        original = self.fake.request
+        def request(method, params, **kwargs):
+            if method == 'thread/read':
+                emit({'last': {'totalTokens': 0}, 'modelContextWindow': 100})
+            return original(method, params, **kwargs)
+        self.fake.request = request
+        refreshed = self.sessions.refresh('thread-a')
+        self.assertEqual(refreshed['latestTokenUsageInfo']['last']['totalTokens'], 0)
+        self.assertEqual(refreshed['turns'][0]['status'], 'completed')
+
     def test_native_settings_event_survives_thread_refresh(self):
         self.sessions.attach('thread-a', explicit=True)
         self.fake.thread['model'] = 'native-model'
@@ -819,6 +906,9 @@ class CliSessionTests(unittest.TestCase):
         self.sessions.attach('thread-a', explicit=True)
         self.sessions.metadata['thread-a']['modelProvider'] = 'custom'
         self.fake.thread['modelProvider'] = 'custom'
+        original = self.fake.request
+        self.fake.request = lambda method, params, **kwargs: ({'config': {'model_provider': 'custom'}}
+            if method == 'config/read' else original(method, params, **kwargs))
         result = self.sessions.get_kind('thread-a', 'models')
         self.assertEqual(result['modelSource'], 'api')
         self.assertEqual(result['models'], [])
@@ -1094,6 +1184,45 @@ class CliSessionTests(unittest.TestCase):
         self.sessions._event(started)
         self.assertEqual(self.states[-1][1]['turns'][-1]['status'], 'inProgress')
         self.assertNotIn('willRetry', self.states[-1][1]['turns'][-1])
+
+    def test_native_retry_error_does_not_trail_resumed_output_as_a_terminal_failure(self):
+        from bridge.features.sessions.timeline import Timeline
+        self.sessions.attach('thread-a', explicit=True)
+        self.sessions._event({'method': 'turn/started', 'params': {
+            'threadId': 'thread-a', 'turn': {'id': 'retry-turn', 'status': 'inProgress', 'items': []}}})
+        error = {'message': 'Temporary response stream interruption'}
+        timeline = Timeline()
+        sent = list(self.fake.sent)
+        for sequence in (1, 2):
+            self.sessions._event({'method': 'error', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': True, 'error': error}})
+            self.sessions._event({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': 'thread-a', 'turnId': 'retry-turn', 'itemId': 'reply', 'delta': 'resumed output'}})
+            state = self.states[-1][1]
+            timeline.update({**normalize_state(state), 'sequence': sequence})
+            self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant'])
+            # Presentation must not rewrite native retry/error evidence or replay the turn.
+            self.assertEqual(state['turns'][-1]['error'], error)
+            self.assertIs(state['turns'][-1]['willRetry'], True)
+        self.assertEqual(self.fake.sent, sent)
+        self.sessions._event({'method': 'error', 'params': {
+            'threadId': 'thread-a', 'turnId': 'retry-turn', 'willRetry': False, 'error': error}})
+        timeline.update({**normalize_state(self.states[-1][1]), 'sequence': 3})
+        self.assertEqual([row['role'] for row in timeline.page()['rows']], ['assistant', 'error'])
+        self.assertEqual(timeline.page()['rows'][-1]['turnId'], 'retry-turn')
+
+    def test_retry_presentation_preserves_terminal_legacy_and_item_errors(self):
+        error = {'message': 'Native error'}
+        for status, retry in (('failed', True), ('failed', False), ('inProgress', None)):
+            with self.subTest(status=status, retry=retry):
+                turn = {'turnId': 'turn', 'status': status, 'error': error, 'items': []}
+                if retry is not None:
+                    turn['willRetry'] = retry
+                self.assertEqual(normalize_state({'turns': [turn]})['turns'][0]['error'], error)
+        view = normalize_state({'turns': [{'turnId': 'turn', 'status': 'inProgress', 'willRetry': True,
+            'error': error, 'items': [{'id': 'tool-error', 'type': 'error', 'message': 'Tool failed'}]}]})
+        self.assertEqual(view['turns'][0]['messages'][0]['role'], 'error')
+        self.assertEqual(view['turns'][0]['messages'][0]['text'], 'Tool failed')
 
     def test_completed_turn_keeps_user_item_omitted_from_event(self):
         self.fake.thread['turns'] = [{'id': 'turn-1', 'status': 'inProgress', 'items': [

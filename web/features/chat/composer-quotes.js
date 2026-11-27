@@ -8,20 +8,9 @@ class ComposerQuotes {
     this.root=doc.createElement('div');this.root.className='composer-quotes';this.root.hidden=true;
     this.action=doc.createElement('button');this.action.type='button';this.action.className='composer-quote-selection';this.action.hidden=true;
     this.action.textContent=translate('引用所选文字');
-    const context=input.closest('.composer')?.querySelector('.composer-tools .context-usage');
-    if(context){
-      const tools=context.parentElement;
-      this.selectionRow=doc.createElement('div');this.selectionRow.className='composer-quote-actions';this.selectionRow.hidden=true;tools.after(this.selectionRow);
-      context.after(this.action);
-      // Measure the real pane: wrapping all toolbar controls can strand the
-      // collapse button on a third row, especially with longer model labels.
-      this.layoutObserver=new ResizeObserver(()=>{
-        if(!tools.clientWidth)return;
-        if(tools.clientWidth<=720){if(this.action.parentElement!==this.selectionRow)this.selectionRow.append(this.action);}
-        else if(this.action.previousElementSibling!==context)context.after(this.action);
-        this.visibility();
-      });
-      this.layoutObserver.observe(tools);
+    const tools=input.closest('.composer')?.querySelector('.composer-tools');
+    if(tools){
+      this.selectionRow=doc.createElement('div');this.selectionRow.className='composer-quote-actions';this.selectionRow.hidden=true;tools.after(this.selectionRow);this.selectionRow.append(this.action);
     }else this.root.append(this.action);
     container.insertBefore(this.root,input);
     this.action.addEventListener('pointerdown',()=>{this.pressed=this.snapshot;});

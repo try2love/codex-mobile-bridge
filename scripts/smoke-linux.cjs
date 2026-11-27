@@ -50,6 +50,11 @@ async function checkElf(file){
 async function cleanupGateway(worker){
   if((await worker('snapshot')).runtime.running)await worker('stop');
 }
+function verifyUpdateDiscovery(update,current){
+  const channel=current.includes('-')?'preview':'stable';
+  assert.equal(update.current,current);assert.equal(update.currentChannel,channel);assert.equal(update.channel,channel);
+  assert.ok(['idle','checking','current','available','skipped','error'].includes(update.state),'Linux discovery must be supported without starting an installation');
+}
 async function main(){
   assert.equal(process.platform,'linux');assert.ok(['x64','arm64'].includes(process.arch));
   assert.notEqual(process.getuid(),0,'Run the app as a regular desktop user');
@@ -59,7 +64,7 @@ async function main(){
   await checkElf(executable);await checkElf(runtime);
   const metadata=JSON.parse(await fs.readFile(path.join(resources,'update-version.json'),'utf8'));
   assert.equal(metadata.platform,'linux');assert.equal(metadata.arch,process.arch);
-  assert.equal(metadata.version,require('../package.json').version);
+  assert.equal(metadata.version,require('../package.json').version);assert.equal(metadata.dataFormat,'bridge-data-v1');
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const data=await fs.mkdtemp(path.join(root,'.tmp','linux-app-'));
   const port=await freePort(),debugPort=await freePort(),env={...process.env,CMB_DATA_DIR:data};
@@ -91,7 +96,11 @@ async function main(){
     await launch();
     assert.equal(await client.evaluate('typeof require'),'undefined');
     assert.equal(await client.evaluate('snapshot.dataDir'),data);
-    assert.equal(await client.evaluate('snapshot.update.state'),'unsupported');
+    const originalPid=child.pid;
+    verifyUpdateDiscovery(await client.evaluate('snapshot.update'),metadata.version);
+    await client.evaluate("tab('updates')");
+    assert.equal(await client.evaluate("document.getElementById('update-channel').value"),metadata.version.includes('-')?'preview':'stable');
+    assert.equal(await client.evaluate("document.getElementById('update-channel').disabled"),false);
     assert.equal(await client.evaluate('snapshot.runtime.running'),false);
     await client.evaluate("document.getElementById('language').value='en';document.getElementById('language').dispatchEvent(new Event('change'))");
     await until(()=>client.evaluate("document.documentElement.lang==='en'"),'English UI');
@@ -101,6 +110,9 @@ async function main(){
       const screenshot=await client.call('Page.captureScreenshot');
       await fs.writeFile(path.join(data,`desktop-${width}.png`),Buffer.from(screenshot.data,'base64'));
     }
+    verifyUpdateDiscovery(await client.evaluate('snapshot.update'),metadata.version);
+    assert.equal(child.pid,originalPid);assert.equal(child.exitCode,null);assert.equal(child.signalCode,null,'Discovery must not restart the controller');
+    assert.equal(await client.evaluate('snapshot.runtime.running'),false,'Discovery must not start the gateway');
     await client.evaluate("document.getElementById('start').click()");
     await until(()=>client.evaluate('snapshot.runtime.running'),'Gateway startup');
     const base='http://127.0.0.1:'+port;
@@ -124,4 +136,4 @@ async function main(){
   }
 }
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
-module.exports={cleanupGateway};
+module.exports={cleanupGateway,verifyUpdateDiscovery};

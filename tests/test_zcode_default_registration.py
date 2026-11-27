@@ -1,5 +1,6 @@
 """Manual discovery adds only the native default ZCode, never a second profile."""
 import json
+import os
 import plistlib
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path, PureWindowsPath
 from unittest.mock import Mock, patch
 
 from bridge.clients.manager import DesktopSessions
+from bridge.clients.discovery import discover_clients
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,6 +69,29 @@ class ZCodeDefaultRegistration(unittest.TestCase):
             self.assertFalse(restored.enabled('zcode'))
         finally:
             restored.close()
+
+    @unittest.skipUnless(os.name == 'posix', 'stable application symlink')
+    def test_registered_stable_symlink_follows_update_without_changing_the_configuration_home(self):
+        updated = self.bundle('Updated ZCode.app')
+        selected = self.root/'Stable ZCode.app'; selected.symlink_to(self.app, target_is_directory=True)
+        self.manager._discovery_preferences.side_effect = lambda: {
+            'zcodeApplication': self.manager.config.get('zcodeApplication', '')}
+        self.discovery.side_effect = lambda preferences: discover_clients(
+            preferences, platform='darwin', home=self.home, env={}, applications=[])
+        with patch('bridge.clients.desktop_app.process_inventory', side_effect=lambda paths: {
+                Path(path): {'pids': [], 'commands': {}} for path in paths}), \
+             patch('bridge.clients.zcode.installation.launch', side_effect=AssertionError('launch')):
+            self.manager.register_zcode_application(str(selected))
+            original_home = self.manager.config['discovered']['zcode']['dataDirectory']
+            self.assertEqual(self.manager.config['discovered']['zcode']['application'], str(self.app))
+            selected.unlink(); selected.symlink_to(updated, target_is_directory=True)
+            self.manager.scan(inventory_only=True)
+        row = self.manager.config['discovered']['zcode']
+        self.assertEqual(row['application'], str(updated))
+        self.assertEqual(row['executable'], str(updated/'Contents/MacOS/ZCode'))
+        self.assertEqual(row['dataDirectory'], original_home)
+        self.assertEqual(self.manager.adapters['zcode'].home, Path(original_home))
+        self.assertEqual(json.loads(self.manager.config_path.read_text())['zcodeApplication'], str(selected))
 
     def test_fresh_discovery_prevents_stale_form_from_overwriting_existing_client(self):
         self.discovery.return_value = {'zcode': {'installed': True, 'application': '/existing/ZCode.app'}}

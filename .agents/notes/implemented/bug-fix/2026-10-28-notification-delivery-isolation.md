@@ -60,3 +60,5 @@ UI、第三方接收地址、认证和用户原会话 owner/provider/auth/cwd �
 [SSH 离线隔离与退避](2026-10-30-ssh-offline-isolation-and-backoff.md)进一步将远端元数据发现移到有限后台读取，避免 SSH 离线超时阻塞本机通知扫描；本篇投递及去重契约保留。
 
 [DSH 通用插件与显式档案绑定](../feature/2026-10-28-dsh-generic-plugin-binding.md)复用本篇契约，记录第三方核心的接入边界和隔离运行验证；不替代其他客户端及版本的验证限制。
+
+[可选完成回答预览](../feature/2026-11-21-notification-answer-preview.md)复用投递隔离与目标复核，增加默认关闭的片段设置，不额外激活聊天。

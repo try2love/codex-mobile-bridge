@@ -4,6 +4,12 @@
 
 **[v2.2.1 发布页](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1)** · [完整更新说明](../RELEASE_NOTES.md) · [桌面客户端接入](../docs/deepseek-harness.md)
 
+## v2.2.2
+
+[v2.2.2 下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2)支持完整历史断点传输、离线正文与过程阅读、离线草稿和待发消息。建议网关和手机一起更新。Android 版本为 **2.2.2**、build **93**，沿用 v2.2.1 与此前 2.2.2 预览版的应用标识和持久签名，覆盖安装保留连接与草稿；iOS marketing version 为 **2.2.2**、build **93**，使用自己的原签名身份覆盖安装。请勿先卸载。
+
+[Download v2.2.2](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2) for resumable full-history transfer, offline messages/processes, drafts and queued messages. Update the gateway and mobile App together. Android **2.2.2/build 93** retains the application and signing identities used by v2.2.1 and previous 2.2.2 previews. iOS uses marketing version **2.2.2/build 93** and requires your existing signing identity. Install over the existing App to preserve connections and drafts.
+
 ## v2.2.1 安装 / Installation
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
@@ -236,3 +242,7 @@ iOS 构建入口 `scripts/build-mobile-ios.py` 生成未签名 IPA 和包含受�
 可选 APNs/FCM 接入见 [推送开发说明](push/README.md)。普通 APK 不含 Firebase SDK；没有配置自有推送服务和签名时，源码能力不等于远程推送可用。iOS 远程通知图片由 BridgeNotifications 扩展处理，需一同构建和签名。第三方许可见 [NOTICE.md](NOTICE.md)。
 
 手机 App 的主题在「手机设置」和聊天「外观与显示」之间同步，可选择跟随系统、浅色或深色；电脑连接页、列表、聊天和设置使用同一选择。切换时保留当前聊天和草稿，其他显示偏好不变。
+
+## HarmonyOS 实验工程
+
+[HarmonyOS 客户端](harmony/README.md)提供独立的单入口网页壳源码。当前未完成 DevEco 构建与真机验收，支持范围和签名配置见该目录说明。

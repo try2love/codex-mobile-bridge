@@ -67,17 +67,18 @@ jobs:
       - run: python3 scripts/test-ios-notification-sources.py
   # These five matrix names are required by main's existing branch protection.
   test:
+    name: test (${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}, ${{ matrix.python }})
     needs: change-scope
     if: always()
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-24.04]
         python: ['3.9', '3.13']
         include:
           - os: macos-latest
             python: '3.13'
-    runs-on: ${{ needs.change-scope.outputs.backend == 'true' && matrix.os || 'ubuntu-latest' }}
+    runs-on: ${{ needs.change-scope.outputs.backend == 'true' && matrix.os || 'ubuntu-24.04' }}
     steps:
       - name: Validate selection and report unaffected backend
         env:

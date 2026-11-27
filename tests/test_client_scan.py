@@ -1,6 +1,6 @@
 """Exercise discovery/setup orchestration without touching native app profiles."""
 import json
-from contextlib import nullcontext
+from threading import RLock
 import plistlib
 import tempfile
 import unittest
@@ -125,8 +125,8 @@ class ClientScanTests(unittest.TestCase):
         self.discovered['codex'].update(installed=False, executable='')
         self.accounts.index = {}
         self.accounts.assert_editable = Mock()
-        self.accounts.gate = nullcontext()
-        self.accounts.lock = nullcontext()
+        self.accounts.gate = RLock()
+        self.accounts.lock = RLock()
         self.bridge.cli_sessions = SimpleNamespace(available=Mock(return_value=True))
         self.manager.gateway_running = True
         self.manager.config['enabled'] = {'codex': False}

@@ -15,8 +15,8 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
   }
   const storage=()=>({getItem(){return null;},setItem(){},clear(){}});
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
-  const context=vm.createContext({CliConnectionsPanel:class{clear(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},AbortController,Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
-    window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:storage(),sessionStorage:storage(),
+  const context=vm.createContext({MutationObserver:class{observe(){}},ComposerToolbar:class{requestSync(){}actionMode(){return this.controls?.sendMode?.value||'send';}sync(){}},CliConnectionsPanel:class{clear(){}},ClientNavigation:class{constructor(){this.provider="codex";this.clients=[];}async refresh(){}async openChatLink(hash){assert.equal(hash,'','This fixture enters without a chat deep link');return false;}},DesktopSessionsView:class{bindListCache(){}previewCachedList(){return false;}clear(){}},Workbench:class{open(){}reset(){}setThumbnails(){}relabel(){}},AbortController,Event:class{constructor(type){this.type=type;}},navigator:{userAgent:'test'},Date,Option:function(text,value){return {...node('option'),textContent:text,value};},document:{addEventListener(){},dispatchEvent(){},documentElement:{classList:{contains(){return false;}}},getElementById:id=>nodes.get(id),querySelector:()=>({classList:{toggle(){}}}),querySelectorAll:()=>[],createElement:node},
+    window:{addEventListener:(name,fn)=>events[name]=fn,removeEventListener:(name,fn)=>{if(events[name]===fn)delete events[name];}},localStorage:storage(),sessionStorage:storage(),
     location:{hash:'',pathname:'/',search:''},history:{state:null,replaceState(state){this.state=state;},pushState(state){this.state=state;},back(){}},
     setTimeout(fn,delay){timers.set(++timerId,{fn,delay});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn,delay){intervals.push({fn,delay});},
     fetch:async(url,options={})=>{
@@ -40,7 +40,7 @@ async function fixture(read,kind='chatgpt',catalog=null,gatewayLanguage,accountS
       throw Error('Unexpected request '+url);
     }});
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/clients/client-navigation.js'),'utf8').match(/^function isCodex(?:Entry|Client).*$/gm).join('\n'),context);
-  for(const file of ['web/features/clients/client-lifecycle.js','web/hosts/environment.js','web/hosts/browser-navigation.js','web/shared/i18n.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/features/chat/permissions.js','web/features/chat/composer-commands.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/features/clients/client-lifecycle.js','web/hosts/environment.js','web/hosts/browser-navigation.js','web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js','web/features/chat/modes.js','web/features/chat/attachments.js','web/features/chat/activity.js','web/features/chat/fast-mode.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/composer-commands.js','web/shared/quota-continuation.js','web/shell/app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,requests,timers,intervals,events,responses,run:code=>vm.runInContext(code,context),
     failNextSkill(){failNextSkill=true;},
@@ -384,7 +384,7 @@ test('legacy model fields are normalized and a failed directory ends the loading
  assert.ok(ui.nodes.get('model-select').children.some(row=>row.value==='string-model'));
  ui.run("api=async()=>{throw Error('Offline')}");await ui.nodes.get('model-refresh').onclick();
  assert.ok(ui.nodes.get('model-options').children.some(row=>row.children[0].value==='legacy'),'failed refresh keeps visible rows');
- assert.match(ui.nodes.get('model-updated').textContent,/Offline/);
+ assert.match(ui.nodes.get('model-updated').textContent,/Offline|离线/);
  assert.equal(ui.nodes.get('model-save').disabled,true);assert.equal(ui.nodes.get('model-refresh').disabled,false);
 });
 

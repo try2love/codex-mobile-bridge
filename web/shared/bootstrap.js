@@ -1,4 +1,53 @@
 'use strict';
+// WebKit can carry a text field's focus ring to a button focused by a tap.
+// Mark that focus only for the lifetime of the focused element.
+(function () {
+  let touchPointer = false;
+  let touchClick = null;
+  let touchFocus = null;
+  function clearFocus() {
+    touchFocus?.removeAttribute('data-touch-focus');
+    touchFocus = null;
+  }
+  function markFocus(element) {
+    if (element === document.body || element === document.documentElement || element.closest('.xterm')) return;
+    touchFocus = element;
+    touchFocus.setAttribute('data-touch-focus', '');
+  }
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.isTrusted) return;
+    touchPointer = event.pointerType === 'touch';
+    touchClick = null;
+    if (!touchPointer) clearFocus();
+  }, true);
+  document.addEventListener('pointercancel', () => { touchPointer = false; }, true);
+  document.addEventListener('contextmenu', () => { touchPointer = false; }, true);
+  document.addEventListener('keydown', (event) => {
+    if (!event.isTrusted) return;
+    touchPointer = false;
+    touchClick = null;
+    clearFocus();
+  }, true);
+  document.addEventListener('click', (event) => {
+    if (!event.isTrusted) return;
+    // WebKit can report a compatibility click as a mouse click after a touch.
+    const fromTouch = touchPointer && event.detail > 0;
+    touchPointer = false;
+    touchClick = fromTouch ? event : null;
+    if (!fromTouch) {
+      clearFocus();
+      return;
+    }
+    const active = document.activeElement;
+    if (active?.contains(event.target)) markFocus(active);
+    setTimeout(() => { if (touchClick === event) touchClick = null; }, 0);
+  }, true);
+  document.addEventListener('focusin', (event) => {
+    clearFocus();
+    if (touchClick) markFocus(event.target);
+  }, true);
+  document.addEventListener('focusout', clearFocus, true);
+})();
 // Apply the saved/system palette before any visible startup content is painted.
 (function () {
   var saved;
@@ -56,9 +105,17 @@
         var nodes = Array.from(document.querySelectorAll('[data-bridge-feature]')).filter(function (node) { return node.dataset.bridgeFeature === name; });
         var scripts = nodes.filter(function (node) { return node.tagName === 'SCRIPT'; });
         var styles = nodes.filter(function (node) { return node.tagName === 'LINK'; });
+        // Fetch dependencies concurrently, but retain ordered execution and
+        // stop at a failed dependency. Slow links otherwise pay an RTT per file.
+        var downloads = scripts.map(function (node) {
+          var link = document.createElement('link');link.rel = 'preload';link.as = 'script';
+          link.href = node.getAttribute('data-bridge-src');link.fetchPriority = backgroundGroups.get(name) ? 'low' : 'auto';
+          document.head.appendChild(link);return link;
+        });
         var task = Promise.all(styles.map(function (node) { return resource(node, backgroundGroups.get(name)); })).then(function () {
           return scripts.reduce(function (previous, node) { return previous.then(function () { return resource(node, backgroundGroups.get(name)); }); }, Promise.resolve());
         });
+        task.then(function () { downloads.forEach(function (node) { node.remove(); }); }, function () { downloads.forEach(function (node) { node.remove(); }); });
         groups.set(name, task);
         task.catch(function () { groups.delete(name); });
       }

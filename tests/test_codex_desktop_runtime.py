@@ -63,8 +63,24 @@ class DesktopRuntimeTests(unittest.TestCase):
         self.assertEqual(result, arguments[:-2] + ['--listen', 'unix:///private/control.sock'])
         for arguments in (['--version'], ['app-server', '--print-startup-config'],
                           ['app-server', 'proxy', '--sock', '/elsewhere'], ['exec-server'],
-                          ['app-server', '--listen', 'ws://localhost:1234'], ['app-server', '--new-option']):
+                          ['app-server', '--listen', 'ws://localhost:1234']):
             self.assertIsNone(runtime.server_arguments(arguments, '/private/control.sock'))
+
+    def test_additive_native_startup_flags_are_forwarded_without_a_version_table(self):
+        arguments = ['--future-global', 'enabled', 'app-server', '--future-setting=true']
+        self.assertEqual(runtime.server_arguments(arguments, '/private/control.sock'),
+                         [*arguments, '--listen', 'unix:///private/control.sock'])
+        for tail in (['--new-option'], ['--future-feature', 'enabled'],
+                     ['--future-feature', 'daemon'], ['--future-feature', 'proxy'],
+                     ['--plugin-mcp-launch-cwd', 'future-plugin', 'future-server', '/future'],
+                     ['--future-config={"feature":true}', '--listen=stdio://']):
+            arguments = ['-c', 'features.existing=true', 'app-server', *tail]
+            expected = [value for value in arguments if value != '--listen=stdio://']
+            self.assertEqual(runtime.server_arguments(arguments, '/private/control.sock'),
+                             [*expected, '--listen', 'unix:///private/control.sock'])
+        for tail in (['daemon', 'version'], ['proxy', '--sock', '/existing'],
+                     ['generate-json-schema'], ['--help'], ['--version']):
+            self.assertIsNone(runtime.server_arguments(['app-server', *tail], '/private/control.sock'))
 
     def test_settings_reject_public_permissions_and_symlink(self):
         path = self.root / 'settings.json'
@@ -143,6 +159,81 @@ class DesktopRuntimeTests(unittest.TestCase):
                 app.start()
             wait.assert_called_once_with(self.home)
             native.start.assert_not_called()
+
+    def test_outdated_app_allows_only_explicit_native_start_after_writer_exit(self):
+        from bridge.clients import desktop_app
+        app = desktop_app.DesktopApp(self.home / 'replacement-app', self.home)
+        settings = self.root / 'settings.json'
+        original = settings.read_bytes()
+        native, order = Mock(), []
+        with patch.object(desktop_app.sys, 'platform', 'darwin'), \
+             patch.object(desktop_app, '_native', return_value=native), \
+             patch.object(runtime, 'wait_stopped', side_effect=lambda home: order.append(('stopped', home))) as wait:
+            native.start.side_effect = lambda *args, **kwargs: order.append(('start', args[1]))
+            with self.assertRaises(runtime.DesktopRuntimeOutdated):
+                runtime.launch_environment(self.home, app.executable)
+            with self.assertRaises(runtime.DesktopRuntimeOutdated):
+                app.start()
+            wait.assert_not_called(); native.start.assert_not_called()
+            app.start(allow_unprepared=True)
+            self.assertEqual(order, [('stopped', self.home), ('start', self.home)])
+            self.assertEqual(native.start.call_args.args[2], {'CODEX_HOME': str(self.home)})
+        self.assertEqual(settings.read_bytes(), original)
+
+    def test_explicit_outdated_start_never_bypasses_live_unknown_or_invalid_settings(self):
+        from bridge.clients import desktop_app
+        app = desktop_app.DesktopApp(self.home / 'replacement-app', self.home)
+        settings, active = self.root / 'settings.json', self.root / 'active.json'
+        original = settings.read_bytes()
+        native = Mock()
+        with patch.object(desktop_app.sys, 'platform', 'darwin'), \
+             patch.object(desktop_app, '_native', return_value=native), \
+             patch.object(runtime, 'runtime_alive', return_value=True):
+            for record in ({'ready': False, 'runtime': None}, {'ready': True, 'runtime': {'pid': 3}}):
+                with self.subTest(record=record):
+                    runtime._write(active, json.dumps(record)); previous = active.read_bytes()
+                    with self.assertRaises(ValueError): app.start(allow_unprepared=True)
+                    native.start.assert_not_called()
+                    self.assertEqual(active.read_bytes(), previous)
+                    self.assertEqual(settings.read_bytes(), original)
+            active.unlink(); settings.chmod(0o644)
+            with patch.object(runtime, 'wait_stopped') as wait:
+                with self.assertRaisesRegex(ValueError, '身份无法确认'):
+                    app.start(allow_unprepared=True)
+                wait.assert_not_called(); native.start.assert_not_called()
+            settings.chmod(0o600)
+            with patch.object(runtime, 'settings', side_effect=PermissionError('settings denied')), \
+                 patch.object(runtime, 'wait_stopped') as wait:
+                with self.assertRaisesRegex(PermissionError, 'settings denied'):
+                    app.start(allow_unprepared=True)
+                wait.assert_not_called(); native.start.assert_not_called()
+        self.assertEqual(settings.read_bytes(), original)
+
+    def test_windows_explicit_outdated_gateway_removes_only_shared_injection_variables(self):
+        from bridge.clients import desktop_app
+        app = desktop_app.DesktopApp(self.application, self.home)
+        original = (self.root / 'settings.json').read_bytes()
+        injected = ('CODEX_CLI_PATH', 'CMB_CODEX_DESKTOP_CONFIGURATION',
+                    'CODEX_APP_SERVER_WS_URL', 'CODEX_APP_SERVER_FORCE_CLI')
+        inherited = {key: 'old-injection' for key in injected}
+        inherited.update(CODEX_HOME='inherited-home', HTTPS_PROXY='http://proxy.fixture', PATH='fixture-bin')
+        order = []
+        with patch.object(desktop_app.sys, 'platform', 'win32'), \
+             patch.object(runtime, 'settings', return_value={**self.config, 'launcher': str(self.home / 'old-gateway.exe')}), \
+             patch.object(runtime, 'wait_stopped', side_effect=lambda home: order.append('stopped')) as wait, \
+             patch.object(desktop_app.os, 'environ', inherited), \
+             patch.object(desktop_app.subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x200, create=True), \
+             patch.object(app, 'launch', side_effect=lambda **kwargs: order.append('launch')) as launch:
+            with self.assertRaises(runtime.DesktopRuntimeOutdated): app.start()
+            wait.assert_not_called(); launch.assert_not_called()
+            app.start(allow_unprepared=True)
+            self.assertEqual(order, ['stopped', 'launch'])
+            options = launch.call_args.kwargs
+            self.assertTrue(options['require_environment'])
+            self.assertEqual(options['env'], {'CODEX_HOME': str(self.home), 'HTTPS_PROXY': 'http://proxy.fixture', 'PATH': 'fixture-bin'})
+            self.assertEqual(options['cwd'], self.home)
+            self.assertTrue(all(key not in options['env'] for key in injected))
+        self.assertEqual((self.root / 'settings.json').read_bytes(), original)
 
     def setup_active(self):
         identities = {1: {'pid': 1, 'parent': 0, 'image': self.application, 'birth': [11, 0]},

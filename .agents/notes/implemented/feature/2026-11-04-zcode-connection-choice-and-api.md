@@ -65,3 +65,6 @@ Mac Test 128.9 的独立冻结验收还通过假 API 配置保存、编辑回包
 - [官方远控实验](2026-11-04-zcode-official-remote-experiment.md)：部分重叠，继续负责官方协议、设备绑定与同账号验证；本文补齐持久配置与用户选择，互链保留。
 - [ZCode 共享能力与账号事务](2026-10-31-zcode-shared-capabilities.md)：部分重叠，继续负责共享模型/Skill/账号事务；本文补齐原生个人 API schema 与保存/应用边界。
 - [应用管理](../architecture/2026-11-03-zcode-desktop-management.md)：端口选择被替代，正常退出、任务保护和私有管道身份检查仍成立，不归档整篇。
+
+
+macOS 网关凭据存储由[资料目录加密容器](../architecture/2026-11-22-macos-profile-credential-vault.md)接续；本文的独立链接、连接模式、私有 IPC 和 Windows/Linux 边界继续适用。

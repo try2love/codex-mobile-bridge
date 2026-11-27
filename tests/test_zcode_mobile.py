@@ -20,7 +20,7 @@ class MobileContracts(unittest.TestCase):
         self.calls = []
         self.snapshot = {'sessionId': 'sess_test', 'revision': 1, 'seq': 2, 'logEpoch': 'epoch',
             'control': {'canStop': True, 'activeWorks': [{'foregroundExecutionId': 'execution'}]},
-            'rows': {'totalCount': 0, 'window': []}, 'pendingInteractions': []}
+            'rows': {'totalCount': 0, 'window': []}, 'pendingInteractions': [], 'queue': {'items': []}}
 
     def transport(self, request):
         self.calls.append(request)
@@ -45,6 +45,53 @@ class MobileContracts(unittest.TestCase):
         self.assertEqual([r['action'] for r in self.calls], ['detail'])
         self.assertEqual(manager.call('zcode', 'list')['sessions'][0]['id'], 'sess_test')
         self.assertTrue(manager.call('zcode', 'account')['capabilities']['models'])
+
+    def test_unknown_control_or_current_turn_does_not_authorize_idle_writes(self):
+        self.snapshot.update(inputRouting={'mode': 'startNow'}, availability={'compact': {'allowed': True}})
+        for control, queue, state in (
+                (None, None, 'queued'), ({'activeWorks': None}, {'items': []}, 'completedSuccess'),
+                ({'activeWorks': []}, None, 'completedSuccess'),
+                ({'activeWorks': []}, {'items': None}, 'completedSuccess'),
+                ({'activeWorks': []}, {'items': []}, 'futureState'),
+                ({'activeWorks': []}, {'items': []}, 'completed'),
+                ({'activeWorks': []}, {'items': []}, 'interrupted')):
+            with self.subTest(control=control, queue=queue, state=state):
+                self.snapshot.update(control=control, queue=queue,
+                    rows={'totalCount': 1, 'window': [{'kind': 'turnHeader', 'rowId': 1, 'turnId': 'latest', 'state': state}]})
+                detail = project_snapshot(self.snapshot, str(self.root))
+                self.assertEqual(detail['session']['status'], 'unknown')
+                self.assertFalse(detail['session']['runtimeKnown'])
+                self.assertNotEqual(detail['session']['turnStatus'], 'completed')
+                for key in ('send', 'queue', 'steer', 'compact'):
+                    self.assertFalse(detail['capabilities'][key])
+                self.assertFalse(any(detail['capabilities']['sendModes'].values()))
+        adapter = ZCodePrototype(self.root, self.config, lambda request: {'snapshot': self.snapshot,
+            'capabilities': {'send': True, 'compact': True, 'sendModes': {'send': True}}})
+        detail = adapter.call('detail', 'sess_test')
+        self.assertFalse(detail['capabilities']['send'])
+        self.assertFalse(detail['capabilities']['compact'])
+        self.assertFalse(any(detail['capabilities']['sendModes'].values()))
+
+    def test_old_unknown_turn_does_not_hide_verified_current_idle_or_responses(self):
+        self.snapshot.update(control={'phase': 'idle', 'activeWorks': []}, queue={'items': []},
+            inputRouting={'mode': 'startNow'}, availability={'compact': {'allowed': True}},
+            rows={'totalCount': 2, 'window': [
+                {'kind': 'turnHeader', 'rowId': 1, 'turnId': 'old', 'state': 'futureState'},
+                {'kind': 'turnHeader', 'rowId': 2, 'turnId': 'latest', 'state': 'completedSuccess'}]})
+        detail = project_snapshot(self.snapshot, str(self.root))
+        self.assertTrue(detail['session']['runtimeKnown'])
+        self.assertEqual(detail['session']['status'], 'idle')
+        self.assertEqual(detail['turns'][0]['status'], 'futureState')
+        self.assertTrue(detail['capabilities']['sendModes']['send'])
+        self.assertTrue(detail['capabilities']['compact'])
+        self.snapshot['control'] = None
+        self.snapshot['pendingInteractions'] = [{'interactionId': 'permission', 'kind': 'permission',
+            'payload': {'options': [{'optionId': 'deny', 'label': 'Deny', 'kind': 'deny'}]}}]
+        detail = project_snapshot(self.snapshot, str(self.root))
+        self.assertEqual(detail['session']['requests'][0]['decisions'][0]['id'], 'deny')
+        adapter = ZCodePrototype(self.root, self.config, self.transport)
+        self.assertEqual(adapter.call('respond', 'sess_test', {'id': str(uuid.uuid4()),
+            'requestId': 'permission', 'decision': 'deny'})['status'], 'accepted')
 
     def test_default_gateway_does_not_register_or_probe_zcode(self):
         manager = DesktopSessions(self.root)
@@ -111,3 +158,38 @@ class MobileContracts(unittest.TestCase):
         self.assertIn('3009', detail['messages'][-1]['text'])
         self.assertEqual(detail['messages'][-1]['role'], 'error')
         self.assertEqual(self.calls, [])
+
+    def test_unknown_turn_state_and_null_nested_objects_do_not_crash_snapshot(self):
+        # 未知 turnHeader.state 不能抛 KeyError（HTTP 404），也不能伪造 completed/failed。
+        self.snapshot['rows']['window'] = [
+            {'kind': 'turnHeader', 'turnId': 't1', 'rowId': 1, 'state': 'queued'},
+            {'kind': 'userInput', 'rowId': 2, 'entityId': 'u1', 'visibility': 'visible',
+             'text': 'hi', 'actions': None},
+        ]
+        self.snapshot.update({'control': None, 'inputRouting': None, 'queue': None, 'usage': None,
+                              'meta': None, 'config': None, 'availability': None})
+        detail = project_snapshot(self.snapshot, str(self.root))
+        self.assertEqual(detail['turns'], [{'turnId': 't1', 'sequence': 1, 'status': 'queued'}])
+        self.assertEqual(detail['session']['title'], '')
+        self.assertEqual(detail['session']['contextUsageStatus'], 'unavailable')
+
+    def test_null_send_result_stays_accepted_and_invalid_respond_blocks_before_ipc(self):
+        # 原生返回 result: null 时仍应记为 accepted；非法 respond 参数应在发出 IPC 前被拦截为 blocked。
+        settings = self.root/'desktop-sessions/settings.json'
+        settings.parent.mkdir(exist_ok=True)
+        settings.write_text(json.dumps({'enabled': {'zcode': True}}))
+        manager = DesktopSessions(self.root)
+        self.addCleanup(manager.close)
+        adapter = ZCodePrototype(self.root, self.config, lambda req: (self.calls.append(req), {'status': 'accepted', 'result': None})[1])
+        manager.adapters['zcode'] = adapter
+
+        sent = manager.call('zcode', 'send', 'sess_test', {'id': str(uuid.uuid4()), 'text': 'hello'})
+        self.assertEqual(sent['status'], 'accepted')
+
+        calls_before = len(self.calls)
+        bad_decision = manager.call('zcode', 'respond', 'sess_test', {'id': str(uuid.uuid4()), 'requestId': 'r1'})
+        bad_answers = manager.call('zcode', 'respond', 'sess_test', {
+            'id': str(uuid.uuid4()), 'requestId': 'r1', 'decision': 'accept', 'answers': {'q': None}})
+        self.assertEqual(bad_decision['status'], 'blocked')
+        self.assertEqual(bad_answers['status'], 'blocked')
+        self.assertEqual(len(self.calls), calls_before)

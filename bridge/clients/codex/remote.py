@@ -16,6 +16,7 @@ from bridge.clients.codex.catalog import CatalogError, CatalogIdentityChanged
 from bridge.features.network.retry import (
     ConnectionUnavailable as RemoteUnavailable, TransportUnavailable as SshTransportUnavailable, ssh_connection)
 from bridge.features.network.stdio import run_with_input
+from bridge.features.sessions.store import project_root_key
 from bridge.resources import source_text
 
 
@@ -33,6 +34,26 @@ def ssh_read(alias, source, timeout=18):
         return _ssh_read(alias, source, timeout)
 
 
+def _parse_ssh_json(stdout):
+    """Parse JSON from remote stdout while ignoring login shell banner noise."""
+    text = (stdout or '').strip()
+    if not text:
+        raise ValueError('Empty remote output')
+    try:
+        return json.loads(text)
+    except ValueError:
+        lines = [line for line in text.splitlines() if line.strip()]
+        for index in range(len(lines) - 1, -1, -1):
+            candidate = '\n'.join(lines[index:])
+            if not candidate.lstrip().startswith(('{', '[')):
+                continue
+            try:
+                return json.loads(candidate)
+            except ValueError:
+                continue
+        raise
+
+
 def _ssh_read(alias, source, timeout=18):
     command = ssh_command(alias)
     try:
@@ -41,7 +62,7 @@ def _ssh_read(alias, source, timeout=18):
             raise SshTransportUnavailable('SSH 主机暂不可用，请检查电脑上的连接')
         if result.returncode:
             raise RemoteUnavailable('SSH 读取失败，请检查电脑上该主机的 SSH 连接')
-        return json.loads(result.stdout)
+        return _parse_ssh_json(result.stdout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SshTransportUnavailable('SSH 主机暂不可用，请检查电脑上的连接') from exc
     except ValueError as exc:
@@ -165,13 +186,17 @@ class RemoteStore:
         raise RemoteUnavailable('正在后台读取 SSH 主机；本机会话可正常使用。')
 
     def call(self, method, args, *, home=None):
-        source = source_text('features/sessions/store.py')
+        source = ('import types\n_bridge_index_archive=types.ModuleType("bridge_native_saved_index")\n'
+                  + 'exec(' + repr(source_text('features/sessions/index_archive.py')) + ', _bridge_index_archive.__dict__)\n'
+                  + source_text('features/sessions/store.py'))
         suffix = ('\nimport os\nhome_source = "environment" if os.environ.get("CODEX_HOME") else "default"\n'
                   's = SessionStore(' + ('Path(' + repr(str(home)) + ')' if home is not None else
                     'Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))') + ')\n'
                   'result = s.' + method + '(**' + payload(args) + ')\n')
         if method == 'discovery_diagnostics':
             suffix += 'result["homeSource"] = home_source\n'
+        if method == 'list' and args.get('project_scope'):
+            suffix += 'for row in result: row["_projectPlatform"] = sys.platform\n'
         return ssh_read(self.alias, source + suffix + 'print(json.dumps(result, ensure_ascii=False))\n', timeout=30)
 
     def list(self, **kwargs):
@@ -204,8 +229,32 @@ class RemoteStore:
     def get(self, thread_id):
         return self.call('get', {'thread_id': thread_id})
 
+    def history_revision(self, thread_id):
+        return self.call('history_revision', {'thread_id': thread_id})
+
+    def history_status(self, thread_id, *, include_usage=False, known_revision=None):
+        return self.call('history_status', {'thread_id': thread_id, 'include_usage': include_usage,
+                                            'known_revision': known_revision})
+
     def history(self, thread_id, turn_limit=None, item_limit=None):
         return self.call('history', {'thread_id': thread_id, 'turn_limit': turn_limit, 'item_limit': item_limit})
+
+    def transfer_snapshot(self, thread_id):
+        return self.call('transfer_snapshot', {'thread_id': thread_id})
+
+    def transfer_index_turns(self, snapshot):
+        cursor = -1
+        while cursor < snapshot['end']:
+            page = self.call('transfer_index_page', {'thread_id': snapshot['id'], 'snapshot': snapshot, 'offset': cursor})
+            if page['turn'] is None:
+                return
+            if page['next'] <= cursor:
+                raise ValueError('聊天历史读取未继续推进')
+            cursor = page['next']
+            yield page['turn']
+
+    def transfer_page(self, thread_id, meta, segment, offset):
+        return self.call('transfer_page', {'thread_id': thread_id, 'meta': meta, 'segment': segment, 'offset': offset})
 
     def subagents(self, thread_id):
         return self.call('subagents', {'thread_id': thread_id})
@@ -218,6 +267,21 @@ class RemoteStore:
 
     def discovery_diagnostics(self, thread_id=None):
         return self.call('discovery_diagnostics', {'thread_id': thread_id})
+
+
+def _catalog_source():
+    source = source_text('clients/codex/catalog.py').replace(
+        'from bridge.features.accounts.models import model_catalog', '').replace(
+        'from bridge.clients.codex.configuration import magpie_managed', '')
+    # SSH helpers rediscover their explicit runtime on every request. Local
+    # Windows installation inventory is neither available nor needed there.
+    start = source.index("        if os.name == 'nt':\n", source.index('    def find_runtime():\n'))
+    end = source.index('        for app in ("ChatGPT", "Codex"):\n', start)
+    source = (source[:start] + "        if os.name == 'nt':\n"
+              "            raise CatalogError('SSH Windows runtime discovery is unsupported')\n" + source[end:])
+    start = source.index('    def _windows_runtime_stamp(self):\n')
+    end = source.index('    def invalidate_models(self):\n', start)
+    return source[:start] + '    def _windows_runtime_stamp(self):\n        return None\n\n' + source[end:]
 
 
 class RemoteCatalog:
@@ -251,9 +315,7 @@ class RemoteCatalog:
         source = source_text('features/auth/tls.py') + '\n'
         source += source_text('features/accounts/models.py').replace('from bridge.features.auth.tls import client_context', '') + '\n'
         source += source_text('clients/codex/configuration.py') + '\n'
-        source += source_text('clients/codex/catalog.py').replace(
-            'from bridge.features.accounts.models import model_catalog', '').replace(
-            'from bridge.clients.codex.configuration import magpie_managed', '')
+        source += _catalog_source()
         source += '\nimport shutil\nhome=Path(os.environ.get("CODEX_HOME", str(Path.home()/".codex")))\n'
         source += 'runtime=Catalog.find_ssh_runtime(home) or str(Path.home()/".local/bin/codex")\n'
         source += 'reader=Catalog(home, runtime, allow_background_refresh=False, auth_status_only=True)\n'
@@ -390,9 +452,7 @@ class RemoteCliModels:
         source += source_text('features/accounts/models.py').replace(
             'from bridge.features.auth.tls import client_context', '') + '\n'
         source += source_text('clients/codex/configuration.py') + '\n'
-        source += source_text('clients/codex/catalog.py').replace(
-            'from bridge.features.accounts.models import model_catalog', '').replace(
-            'from bridge.clients.codex.configuration import magpie_managed', '') + '\n'
+        source += _catalog_source() + '\n'
         source += source_text('platforms/linux/codex_daemon_env.py') + '\n'
         source += '_linux_read_process_environment = read_process_environment\n'
         source += source_text('platforms/macos/force_exit.py') + '\n'
@@ -585,30 +645,63 @@ class AppHosts:
 
     def decorate(self, rows, host, label, native_memberships=()):
         state = self.state()
-        if host == 'local':
-            projects = [{'id': p['id'], 'name': p['name']}
-                        for p in state.get('local-projects', {}).values()]
+        local = host == 'local' or host.startswith('codex:')
+        state_host = 'local' if local else host
+        local_roots = {}
+        if local:
+            projects = list(state.get('local-projects', {}).values())
+            for project in projects:
+                for root in project.get('rootPaths') or ():
+                    key = project_root_key(root)
+                    if key is not None:
+                        local_roots.setdefault(key, []).append(project)
         else:
             projects = [{'id': p['id'], 'name': p.get('label') or project_path_name(p['remotePath']),
                          'cwd': p['remotePath']}
                         for p in state.get('remote-projects', []) if p['hostId'] == host]
+        projects_by_id = {project['id']: project for project in projects}
         assignments = state.get('thread-project-assignments', {})
+        membership_hosts = state.get('thread-project-membership-host-ids', {})
         projectless = set(state.get('projectless-thread-ids', []))
-        project_ids = {project['id'] for project in projects}
-        legacy_ids = {server_id: legacy_id
-                      for mapping in state.get('app-server-project-id-by-legacy-project-id-by-host', {}).values()
-                      for legacy_id, server_id in mapping.items() if legacy_id in project_ids}
+        mappings = state.get('app-server-project-id-by-legacy-project-id-by-host', {})
+        scope = 'local:' + str(self.home.resolve()) if local else host
+        legacy_by_scope = {}
         for row in rows:
+            platform = row.pop('_projectPlatform', None)
             assigned = assignments.get(row['id'], {})
             project = row.pop('_nativeProject', None)
+            native_roots = row.pop('_nativeRootProjects', ())
+            remote_home = row.pop('_nativeProjectHome', None)
+            row_scope = host + ':' + remote_home if not local and remote_home else scope
+            if row_scope not in legacy_by_scope:
+                mapping = mappings.get(row_scope, mappings.get(host, {}) if not local else {})
+                legacy_by_scope[row_scope] = {server_id: legacy_id for legacy_id, server_id in mapping.items()
+                                             if legacy_id in projects_by_id}
+            legacy_ids = legacy_by_scope[row_scope]
             explicitly_projectless = row['id'] in projectless
             # Empty native metadata also occurs while Codex migrates memberships.
             if project is None and not explicitly_projectless and row['id'] not in native_memberships:
-                project = next((p for p in projects if p['id'] == assigned.get('projectId') and assigned.get('hostId', host) == host), None)
+                assigned_host = assigned.get('hostId', membership_hosts.get(row['id'], state_host))
+                if assigned_host == state_host and assigned.get('projectKind') in (None, 'local' if local else 'remote'):
+                    project = projects_by_id.get(assigned.get('projectId'))
+                can_match_root = (project is None and not assigned and assigned_host == state_host and
+                                  row.get('workspaceKind') != 'projectless')
+                if can_match_root and local and not row.get('project_id'):
+                    # Migration aliases identify one project across both registries.
+                    candidates = {p['id']: p for p in local_roots.get(project_root_key(row.get('cwd')), ())}
+                    candidates.update((legacy_ids.get(p['id'], p['id']), p) for p in native_roots)
+                    if len(candidates) == 1:
+                        project = next(iter(candidates.values()))
                 # The App also groups legacy SSH chats by their registered host/root,
                 # without persisting a thread projectId. Keep explicit removals authoritative.
-                if project is None and host != 'local' and not assigned and row.get('workspaceKind') != 'projectless':
-                    project = next((p for p in projects if p['cwd'] and p['cwd'] == row.get('cwd')), None)
+                if can_match_root and not local:
+                    # Only the execution host can disambiguate a pure // path.
+                    # Older/unknown sources retain the exact-string fallback.
+                    def root_key(path):
+                        return project_root_key(path, platform) if platform in ('darwin', 'linux', 'win32') else path
+                    candidates = {p['id']: p for p in projects if p['cwd'] and root_key(p['cwd']) == root_key(row.get('cwd'))}
+                    if len(candidates) == 1:
+                        project = next(iter(candidates.values()))
             row.update(host=host, hostLabel=label,
                        projectKey=host + '|' + (legacy_ids.get(project['id'], project['id']) if project else 'unassigned'),
                        projectName=project['name'] if project else '未归类',
@@ -623,10 +716,10 @@ def upload_file(alias, thread, identifier, name, data, digest, *, reader=None):
 p=Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))/'mobile-bridge'/'uploads'/v['thread']/v['id']/v['name']
 p.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
 b=base64.b64decode(v['data'],validate=True)
-assert hashlib.sha256(b).hexdigest()==v['sha256']
+if hashlib.sha256(b).hexdigest()!=v['sha256']: raise ValueError('Uploaded file digest mismatch')
 if p.is_symlink(): raise ValueError('Invalid attachment path')
 if p.exists():
-    assert hashlib.sha256(p.read_bytes()).hexdigest()==v['sha256']
+    if hashlib.sha256(p.read_bytes()).hexdigest()!=v['sha256']: raise ValueError('Existing file digest mismatch')
 else:
     tmp=p.parent/(v['id']+'.part')
     with tmp.open('wb') as f: f.write(b)

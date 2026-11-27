@@ -16,7 +16,6 @@ class MagpieTests(unittest.TestCase):
     def test_native_provider_catalog_and_openai_override_modes(self):
         for config in (
             {'model_provider': 'magpie'},
-            {'model_providers': {'magpie': {'base_url': 'https://fixture.invalid/v1'}}},
             {'model_catalog_json': '/fixture/magpie-models.json'},
             {'model_catalog_json': 'C:\\fixture\\magpie-models.json'},
             {'openai_base_url': 'http://127.0.0.1:3425/v1'},
@@ -25,6 +24,64 @@ class MagpieTests(unittest.TestCase):
             with self.subTest(config=config):
                 self.assertTrue(magpie_managed(config=config))
         self.assertFalse(magpie_managed(config={'model_provider': 'bridge_api', 'openai_base_url': 'https://fixture.invalid/v1'}))
+
+    def test_inactive_magpie_definitions_and_comments_do_not_manage_the_active_provider(self):
+        cases = [
+            ({'model_provider': 'bridge_api', 'model_providers': {'magpie': {}}},
+             'model_provider="bridge_api"\n[model_providers.magpie]\nname="Magpie"\n'),
+            ({'model_providers': {'magpie': {}}}, '[model_providers.magpie]\nname="Magpie"\n'),
+            ({'model_provider': 'bridge_api'}, '# Previously managed by Magpie\nmodel_provider="bridge_api"\n'),
+            ({'profile': 'work', 'model_provider': 'magpie', 'profiles': {'work': {'model_provider': 'bridge_api'}}},
+             'profile="work"\nmodel_provider="magpie"\n[profiles.work]\nmodel_provider="bridge_api"\n'),
+            ({'model_provider': 'bridge_api', 'openai_base_url': 'http://127.0.0.1:3425/v1'},
+             'model_provider="bridge_api"\nopenai_base_url="http://127.0.0.1:3425/v1"\n'),
+        ]
+        fixture = self.fixture()
+        for config, text in cases:
+            with self.subTest(config=config):
+                self.assertFalse(magpie_managed(config=config))
+                (fixture.home/'config.toml').write_text(text, encoding='utf-8')
+                self.assertFalse(fixture.manager.management()['external'])
+
+    def test_active_provider_endpoint_precedes_the_legacy_root_override(self):
+        for config in (
+            {'model_providers': {'openai': {'base_url': 'http://127.0.0.1:3425/v1'}}},
+            {'model_provider': 'openai', 'openai_base_url': 'https://fixture.invalid/v1',
+             'model_providers': {'openai': {'base_url': 'http://127.0.0.1:3425/v1'}}},
+        ):
+            with self.subTest(config=config):
+                self.assertTrue(magpie_managed(config=config))
+        self.assertFalse(magpie_managed(config={
+            'model_provider': 'openai', 'openai_base_url': 'http://127.0.0.1:3425/v1',
+            'model_providers': {'openai': {'base_url': 'https://fixture.invalid/v1'}}}))
+
+    def test_auto_management_follows_current_config_but_preserves_explicit_external_mode(self):
+        fixture = self.fixture()
+        path = fixture.home/'config.toml'
+        path.write_text('model_provider="magpie"\n', encoding='utf-8')
+        self.assertTrue(fixture.manager.management()['external'])
+        path.write_text('# Magpie remains installed\nmodel_provider="bridge_api"\n'
+                        '[model_providers.magpie]\nbase_url="http://127.0.0.1:3425/v1"\n', encoding='utf-8')
+        before = fixture.manager.snapshot_files()
+        self.assertFalse(fixture.manager.management()['external'])
+        self.assertTrue(fixture.manager.public()['canSwitch'])
+        fixture.manager.require_managed_writes()
+        fixture.manager.index['accessManagement'] = 'external'
+        self.assertTrue(fixture.manager.management()['external'])
+        with self.assertRaises(ValueError):
+            fixture.manager.require_managed_writes()
+        self.assertEqual(fixture.manager.snapshot_files(), before)
+
+    def test_invalid_config_remains_unknown_and_blocks_managed_writes(self):
+        fixture = self.fixture()
+        (fixture.home/'config.toml').write_text('model_provider="unterminated\n', encoding='utf-8')
+        before = fixture.manager.snapshot_files()
+        result = fixture.manager.management()
+        self.assertTrue(result['external'])
+        self.assertIn('无法确认', result['reason'])
+        with self.assertRaises(ValueError):
+            fixture.manager.require_managed_writes()
+        self.assertEqual(fixture.manager.snapshot_files(), before)
 
     def test_model_catalog_is_read_by_native_runtime_without_reimport_or_credentials(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as folder:

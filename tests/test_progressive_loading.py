@@ -11,7 +11,8 @@ class ProgressiveLoadingTests(unittest.TestCase):
     tearDown = test_bridge.IntegrationTests.tearDown
 
     def test_unchanged_pages_reuse_projection_and_patch_invalidates_it(self):
-        self.fixture.state['turns'] = [{'turnId': 'turn', 'status': 'completed', 'items': [
+        # This measures unchanged projection reuse, not asynchronous label repair.
+        self.fixture.state['turns'] = [{'turnId': 'turn', 'status': 'completed', 'model': 'fixture-model', 'items': [
             {'id': str(i), 'type': 'agentMessage', 'text': 'row ' + str(i), 'timestamp': 1700000000 + i} for i in range(10000)]}]
         session = self.bridge.session(THREAD)
         first = self.bridge.timeline_read(THREAD)
@@ -25,7 +26,7 @@ class ProgressiveLoadingTests(unittest.TestCase):
             self.assertEqual(len(older['rows']), 100)
             # A newly requested window is normalized lazily; old bodies were
             # deliberately not converted during the initial read.
-            normalize.assert_called_once_with(item_limit=140)
+            normalize.assert_called_once_with(item_limit=140, process_bodies=True, sync_history=False)
         self.fixture.publish({'type': 'patches', 'baseRevision': 1, 'revision': 2,
                               'patches': [{'op': 'replace', 'path': ['turns', 0, 'items', 9999, 'text'], 'value': 'updated'}]})
         with session.condition:

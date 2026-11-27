@@ -46,6 +46,22 @@ class ServiceBoundary(unittest.TestCase):
                     signature._verify_previous_build(str(bad), digest)
             codesign.assert_not_called()
 
+    def test_published_holder_can_keep_its_profile_across_versioned_test_directories(self):
+        signature = host.SignedGatewayPeer.__new__(host.SignedGatewayPeer)
+        layout = Path("Contents/Resources/gateway/codex-mobile-gateway")
+        signature.image = str(Path("/test-builds/current/mac-arm64/Test.app") / layout)
+        signature.published = {"product": "io.github.try2love.codexmobilebridge.test"}
+        previous = Path("/test-builds/previous/mac-arm64/Test.app")
+        digest = b"d" * 20
+        with patch("bridge.platforms.macos.signed_peer.release_identity.read") as published, \
+                patch.object(signature, "_starter_requirement") as starter:
+            signature._verify_previous_build(str(previous / layout), digest)
+            published.assert_called_once_with(previous / layout, digest, expected_product=signature.published["product"])
+            starter.assert_called_once_with(previous / "Contents/Helpers/CMBZCodePipeStarter.app", digest)
+            published.side_effect = PermissionError("wrong product or publisher")
+            with self.assertRaises(PermissionError):
+                signature._verify_previous_build(str(previous / layout), digest)
+
     @unittest.skipIf(os.name == "nt", "macOS peer identity uses Unix sockets and UID")
     def test_relocation_does_not_authorize_a_different_gateway_or_pid_generation(self):
         import struct
@@ -78,6 +94,47 @@ class ServiceBoundary(unittest.TestCase):
                     with self.assertRaises(error):
                         fixture_client("/unused", "status")
 
+    def test_relocated_holder_role_uses_its_verified_image_and_exact_profile(self):
+        temporary = tempfile.TemporaryDirectory(dir=ROOT / ".tmp")
+        self.addCleanup(temporary.cleanup)
+        profile = Path(temporary.name)
+        client = host.PipeHostClient(profile, "/fictional/ZCode.app")
+        old = "/test-builds/previous/Test.app/Contents/Resources/gateway/codex-mobile-gateway"
+        signature = Mock(image="/test-builds/current/Test.app/Contents/Resources/gateway/codex-mobile-gateway")
+        signature.require.return_value = {"pid": 123, "image": old}
+        record = {"application": str(client.application), "profile": host.profile_id(client.profile),
+                  "endpoint": "/private/tmp/cmb-zp-fixture/rpc", "pid": 123, "nonce": "synthetic"}
+        role = old + " zcode-pipe-host --data-dir " + str(client.profile) + " --application " + str(client.application)
+        with patch.object(client, "supported", return_value=True), patch.object(client, "_signing", return_value=signature), \
+                patch.object(host, "read_json", return_value=record), patch.object(host, "private_dir"), \
+                patch.object(host.socket, "AF_UNIX", getattr(socket, "AF_UNIX", 1), create=True), \
+                patch.object(host.socket, "socket"), patch.object(host, "commands", return_value={123: role}) as commands, \
+                patch.object(host, "exchange_write") as write, patch.object(host, "exchange_read", return_value={"ok": True, "value": {"running": True}}):
+            self.assertTrue(client._request({"command": "status"})["running"])
+            write.assert_called_once()
+            write.reset_mock()
+            commands.return_value = {123: role + " --unexpected"}
+            with self.assertRaisesRegex(PermissionError, "service role"):
+                client._request({"command": "status"})
+            write.assert_not_called()
+
+    def test_holder_accepts_only_current_profile_gateway_after_published_relocation(self):
+        profile = Path("/synthetic/profile")
+        signature = Mock()
+        identity = {"pid": 321, "image": "/test-builds/current/Test.app/Contents/Resources/gateway/codex-mobile-gateway"}
+        signature.require.return_value = identity
+        role = identity["image"] + " serve --data-dir " + str(profile)
+        with patch.object(host, "read_json", return_value={"pid": 321}), \
+                patch.object(host, "commands", return_value={321: role}) as commands:
+            self.assertEqual(host.active_gateway(profile, signature, Mock()), identity)
+            validate = signature.require.call_args.kwargs["relocated_holder"]
+            validate(identity)
+            commands.return_value = {321: role + "-another-profile"}
+            with self.assertRaises(PermissionError):
+                validate(identity)
+            with self.assertRaises(PermissionError):
+                host.active_gateway(profile, signature, Mock())
+
     def test_only_supported_native_request_shapes_reach_the_pipe(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as tmp:
             holder = host.Holder(tmp, None, None)
@@ -107,7 +164,7 @@ def fixture_holder(profile):
     class SignedFixture:
         native = host.Native()
 
-        def require(self, conn, pid):
+        def require(self, conn, pid, *, relocated_holder=None):
             if conn.getsockopt(0, 2) != pid:
                 raise PermissionError("unexpected test peer")
             return {"image": sys.executable, "pid": pid}

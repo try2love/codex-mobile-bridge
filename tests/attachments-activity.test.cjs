@@ -37,6 +37,25 @@ function fixture(){
  return {panel,calls,saved,root,button,input,events,thumbCalls,setUpload:f=>upload=f};
 }
 const tick=()=>new Promise(setImmediate),file=(name,size=12)=>({name,size});
+test('uploaded files use their body hyperlink once and keep a text fallback without a link',()=>{
+ const make=tag=>({tag,dataset:{},children:[],append(...nodes){this.children.push(...nodes);}});
+ const context=vm.createContext({window:{},BridgeI18n:{t:s=>s},document:{createElement:make,createTextNode:text=>({textContent:text})}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),context);
+ const render=vm.runInContext('renderChatAttachments',context);
+ const body=make('article');body.querySelectorAll=()=>[{textContent:'notes.txt',dataset:{chatFilePath:'/uploads/notes.txt',chatFileName:'notes.txt'}}];
+ render(body,[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}],{});
+ assert.equal(body.children.length,0,'linked file has no duplicate plain caption');
+ body.querySelectorAll=()=>[];render(body,[{type:'file',name:'notes.txt'}],{});
+ assert.equal(body.children[0].children[0].children.at(-1).textContent,'notes.txt');
+});
+test('a same-name external link does not hide the uploaded file fallback',()=>{
+ const make=tag=>({tag,dataset:{},children:[],append(...nodes){this.children.push(...nodes);}});
+ const context=vm.createContext({window:{},BridgeI18n:{t:s=>s},document:{createElement:make,createTextNode:text=>({textContent:text})}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/features/chat/attachments.js'),'utf8'),context);
+ const body=make('article');body.querySelectorAll=()=>[{textContent:'notes.txt',dataset:{},getAttribute:()=> 'https://example.org/notes.txt'}];
+ vm.runInContext('renderChatAttachments',context)(body,[{type:'file',name:'notes.txt',path:'/uploads/notes.txt'}],{});
+ assert.equal(body.children[0].children[0].children.at(-1).textContent,'notes.txt');
+});
 test('multi-select uploads independently and switching chats preserves host-scoped drafts',async()=>{
  const ui=fixture();ui.panel.add([file('a.txt'),file('photo.png')]);await tick();
  assert.equal(ui.calls.length,2);assert.equal(ui.panel.ready(),true);assert.equal(ui.panel.ids().length,2);
@@ -105,4 +124,11 @@ test('large host references do not consume upload bytes; upload capability does 
  ui.panel.add([file('blocked.png')]);assert.equal(ui.calls.length,0);
  ui.panel.canUpload=()=>true;ui.panel.add([file('photo.png')]);await tick();
  assert.equal(ui.calls.length,1);assert.equal(ui.panel.references().length,1);assert.equal(ui.panel.ids().length,1);
+});
+
+test('an add menu without upload capability cannot retry a failed attachment',()=>{
+ const ui=fixture();ui.panel.rows.push({id:'failed',name:'old.png',size:5,status:'failed',error:'failed'});
+ ui.panel.canUpload=()=>false;ui.panel.render();
+ const retry=ui.root.children[0].children.find(n=>n.textContent==='重试');
+ assert.equal(retry.disabled,true);retry.onclick();assert.equal(ui.calls.length,0);assert.equal(ui.panel.rows[0].status,'failed');
 });

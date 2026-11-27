@@ -19,13 +19,20 @@ from .presentation import COMPOSER_CAPABILITIES, composer_presentation
 
 
 ACCESS = {'build': '变更前确认', 'guarded': '自主模式', 'yolo': '完全访问'}
+SAVED_SYNC_CURSOR = 'zcode-saved-sync.'
 LOOPBACK_PLATFORMS = ('darwin', 'win32')
 
 
 def project_files(root, paths):
     if not isinstance(paths, list) or len(paths) > 10:
         raise ValueError('每条消息最多 10 个项目文件')
-    workspace, result, total = Workspace(root), [], 0
+    if not paths:
+        return []
+    try:
+        workspace = Workspace(root)
+    except (OSError, ValueError) as error:
+        raise ResumePreflightBlocked('ZCode 原项目目录不可用，请重新选择有效项目') from error
+    result, total = [], 0
     if str(workspace.root) != str(root):
         raise ValueError('项目目录已变化，请重新接入')
     if len(set(paths)) != len(paths):
@@ -41,18 +48,64 @@ def project_files(root, paths):
     return result
 
 
+TURN_STATES = {'running': 'inProgress', 'completedSuccess': 'completed',
+               'completedInterrupted': 'interrupted', 'failed': 'failed'}
+
+
+def _dict(value):
+    # ZCode 快照与原生回执中的嵌套对象可能显式返回 None，统一转为字典防止 AttributeError。
+    return value if isinstance(value, dict) else {}
+
+
+def _project_available(workspace):
+    try:
+        return bool(workspace) and Path(workspace).is_absolute() and Path(workspace).is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def saved_prefix(home, sid, workspace, native_rows):
+    """Find the exact predecessor boundary when both native sources agree."""
+    from .history import saved_detail
+    oldest = next((row for row in native_rows if row.get('visibility') == 'visible'
+                   and row.get('kind') in ('userInput', 'assistantText')), None)
+    identifier = oldest.get('entityId') if oldest else None
+    if not isinstance(identifier, str) or not identifier:
+        return None
+    try:
+        saved = saved_detail(home, sid, {'historyBefore': identifier, 'historyLimit': 1, 'historySync': True})
+    except (OSError, ValueError, BridgeUnavailable):
+        return None
+    if not same_cwd(workspace, saved['session']['cwd'], sys.platform == 'win32') or not saved['messages']:
+        return None
+    return identifier
+
+
 def project_snapshot(snapshot, workspace, reply_models=None):
+    project_available = _project_available(workspace)
     messages = []
+    # 未知的 turnHeader.state 不能直接下标索引（KeyError 会被 HTTP 层误判为 404），
+    # 也不应伪造 completed/failed，以免误触发完成或异常通知。
     turns = [{'turnId': row['turnId'], 'sequence': row['rowId'],
-              'status': {'running': 'inProgress', 'completedSuccess': 'completed',
-                         'completedInterrupted': 'interrupted', 'failed': 'failed'}[row['state']]}
+              'status': TURN_STATES.get(row.get('state'), row.get('state') or 'unknown')}
              for row in snapshot['rows']['window'] if row['kind'] == 'turnHeader']
+    headers = {row.get('productTurnId') or row['turnId']: row
+               for row in snapshot['rows']['window'] if row['kind'] == 'turnHeader'}
     for row in snapshot['rows']['window']:
         if row.get('visibility') != 'visible' or row['kind'] not in ('userInput', 'assistantText', 'reasoning', 'toolCall'):
             continue
         message = {'id': 'zcode:%s:%s' % (snapshot['sessionId'], row['rowId']),
                    'role': {'userInput': 'user', 'assistantText': 'assistant', 'reasoning': 'reasoning',
                             'toolCall': 'activity'}[row['kind']], 'text': row.get('text', '')}
+        turn_id = row.get('productTurnId') or row.get('turnId')
+        if isinstance(turn_id, str) and turn_id:
+            message['turnId'] = turn_id
+            header = headers.get(turn_id)
+            if header:
+                message['turnStatus'] = TURN_STATES.get(header.get('state'), 'unknown')
+                for source, target in (('startedAt', 'turnStartedAt'), ('endedAt', 'turnCompletedAt')):
+                    if header.get(source) is not None:
+                        message[target] = header[source]
         if row['kind'] in ('userInput', 'assistantText') and row.get('createdAt') is not None:
             message['timestamp'] = row['createdAt']
         if row['kind'] == 'assistantText':
@@ -68,27 +121,36 @@ def project_snapshot(snapshot, workspace, reply_models=None):
             message['attachments'] = attachments(snapshot['sessionId'], row['attachments'], row.get('sourceCommandId'))
         if row.get('entityId'):
             target = json.dumps({'rowId': row['rowId'], 'entityId': row['entityId'], 'logEpoch': snapshot['logEpoch']}, separators=(',', ':'))
-            if row['kind'] == 'assistantText' and row.get('actions', {}).get('canFork'):
+            actions = _dict(row.get('actions'))
+            if row['kind'] == 'assistantText' and actions.get('canFork'):
                 message['forkMessageId'] = target
-            if row['kind'] == 'userInput' and row.get('actions', {}).get('canEdit'):
+            if row['kind'] == 'userInput' and actions.get('canEdit'):
                 message['editMessageId'] = target
         messages.append(message)
-    control = snapshot['control']
-    active = bool(control.get('activeWorks')) or bool(snapshot['pendingInteractions'])
-    routing = snapshot.get('inputRouting', {}).get('mode')
-    send_modes = {'send': not active and routing == 'startNow' and not snapshot.get('queue', {}).get('items'),
-                  'queue': routing in ('startNow', 'enqueue', 'guide', 'choice') and not snapshot['pendingInteractions'],
-                  'steer': bool(control.get('activeWorks')) and routing in ('enqueue', 'guide') and not snapshot['pendingInteractions']}
+    control = _dict(snapshot.get('control'))
+    config = _dict(snapshot.get('config'))
+    queue_items = _dict(snapshot.get('queue')).get('items')
+    works = control.get('activeWorks')
+    latest_header = next((row for row in reversed(snapshot['rows']['window']) if row['kind'] == 'turnHeader'), None)
+    latest_turn = turns[-1]['status'] if turns else None
+    runtime_known = (isinstance(snapshot.get('control'), dict) and isinstance(works, list) and
+                     all(isinstance(work, dict) for work in works) and isinstance(queue_items, list) and
+                     (latest_header is None or latest_header.get('state') in TURN_STATES))
+    active = bool(works) or bool(snapshot['pendingInteractions']) or bool(queue_items) or latest_turn == 'inProgress'
+    routing = _dict(snapshot.get('inputRouting')).get('mode')
+    send_modes = {'send': runtime_known and not active and routing == 'startNow',
+                  'queue': runtime_known and routing in ('startNow', 'enqueue', 'guide', 'choice') and not snapshot['pendingInteractions'],
+                  'steer': runtime_known and bool(works) and routing in ('enqueue', 'guide') and not snapshot['pendingInteractions']}
     error = control.get('lastError') if control.get('phase') == 'error' else None
-    if error:
+    if isinstance(error, dict):
         text = error.get('message') or 'ZCode 原生任务执行失败'
-        if error.get('code') == '3009' and error.get('attribution', {}).get('reason') == 'rate_limited':
+        if error.get('code') == '3009' and _dict(error.get('attribution')).get('reason') == 'rate_limited':
             text = 'ZCode 模型服务繁忙（3009）：已达到并发限制。请稍后手动发送，或在 ZCode 中切换模型。'
         messages.append({'id': 'zcode:%s:error:%s' % (snapshot['sessionId'], error.get('at', 'current')),
                          'role': 'error', 'text': text})
     requests = []
     for interaction in snapshot['pendingInteractions']:
-        payload = interaction['payload']
+        payload = _dict(interaction.get('payload'))
         item = {'id': interaction['interactionId'], 'tool': payload.get('toolName', '等待确认'),
                 'input': payload.get('detail') or payload.get('input') or {}}
         if interaction['kind'] == 'userInput':
@@ -96,30 +158,31 @@ def project_snapshot(snapshot, workspace, reply_models=None):
         elif interaction['kind'] == 'permission':
             # Show the native offered choices; never invent an allow vocabulary.
             item['decisions'] = [{'id': option['optionId'], 'label': option['label']}
-                                 for option in payload.get('options', []) if option['kind'] in ('allowOnce', 'deny')]
+                                 for option in (payload.get('options') or []) if option['kind'] in ('allowOnce', 'deny')]
         requests.append(item)
-    foreground = [work['foregroundExecutionId'] for work in control.get('activeWorks', []) if work.get('foregroundExecutionId')]
+    foreground = [work['foregroundExecutionId'] for work in (works if isinstance(works, list) else [])
+                  if isinstance(work, dict) and work.get('foregroundExecutionId')]
     native_goal = snapshot.get('goal')
     goal = ({'goalId': native_goal['targetId'], 'objective': native_goal['objective'],
              'status': {'verified': 'complete', 'verifying': 'active', 'notSatisfied': 'active',
                         'failed': 'blocked'}.get(native_goal['status'], native_goal['status'])}
-            if native_goal else None)
-    native_usage = snapshot.get('usage', {}).get('contextWindow')
+            if isinstance(native_goal, dict) else None)
+    native_usage = _dict(_dict(snapshot.get('usage')).get('contextWindow'))
     usage = ({'usedTokens': native_usage['usedTokens'], 'contextWindow': native_usage['maxTokens'],
-              'measurement': 'native', 'model': snapshot.get('config', {}).get('model'),
+              'measurement': 'native', 'model': config.get('model'),
               **{key: native_usage[key] for key in ('autoCompactThresholdTokens', 'cache') if key in native_usage}}
              if native_usage else None)
-    return {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
-                        'cwd': workspace, 'title': snapshot.get('meta', {}).get('title', ''),
-                        'status': 'active' if active else 'idle', 'backend': 'desktop', 'requests': requests,
-                        'turnStatus': 'failed' if error else 'inProgress' if active else 'completed',
-                        'model': '/'.join(filter(None, (snapshot.get('config', {}).get('provider'), snapshot.get('config', {}).get('model')))),
-                        'modelDisplayName': snapshot.get('config', {}).get('model'), 'effort': snapshot.get('config', {}).get('thought'),
+    value = {'session': {'id': snapshot['sessionId'], 'provider': 'zcode', 'host': 'local',
+                        'cwd': workspace, 'title': _dict(snapshot.get('meta')).get('title', ''),
+                        'status': 'active' if runtime_known and active else 'idle' if runtime_known else 'unknown', 'backend': 'desktop', 'requests': requests,
+                        'turnStatus': 'failed' if error else 'unknown' if not runtime_known else 'inProgress' if active else 'completed',
+                        'model': '/'.join(filter(None, (config.get('provider'), config.get('model')))),
+                        'modelDisplayName': config.get('model'), 'effort': config.get('thought'),
                         'composerCapabilities': dict(COMPOSER_CAPABILITIES),
-                        'runtimeKnown': True,
-                        'permissionMode': snapshot.get('config', {}).get('mode'),
-                        'permissionLabel': ACCESS.get(snapshot.get('config', {}).get('mode')),
-                        'collaborationMode': 'plan' if snapshot.get('config', {}).get('planEnabled') or snapshot.get('config', {}).get('mode') == 'plan' else 'default',
+                        'runtimeKnown': runtime_known,
+                        'permissionMode': config.get('mode'),
+                        'permissionLabel': ACCESS.get(config.get('mode')),
+                        'collaborationMode': 'plan' if config.get('planEnabled') or config.get('mode') == 'plan' else 'default',
                         'goal': goal, 'contextUsage': usage,
                         'contextUsageStatus': 'available' if usage else 'unavailable',
                         'stopTarget': {'executionId': foreground[0]} if len(foreground) == 1 else {},
@@ -130,10 +193,14 @@ def project_snapshot(snapshot, workspace, reply_models=None):
             'capabilities': {'send': any(send_modes.values()), 'sendModes': send_modes,
                              'stop': bool(control.get('canStop')) and len(foreground) == 1,
                              'attachments': True, 'uploadFiles': True, 'resume': True, 'models': True, 'effort': True,
-                             'queue': send_modes['queue'], 'steer': send_modes['steer'], 'skills': True, 'permissions': snapshot.get('config', {}).get('mode') in ACCESS,
-                             'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': not active and not snapshot.get('queue', {}).get('items') and
-                             snapshot.get('availability', {}).get('compact', {}).get('allowed') is True,
+                             'projectReferences': project_available,
+                             'queue': send_modes['queue'], 'steer': send_modes['steer'], 'skills': True, 'permissions': config.get('mode') in ACCESS,
+                             'tasks': True, 'rename': True, 'fork': True, 'editMessage': True, 'compact': runtime_known and not active and not queue_items and
+                             _dict(_dict(snapshot.get('availability')).get('compact')).get('allowed') is True,
                              'plan': True, 'goal': True, 'goalEdit': False, 'create': True}}
+    if not project_available:
+        value['notice'] = '原项目目录已不可用；文字会话仍可继续，项目文件、终端和 Git 暂不可用。'
+    return value
 
 
 def detached_session(row, workspace):
@@ -458,6 +525,15 @@ class ZCodePrototype(ZCodeDesktop):
     def call(self, action, sid=None, body=None):
         if action == 'image':
             return super().call(action, sid, body)
+        before = (body or {}).get('historyBefore') or ''
+        if action == 'detail' and (body or {}).get('historySync') and before.startswith(SAVED_SYNC_CURSOR):
+            from .history import saved_detail
+            value = saved_detail(self.home, sid, {**body, 'historyBefore': before.removeprefix(SAVED_SYNC_CURSOR)})
+            history = value['history']
+            history['complete'] = False  # The native window and saved prefix can have different process evidence.
+            if history.get('before'):
+                history['before'] = SAVED_SYNC_CURSOR + history['before']
+            return value
         if not self.pipe and action in ('list', 'detail', 'history', 'resume', 'send') and self._window_app():
             if action == 'resume':
                 ready = self._try_window_resume(sid, body)
@@ -614,8 +690,8 @@ class ZCodePrototype(ZCodeDesktop):
                                      'binding': self.binding})
             rows = []
             for item in result['sessions']:
-                row = (project_snapshot(item['snapshot'], item['cwd'])['session'] if 'snapshot' in item
-                       else detached_session(item, item['cwd']))
+                row = (project_snapshot(item['snapshot'], item['cwd'])['session']
+                       if isinstance(item.get('snapshot'), dict) else detached_session(item, item['cwd']))
                 if 'title' in item:
                     row['title'] = item['title']
                 row['capabilities'] = {**row.get('capabilities', {}), 'rename': item.get('nativeRename') is True}
@@ -644,12 +720,13 @@ class ZCodePrototype(ZCodeDesktop):
             result = self.transport({'action': action, **context, 'body': body})
             workspace, binding = result.pop('workspace', None), result.pop('binding', None)
             if result.get('status') == 'accepted' and workspace:
-                self.workspaces[result['result']['id']] = workspace
+                created_sid = result['result']['id']
+                self.workspaces[created_sid] = workspace
                 if binding:
                     self.bindings[workspace] = binding
+                    self.debug_sessions.add(created_sid)
                     if not self.sid:
-                        self.sid, self.workspace = result['result']['id'], workspace
-                        self.debug_sessions.add(self.sid)
+                        self.sid, self.workspace = created_sid, workspace
             return result
         if not isinstance(sid, str) or not sid.startswith('sess_'):
             raise ValueError('ZCode 会话标识无效')
@@ -690,10 +767,10 @@ class ZCodePrototype(ZCodeDesktop):
                 raise ValueError('最多选择 8 个有效 Skill')
             if body.get('mode', 'send') not in ('send', 'queue', 'steer'):
                 raise ValueError('发送方式无效')
-            body['files'] = project_files(workspace, body.pop('projectFiles', []))
+            project_paths = body.pop('projectFiles', [])
             references = body.pop('resolvedReferences', [])
             paths = [str(Path(item['path']).relative_to(workspace)) for item in references]
-            body['files'].extend(project_files(workspace, paths))
+            body['files'] = project_files(workspace, project_paths + paths)
             for item in body.pop('resolvedImages', []):
                 header, data = item['url'].split(',', 1)
                 body['files'].append({'name': item['name'], 'mime': header[5:].split(';')[0], 'data': data})
@@ -713,13 +790,26 @@ class ZCodePrototype(ZCodeDesktop):
                 raise ValueError('消息标识无效')
             body['target'] = target
         if action == 'respond' and 'requestId' in body:
-            body['interactionId'] = body.pop('requestId')
-            decision = body.pop('decision')
+            decision = body.get('decision')
+            if not isinstance(decision, str) or not decision:
+                # 在发出原生 IPC 前明确拦截缺失或非法的决定，避免在 requests.sqlite 中残留 unknown。
+                raise ResumePreflightBlocked('请选择本次允许或拒绝')
+            raw_answers = body.get('answers')
             if decision == 'accept':
-                answers = {key: ', '.join(value['answers']) for key, value in body.pop('answers', {}).items()}
+                if raw_answers is None:
+                    raw_answers = {}
+                if not isinstance(raw_answers, dict) or any(
+                        not isinstance(value, dict) or not isinstance(value.get('answers'), list)
+                        or any(not isinstance(item, str) for item in value['answers'])
+                        for value in raw_answers.values()):
+                    raise ResumePreflightBlocked('提问回复格式无效')
+                answers = {key: ', '.join(value['answers']) for key, value in raw_answers.items()}
                 body['answer'] = {'action': 'accept', 'content': {'answers': answers}}
             else:
                 body['answer'] = {'optionId': decision}
+            body['interactionId'] = body.pop('requestId')
+            body.pop('decision', None)
+            body.pop('answers', None)
         if action == 'receipt':
             request['commandId'] = str(uuid.UUID(body['commandId']))
         if action == 'settings' and (set(body) - {'id', 'model', 'effort', 'modelCatalogIdentity', 'manualModel', 'manualEffort'} or
@@ -739,7 +829,7 @@ class ZCodePrototype(ZCodeDesktop):
                 messages = []
                 for item in history['messages']:
                     info = item['info']
-                    if info.get('semantics', {}).get('uiVisibility') != 'visible':
+                    if _dict(info.get('semantics')).get('uiVisibility') != 'visible':
                         continue
                     message = {'id': info['messageId'], 'role': info['role'],
                                'text': '\n'.join(part.get('text', '') for part in item.get('parts', []) if part.get('type') == 'text')}
@@ -756,6 +846,7 @@ class ZCodePrototype(ZCodeDesktop):
                     message.update(models.get(message['id'], {}))
                 session = detached_session({'id': row['sessionId'], 'title': row.get('title', '')}, workspace)
                 return {'session': session, 'messages': messages, 'capabilities': session['capabilities'],
+                        'history': {'hasMore': False, 'complete': False},
                         'notice': '当前显示 ZCode 历史；点击继续会话连接原生运行状态。'}
             from .reply_metadata import native_reply_models
             snapshot = result['snapshot']
@@ -763,23 +854,36 @@ class ZCodePrototype(ZCodeDesktop):
                 snapshot['rows']['window'] if row['kind'] == 'assistantText' and row.get('visibility') == 'visible'))
             value = project_snapshot(snapshot, workspace, models)
             value['capabilities'].update(result.get('capabilities', {}))
+            if not _project_available(workspace):
+                value['capabilities']['projectReferences'] = False
+            if not value['session']['runtimeKnown']:
+                # Capability advertisements cannot turn an unknown snapshot into idle evidence.
+                value['capabilities'].update(send=False, queue=False, steer=False, compact=False,
+                                             sendModes=dict.fromkeys(('send', 'queue', 'steer'), False))
             if sid in self.debug_sessions:
                 # The client inventory may still describe the previous connection.
                 value['session'].update(controlScope='session', connectionState='ready')
-            value['draftAccountIdentity'] = result.get('account', {}).get('identity', '')
+            value['draftAccountIdentity'] = _dict(result.get('account')).get('identity', '')
             if value['history']['hasMore']:
                 value['notice'] = '当前显示 ZCode 已加载的历史；更早内容请在原 App 中加载。'
-                value['history']['hasMore'] = False
+                value['history'].update(hasMore=False, complete=False)
+                if body.get('historySync'):
+                    boundary = saved_prefix(self.home, sid, workspace, snapshot['rows']['window'])
+                    if boundary:
+                        value['history'].update(hasMore=True, before=SAVED_SYNC_CURSOR + boundary)
+                        value['notice'] = '更早内容和可用的执行过程来自 ZCode 已保存的记录。'
             return value
         if action in ('send', 'stop', 'respond', 'settings', 'access', 'work-mode', 'goal', 'compact', 'stop-task', 'fork', 'edit-message', 'rename'):
             status = result['status']
-            if action == 'send' and status == 'accepted' and result.get('result', {}).get('delivery') == 'queue':
+            # 原生回执的 result 字段可能显式为 null；若直接 .get('result', {}).get(...) 会抛出 AttributeError，
+            # 导致已被原 App 接受的 send 被 requests.sqlite 误记为 status='unknown' 并阻塞后续归档。
+            native = _dict(result.get('result'))
+            if action == 'send' and status == 'accepted' and native.get('delivery') == 'queue':
                 status = 'queued'
             if action in ('settings', 'access', 'work-mode') and status == 'noop' and result.get('reasonCode') == 'config.unchanged':
                 status = 'accepted'
             extra = {}
             if action in ('fork', 'edit-message') and status == 'accepted':
-                native = result.get('result', {})
                 if not native.get('sessionId') or native.get('disposition') == 'blocked':
                     status = 'rejected'
                 else:

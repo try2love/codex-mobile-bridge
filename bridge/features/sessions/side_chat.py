@@ -154,6 +154,7 @@ class SideChat:
         self.condition = threading.Condition(self.lock)
         self.sequence, self.viewers, self.touched = 0, 0, time.monotonic()
         self.timeline = Timeline()
+        self.sync_timeline = Timeline()
         self.actions = threading.Lock()
         self.closed = False
         self.ready = False

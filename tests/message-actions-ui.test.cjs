@@ -4,9 +4,9 @@ const source=name=>fs.readFileSync(require('node:path').join(__dirname,'../web/f
 function timeline(){
  const context=vm.createContext({BridgeI18n:{t:s=>s}});vm.runInContext(source('timeline.js'),context);
  const row={key:'row',version:'v',text:'preview',truncated:true};
- const stub={abort:{signal:{aborted:false}},epoch:'epoch',rows:new Map([['row',{row}]])};
- const full=vm.runInContext('ChatTimeline.prototype.fullText',context);
- return {row,stub,read:()=>full.call(stub,row)};
+ const Type=vm.runInContext('ChatTimeline',context);
+ const stub=Object.assign(Object.create(Type.prototype),{abort:{signal:{aborted:false}},epoch:'epoch',rows:new Map([['row',{row}]])});
+ return {row,stub,read:()=>stub.fullText(row)};
 }
 test('copy loads all detail pages and rejects version/offset changes',async()=>{
  const ui=timeline(),calls=[];

@@ -144,7 +144,8 @@ def plan_goal_command(action, objective, current, *, status=None):
         return "invalid", "目标已发生变化，请刷新后重试", None
     if current_status == expected:
         return "duplicate", "", expected
-    if current_status == predecessor or (action == "pause" and current_status in ("blocked", "usageLimited", "budgetLimited")):
+    if (current_status == predecessor or action == 'resume' and current_status == 'usageLimited'
+            or action == "pause" and current_status in ("blocked", "usageLimited", "budgetLimited")):
         return "execute", "", expected
     return "invalid", "目标当前状态不支持暂停" if action == "pause" else "目标当前状态不支持恢复", None
 

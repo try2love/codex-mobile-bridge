@@ -21,7 +21,7 @@ public final class GatewayURL {
     }
     public static String connection(String value)throws Exception {
         String base=origin(value);String fragment=new URI(value.trim()).getRawFragment();
-        if(fragment!=null&&!fragment.isEmpty()&&!fragment.matches("pair=[A-Za-z0-9_-]{43}"))throw new Exception("请使用电脑网关提供的地址或二维码");
+        if(fragment!=null&&!fragment.isEmpty()&&!fragment.matches("pair=[A-Za-z0-9_-]{43}(&transfer=local)?"))throw new Exception("请使用电脑网关提供的地址或二维码");
         return base+"/"+(fragment==null?"":"#"+fragment);
     }
     public static String httpOrigin(String base){try{URI u=new URI(base);return u.getScheme()+"://"+u.getRawAuthority();}catch(Exception e){return "";}}
@@ -35,6 +35,23 @@ public final class GatewayURL {
         String raw=value.split("[?#]",2)[0];return origin(raw);
     }
     public static boolean isChatPage(String url,String base){try{return base.equals(targetBase(url));}catch(Exception invalid){return false;}}
+    static String[] offlineTarget(String base,String provider,String host,String id)throws Exception {
+        String family=provider.split(":",2)[0], path;
+        String query="mode=recent&indexOnly=1&limit=1";
+        if(family.matches("claude|deepseek|zcode|antigravity")){
+            if(!provider.equals(family)&&!provider.matches("(claude|deepseek):[a-f0-9]{32}"))throw new Exception("Invalid provider");
+            host="desktop:"+provider;
+            path="/api/desktop-sessions/"+family+"/sync?"+query+"&sessionId="+encode(id);
+            if(!provider.equals(family))path+="&entry="+encode(provider);
+        }else{
+            if(!family.matches("codex|wsl")||!provider.equals(family)||host.startsWith("desktop:"))throw new Exception("Invalid provider");
+            path="/api/sessions/"+encode(id)+"/sync?"+query+"&host="+encode(host);
+        }
+        return new String[]{chat(base,id,host),path};
+    }
+    private static String encode(String value)throws Exception {
+        return URLEncoder.encode(value,"UTF-8").replace("+","%20");
+    }
     public static String chat(String origin,String thread,String host)throws Exception {
         boolean desktop=host!=null&&(host.matches("desktop:(claude|deepseek)(:[0-9a-f]{32})?")||"desktop:zcode".equals(host)||"desktop:antigravity".equals(host));
         if(thread==null||host==null||thread.isEmpty()||thread.length()>512||host.length()>256||(thread+host).matches("(?s).*[\\x00-\\x1f\\x7f].*")||(!desktop&&(host.startsWith("desktop:")||!thread.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))))throw new Exception("聊天链接无效");

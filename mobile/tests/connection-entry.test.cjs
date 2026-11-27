@@ -5,7 +5,7 @@ const android=fs.readFileSync(path.join(root,'mobile/android/src/io/github/try2l
 const ios=fs.readFileSync(path.join(root,'mobile/ios/BridgePreview/App.swift'),'utf8');
 function method(source,signature){const start=source.indexOf(signature);assert.ok(start>=0);const open=source.indexOf('{',start);let depth=1,end=open+1;for(;depth;end++){if(source[end]==='{')depth++;if(source[end]==='}')depth--;}return source.slice(open+1,end-1);}
 function fixture(){
- const pending=new Map(),calls=[],web={},scope={generation:4,web,connectionDeadline:null,hideEntryProgress:()=>calls.push(['hide-progress']),View:{VISIBLE:0},L:value=>value,status:{setVisibility:value=>calls.push(['visible',value]),setText:value=>calls.push(['text',value])},showConnectionError:url=>calls.push(['error',url]),recoverConnection:url=>calls.push(['recover',url])};
+ const pending=new Map(),calls=[],web={},scope={generation:4,web,connectionDeadline:null,hideEntryProgress:()=>calls.push(['hide-progress']),View:{VISIBLE:0},L:value=>value,status:{setVisibility:value=>calls.push(['visible',value]),setText:value=>calls.push(['text',value])},showConnectionError:(url,automatic)=>calls.push(['error',url,automatic]),recoverConnection:url=>calls.push(['recover',url])};
  scope.homeHandler={postDelayed:(fn,ms)=>pending.set(fn,ms),removeCallbacks:fn=>pending.delete(fn)};
  vm.createContext(scope);
  vm.runInContext('function cancelConnectionDeadline(){'+method(android,'void cancelConnectionDeadline()')+'}\nfunction watchConnection(url,current,ticket){'+method(android,'void watchConnection(').replace('()->','()=>')+'}',scope);
@@ -15,7 +15,8 @@ test('initial native connection deadline shows a retry path for a document stall
  const f=fixture();f.scope.watchConnection('https://computer/',f.scope.web,4);
  const [[deadline,ms]]=f.pending;assert.equal(ms,30000);assert.deepEqual(f.calls,[]);
  deadline();assert.equal(f.scope.connectionDeadline,null);
- assert.deepEqual(f.calls,[['error','https://computer/'],['recover','https://computer/']]);
+ assert.deepEqual(f.calls,[['error','https://computer/',true]]);
+ assert.match(method(android,'void showConnectionError('),/if\(automatic\)offlinePages\.list\(address,true,current,\(\)->recoverConnection\(url\)\)/);
 });
 test('entry watchdog cannot update another computer, and document commit cancels its timer',()=>{
  for(const invalidate of [scope=>scope.generation++,scope=>scope.web={}]){
@@ -56,4 +57,27 @@ test('Android keeps failure actions over generated network error pages until a n
  assert.match(method(android,'public void onReceivedHttpError('),/navigationFailed=true/);
  assert.match(method(android,'public void onPageFinished(WebView view,String target)'),/!navigationFailed/);
  assert.match(method(android,'public void onPageStarted('),/navigationFailed=false/);
+});
+
+test('Android offline reader separates the local document from live gateway navigation',()=>{
+ const directory=path.join(root,'mobile/android/src/io/github/try2love/codexbridge');
+ const pages=fs.readFileSync(path.join(directory,'OfflinePages.java'),'utf8');
+ const archive=fs.readFileSync(path.join(directory,'OfflineArchive.java'),'utf8');
+ assert.match(method(pages,'private WebResourceResponse resource('),/getEncodedAuthority\(\).*getEncodedPath\(\).*assets\.get\(path\).*mainFrame==document.*ASSET_ROOT\+file.*403/s);
+ assert.match(method(pages,'private void open('),/setAllowFileAccess\(false\).*setAllowContentAccess\(false\).*setBlockNetworkLoads\(true\)/s);
+ assert.match(method(pages,'private boolean current('),/readerDocument\(item.view.getUrl\(\)\)/);
+ assert.match(method(pages,'private static boolean readerDocument('),/getEncodedAuthority\(\).*getEncodedPath|path=url.getEncodedPath\(\).*getEncodedAuthority\(\)/s);
+ assert.match(method(pages,'void networkChanged()'),/window\.OfflineChatReader\.reconnect\(\)/);
+ assert.match(method(pages,'private void request('),/listing\)\{item\.sessionId="";item\.anchor=null;\}/);
+ assert.match(method(pages,'void pause()'),/visibility\+\+.*View\.INVISIBLE/s);
+ assert.match(method(pages,'void resume()'),/readAccount\(archive,item\).*account==null.*setVisibility\(View\.VISIBLE\)/s);
+ assert.match(method(android,'void reconnectOffline('),/before\.equals\(after\).*gateway\.equals.*identity\.equals.*EventClient\.verifyOffline\(route,target\[1\].*proof\.value\.optJSONArray\("index"\)==null.*connect\(destination,anchor\)/s);
+ assert.match(method(archive,'JSONObject readerSession('),/t\.asked<CAST\(\? AS INTEGER\).*t\.id<\?.*ORDER BY t\.asked DESC,t\.id DESC LIMIT/s);
+});
+
+test('Android keeps the private offline anchor out of external URL validation and requires HTTP 200 proof',()=>{
+ const client=fs.readFileSync(path.join(root,'mobile/android/src/io/github/try2love/codexbridge/EventClient.java'),'utf8');
+ assert.match(method(client,'static JSONObject request('),/getResponseCode\(\)!=200\)throw/);
+ assert.match(method(android,'private void connect(String target,JSONObject offlineAnchor)'),/GatewayURL\.targetBase\(target\).*\?offlineAnchor=.*connectDocument\(url,target,base\)/s);
+ assert.match(method(android,'public void onPageFinished(WebView view,String target)'),/target\.equals\(offlineTarget\).*epoch==documentEpoch.*GatewayURL\.isChatPage\(loaded,document\).*offlineBridge\.attach/s);
 });

@@ -53,3 +53,6 @@ Windows 增加一个由网关拥有的内部 holder，空闲时阻塞等待 stdi
 - [官方远控实验](../feature/2026-11-04-zcode-official-remote-experiment.md)：部分重叠；保留同账号、设备归属与官方协议边界，本篇负责本机 IPC 与平台安全存储。
 - [连接选择与 API](../feature/2026-11-04-zcode-connection-choice-and-api.md)：部分重叠；互斥方式、持久配置与任务保护继续沿用。
 - [原生私有启动器打包](2026-11-03-zcode-private-launcher-packaging.md)：服务对象不同；原 Agent 管道 custodian 不由本篇替代，不合并或移除。
+
+
+本篇的 macOS 钥匙串保存策略由[资料目录加密容器](2026-11-22-macos-profile-credential-vault.md)部分替代。Windows/Linux 存储策略、异步与代次保护仍沿用本篇。

@@ -20,6 +20,7 @@ def build():
         cache.mkdir(parents=True, exist_ok=True)
         for native_source, output_name in [(source/'macos/claude-helper.swift', 'claude-bridge-helper'),
                                            (source/'macos/zcode-helper.swift', 'zcode-bridge-helper'),
+                                           (source/'macos/codex-launcher.swift', 'codex-launcher'),
                                            (source/'macos/update-launcher.swift', 'update-launcher')]:
             helper = str(target/output_name)
             subprocess.run([compiler, '-O', '-module-cache-path', str(cache), str(native_source), '-o', helper], check=True)
@@ -28,11 +29,13 @@ def build():
     elif sys.platform == 'win32':
         framework = Path(os.environ.get('WINDIR', 'C:/Windows'))/'Microsoft.NET/Framework64/v4.0.30319'
         for native_source, output_name in [(source/'windows/claude-helper.cs', 'claude-bridge-helper.exe'),
-                                           (source/'windows/codex-quit-helper.cs', 'codex-quit-helper.exe')]:
+                                           (source/'windows/codex-quit-helper.cs', 'codex-quit-helper.exe'),
+                                           (source/'windows/codex-launcher.cs', 'codex-launcher.exe')]:
             subprocess.run([str(framework/'csc.exe'), '/nologo', '/target:exe', '/platform:x64',
                             '/out:'+str(target/output_name),
                             *['/reference:'+str(framework/'WPF'/name) for name in
                               ['UIAutomationClient.dll', 'UIAutomationTypes.dll', 'WindowsBase.dll']],
+                            '/reference:System.Web.Extensions.dll',
                             str(native_source)], check=True)
             subprocess.run([str(target/output_name), '--self-check'], check=True)
     return target

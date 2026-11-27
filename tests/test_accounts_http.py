@@ -1,7 +1,11 @@
 import unittest
+import threading
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 import test_bridge
+from bridge.features.sessions.quota_continue import QuotaContinuation
 
 
 class AccountsHttpTests(unittest.TestCase):
@@ -17,6 +21,34 @@ class AccountsHttpTests(unittest.TestCase):
         manager.info = SimpleNamespace(request=Mock(return_value={'accounts': [], 'switch': {'phase': 'idle'}}))
         self.server.bridge.accounts = manager
         return manager
+
+    def test_home_quota_toggle_is_global_authenticated_and_csrf_protected(self):
+        manager = self.manager()
+        preferences = {'autoContinue': False}
+        def configure(value):
+            preferences.update(value)
+        temp = tempfile.TemporaryDirectory(dir=test_bridge.ROOT / '.tmp')
+        self.addCleanup(temp.cleanup)
+        manager.root = Path(temp.name)
+        manager.lock = threading.RLock()
+        manager.bridge = SimpleNamespace(host='local')
+        manager.monitor = SimpleNamespace(manager=manager, preferences=preferences, configure=Mock(side_effect=configure))
+        manager.monitor.continuation = QuotaContinuation(manager.monitor)
+        path = '/api/quota-continuation'
+        self.assertEqual(self.request('GET', path)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', path, {'enabled': True}, {'Cookie': headers['Cookie']})[0], 403)
+        for body in ({'enabled': 'yes'}, {'enabled': True, 'extra': True}, {}):
+            self.assertEqual(self.request('POST', path, body, headers)[0], 400)
+        self.assertEqual(self.request('POST', path, {'enabled': True}, headers)[0], 200)
+        status, _, value = self.request('GET', path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(value['enabled'])
+        manager.monitor.configure.assert_called_once_with({'autoContinue': True})
+        excluded = {'threadId': test_bridge.THREAD, 'excluded': True}
+        self.assertEqual(self.request('POST', path, excluded, {'Cookie': headers['Cookie']})[0], 403)
+        self.assertEqual(self.request('POST', path, excluded, headers)[0], 200)
+        self.assertTrue(self.request('GET', path, headers=headers)[2]['tasks'][0]['excluded'])
 
     def test_reset_dynamic_setting_and_requests_require_auth_and_enabled_feature(self):
         manager = self.manager()
@@ -45,6 +77,14 @@ class AccountsHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST','/api/accounts/switch',{**value,'apiKey':'forbidden'},headers)[0],400)
         self.assertEqual(self.request('POST','/api/accounts/switch',value,headers)[0],202)
         manager.switch.assert_called_once_with(value)
+        manager.switch.reset_mock()
+        confirmed = {**value, 'sharedDaemonConfirmed': True}
+        self.assertEqual(self.request('POST','/api/accounts/switch',confirmed,headers)[0],202)
+        manager.switch.assert_called_once_with(confirmed)
+        manager.switch.reset_mock()
+        self.assertEqual(self.request('POST','/api/accounts/switch',
+            {**value, 'sharedDaemonConfirmed': 'true'},headers)[0],400)
+        manager.switch.assert_not_called()
 
     def test_ssh_retry_requires_auth_csrf_and_registered_host(self):
         self.manager()
@@ -76,6 +116,24 @@ class AccountsHttpTests(unittest.TestCase):
         self.server.auth.config['mode'] = 'none'
         self.assertEqual(self.request('POST', path, value, headers)[0], 403)
         manager.control.assert_not_called()
+
+    def test_client_management_initialization_keeps_auth_csrf_and_password_boundaries(self):
+        manager=SimpleNamespace(toggle_client=Mock(return_value={'clients':[]}))
+        self.server.desktop_sessions=manager
+        value={'provider':'codex','enabled':True,'initializeDesktop':True,'requestId':'fixture',
+               'confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True}
+        path='/api/clients'
+        self.assertEqual(self.request('POST',path,value)[0],401)
+        headers=self.login()
+        self.assertEqual(self.request('POST',path,value,{'Cookie':headers['Cookie']})[0],403)
+        self.assertEqual(self.request('POST',path,{**value,'home':'/other'},headers)[0],400)
+        self.assertEqual(self.request('POST',path,{**value,'provider':'claude'},headers)[0],400)
+        self.assertEqual(self.request('POST',path,value,headers)[0],200)
+        manager.toggle_client.assert_called_once_with(value)
+        manager.toggle_client.reset_mock()
+        self.server.auth.config['mode']='none'
+        self.assertEqual(self.request('POST',path,value,headers)[0],403)
+        manager.toggle_client.assert_not_called()
 
     def test_runtime_initialization_forwards_explicit_unavailable_acknowledgement(self):
         manager = self.manager(); manager.control = Mock(return_value={'switch': {'phase': 'preparing'}})

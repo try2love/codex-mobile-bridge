@@ -18,6 +18,10 @@ def require_update_ready(worker):
             argv = process_args(pid)
             if identity(pid) != before:
                 raise ValueError('网关运行实例已变化，请重试更新。')
+            if argv and os.path.normcase(argv[0]) == expected and any(
+                    role in argv[1:] for role in ('app-server', 'exec-server',
+                                                  'codex-desktop-launch', 'codex-desktop-runtime')):
+                raise ValueError('请先结束任务并正常退出 Codex，再更新网关。')
             if (len(argv) != 6 or os.path.normcase(argv[0]) != expected or
                     argv[1:3] != ['zcode-pipe-host', '--data-dir'] or argv[4] != '--application'):
                 continue

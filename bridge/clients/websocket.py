@@ -7,14 +7,72 @@ import struct
 import threading
 
 
+class WebSocketMessage:
+    """Read one server text message without buffering its frames or fragments."""
+
+    def __init__(self, exact, reject, pong, *, limit=None, skip_binary=False):
+        self.exact, self.reject, self.pong = exact, reject, pong
+        self.limit, self.skip_binary = limit, skip_binary
+        self.remaining = self.total = 0
+        self.final, self.open, self.ignoring, self.done = False, False, False, False
+
+    def recv(self, size):
+        while not self.done:
+            if self.remaining:
+                amount = min(size, self.remaining)
+                self.remaining -= amount
+                data = bytes(self.exact(amount))
+                self.done = self.final and self.remaining == 0
+                return data
+            first, second = self.exact(2)
+            opcode, fin = first & 15, bool(first & 128)
+            length = second & 127
+            if length == 126:
+                length = struct.unpack('!H', self.exact(2))[0]
+            elif length == 127:
+                length = struct.unpack('!Q', self.exact(8))[0]
+            if first & 0x70 or second & 128 or length >= 1 << 63:
+                raise self.reject('Invalid Native WebSocket frame')
+            if self.limit is not None and length > self.limit:
+                raise self.reject('Native WebSocket frame is too large')
+            if opcode in (8, 9, 10):
+                if not fin or length > 125:
+                    raise self.reject('Invalid Native WebSocket control frame')
+                payload = self.exact(length)
+                if opcode == 8:
+                    raise EOFError()
+                if opcode == 9:
+                    self.pong(payload)
+                continue
+            if opcode == 2 and self.skip_binary or opcode == 0 and self.ignoring:
+                if self.open or opcode == 2 and self.ignoring:
+                    raise self.reject('Interleaved Native WebSocket frame')
+                self.ignoring = not fin
+                while length:
+                    amount = min(size, length)
+                    self.exact(amount)
+                    length -= amount
+                continue
+            if opcode not in (0, 1) or opcode == 0 and not self.open or opcode == 1 and (self.open or self.ignoring):
+                raise self.reject('Invalid Native WebSocket text fragment')
+            self.total += length
+            if self.limit is not None and self.total > self.limit:
+                raise self.reject('Native WebSocket message is too large')
+            self.open, self.final, self.remaining = not fin, fin, length
+            if fin and not length:
+                self.done = True
+        return b''
+
+
 class WebSocket:
     """Minimal client-side WebSocket over the proxy's byte streams."""
 
     def __init__(self, reader, writer, *, path="/", host="localhost",
                  error=RuntimeError, unavailable=RuntimeError, unsupported=RuntimeError,
-                 max_message_bytes=16 * 1024 * 1024, oversized=None):
+                 max_message_bytes=16 * 1024 * 1024, oversized=None, message_reader=None):
         self.error, self.unavailable, self.unsupported = error, unavailable, unsupported
         self.max_message_bytes = max_message_bytes
+        self.message_reader = message_reader
         self.oversized = oversized or error
         if any(c in path + host for c in "\r\n") or not path.startswith("/"):
             raise ValueError("Invalid WebSocket endpoint")
@@ -77,38 +135,23 @@ class WebSocket:
         self._write(header + mask + payload)
 
     def receive(self):
+        if self.message_reader is not None:
+            return self.message_reader(self.message_stream())
         return json.loads(self._receive_bytes())
 
     def receive_text(self):
         return self._receive_bytes().decode('utf-8')
 
+    def message_stream(self, *, limit=None):
+        return WebSocketMessage(self._exact, self.unsupported, lambda data: self._control(10, data), limit=limit,
+                                skip_binary=True)
+
     def _receive_bytes(self):
-        fragments = []
-        total = 0
-        while True:
-            head = self._exact(2)
-            opcode = head[0] & 15
-            length = head[1] & 127
-            if length == 126:
-                length = struct.unpack('!H', self._exact(2))[0]
-            elif length == 127:
-                length = struct.unpack('!Q', self._exact(8))[0]
-            if length > 64 * 1024 * 1024 or head[1] & 128:
-                raise self.unsupported('Invalid Native WebSocket frame')
-            payload = self._exact(length)
-            if opcode == 8:
-                raise EOFError()
-            if opcode == 9:
-                self._control(10, payload)
-                continue
-            if opcode not in (0, 1):
-                continue
-            fragments.append(payload)
-            total += len(payload)
-            if total > 64 * 1024 * 1024:
-                raise self.unsupported('Native WebSocket message is too large')
-            if head[0] & 128:
-                return b''.join(fragments)
+        stream = self.message_stream(limit=64 * 1024 * 1024)
+        chunks = []
+        while chunk := stream.recv(1024 * 1024):
+            chunks.append(chunk)
+        return b''.join(chunks)
 
     def _exact(self, length):
         chunks = bytearray()
@@ -130,6 +173,8 @@ class WebSocket:
             self.writer.flush()
 
     def _control(self, opcode, payload):
+        if len(payload) > 125:
+            raise self.unsupported('Invalid Native WebSocket control frame')
         mask = os.urandom(4)
         self._write(bytes((0x80 | opcode, 0x80 | len(payload))) + mask +
                     bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload)))

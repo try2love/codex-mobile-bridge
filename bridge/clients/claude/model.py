@@ -38,8 +38,9 @@ def session(surface, raw):
             continue
         rid = item.get('requestId', item.get('id'))
         if isinstance(rid, str):
+            raw_input = item.get('input')
             requests.append({'id': rid, 'tool': item.get('toolName', '工具'),
-                             'input': item.get('input', {}),
+                             'input': raw_input if isinstance(raw_input, dict) else {},
                              'needsInput': item.get('toolName') == 'AskUserQuestion'})
     folders = [value for value in raw.get('userSelectedFolders') or [] if isinstance(value, str)]
     return {'id': gateway_id(surface, native), 'nativeId': native, 'backend': surface, 'mode': surface,
@@ -52,6 +53,32 @@ def session(surface, raw):
             'archived': bool(raw.get('isArchived') or lifecycle == 'archived'),
             'status': 'active' if active else 'idle', 'runtimeKnown': runtime_known, 'error': bool(raw.get('error')),
             'requests': requests}
+
+
+def respond_answers(pending_input, raw_answers, *, error_cls=ValueError):
+    """校验并映射 AskUserQuestion 回答，防止 null 或非字典触发未捕获异常。"""
+    # 原生请求的 input 或客户端传入的 answers 可能为 None / 非字典，提前收敛为可读业务错误。
+    if not isinstance(pending_input, dict):
+        raise error_cls('原生提问格式无效，请刷新后重试或拒绝本次操作')
+    updated = dict(pending_input)
+    questions = updated.get('questions')
+    if (not isinstance(questions, list) or not questions or any(
+            not isinstance(question, dict) or not isinstance(question.get('question'), str) or
+            not question['question'].strip() for question in questions)):
+        raise error_cls('原生提问格式无效，请刷新后重试或拒绝本次操作')
+    answers = {} if raw_answers is None else raw_answers
+    if not isinstance(answers, dict):
+        raise error_cls('请回答每一项问题')
+    mapped = {}
+    for index, question in enumerate(questions):
+        key = str(question.get('id') or question.get('question') or index)
+        entry = answers.get(key)
+        values = entry.get('answers') if isinstance(entry, dict) else None
+        if not isinstance(values, list) or not values or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise error_cls('请回答每一项问题')
+        mapped[question.get('question') or key] = ', '.join(values)
+    updated['answers'] = mapped
+    return updated
 
 
 def turns(value):
@@ -104,12 +131,13 @@ def transcript(value):
         first_part = len(result)
         texts = []
         text_part = 0
+        reply_label = {key: message[key] for key in ('model', 'effort') if isinstance(message.get(key), str)}
         event_id=event.get('uuid') or message.get('id') or str(index)
         def flush():
             nonlocal text_part
             if texts:
                 result.append({'id':str(event_id)+':text:'+str(text_part), 'eventId':str(event_id), 'role':role,'text':'\n'.join(texts),
-                               **{key: message[key] for key in ('model', 'effort') if isinstance(message.get(key), str)}})
+                               **reply_label})
                 text_part += 1
                 texts.clear()
         for part,block in enumerate(blocks):
@@ -170,9 +198,15 @@ def transcript(value):
             elif block.get('type') == 'thinking_summary':
                 flush()
                 summary=block.get('text') or block.get('summary')
-                if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary)})
+                if summary:result.append({'id':str(event_id)+':thinking:'+str(part),'role':'reasoning','kind':'reasoning','title':'思考摘要','text':str(summary), **reply_label})
         flush()
         # One native event can contain multiple text/image/tool blocks.
+        for row in result[first_part:]:
+            if row['role'] == 'user' and isinstance(event.get('sourceToolAssistantUUID'), str) and any(
+                    isinstance(block, dict) and block.get('type') == 'tool_result' for block in blocks):
+                row['interaction'] = 'response'
+            if row['role'] == 'assistant' and message.get('stop_reason') in ('tool_use', 'end_turn'):
+                row['phase'] = 'commentary' if message['stop_reason'] == 'tool_use' else 'final_answer'
         for row in result[first_part:]:
             if row['role'] in ('user', 'assistant'):
                 if event.get('timestamp') is not None:

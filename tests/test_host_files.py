@@ -1,3 +1,4 @@
+import base64
 import os
 from pathlib import Path
 import tempfile
@@ -46,8 +47,27 @@ class HostFileNavigationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             operate(None, 'list', {'scope': 'host', 'path': ''})
 
+    def test_upload_uses_exact_host_directory_without_a_project_and_never_overwrites(self):
+        path = (self.other/'uploaded.txt').as_posix()
+        params = {'scope': 'host', 'path': path, 'encoded': base64.b64encode(b'new bytes').decode()}
+        result = operate(None, 'upload', params)
+        self.assertEqual(result['path'], path)
+        self.assertEqual((self.other/'uploaded.txt').read_bytes(), b'new bytes')
+        self.assertFalse((self.project/'uploaded.txt').exists())
+        self.assertTrue(operate(None, 'upload', params)['existing'])
+        with self.assertRaisesRegex(ValueError, '同名文件'):
+            operate(None, 'upload', {**params, 'encoded': base64.b64encode(b'different').decode()})
+        with self.assertRaises((ValueError, PermissionError)):
+            operate(None, 'upload', {**params, 'path': str(self.other/'../project/escape.txt')})
+        with self.assertRaises(PermissionError):
+            operate(None, 'upload', {**params, 'path': str(self.other/'.git/config')})
+        if os.name != 'nt':
+            (self.other/'link').symlink_to(self.project, target_is_directory=True)
+            with self.assertRaises((ValueError, PermissionError)):
+                operate(None, 'upload', {**params, 'path': str(self.other/'link/escape.txt')})
+
     def test_project_operations_and_sends_do_not_gain_host_scope(self):
-        for action in ('upload', 'references', 'git-status', 'git-action'):
+        for action in ('references', 'git-status', 'git-action'):
             with self.subTest(action=action), self.assertRaises(PermissionError):
                 self.read(action, (self.other/'报告.txt').as_posix())
         with self.assertRaises(PermissionError):

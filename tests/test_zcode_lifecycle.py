@@ -34,6 +34,10 @@ class ZCodeLifecycleTests(unittest.TestCase):
         self.platform.start()
         self.addCleanup(self.platform.stop)
         self.manager = DesktopSessions(self.root, gateway_running=True)
+        # This protocol fixture supplies its own installation and process observations.
+        inventory = patch.object(self.manager, '_refresh_installation_inventory', return_value=False)
+        inventory.start()
+        self.addCleanup(inventory.stop)
         self.addCleanup(self.manager.close)
         self.adapter = self.manager.adapters['zcode']
         self.assertIs(type(self.adapter), ZCodeDesktop)

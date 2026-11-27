@@ -1,6 +1,10 @@
 {
   "accepted": [
     [
+      "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&transfer=local",
+      "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&transfer=local"
+    ],
+    [
       "https://codex.try2love.com",
       "https://codex.try2love.com/"
     ],
@@ -105,6 +109,10 @@
     ]
   ],
   "rejected": [
+    "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&transfer=local&transfer=local",
+    "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&transfer=remote",
+    "https://codex.try2love.com/#transfer=local",
+    "https://codex.try2love.com/#pair=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%26transfer=local",
     "http://codex.try2love.com",
     "http://8.8.8.8",
     "http://172.32.0.1",

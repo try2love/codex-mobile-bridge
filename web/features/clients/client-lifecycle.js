@@ -40,10 +40,12 @@ const ClientLifecycle=(()=>{
     const canStartDesktop=client.id==='claude'&&client.canStartDesktop===true&&!client.connected&&!pending;
     const canReconnect=client.id==='claude'&&client.canReconnect===true&&client.reconnectSupported===true&&!client.connected&&!pending&&!['recovery-required','restart-required'].includes(setup);
     const pipe=client.id==='zcode'&&client.pipeSupported===true;
-    const canInitialize=client.id==='zcode'
+    const canInitialize=client.id==='codex'
+      ?client.canInitializeDesktop===true&&client.installed!==false&&!pending
+      :client.id==='zcode'
       ?pipe&&client.canInitializeDesktop===true&&client.installed!==false&&!ready&&!pending
       :client.id==='claude'&&!canStartDesktop&&client.enabled&&client.installed!==false&&!client.connected&&!pending&&(['needs-initialization','needs-retry','needs-developer-mode','needs-trust','needs-permission','needs-unlock','needs-desktop','cancelled','failed'].includes(setup)||stage==='needs-initialization'||client.canInitializeDesktop===true&&!canReconnect);
-    const initializeLabel=canReconnect?'重新初始化连接':'初始化连接';
+    const initializeLabel=canReconnect||client.id==='codex'&&ready?'重新初始化连接':'初始化连接';
     const retryable=client.retryable===true&&client.enabled&&!ready&&!pending&&!canInitialize&&!canReconnect&&!canStartDesktop&&!['recovery-required','restart-required'].includes(setup);
     const canConnectWsl=['wsl-cli','wsl-claude-cli'].includes(client.kind)&&client.enabled===true&&!ready&&!pending&&client.distributionRunning!==true;
     return {label,modeLabel:connectionModeLabel(client),reason,ready,waiting:pending,action:action||setup==='recovery-required',retryable:!!retryable,canReconnect:!!canReconnect,canInitialize:!!canInitialize,initializeLabel,canStartDesktop:!!canStartDesktop,canConnectWsl,error:!pending&&!ready&&(['error','timeout'].includes(stage)||setup==='failed')};
@@ -86,7 +88,7 @@ const ClientLifecycle=(()=>{
     if(client.id==='zcode'&&!mode)return false;
     let accepted=await initializeDialog(client,mode);
     if(!accepted)return false;
-    if(mode&&client.running&&client.confirmTaskState){
+    if((mode||client.id==='codex')&&client.running&&client.confirmTaskState){
       accepted=await confirmQuit(client,false,true);
       if(!accepted)return false;
     }
@@ -97,12 +99,19 @@ const ClientLifecycle=(()=>{
     return {initializeDesktop:true,...(choice.connectionMode==='private-pipe'?{connectionMode:'private-pipe'}:{}),
       ...(choice==='recovery'||choice.acknowledgeUnavailable===true?{acknowledgeUnavailable:true}:{})};
   }
+  function codexInitialization(choice){
+    const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
+    const hex=[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');
+    return {requestId:hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20),
+      confirmed:true,tasksConfirmed:true,...(choice==='recovery'?{acknowledgeUnavailable:true}:{})};
+  }
   function initializeDialog(client,mode){
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
       const title=node('h2','初始化连接');
-      const description=node('p',mode==='private-pipe'?'网关将通过本机专用管道连接 ZCode。你可以在电脑锁屏时继续原会话。'
+      const description=node('p',client.id==='codex'?'网关将自动准备 Codex 原生连接。需要时会正常退出并重新启动 Codex；账号、聊天记录和草稿会保留。检测到活动任务时不会重启。'
+        :mode==='private-pipe'?'网关将通过本机专用管道连接 ZCode。你可以在电脑锁屏时继续原会话。'
         :client.initializationMode==='background'?'Windows 上优先后台初始化，无需保持键盘焦点；开发者工具可能短暂出现。后台方式不可用时，仅在桌面可交互时尝试前台引导。'
         :'将在电脑端打开 Claude 和开发者工具，并使用键盘焦点完成连接；如遇屏保或锁屏，请恢复桌面后继续。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
@@ -181,7 +190,7 @@ const ClientLifecycle=(()=>{
     return new Promise(resolve=>{
       const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
       const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
-      const title=node('h2',restart?'重新启动 ZCode？':force?'强制关闭确认':client.confirmTaskState?'正常退出确认':client.id==='codex'?'Codex 恢复退出确认':'退出 Claude Desktop 确认'),description=node('p',restart?'当前无法核验所有任务。正常重启可能中断未确认的任务或审批。是否继续？':!force&&client.confirmTaskState?'当前无法核验所有任务。正常退出可能中断正在运行的任务或等待中的审批，是否继续？':!force&&client.id==='codex'?'连接重建失败，可能无法核验全部任务。正常退出仍可能中断无法确认的任务；已知运行任务会阻止退出。请确认接受此风险，退出后再手动开启 Codex。':client.id==='claude'
+      const title=node('h2',restart?(client.id==='codex'?'重新启动 Codex？':'重新启动 ZCode？'):force?'强制关闭确认':client.confirmTaskState?'正常退出确认':client.id==='codex'?'Codex 恢复退出确认':'退出 Claude Desktop 确认'),description=node('p',restart?'当前无法核验所有任务。正常重启可能中断未确认的任务或审批。是否继续？':!force&&client.confirmTaskState?'当前无法核验所有任务。正常退出可能中断正在运行的任务或等待中的审批，是否继续？':!force&&client.id==='codex'?'连接重建失败，可能无法核验全部任务。正常退出仍可能中断无法确认的任务；已知运行任务会阻止退出。请确认接受此风险，退出后再手动开启 Codex。':client.id==='claude'
         ?force?'这会立即结束 Claude Desktop，可能中断正在运行的会话并丢失未保存内容。重新启动后，初始化连接需要电脑处于解锁状态。是否确认强制退出？':'重新启动 Claude Desktop 后，初始化连接需要电脑处于解锁状态。是否确认退出？'
         :'这会立即结束电脑上的应用，可能中断正在运行的会话并丢失未保存内容。请确认仍要继续。');
       const identity=document.createElement('p');identity.textContent=client.name||client.id;
@@ -192,6 +201,6 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,codexInitialization,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports={...ClientLifecycle,ClientIdentity};

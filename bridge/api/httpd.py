@@ -2,9 +2,11 @@
 import base64
 import gzip
 import hashlib
+from io import BytesIO
 import hmac
 import json
 import logging
+import sqlite3
 import mimetypes
 import os
 import re
@@ -15,7 +17,7 @@ import threading
 import time
 from functools import lru_cache
 from http import HTTPStatus
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from bridge.features.workspace.uploads import MAX_FILE
@@ -64,8 +66,11 @@ def _prepared_static(data, content_type, use_gzip):
 
 from bridge.features.sessions.cli_release import CliConnections
 from bridge.app.lifecycle import private_json
+from bridge.features.sessions.sync import parse_query as sync_query, wait_for_watch, SyncCursorChanged
+from bridge.features.sessions.offline_delivery import DeliveryBlocked, request as delivery_request
+from bridge.features.sessions.history_transfer import HistoryTransfer, HistorySources, CHUNK_BYTES as HISTORY_CHUNK_BYTES
 
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|delivery|stop|history|respond|reconnect|cli-network|queue|catalog|settings|permissions|poll|timeline|conversation|process|changes|sync|detail|notifications|uploads|message-action|message-management|rename|pin|archive|delete|organization|compact))?$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
 DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
@@ -80,8 +85,10 @@ class GatewayServer(ThreadingHTTPServer):
     # HTTP/2 proxies fan a cold page out into many simultaneous HTTP/1.1 connects.
     request_queue_size = 128
 
-    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None):
+    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None, *, transfer_usage=None):
+        self.address_family = socket.AF_INET6 if ':' in address[0] else socket.AF_INET
         self.transfer_directory = data_dir if shared is None else shared.transfer_directory
+        self.auth_owner = shared is None
         self.mobile_updates_owner = shared is None and data_dir is not None
         self.mobile_updates = MobileUpdates(data_dir) if self.mobile_updates_owner else getattr(shared, 'mobile_updates', None)
         self.local_access = config.get('localAccess', True)
@@ -92,9 +99,10 @@ class GatewayServer(ThreadingHTTPServer):
             self.harness = Harness(data_dir) if data_dir else None
             self.desktop_sessions = DesktopSessions(data_dir, bridge, gateway_running=True) if data_dir else None
             self.desktop_uploads = DesktopUploads(data_dir) if data_dir else None
+            self.history_transfer = HistoryTransfer(data_dir, HistorySources(bridge, self.desktop_sessions, self.desktop_uploads)) if data_dir else None
             self.cli_connections = CliConnections(data_dir, lambda: [self.bridge, self.desktop_sessions], private_json) if data_dir else None
             self.instance_id = secrets.token_hex(16)
-            self.auth = Auth(config["auth"], data_dir)
+            self.auth = Auth(config["auth"], data_dir, transfer_usage=transfer_usage)
             self.origins = set(config["origins"])
             self.pairing = Pairing(self.auth, self.origins)
             self.hosts = {urlsplit(o).netloc for o in self.origins}
@@ -106,7 +114,7 @@ class GatewayServer(ThreadingHTTPServer):
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'cli_connections', 'harness', 'desktop_sessions', 'desktop_uploads', 'notifications', 'network_adaptation', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'terminal_sockets', 'ui_language_path'):
+            for name in ('bridge', 'cli_connections', 'harness', 'desktop_sessions', 'desktop_uploads', 'history_transfer', 'notifications', 'network_adaptation', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'terminal_sockets', 'ui_language_path'):
                 setattr(self, name, getattr(shared, name))
         try:
             super().__init__(address, Handler)
@@ -126,13 +134,21 @@ class GatewayServer(ThreadingHTTPServer):
             return 'zh'
 
     def server_close(self):
-        if self.mobile_updates_owner and self.cli_connections:
-            self.cli_connections.close()
-        if self.mobile_updates_owner:
-            self.mobile_updates.close()
-        super().server_close()
+        try:
+            if self.auth_owner:
+                self.auth.close()
+            if self.mobile_updates_owner and self.cli_connections:
+                self.cli_connections.close()
+            if self.mobile_updates_owner:
+                self.mobile_updates.close()
+        finally:
+            super().server_close()
 
     def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            # Explicit IPv6 listeners stay IPv6-only on every OS; do not silently
+            # expand a configured bind to IPv4-mapped clients.
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         # HTTPServer resolves the listening IP with getfqdn(), which can stall
         # startup on machines without working reverse DNS. Origins are explicit.
         TCPServer.server_bind(self)
@@ -222,7 +238,46 @@ class Handler(BaseHTTPRequestHandler):
                          "default-src 'self'; script-src 'self'; style-src " + style_source + "; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src " + frame_source + "; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
+    def session_transfer_allowed(self):
+        if not getattr(self, '_session_meter', None) or self.login_session():
+            return True
+        self._session_meter = None
+        self.close_connection = True
+        self.output(401, {'error': '请登录', 'code': 'unauthenticated', 'authStatus': self.rejection()})
+        return False
+
+    def record_session_bytes(self, count, data=None):
+        meter = getattr(self, '_session_meter', None)
+        if not meter or not count:
+            return
+        title = method = host_label = ''
+        reused_bytes = 0
+        if isinstance(data, dict):
+            if urlsplit(self.path).path.endswith('/sync') and type(data.get('reusedBytes')) is int:
+                reused_bytes = max(0, data['reusedBytes'])
+            for view in (data.get('session'), data.get('meta'), data):
+                if not isinstance(view, dict):
+                    continue
+                if not title and isinstance(view.get('title'), str):
+                    title = view['title']
+                if not host_label:
+                    label = view.get('hostLabel') or view.get('host')
+                    if isinstance(label, str):
+                        host_label = label
+                access = view.get('access')
+                for source in (view.get('backend'), access.get('source') if isinstance(access, dict) else None,
+                               view.get('mode')):
+                    if not method and source in ('app', 'desktop', 'cli', 'ide', 'code', 'cowork'):
+                        method = 'app' if source == 'desktop' else source
+        try:
+            self.server.auth.record_transfer(*meter, title, count, method=method, host_label=host_label,
+                                             reused_bytes=reused_bytes)
+        except (OSError, sqlite3.Error):
+            logging.getLogger(__name__).warning('无法写入会话传输统计', exc_info=True)
+
     def output(self, status, data, content_type="application/json; charset=utf-8", cookie=None, content_disposition=None, preview_shell=False, style_nonce=None, mermaid_shell=False, visualize_shell=False):
+        if 200 <= status < 300 and not self.session_transfer_allowed():
+            return
         # Keep the browser cookie in step with the renewed server-side deadline,
         # including long-lived pages that do not revisit /api/auth.
         if cookie is None and 200 <= status < 300 and urlsplit(self.path).path.startswith('/api/'):
@@ -255,6 +310,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self._transport_written = True
+        if 200 <= status < 300:
+            self.record_session_bytes(len(body), data)
+
+    def rejection(self):
+        token = self.token()
+        if not token:
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get('Cookie', ''))
+                name = self.server.auth.cookie_name
+                token = cookie[name].value if name in cookie else ''
+            except (ValueError, CookieError):
+                pass
+        return 'unknownRejected' if token else 'anonymous'
 
     def static_output(self, path, content_type):
         data = served_asset_bytes(self.server.web_dir, path)
@@ -324,8 +393,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(self.headers.get_all("Host", [])) != 1 or self.headers.get("Host") not in self.server.hosts:
             raise PermissionError("此访问地址未在网关配置中允许")
         host = self.headers.get('Host', '')
-        local_host = urlsplit('http://' + host).hostname in ('127.0.0.1', 'localhost')
-        if not self.server.local_access and (local_host or (self.connection.getsockname()[0] == '127.0.0.1' and host not in self.server.secure_hosts)):
+        local_host = urlsplit('http://' + host).hostname in ('127.0.0.1', '::1', 'localhost')
+        if not self.server.local_access and (local_host or (self.connection.getsockname()[0] in ('127.0.0.1', '::1') and host not in self.server.secure_hosts)):
             raise PermissionError('本机网页访问已关闭')
         origin = self.headers.get("Origin")
         expected_origin = ('https://' if host in self.server.secure_hosts else 'http://') + host
@@ -343,15 +412,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def authorized(self, write=False):
         if not self.server.auth.permitted(self.client()['ip']):
-            raise PermissionError('此 IP 已被访问规则禁止')
+            self.close_connection = True
+            self.output(403, {'error': '此 IP 已被访问规则禁止', 'authStatus': 'revoked'})
+            return None
         session = self.login_session()
         if not session:
             self.close_connection = True
-            self.output(401, {"error": "请登录", "code": "unauthenticated"})
+            self.output(401, {"error": "请登录", "code": "unauthenticated", "authStatus": self.rejection()})
             return None
         if write and not hmac.compare_digest(self.headers.get("X-CSRF-Token", ""), session["csrf"]):
             raise PermissionError("登录验证已失效，请刷新页面")
         return session
+
+    def resolve_desktop_send(self, manager, uploads, provider, sid, body, detail=None):
+        if 'attachments' not in body:
+            return
+        if uploads is None:
+            raise IPCError('桌面会话接入不可用')
+        if detail is None:
+            detail = manager.call(provider, 'detail', sid)
+        session = detail.get('session') or {}
+        local_cli = provider == 'claude' and session.get('backend') == 'cli'
+        images, files = uploads.resolve(provider, sid, body.pop('attachments'), local_claude_cli=local_cli,
+                                        native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
+        body['resolvedImages'] = images
+        if files:
+            body['resolvedFiles'] = files
 
     def read_json(self):
         if self.headers.get("Transfer-Encoding"):
@@ -405,6 +491,7 @@ class Handler(BaseHTTPRequestHandler):
         ray = ray if re.fullmatch(r'[a-fA-F0-9]{16,32}(?:-[A-Z]{3})?', ray) else '-'
         traced = operation in ('send', 'reconnect', 'message-management') or ray != '-' and path in STATIC
         self._transport_trace = {'id': secrets.token_hex(8), 'ray': ray} if traced else None
+        self._session_meter = None
         self._transport_status, self._transport_written = 0, False
         started = time.monotonic()
         if traced:
@@ -462,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {"uiLanguage": self.server.ui_language(), "authenticated": bool(session), "trustedDevice": bool(session and session.get("trustedDevice")), "csrf": session["csrf"] if session else None,
                                          "loginStatus": self.server.auth.login_status(self.client()["ip"]),
                                          "instanceId": self.server.instance_id, "cookieName": self.server.auth.cookie_name,
-                                         **({'draftIdentity': self.server.auth.draft_identity} if session else {}),
+                                         **({'draftIdentity': self.server.auth.draft_identity, 'sessionSync': self.server.auth.session_sync} if session else {'authStatus': self.rejection()}),
                                          **({'enabledClients': self.server.desktop_sessions.navigation_clients() if self.server.desktop_sessions else ['codex']} if session else {}),
                                          **({'listCacheIdentity': hashlib.sha256((self.server.instance_id + '\0' + session['csrf']).encode()).hexdigest()} if session else {}),
                                          **({"computer": {"name": socket.gethostname(), "platform": platform.system()}} if session else {}),
@@ -501,6 +588,20 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.authorized(write)
             if not auth:
                 return
+            if path.startswith('/api/history-transfer/'):
+                return self.history_transfer(path, write, auth)
+            if not write and path == '/api/session-transfers':
+                return self.output(200, self.server.auth.transfer_summary(self.token()))
+            if not write:
+                # Count conversation responses at their authenticated route, after compression.
+                thread = re.fullmatch(r'/api/sessions/([0-9a-f-]{36})(?:/.*)?', path)
+                desktop = re.fullmatch(r'/api/desktop-sessions/(deepseek|claude|zcode|antigravity)/.*', path)
+                if thread:
+                    self._session_meter = (self.server.auth.key(self.token()), 'codex',
+                                           query.get('host', ['local'])[0], thread[1])
+                elif desktop and query.get('sessionId'):
+                    self._session_meter = (self.server.auth.key(self.token()), query.get('entry', [desktop[1]])[0],
+                                           'local', query['sessionId'][0])
             terminal_socket = re.fullmatch(r'/api/sessions/([0-9a-f-]{36})/terminal', path)
             if path == '/api/connection/routes':
                 discovery = getattr(self.server, 'connection_discovery', None)
@@ -614,7 +715,16 @@ class Handler(BaseHTTPRequestHandler):
                     value = self.read_json()
                     if value == {'action': 'scan-wsl'}:
                         return self.output(200, manager.scan_wsl())
-                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}:
+                    allowed = {'provider', 'enabled', 'quitDesktop', 'initializeDesktop', 'connectionMode', 'forceDesktop', 'forceConfirmed', 'acknowledgeUnavailable'}
+                    if isinstance(value, dict) and value.get('provider') == 'codex' and value.get('initializeDesktop') is True:
+                        allowed |= {'requestId', 'confirmed', 'tasksConfirmed'}
+                        if (not {'requestId', 'confirmed', 'tasksConfirmed'} <= set(value)
+                                or value.get('enabled') is not True or value.get('confirmed') is not True
+                                or value.get('tasksConfirmed') is not True):
+                            raise ValueError('Codex 初始化确认无效')
+                        if self.server.auth.config.get('mode') == 'none':
+                            raise PermissionError('免密访问不能初始化桌面连接，请在桌面端操作')
+                    if not isinstance(value, dict) or not {'provider', 'enabled'} <= set(value) or set(value) - allowed:
                         raise ValueError('应用开关无效')
                     if (value.get('provider') == 'zcode' and value.get('enabled') is True
                             and self.server.auth.config.get('mode') == 'none'):
@@ -722,10 +832,27 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.desktop_sessions
                 if manager is None:
                     return self.output(503, {'error': '桌面会话接入不可用'})
-                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in (WRITES if write else READS):
+                if len(parts) != 4 or parts[2] not in ('deepseek', 'claude', 'zcode', 'antigravity') or parts[3] not in ({'delivery'} | (WRITES if write else READS | {'sync'})):
                     return self.output(404, {'error': '接口不存在'})
                 manager, uploads, _ = self.desktop_context(parts[2], query)
+                if parts[3] == 'delivery':
+                    sid = query.get('sessionId', [None])[0]
+                    if len(query.get('sessionId', [])) != 1 or len(query.get('entry', [])) > 1:
+                        raise DeliveryBlocked('离线会话标识无效')
+                    body = self.read_json() if write else None
+                    rid, account = delivery_request(query, self.server.auth.session_sync['gatewayId'], sid, body)
+                    if body is not None:
+                        body.pop('sessionId')
+                    return self.output(200, manager.offline_delivery(parts[2], sid, rid, account, body,
+                        resolve=lambda detail: self.resolve_desktop_send(manager, uploads, parts[2], sid, body, detail)))
                 manager.require_enabled(parts[2])
+                if not write and parts[3] == 'sync':
+                    mode, options = sync_query(query)
+                    sid = query.get('sessionId', [None])[0]
+                    if mode == 'watch':
+                        return self.sync_watch(lambda: manager.history_sync(parts[2], sid, mode, options),
+                                               lambda: manager.sync_watch_source(parts[2], sid), options)
+                    return self.output(200, manager.history_sync(parts[2], sid, mode, options))
                 body = self.read_json() if write else ({'section': query.get('section', ['all'])[0],
                                                          'refresh': query.get('refresh') == ['true']}
                                                         if parts[3] == 'catalog' else
@@ -735,6 +862,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = {key: query[key][0] for key in ('environment', 'projectKey', 'path') if key in query}
                     body['refresh'] = query.get('refresh') == ['true']
                 if not write and parts[3] == 'detail':
+                    if query.get('historyMode') == ['conversation']:
+                        body['historyMode'] = 'conversation'
+                        for key in ('historyProcess', 'historyDetail', 'historyAfter', 'historyVersion'):
+                            if key in query:
+                                body[key] = query[key][0]
+                        if 'historyOffset' in query:
+                            body['historyOffset'] = max(0, int(query['historyOffset'][0]))
                     body['historyLimit'] = max(1, min(100, int(query.get('historyLimit', ['40'])[0])))
                     if query.get('historyBefore'):
                         before = query['historyBefore'][0]
@@ -746,14 +880,7 @@ class Handler(BaseHTTPRequestHandler):
                 if write and parts[3] == 'send' and 'attachments' in body:
                     if uploads is None:
                         return self.output(503, {'error': '桌面会话接入不可用'})
-                    detail = manager.call(parts[2], 'detail', sid)
-                    session = detail.get('session') or {}
-                    local_cli = parts[2] == 'claude' and session.get('backend') == 'cli'
-                    images, files = uploads.resolve(
-                        parts[2], sid, body.pop('attachments'), local_claude_cli=local_cli, native_files=detail.get('capabilities', {}).get('uploadFiles') is True)
-                    body['resolvedImages'] = images
-                    if files:
-                        body['resolvedFiles'] = files
+                    self.resolve_desktop_send(manager, uploads, parts[2], sid, body)
                 feed = self.server.notifications.mobile.checkpoint() if parts[3] == 'list' and self.server.notifications else None
                 result = manager.list_with_activity(parts[2]) if parts[3] == 'list' else manager.call(parts[2], parts[3], sid, body)
                 if feed is not None:
@@ -887,6 +1014,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('重置动态设置无效')
                 account_bridge.accounts.set_reset_dynamic(body['enabled'])
                 return self.output(200, account_bridge.accounts.public())
+            if path == '/api/quota-continuation':
+                monitor = self.server.bridge.accounts.monitor
+                if write:
+                    body = self.read_json()
+                    return self.output(200, monitor.continuation.configure(body))
+                return self.output(200, monitor.continuation.public())
             if write and path == '/api/accounts/reminders':
                 body = self.read_json()
                 if set(body) != {'preferences'}:
@@ -934,9 +1067,10 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.auth.config.get('mode') == 'none':
                     raise PermissionError('免密访问不能切换账号，请在桌面端操作')
                 body = self.read_json()
-                if (set(body) - {'id', 'requestId', 'confirmed', 'tasksConfirmed', 'syncLocalCli'}
+                if (set(body) - {'id', 'requestId', 'confirmed', 'tasksConfirmed', 'syncLocalCli', 'sharedDaemonConfirmed'}
                         or not {'id', 'requestId', 'confirmed', 'tasksConfirmed'} <= set(body)
-                        or 'syncLocalCli' in body and not isinstance(body['syncLocalCli'], bool)):
+                        or 'syncLocalCli' in body and not isinstance(body['syncLocalCli'], bool)
+                        or 'sharedDaemonConfirmed' in body and not isinstance(body['sharedDaemonConfirmed'], bool)):
                     raise ValueError('账号切换请求包含不支持的字段')
                 return self.output(202, account_bridge.accounts.switch(body))
             if not write and path == '/api/account':
@@ -1107,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
                 manager = self.server.notifications
                 if manager is None:
                     raise ValueError('当前网关未启用通知服务')
-                fields = ('includeTitle', 'clickBase', 'securityEnabled', 'addressEnabled', 'addressName')
+                fields = ('includeTitle', 'includeAnswer', 'clickBase', 'securityEnabled', 'addressEnabled', 'addressName')
                 with manager.lock:
                     if write:
                         body = self.read_json()
@@ -1189,7 +1323,7 @@ class Handler(BaseHTTPRequestHandler):
                 provider, operation = desktop_workspace.groups()
                 sid = query.get('sessionId', [''])[0]
                 manager, _, _ = self.desktop_context(provider, query)
-                host_files = not write and query.get('scope') == ['host'] and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')
+                host_files = query.get('scope') == ['host'] and ((not write and operation in ('workspace', 'workspace/info', 'workspace/preview', 'workspace/download')) or (write and operation == 'workspace/upload'))
                 bridge = manager.workspace_bridge(provider, sid, **({'host_files': True, 'path': query.get('path', [''])[0]} if host_files else {}))
                 path = '/api/sessions/' + bridge.identifier + '/' + operation
             else:
@@ -1256,12 +1390,12 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get('scope') not in (None, ['host']):
                     raise ValueError('文件浏览范围无效')
                 scope = {'scope': 'host'} if query.get('scope') == ['host'] else {}
-                if scope and (write or operation not in (None, 'info', 'preview', 'download')):
+                if scope and not ((not write and operation in (None, 'info', 'preview', 'download')) or (write and operation == 'upload')):
                     raise PermissionError('宿主机文件浏览仅支持读取')
                 if write:
                     if operation == 'git-action':
                         body = self.read_json()
-                        if set(body) - {'action', 'version', 'path', 'branch', 'message'} or not {'action', 'version'} <= set(body):
+                        if set(body) - {'action', 'version', 'path', 'branch', 'message', 'limit'} or not {'action', 'version'} <= set(body):
                             raise ValueError('Git 操作请求无效')
                         return self.output(200, bridge.workspace(thread_id, operation, body))
                     if operation != 'upload': return self.output(405, {'error': '不支持此文件操作'})
@@ -1270,7 +1404,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('每个文件不能超过 20 MB')
                     content = self.rfile.read(int(sizes[0]))
                     if len(content) != int(sizes[0]): raise ValueError('上传中断，请重试')
-                    return self.output(200, bridge.workspace(thread_id, 'upload', {'path': relative, 'encoded': base64.b64encode(content).decode()}))
+                    return self.output(200, bridge.workspace(thread_id, 'upload', {**scope, 'path': relative, 'encoded': base64.b64encode(content).decode()}))
                 if operation == 'upload': return self.output(405, {'error': '请使用上传操作'})
                 if operation == 'git-action': return self.output(405, {'error': 'Git 操作需要 POST 请求'})
                 if operation == 'git-history':
@@ -1280,12 +1414,19 @@ class Handler(BaseHTTPRequestHandler):
                 if operation == 'git-history-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'revision': query.get('revision', [''])[0], 'path': relative}))
                 if operation == 'git-branches': return self.output(200, bridge.workspace(thread_id, operation, {}))
-                if operation == 'git-status': return self.output(200, bridge.workspace(thread_id, operation, {}))
+                if operation == 'git-status':
+                    options = {}
+                    for key in ('limit', 'offset'):
+                        if key in query: options[key] = int(query[key][0])
+                    for source, target in (('section', 'section'), ('untrackedPath', 'untracked_path'), ('version', 'version')):
+                        if source in query: options[target] = query[source][0]
+                    if 'collapseUntracked' in query: options['collapse_untracked'] = query['collapseUntracked'] == ['true']
+                    return self.output(200, bridge.workspace(thread_id, operation, options))
                 if operation == 'git-diff':
                     return self.output(200, bridge.workspace(thread_id, operation, {'path': relative, 'section': query.get('section', ['unstaged'])[0]}))
                 if operation is None:
                     return self.output(200, bridge.workspace(thread_id, 'list', {**scope, 'path': relative, 'hidden': query.get('hidden') == ['true'],
-                        'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0])}))
+                        'search': query.get('search', [''])[0], 'offset': int(query.get('offset', ['0'])[0]), 'sort': query.get('sort', ['name-asc'])[0]}))
                 if operation == 'download':
                     policy = transfer_settings(self.server.transfer_directory)
                     if query.get('info') == ['1']:
@@ -1345,6 +1486,12 @@ class Handler(BaseHTTPRequestHandler):
             if not match:
                 return self.output(404, {"error": "页面不存在"})
             thread_id, action = match.groups()
+            if action == 'delivery':
+                if side is not None or len(query.get('host', [])) != 1 or not hasattr(bridge, 'offline_delivery'):
+                    raise DeliveryBlocked('此接入暂不支持离线投递')
+                body = self.read_json() if write else None
+                rid, account = delivery_request(query, self.server.auth.session_sync['gatewayId'], thread_id, body)
+                return self.output(200, bridge.offline_delivery(thread_id, rid, account, body))
             if action == 'cli-network':
                 if not hasattr(bridge, 'cli_network'):
                     raise ValueError('只支持本机 Codex CLI')
@@ -1389,14 +1536,29 @@ class Handler(BaseHTTPRequestHandler):
             if not write:
                 if action == 'permissions':
                     return self.output(200, bridge.linux_permission_options(thread_id))
-                if action == 'timeline':
-                    return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0]))
+                if action == 'sync':
+                    mode, options = sync_query(query)
+                    if 'scan' in options:
+                        raise ValueError('此会话不使用原生续页令牌')
+                    if mode == 'watch':
+                        return self.sync_watch(lambda: bridge.timeline_read(thread_id, 'sync', sync_mode=mode, **options),
+                                               lambda: bridge.sync_watch_source(thread_id), options)
+                    return self.output(200, bridge.timeline_read(thread_id, 'sync', sync_mode=mode, **options))
+                if action in ('timeline', 'conversation'):
+                    return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0],
+                                                               **({'projection': 'conversation'} if action == 'conversation' else {})))
+                if action == 'process':
+                    return self.output(200, bridge.timeline_read(thread_id, 'process', cursor=query.get('cursor', [''])[0],
+                                                               after=query.get('after', [None])[0], limit=int(query.get('limit', ['20'])[0])))
                 if action == 'detail':
                     return self.output(200, bridge.timeline_read(thread_id, 'detail', cursor=query.get('key', [''])[0],
-                                                               offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0]))
+                                                               offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0],
+                                                               **({'projection': 'conversation'} if query.get('projection') == ['conversation'] else {})))
                 if action == 'changes':
                     return self.changes(bridge, thread_id, int(query.get('after', ['-1'])[0]),
-                                        query.get('epoch', [''])[0], query.get('start', [''])[0])
+                                        query.get('epoch', [''])[0], query.get('start', [''])[0],
+                                        query.get('paged', [''])[0] == '1', query.get('through', [None])[0],
+                                        projection='conversation' if query.get('projection') == ['conversation'] else None)
                 if action is None:
                     return self.output(200, bridge.view(thread_id, background=True))
                 if action == "catalog":
@@ -1489,10 +1651,16 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             self.close_connection = True
             self.output(404, {"error": "找不到这个会话"})
+        except DeliveryBlocked as exc:
+            self.close_connection = True
+            self.output(409, {"error": str(exc), "code": exc.code})
         except SubmissionRejected as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc), "code": "send_not_submitted"})
         except CatalogIdentityChanged as exc:
+            self.close_connection = True
+            self.output(409, {"error": str(exc), "code": exc.code})
+        except SyncCursorChanged as exc:
             self.close_connection = True
             self.output(409, {"error": str(exc), "code": exc.code})
         except ValueError as exc:
@@ -1510,6 +1678,57 @@ class Handler(BaseHTTPRequestHandler):
             LOG.exception("Gateway operation failed")
             self.close_connection = True
             self.output(500, {"error": "网关操作失败，请查看本机日志"})
+
+    def history_transfer(self, path, write, auth):
+        service = self.server.history_transfer
+        if service is None:
+            return self.output(404, {'error': '此网关未提供本地数据传输'})
+        action = path.removeprefix('/api/history-transfer/')
+        owner = auth.get('transferOwner') or self.server.auth.key(self.token())
+        operation = (action, write)
+        fields = {('catalog', False): {'cursor'}, ('manifest', False): {'id', 'cursor'},
+                  ('manifest', True): set(), ('chunk', False): {'id', 'item', 'index'},
+                  ('content', False): {'id', 'item', 'offset', 'length'}}
+        if operation not in fields:
+            return self.output(404, {'error': '接口不存在'})
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+        required = fields[operation] - {'cursor'}
+        if set(query) - fields[operation] or required - query.keys() or any(len(v) != 1 for v in query.values()):
+            raise ValueError('传输参数无效')
+        values = {key: val[0] for key, val in query.items()}
+        for key, pattern in (('id', '[0-9a-f]{32}'), ('item', '[0-9a-f]{64}')):
+            if key in values and not re.fullmatch(pattern, values[key]):
+                raise ValueError('传输标识无效')
+        for key in ('cursor', 'index', 'offset', 'length'):
+            if key in values:
+                if key == 'cursor' and action == 'manifest':
+                    if not re.fullmatch(r'[ra][0-9]{1,15}', values[key]):
+                        raise ValueError('传输分段无效')
+                    continue
+                if not re.fullmatch(r'[0-9]{1,15}', values[key]):
+                    raise ValueError('传输分段无效')
+                values[key] = int(values[key])
+        if write:
+            return self.output(202, service.start(owner, self.read_json()))
+        if action == 'catalog':
+            return self.output(200, service.catalog(values.get('cursor', 0)))
+        transfer = values['id']
+        if action == 'manifest':
+            return self.output(200, service.manifest(owner, transfer, values.get('cursor', '')))
+        item = values['item']
+        if action == 'chunk':
+            return self.output(200, service.chunk(owner, transfer, item, values['index']))
+        offset, length = values['offset'], values['length']
+        if not 0 < length <= HISTORY_CHUNK_BYTES:
+            raise ValueError('传输分段无效')
+        descriptor, checksum, body = service.content(owner, transfer, item, offset, length)
+        session = descriptor['session']
+        provider = 'codex' if session['client'] == 'codex' else session['entry']
+        self._session_meter = (self.server.auth.key(self.token()), provider, session['host'], session['sessionId'])
+        metadata = {'status': 206, 'length': len(body), 'etag': '"sha256-' + descriptor['version'] + '"',
+                    'name': descriptor['name'], 'contentRange': f"bytes {offset}-{offset + len(body) - 1}/{descriptor['bytes']}",
+                    'chunkSha256': checksum}
+        return self.download_response(metadata, BytesIO(body))
 
     def download(self, bridge, thread_id, artifact_id, info=False, preview=False):
         artifact = bridge.artifact(thread_id, artifact_id)
@@ -1538,6 +1757,8 @@ class Handler(BaseHTTPRequestHandler):
                 'if_range': ','.join(self.headers.get_all('If-Range', []))}
 
     def download_response(self, metadata, stream, mime='application/octet-stream', disposition='attachment'):
+        if not self.session_transfer_allowed():
+            return
         self.send_response(metadata['status'])
         self.headers_common()
         self.send_header('Content-Type', mime)
@@ -1546,12 +1767,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('ETag', metadata['etag'])
         if metadata.get('contentRange'):
             self.send_header('Content-Range', metadata['contentRange'])
+        if metadata.get('chunkSha256'):
+            self.send_header('X-Chunk-SHA256', metadata['chunkSha256'])
         self.send_header('Content-Disposition', disposition + "; filename*=UTF-8''" + quote(metadata['name'], safe=''))
         token = self.token()
         if token and self.server.auth.get(token): self.send_header('Set-Cookie', self.cookie(token))
         self.end_headers()
+        remaining = metadata['length']
         try:
-            remaining = metadata['length']
             while remaining:
                 chunk = stream.read(min(65536, remaining))
                 if not chunk: raise OSError('Download snapshot ended early')
@@ -1560,6 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             # Never append a JSON error to an already-started binary response.
             self.close_connection = True
+        finally:
+            self.record_session_bytes(metadata['length'] - remaining)
 
     def upload_preview(self, bridge, thread_id, upload_id, variant='thumb', side=None, download=False):
         if download:
@@ -1569,6 +1794,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def attachment_preview(self, artifact, served_variant, private=False, download=False):
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()
+        if not self.session_transfer_allowed():
+            return
         etag = '"' + artifact["previewSha256"] + '"'
         cache_control = 'private, no-store' if private or download or served_variant == 'fallback-original' else 'private, max-age=31536000, immutable'
         if self.headers.get("If-None-Match") == etag:
@@ -1587,12 +1814,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", ("attachment" if download else "inline") + "; filename*=UTF-8''" + quote(artifact["name"], safe=""))
         self.end_headers()
         self.wfile.write(data)
+        self.record_session_bytes(len(data))
 
     def desktop_image_preview(self, bridge, thread_id, image_id, download=False):
         artifact, served_variant = bridge.desktop_image_preview(thread_id, image_id)
         if download:
             return self.attachment_preview(artifact, served_variant, download=True)
         data = artifact['previewBytes'] if 'previewBytes' in artifact else Path(artifact["previewPath"]).read_bytes()
+        if not self.session_transfer_allowed():
+            return
         etag = '"' + artifact["previewSha256"] + '"'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
@@ -1610,6 +1840,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", "inline; filename*=UTF-8''" + quote(artifact["name"], safe=""))
         self.end_headers()
         self.wfile.write(data)
+        self.record_session_bytes(len(data))
+
+    def sync_watch(self, read, source, options):
+        wait_ms = options.pop('waitMs', 0)
+        if not options.get('ifVersion'):
+            wait_ms = 0
+        result = wait_for_watch(read, wait_ms, source() if wait_ms else None)
+        # A revoked credential must not read a result from an in-flight wait.
+        if self.authorized():
+            return self.output(200, result)
 
     def poll(self, bridge, thread_id, after):
         session = bridge.session(thread_id, background=True)
@@ -1627,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
                 session.viewers -= 1
                 session.touched = time.monotonic()
 
-    def changes(self, bridge, thread_id, after, epoch, start):
+    def changes(self, bridge, thread_id, after, epoch, start, paged=False, through=None, projection=None):
         session = bridge.session(thread_id, background=True)
         with session.condition:
             session.viewers += 1
@@ -1635,7 +1875,9 @@ class Handler(BaseHTTPRequestHandler):
             with session.condition:
                 session.condition.wait_for(lambda: session.sequence != after or epoch != session.timeline.epoch or bridge.closed.is_set(), timeout=12)
             if self.authorized():
-                self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start))
+                self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start,
+                                                            **({'projection': projection} if projection else {}),
+                                                            **({'paged': True, 'through': through} if paged else {})))
         finally:
             with session.condition:
                 session.viewers -= 1
@@ -1670,10 +1912,12 @@ class Handler(BaseHTTPRequestHandler):
                 if updated:
                     view = bridge.view(thread_id, attach=False, background=True)
                     payload = json.dumps(view, ensure_ascii=False, separators=(",", ":"))
-                    self.wfile.write(f"id: {sequence}\nevent: state\ndata: {payload}\n\n".encode())
+                    frame = f"id: {sequence}\nevent: state\ndata: {payload}\n\n".encode()
                 else:
-                    self.wfile.write(b": heartbeat\n\n")
+                    frame = b": heartbeat\n\n"
+                self.wfile.write(frame)
                 self.wfile.flush()
+                self.record_session_bytes(len(frame))
                 bridge.closed.wait(0.2)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, socket.timeout):
             pass

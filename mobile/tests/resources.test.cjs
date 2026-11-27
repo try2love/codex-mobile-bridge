@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const read = value => fs.readFileSync(path.join(root, value), 'utf8');
-const shared = ['channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js'];
+const shared = ['channel-link.js', 'mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'mobile-offline.js'];
 const android = [...shared, 'mobile-session.js'];
 
 test('both Android variants register the downloaded-file viewer provider', () => {
@@ -48,7 +48,7 @@ test('iOS target packages each shared script exactly once and compiles its resou
     return ids(field(phase, 'files')).map(id => objects.get(field(objects.get(id), 'fileRef')));
   }
   const resources = files('PBXResourcesBuildPhase');
-  const scripts = resources.filter(body => field(body, 'path').endsWith('.js'));
+  const scripts = resources.filter(body => field(body, 'path').startsWith('../shared/web/') && field(body, 'path').endsWith('.js'));
   assert.equal(scripts.length, shared.length);
   for (const name of shared) {
     const matches = scripts.filter(body => field(body, 'path') === '../shared/web/' + name);
@@ -57,6 +57,29 @@ test('iOS target packages each shared script exactly once and compiles its resou
     assert.equal(fs.readFileSync(path.resolve(root, 'mobile/ios', field(matches[0], 'path')), 'utf8'), read('mobile/shared/web/' + name));
   }
   assert.equal(files('PBXSourcesBuildPhase').filter(body => field(body, 'path') === 'WebScripts.swift').length, 1);
+  const ordinary = read('scripts/build-mobile-android.py'), push = read('mobile/android-push/build.gradle');
+  const shellPhase = phases.find(body => field(body, 'isa') === 'PBXShellScriptBuildPhase');
+  for (const build of [shellPhase, ordinary, push]) assert.match(build, /build-offline-shell\.py/);
+});
+
+test('packaged offline routes load the gateway shell and its public chat components', t => {
+  const scratch = path.join(root, '.tmp');
+  fs.mkdirSync(scratch, {recursive:true});
+  const output = fs.mkdtempSync(path.join(scratch, 'offline-shell-test-'));
+  t.after(() => fs.rmSync(output, {recursive:true, force:true}));
+  require('node:child_process').execFileSync(process.platform === 'win32' ? 'python' : 'python3',
+    ['-B', 'scripts/build-offline-shell.py', output], {cwd:root});
+  const manifest = JSON.parse(fs.readFileSync(path.join(output, 'manifest.json')));
+  const asset = url => fs.readFileSync(path.join(output, manifest[url]), 'utf8');
+  assert.equal(manifest['/offline-reader.html'], manifest['/']);
+  assert.equal(manifest['/index.html'], manifest['/']);
+  assert.match(asset('/'), /<html data-bridge-offline /);
+  for (const id of ['app','sidebar','sessions','chat','timeline','messages']) assert.ok(asset('/').includes('id="'+id+'"'),id);
+  assert.match(asset('/timeline.js'), /class ChatTimeline/);
+  assert.match(asset('/app.js'), /class |function renderList/);
+  for (const name of ['client-navigation.css','desktop-sessions.css','style.css','vendor/markdown-it.min.js']) {
+    assert.ok(asset('/'+name).length > 1000,name);
+  }
 });
 
 test('ordinary APK and push Gradle package the same scripts without overlapping filenames', () => {
@@ -91,7 +114,7 @@ test('iOS missing resources stop connection visibly before replacing the current
   const connect = app.slice(app.indexOf('private func connect('), app.indexOf('@objc private func refresh()'));
   assert.match(connect, /do \{ scripts = try WebScripts\(\) \}\s+catch \{ info\(error\.localizedDescription\); return \}/);
   assert.ok(connect.indexOf('try WebScripts()') < connect.indexOf('clear()'));
-  for (const script of ['WebScripts.fixedViewport', 'appearanceScript', 'clipboardScript', 'systemBarsScript']) {
+  for (const script of ['WebScripts.fixedViewport', 'appearanceScript', 'clipboardScript', 'systemBarsScript', 'offlineScript']) {
     assert.match(connect, new RegExp(`addUserScript\\(WKUserScript\\(source: ${script.replace('.', '\\.')}\\, injectionTime: \\.atDocumentEnd, forMainFrameOnly: true\\)\\)`));
   }
   assert.match(connect, /addUserScript\(WKUserScript\(source: "window\.BridgeMobileCapabilities = Object\.freeze\(\{ diagnosticsExport: true \}\);", injectionTime: \.atDocumentEnd, forMainFrameOnly: true\)\)/);

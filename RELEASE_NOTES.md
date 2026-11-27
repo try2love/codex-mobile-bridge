@@ -1,3 +1,335 @@
+## v2.2.2 · 原生连接、离线使用与网关体验升级
+
+**建议更新网关和手机 App，以适配最新版 Codex App 原生连接，并获得完整的历史下载、离线阅读和交互改进。**
+
+本次正式版汇总 v2.2.1 以来各轮预览版的更新，重点完善 Codex 原生连接、长会话与离线使用、Antigravity 操作、网关版本管理及跨平台稳定性。
+
+- **新版 Codex 原生连接。** 适配新版 Codex App 的原生连接方式，兼容旧版接入；改善正常启动、客户端更新及重开后的连接恢复，继续使用原会话、账号和执行环境。修复第三方 API 执行报错后聊天错误退为只读的问题。[#252](https://github.com/try2love/codex-mobile-bridge/issues/252)、[#254](https://github.com/try2love/codex-mobile-bridge/issues/254)、[#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- **长会话加载与过程阅读。** 优先展示缓存和最近内容，正文与执行过程分别按需加载；改善中间输出、过程展开、运行耗时及历史图片展示，保留上翻阅读位置。修复新一轮输入后旧内容消失、空快照覆盖流式正文等问题。[#212](https://github.com/try2love/codex-mobile-bridge/issues/212)、[#258](https://github.com/try2love/codex-mobile-bridge/issues/258)
+- **完整历史下载与离线阅读。** 支持下载会话正文、执行过程和附件，复用已有内容、断点续传并恢复未完成的下载；离线记录可按日期清理，回收存储空间。
+- **离线草稿与待发消息。** 断网后继续输入、保存待发消息，并保留下一条草稿；重连后核对原网关、账号和会话，再按顺序发送。明确未发送的失败项可原位编辑或移除；发送结果未确认时提供消息管理入口，避免重复发送。[PR #247](https://github.com/try2love/codex-mobile-bridge/pull/247)
+- **可定制聊天输入区。** 支持单栏、双栏布局，工具拖动排序、面板收纳及图标／文字显示；统一发送与停止控件，切换布局保留草稿，并改善窄屏、触控与输入焦点体验。[#175](https://github.com/try2love/codex-mobile-bridge/issues/175)、[PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201)
+- **分屏与原生待发消息。** 宽屏聊天可直接打开右侧文件或工具分屏，改善图片缩略图刷新；消息管理可查看 Codex App 中“完成后发送”的原生队列，并与网关队列区分。[PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+- **额度展示与可选自动继续。** 新增可调整位置的“剩余额度”工具，统一额度圆环、时间窗口及可展开额度池。提供默认关闭的额度恢复后自动继续功能，支持默认配置下本机 Codex Desktop 官方账号的额度中断任务。[#255](https://github.com/try2love/codex-mobile-bridge/issues/255)、[PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256)、[PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257)
+- **网关版本自由选择与下载缓存。** 在 App 内浏览正式版和预览版，下载适合本机系统与架构的历史安装包；通过兼容性检查后，可升级、降级或重新安装当前版本。安装包保留为下载缓存，标注版本、格式和大小，支持复用与勾选清理。
+- **升级恢复与一键迁移凭据。** 改善 Mac 更新后启动超时回滚、Windows 安装目录占用检查及配置备份。Mac 仅在存在待迁移旧凭据时显示“一键迁移凭据”，成功后自动隐藏；迁移保留旧凭据，失败项可重试，无需重新配对。[#268](https://github.com/try2love/codex-mobile-bridge/issues/268)
+- **Windows Codex 初始化与退出。** 改善原生菜单按需展开时的正常退出兼容性，完善初始化中的退出、配置、重启及连接核验流程，保留任务和审批检查。[#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
+- **Antigravity 指令、模式与模型选择。** 支持原生斜杠指令、Skill 多选、上下文压缩及原生支持的计划／目标模式；模型与思考强度分开选择，指令和模型目录随当前账号、模型刷新。[PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)、[PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **Antigravity 会话管理与分支。** 支持改名、归档与恢复、新建聊天自定义标题，以及从已完成回复创建原生分支；支持撤回到指定原生步骤，是否同时回退文件由用户选择。[#231](https://github.com/try2love/codex-mobile-bridge/issues/231)、[PR #232](https://github.com/try2love/codex-mobile-bridge/pull/232)、[#233](https://github.com/try2love/codex-mobile-bridge/issues/233)、[PR #234](https://github.com/try2love/codex-mobile-bridge/pull/234)、[PR #246](https://github.com/try2love/codex-mobile-bridge/pull/246)
+- **Antigravity 后台任务与停止。** 查看后台任务和子代理，单独停止对应任务；发送尚未返回时仍可停止当前聊天。修复停止后状态缓存残留及桌面新一轮任务无法恢复的问题。[PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179)、[#235](https://github.com/try2love/codex-mobile-bridge/issues/235)、[PR #236](https://github.com/try2love/codex-mobile-bridge/pull/236)、[#223](https://github.com/try2love/codex-mobile-bridge/issues/223)、[PR #224](https://github.com/try2love/codex-mobile-bridge/pull/224)、[#241](https://github.com/try2love/codex-mobile-bridge/issues/241)、[PR #242](https://github.com/try2love/codex-mobile-bridge/pull/242)
+- **Antigravity 图片、引用与上下文。** 图片附件通过原生接口发送，工作区文件引用保留原生语义；补充上下文容量、系统消息和有可靠原生时间依据的回合耗时展示。[#237](https://github.com/try2love/codex-mobile-bridge/issues/237)、[PR #238](https://github.com/try2love/codex-mobile-bridge/pull/238)、[#239](https://github.com/try2love/codex-mobile-bridge/issues/239)、[PR #240](https://github.com/try2love/codex-mobile-bridge/pull/240)
+- **Antigravity 版本与平台兼容。** 改善 Linux AppImage、解压版和自动发现；修复新建聊天项目绑定、模型目录缓存滞后及旧版思考强度识别。补充 macOS/Linux 新版原生服务的环境令牌发现。[#210](https://github.com/try2love/codex-mobile-bridge/issues/210)、[PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209)、[#213](https://github.com/try2love/codex-mobile-bridge/issues/213)、[PR #215](https://github.com/try2love/codex-mobile-bridge/pull/215)、[#214](https://github.com/try2love/codex-mobile-bridge/issues/214)、[PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216)、[#249](https://github.com/try2love/codex-mobile-bridge/issues/249)、[PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250)
+- **Antigravity 历史与异常恢复。** 改善较早会话读取、历史缓存刷新和数据库暂时不可读时的处理；修复账号索引缺字段或格式异常导致的错误。[PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245)、[PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196)、[#225](https://github.com/try2love/codex-mobile-bridge/issues/225)、[PR #226](https://github.com/try2love/codex-mobile-bridge/pull/226)
+- **文件与 Git 管理。** 文件目录支持按名称、修改时间和大小排序，上传目标跟随当前浏览目录。Git 页面优先展示最近提交，大型仓库变更列表完整分页，并共享差异阅读的字号与换行设置。[#262](https://github.com/try2love/codex-mobile-bridge/issues/262)、[#263](https://github.com/try2love/codex-mobile-bridge/issues/263)、[#264](https://github.com/try2love/codex-mobile-bridge/issues/264)
+- **聊天列表与设备管理。** 列表显示最后一次用户输入时间，改进项目分组及不同系统的路径识别；已连接设备显示更易读的浏览器、机型和 App 版本信息，并支持重命名。[#265](https://github.com/try2love/codex-mobile-bridge/issues/265)
+- **任务完成通知。** 可选择在通知中附带最终回答摘要，默认关闭；修复 Android 深色模式下通知面板的外观不一致。[#163](https://github.com/try2love/codex-mobile-bridge/issues/163)、[#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+- **手机连接与刷新。** 改善蜂窝网络、Tailscale 等慢响应场景的可达性判断，减少过早显示离线；修复 iOS“刷新页面”未实际重新加载，并复用同一电脑连接的外观与工具栏设置。[#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
+- **ZCode 登录与本地连接。** 修复官方远控浏览器授权衔接，改善工作目录被删除和新聊天的连接处理；获取上游模型后可一次添加全部模型，并完善未知任务状态及原生问答校验。[#174](https://github.com/try2love/codex-mobile-bridge/issues/174)、[#204](https://github.com/try2love/codex-mobile-bridge/issues/204)、[#203](https://github.com/try2love/codex-mobile-bridge/issues/203)、[PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191)
+- **Claude、Codex 与 DSH 兼容修复。** 修正 Claude 上下文用量读取及原生问题回答校验；改善 Codex 模型目录空值和 Fast 模式策略处理；兼容 DSH 凭据中的空配置段，改善传输错误提示及打开会话后的连接恢复。[PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189)、[PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192)、[PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190)、[#217](https://github.com/try2love/codex-mobile-bridge/issues/217)、[PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **启动、配置保存与后台稳定性。** 修复可重建状态文件损坏、残留临时文件及数据目录保存异常导致的启动或写入失败；隔离单个会话的维护错误，避免影响其他会话和通知线程。[#184](https://github.com/try2love/codex-mobile-bridge/issues/184)、[#188](https://github.com/try2love/codex-mobile-bridge/issues/188)、[PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194)、[PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195)、[PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **客户端扫描与协议处理。** 修复 Windows 受保护安装目录导致的客户端扫描失败，改善应用更新后的路径识别；完善 WebSocket 控制帧、分片和二进制消息处理。[#211](https://github.com/try2love/codex-mobile-bridge/issues/211)、[PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200)、[PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197)
+- **网络与文件保护。** 支持显式 IPv6 监听，修复公网 IPv6 地址处理；兼容 SSH 登录输出噪音，保留上传完整性校验，并统一拦截 `.git` 大小写变体路径。[#208](https://github.com/try2love/codex-mobile-bridge/issues/208)、[#219](https://github.com/try2love/codex-mobile-bridge/issues/219)、[PR #220](https://github.com/try2love/codex-mobile-bridge/pull/220)、[#221](https://github.com/try2love/codex-mobile-bridge/issues/221)、[PR #222](https://github.com/try2love/codex-mobile-bridge/pull/222)
+- **消息管理兼容性。** 修复旧浏览器点击消息管理无反应、新建聊天保留已归档筛选及异常队列文本渲染的问题。[#227](https://github.com/try2love/codex-mobile-bridge/issues/227)、[PR #228](https://github.com/try2love/codex-mobile-bridge/pull/228)、[#229](https://github.com/try2love/codex-mobile-bridge/issues/229)、[PR #230](https://github.com/try2love/codex-mobile-bridge/pull/230)
+- **应用外观。** 更新桌面、Android、iOS 和网页应用图标，完善明暗主题适配；网关 App 本体支持跟随系统深色模式。[#181](https://github.com/try2love/codex-mobile-bridge/issues/181)、[PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)、[#261](https://github.com/try2love/codex-mobile-bridge/issues/261)
+
+更新请覆盖安装，不要先卸载或清除数据。Android 可覆盖 v2.2.1 及本系列预览版；iOS 请沿用原签名身份安装。Mac 首次迁移旧连接凭据时可能需要一次系统授权。切换历史版本时会检查凭据与配置兼容性，不兼容的版本仍可单独下载安装包。
+
+感谢 [@windowmmk](https://github.com/windowmmk)、[@heiqiu47](https://github.com/heiqiu47)、[@mc373906408](https://github.com/mc373906408)、[@hmho000](https://github.com/hmho000)、[@a32556376](https://github.com/a32556376)、[@ufomaker](https://github.com/ufomaker)，以及参与各轮预览测试、提交问题和建议的用户。
+
+### English · Native connections, offline use and gateway improvements
+
+**Update both the gateway and mobile App for compatibility with the latest Codex App native connection and the complete history-download, offline-reading and interaction improvements.**
+
+This stable release brings together the previews since v2.2.1, focusing on Codex native connections, long chats and offline use, Antigravity controls, gateway version management and cross-platform reliability.
+
+- **Newer Codex native connections.** Support the latest Codex App native connection while retaining older clients. Improve recovery after normal launches, client updates and reopening, preserving the original chat, account and execution environment. Fix chats incorrectly becoming read-only after a third-party API execution error. [#252](https://github.com/try2love/codex-mobile-bridge/issues/252) · [#254](https://github.com/try2love/codex-mobile-bridge/issues/254) · [#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- **Long chats and execution details.** Show cached and recent content first, and load message bodies and execution details separately on demand. Improve intermediate output, expandable processes, elapsed times and historical images while preserving the reading position. Fix older content disappearing after a new input and empty snapshots overwriting streamed text. [#212](https://github.com/try2love/codex-mobile-bridge/issues/212) · [#258](https://github.com/try2love/codex-mobile-bridge/issues/258)
+- **Full-history downloads and offline reading.** Download messages, execution details and attachments, reuse existing content, resume interrupted transfers and recover unfinished downloads. Remove offline records by date to reclaim storage.
+- **Offline drafts and queued messages.** Keep typing and queue messages while disconnected, retaining a separate next-message draft. On reconnection, verify the original gateway, account and chat before sending in order. Edit explicitly unsent failures in place or remove them; manage unconfirmed sends without duplicating messages. [PR #247](https://github.com/try2love/codex-mobile-bridge/pull/247)
+- **Customizable composer.** Choose single- or dual-column layouts, reorder tools by dragging, organize panels and select icon or text labels. Unified send/stop controls and layout changes preserve drafts, with improved narrow-screen, touch and input-focus behavior. [#175](https://github.com/try2love/codex-mobile-bridge/issues/175) · [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201)
+- **Split views and native queued messages.** Open files or tools beside a wide-screen chat and refresh image thumbnails more reliably. Message management displays Codex App's native send-after-completion queue separately from the gateway queue. [PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+- **Quota display and optional continuation.** Add a movable Remaining quota tool with consistent rings, time windows and expandable quota pools. Quota-recovery continuation is off by default and supports quota-interrupted tasks for official accounts in the default local Codex Desktop profile. [#255](https://github.com/try2love/codex-mobile-bridge/issues/255) · [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256) · [PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257)
+- **Gateway version selection and download cache.** Browse stable and preview releases and download historical packages for the current OS and architecture. After compatibility checks, upgrade, downgrade or reinstall the current version. Keep installers in a cache labeled by version, format and size, reuse verified downloads and select entries to delete.
+- **Update recovery and one-click credential migration.** Improve macOS startup-timeout rollback, Windows installation-directory occupancy checks and configuration backups. On macOS, Migrate credentials appears only when legacy credentials need migration and disappears after success. Keep the old credentials, retry failures and retain existing phone pairings. [#268](https://github.com/try2love/codex-mobile-bridge/issues/268)
+- **Windows Codex initialization and shutdown.** Improve normal shutdown when native menus are expanded on demand, and complete the quit, configure, restart and connection-verification sequence during initialization while retaining task and approval checks. [#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
+- **Antigravity commands, modes and models.** Support native slash commands, multiple Skills, context compaction and supported native Plan/Goal modes. Select models and reasoning effort separately, refreshing command and model catalogs for the current account and model. [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173) · [PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **Antigravity chat management and branching.** Rename, archive and restore chats, set titles for new chats and create native branches from completed replies. Revert to a selected native step, with file rollback left to the user's choice. [#231](https://github.com/try2love/codex-mobile-bridge/issues/231) · [PR #232](https://github.com/try2love/codex-mobile-bridge/pull/232) · [#233](https://github.com/try2love/codex-mobile-bridge/issues/233) · [PR #234](https://github.com/try2love/codex-mobile-bridge/pull/234) · [PR #246](https://github.com/try2love/codex-mobile-bridge/pull/246)
+- **Antigravity background tasks and stopping.** View background tasks and subagents and stop individual tasks. Stop the current chat even while a send request is pending. Fix stale state after stopping and recovery when a new task starts on the desktop. [PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179) · [#235](https://github.com/try2love/codex-mobile-bridge/issues/235) · [PR #236](https://github.com/try2love/codex-mobile-bridge/pull/236) · [#223](https://github.com/try2love/codex-mobile-bridge/issues/223) · [PR #224](https://github.com/try2love/codex-mobile-bridge/pull/224) · [#241](https://github.com/try2love/codex-mobile-bridge/issues/241) · [PR #242](https://github.com/try2love/codex-mobile-bridge/pull/242)
+- **Antigravity images, references and context.** Send image attachments through the native API and preserve native workspace-file references. Show context capacity, system messages and turn durations when reliable native timestamps are available. [#237](https://github.com/try2love/codex-mobile-bridge/issues/237) · [PR #238](https://github.com/try2love/codex-mobile-bridge/pull/238) · [#239](https://github.com/try2love/codex-mobile-bridge/issues/239) · [PR #240](https://github.com/try2love/codex-mobile-bridge/pull/240)
+- **Antigravity version and platform compatibility.** Improve Linux AppImage, extracted-installation and automatic discovery support. Fix project binding for new chats, stale model catalogs and reasoning-effort detection in older versions. Discover environment tokens for newer native services on macOS and Linux. [#210](https://github.com/try2love/codex-mobile-bridge/issues/210) · [PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209) · [#213](https://github.com/try2love/codex-mobile-bridge/issues/213) · [PR #215](https://github.com/try2love/codex-mobile-bridge/pull/215) · [#214](https://github.com/try2love/codex-mobile-bridge/issues/214) · [PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216) · [#249](https://github.com/try2love/codex-mobile-bridge/issues/249) · [PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250)
+- **Antigravity history and error recovery.** Improve older-chat reading, history-cache refresh and handling of temporarily unreadable databases. Fix errors caused by missing or malformed account-index fields. [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245) · [PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196) · [#225](https://github.com/try2love/codex-mobile-bridge/issues/225) · [PR #226](https://github.com/try2love/codex-mobile-bridge/pull/226)
+- **Files and Git.** Sort directories by name, modification time or size and upload into the currently browsed directory. Show recent Git commits first, fully page large change lists and share font-size and wrapping settings with diff views. [#262](https://github.com/try2love/codex-mobile-bridge/issues/262) · [#263](https://github.com/try2love/codex-mobile-bridge/issues/263) · [#264](https://github.com/try2love/codex-mobile-bridge/issues/264)
+- **Chat lists and device management.** Show the last user-input time, improve project grouping and platform-specific path handling. Display readable browser, device-model and app-version information for connected devices and allow renaming. [#265](https://github.com/try2love/codex-mobile-bridge/issues/265)
+- **Task-completion notifications.** Optionally include a final-answer excerpt; this is off by default. Fix inconsistent Android notification-panel styling in dark mode. [#163](https://github.com/try2love/codex-mobile-bridge/issues/163) · [#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+- **Mobile connections and refresh.** Improve reachability checks for slow responses over cellular, Tailscale and similar connections, avoiding premature offline reports. Fix iOS Refresh page not actually reloading, and reuse appearance and toolbar preferences for the same computer connection. [#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
+- **ZCode login and local connections.** Fix browser authorization handoff for official remote access and improve handling of deleted working directories and new chats. Add all upstream models at once after fetching them, with stronger checks for unknown task state and native questions. [#174](https://github.com/try2love/codex-mobile-bridge/issues/174) · [#204](https://github.com/try2love/codex-mobile-bridge/issues/204) · [#203](https://github.com/try2love/codex-mobile-bridge/issues/203) · [PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191)
+- **Claude, Codex and DSH compatibility.** Correct Claude context-usage reads and native-question validation. Handle nullable Codex model catalogs and Fast-mode policies. Support empty configuration sections in DSH credentials, improve transport errors and restore connections after opening a chat. [PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189) · [PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192) · [PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190) · [#217](https://github.com/try2love/codex-mobile-bridge/issues/217) · [PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **Startup, configuration saves and background stability.** Fix startup and write failures caused by corrupt rebuildable state, leftover temporary files and data-directory save errors. Isolate maintenance failures in one chat so other chats and notification workers keep working. [#184](https://github.com/try2love/codex-mobile-bridge/issues/184) · [#188](https://github.com/try2love/codex-mobile-bridge/issues/188) · [PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194) · [PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195) · [PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **Client discovery and protocol handling.** Fix client scans blocked by protected Windows installation directories and improve path discovery after application updates. Correct WebSocket control-frame, fragmentation and binary-message handling. [#211](https://github.com/try2love/codex-mobile-bridge/issues/211) · [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) · [PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197)
+- **Networking and file protection.** Support explicit IPv6 listeners and fix public IPv6 address handling. Tolerate SSH login-output noise while retaining upload-integrity verification, and consistently block case variants of .git paths. [#208](https://github.com/try2love/codex-mobile-bridge/issues/208) · [#219](https://github.com/try2love/codex-mobile-bridge/issues/219) · [PR #220](https://github.com/try2love/codex-mobile-bridge/pull/220) · [#221](https://github.com/try2love/codex-mobile-bridge/issues/221) · [PR #222](https://github.com/try2love/codex-mobile-bridge/pull/222)
+- **Message-management compatibility.** Fix message management failing to open in older browsers, archived filters persisting into new chats and malformed queue-text rendering. [#227](https://github.com/try2love/codex-mobile-bridge/issues/227) · [PR #228](https://github.com/try2love/codex-mobile-bridge/pull/228) · [#229](https://github.com/try2love/codex-mobile-bridge/issues/229) · [PR #230](https://github.com/try2love/codex-mobile-bridge/pull/230)
+- **Application appearance.** Update desktop, Android, iOS and web icons with light/dark variants, and let the gateway App follow the system dark theme. [#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182) · [#261](https://github.com/try2love/codex-mobile-bridge/issues/261)
+
+Install over the existing App without uninstalling or clearing data. Android supports in-place upgrades from v2.2.1 and this preview series; use your existing signing identity for iOS. Initial migration of legacy macOS connection credentials may require one system authorization. Switching to a historical version checks credential and configuration compatibility; incompatible installers remain available for separate download.
+
+Thanks to [@windowmmk](https://github.com/windowmmk), [@heiqiu47](https://github.com/heiqiu47), [@mc373906408](https://github.com/mc373906408), [@hmho000](https://github.com/hmho000), [@a32556376](https://github.com/a32556376), [@ufomaker](https://github.com/ufomaker), and everyone who tested previews and shared issues and suggestions.
+
+### 安装 / Installation
+
+桌面、Android 与 iOS 版本 **2.2.2**；Android/iOS build **93**。
+
+Desktop, Android and iOS version **2.2.2**; Android/iOS build **93**.
+
+## v2.2.2-preview.4 · 完整历史、离线消息与原生连接改进
+
+本次预览版重点改进长会话阅读、完整历史传输与离线使用，并继续完善 Codex 原生连接、额度展示和文件管理。建议同时更新网关和手机 App，以使用完整的离线功能。
+
+**2026-11-26 桌面更新补丁**：同一 Preview 4 Release 更新桌面安装包。修复 Mac 旧连接凭据待迁移时的更新超时回滚，并为 Windows 补充 Codex 运行时占用预检。从 Preview 3 升级的 Windows 用户仍需先结束任务、正常退出 Codex，以及使用本地连接的 ZCode。Mac 更新后若提示旧凭据待迁移，请在电脑端连接设置中显式迁移并重启网关。
+
+此前下载或安装过 Preview 4 的用户，请在“历史版本与安装包”中点击“刷新”，重新选择 Preview 4 并安装；普通“检查更新”不会提示同版本补丁。请勿先卸载或清除数据。桌面产品源码为 [660defca](https://github.com/try2love/codex-mobile-bridge/commit/660defca47657ed2215765c0e825dc029e84b84b)，Mac ARM64 使用产品代码相同、只补充测试与验收工具的 [91e6730a](https://github.com/try2love/codex-mobile-bridge/commit/91e6730a839e91fd20013157ac3310ce559827aa)。保留原 tag，GitHub 自动源码归档仍对应首次发布；手机安装包不变。
+
+- **完整历史传输与离线阅读**：支持将已保存的会话正文、中间过程和附件下载到手机，复用已有内容、断点续传并恢复未完成任务。离线记录支持按日期清理并回收存储空间。
+- **离线草稿与待发消息**：断网后仍可继续输入，将消息存入待发队列，同时保留下一条草稿。重连后核对原网关、账号和会话，按顺序投递；明确未发送的失败消息可原位编辑或移除，发送结果未知时继续核对，避免重复发送。
+- **长会话加载与展示**：优先展示已有内容，减少缓存读写对前台阅读的影响；完善旧历史补全、过程分页和附件链接，修复部分回复的模型、时间信息缺失，以及新一轮开始后历史显示不完整的问题。关联 [#258](https://github.com/try2love/codex-mobile-bridge/issues/258)。
+- **Codex 原生连接**：改进 macOS、Windows 和 Linux 上正常启动 Codex App 后的原生接入与连接恢复，继续保留原会话和执行上下文。
+- **额度展示与可选自动继续**：新增可自定义位置的“剩余额度”工具，统一额度圆环、窗口和可展开额度池；提供默认关闭的额度恢复后自动继续功能，目前限默认配置下的本机 Codex Desktop 官方账号。关联 [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256)、[PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257)。
+- **文件与 Git 管理**：目录支持按名称、修改时间和大小排序；允许向当前浏览的宿主目录上传；大型仓库的 Git 变更列表支持完整分页。关联 [#262](https://github.com/try2love/codex-mobile-bridge/issues/262)、[#263](https://github.com/try2love/codex-mobile-bridge/issues/263)、[#264](https://github.com/try2love/codex-mobile-bridge/issues/264)。
+- **聊天列表与交互**：列表显示最后一次用户输入的时间；改进按已登记项目根目录归类，正确区分 Windows 与 Mac/Linux 的路径规则；修复打开 DSH 会话后的连接问题，支持关闭聊天状态提示，并优化触控焦点和输入区按钮。时间显示关联 [#265](https://github.com/try2love/codex-mobile-bridge/issues/265)。
+- **设备与通知**：已连接设备显示更易读的浏览器、机型与 App 版本信息，支持重命名；任务完成通知可选择包含最终回答摘要，默认关闭。通知关联 [#163](https://github.com/try2love/codex-mobile-bridge/issues/163)。
+- **Antigravity 适配**：改进新版接入发现、较早会话读取与未知发送提示；支持经原生状态核验后撤回消息，文件回退由用户单独选择。关联 [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245)、[PR #246](https://github.com/try2love/codex-mobile-bridge/pull/246)、[PR #247](https://github.com/try2love/codex-mobile-bridge/pull/247)、[PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250)。
+- **接入识别与网络**：修复已切回原配置后仍被识别为 Magpie 接管的问题；增加显式 IPv6 监听支持。关联 [#259](https://github.com/try2love/codex-mobile-bridge/issues/259)、[#208](https://github.com/try2love/codex-mobile-bridge/issues/208)。
+- **macOS 凭据与更新备份**：改进网关凭据保存，升级备份包含完整的凭据资料，并在切换旧版本前检查可读性。
+- **HarmonyOS 实验客户端**：在共享工作台基础上补充原生复制、文件上传下载、绑定保存和分页离线归档的源码实现。当前仍为实验源码，尚未完成 HAP 构建与真机验收。关联 [PR #248](https://github.com/try2love/codex-mobile-bridge/pull/248)。
+
+使用新版凭据格式的 macOS 配置暂不能直接切换回 Preview 3 或更早版本；历史安装包仍可单独下载，手动回退需先备份并恢复兼容凭据。
+
+感谢 [a32556376](https://github.com/a32556376)、[windowmmk](https://github.com/windowmmk)、[Aplier](https://github.com/Aplier) 的贡献，以及参与测试和反馈的用户。
+
+### English
+
+This preview focuses on long-chat reading, full-history transfers and offline use, with further improvements to Codex native connections, quota displays and file management. Update both the gateway and mobile app for the complete offline feature set.
+
+**Desktop hotfix — November 26, 2026:** the same Preview 4 release receives replacement desktop packages. The hotfix prevents macOS update rollback when legacy connection credentials await migration and adds Windows checks for Codex runtimes holding the installation open. Windows users upgrading from Preview 3 must still finish tasks and quit Codex normally, plus ZCode if using the local connection. If macOS reports pending legacy credentials, explicitly migrate them in the computer's connection settings and restart the gateway.
+
+If you previously downloaded or installed Preview 4, refresh History and installation packages, select Preview 4 again and install it; ordinary Check for updates does not announce same-version patches. Do not uninstall or clear data. Desktop product source: [660defca](https://github.com/try2love/codex-mobile-bridge/commit/660defca47657ed2215765c0e825dc029e84b84b). Mac ARM64 uses [91e6730a](https://github.com/try2love/codex-mobile-bridge/commit/91e6730a839e91fd20013157ac3310ce559827aa), with identical product code and changes only to tests and acceptance tools. The original tag and automatic GitHub source archives remain at the initial release; mobile packages are unchanged.
+
+- **Full-history transfers and offline reading:** download saved messages, intermediate processes and attachments to your phone, reuse existing content, resume interrupted transfers and recover unfinished tasks. Remove offline records by date and reclaim their storage.
+- **Offline drafts and outbox:** keep typing while disconnected, queue a message and retain a separate draft for the next one. After reconnection, verify the original gateway, account and chat before delivering in order. Edit explicitly unsent failures in place or remove them; continue checking unknown results to avoid duplicate sends.
+- **Long-chat loading and display:** show existing content first and reduce cache work that interrupts reading. Improve older-history completion, process paging and attachment links; restore missing model/time metadata and retain history when a new turn starts. [#258](https://github.com/try2love/codex-mobile-bridge/issues/258)
+- **Codex native connections:** improve native access and recovery after ordinary Codex App launches on macOS, Windows and Linux, retaining the original chat and execution context.
+- **Quotas and optional continuation:** add a movable Remaining quota tool, shared quota rings/windows and expandable pools. Quota-recovery continuation is off by default and currently limited to the default local Codex Desktop profile with an official account. [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256) · [PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257)
+- **Files and Git:** sort directories by name, modification time or size; upload into the currently browsed host directory; page through the full Git change list in large repositories. [#262](https://github.com/try2love/codex-mobile-bridge/issues/262) · [#263](https://github.com/try2love/codex-mobile-bridge/issues/263) · [#264](https://github.com/try2love/codex-mobile-bridge/issues/264)
+- **Chat lists and interaction:** show the last user-input time, group chats by registered project roots using the correct Windows or Mac/Linux path rules, fix connections when opening DSH chats, allow status notices to be dismissed and refine touch focus and composer buttons. Time display: [#265](https://github.com/try2love/codex-mobile-bridge/issues/265)
+- **Devices and notifications:** show readable browser, device-model and app-version details and allow devices to be renamed. Task-completion notifications can include a final-answer excerpt; this is off by default. [#163](https://github.com/try2love/codex-mobile-bridge/issues/163)
+- **Antigravity:** improve discovery of newer native connections, older-chat reading and unknown-send notices. Revert messages after verifying native state; file rollback remains a separate user choice. [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245) · [PR #246](https://github.com/try2love/codex-mobile-bridge/pull/246) · [PR #247](https://github.com/try2love/codex-mobile-bridge/pull/247) · [PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250)
+- **Connection detection and networking:** stop reporting Magpie ownership after the original configuration is restored; support explicit IPv6 listeners. [#259](https://github.com/try2love/codex-mobile-bridge/issues/259) · [#208](https://github.com/try2love/codex-mobile-bridge/issues/208)
+- **macOS credentials and update backups:** improve gateway credential storage, include complete credential files in upgrade backups and check readability before switching to older versions.
+- **Experimental HarmonyOS client:** extend the shared workbench with source implementations of native copying, file uploads/downloads, saved bindings and paged offline archives. HAP builds and physical-device acceptance have not been completed. [PR #248](https://github.com/try2love/codex-mobile-bridge/pull/248)
+
+macOS profiles using the new credential format cannot switch directly to Preview 3 or earlier. Older installers remain available to download; manual rollback requires a backup and restoration of compatible credentials.
+
+Thanks to [a32556376](https://github.com/a32556376), [windowmmk](https://github.com/windowmmk), [Aplier](https://github.com/Aplier), and everyone who tested and reported issues.
+
+### 安装 / Installation
+
+桌面与 Android 版本 **2.2.2-preview.4**；Android/iOS build **92**，iOS marketing version **2.2.2**。Android 沿用 v2.2.1 与此前 2.2.2 预览版的应用标识和持久签名，覆盖安装可保留连接及草稿。iOS 未签名 IPA 需使用自己的原签名身份安装。请勿先卸载或清除数据。本预览版不替换 v2.2.1 稳定版。
+
+Desktop/Android version **2.2.2-preview.4**, Android/iOS build **92**, iOS marketing version **2.2.2**. Android retains the application and persistent signing identities used by v2.2.1 and earlier 2.2.2 previews for in-place upgrades. Sign the unsigned iOS IPA with your existing identity. Do not uninstall or clear data first. This prerelease does not replace stable v2.2.1.
+
+## v2.2.2-preview.3 · 新版 Codex 原生连接适配与网关更新优化
+
+本次预览版适配新版 Codex Desktop 原生连接，并改善网关更新重试、配置恢复与卸载数据保留。[#252](https://github.com/try2love/codex-mobile-bridge/issues/252) · [#254](https://github.com/try2love/codex-mobile-bridge/issues/254)
+
+**建议更新网关，以适配最新版 Codex App 原生连接。**
+
+### 新增与改进
+
+- **新版 Codex 原生连接。** 支持新版 hosted Desktop 的原生聊天读取、发送、停止与审批，并兼容旧版连接。首次正常准备连接时，可能需要重启 Codex 一次。
+- **连接恢复与长会话读取。** 改善 Codex 重开后的接入恢复，冷聊天和单聊天重建不再连带断开其他聊天；实时连接优先跟随当前回合，较早历史按需读取，编辑重发后仍可查看保留的前文。
+- **运行状态展示。** 修正历史时间单位混用导致的异常超大用时；自动重试警告不再反复作为终止错误置底，真实失败和工具错误继续显示。
+- **手机应用图标。** Android 和 iOS 同步新版图标，补齐此前只更新桌面与网页的遗漏。[#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
+- **自由选择网关版本。** 从更新页查看全部已发布的正式版与预览版，并选择适合本机系统与架构的安装包；可单独下载，也可确认后切换到较新、较旧或当前版本。后续正式版与本预览版可双向切换，较早安装包保留明确的手动安装入口。
+- **下载缓存管理。** 完整安装包在更新成功后继续保留，列表标注版本、系统、架构、格式和大小，可勾选删除；重复下载或安装前重新校验并复用缓存。
+- **Windows 配置与恢复。** 改善配置文件权限处理，保留恢复副本；返回稳定版时恢复兼容配置。
+- **卸载数据保留。** 默认保留数据，可选择仅清理 Bridge 自有目录。
+
+### 更新说明
+
+这是预览版，v2.2.1 仍为最新稳定版。v2.2.1 的既有更新器不会发现预览版，首次体验需手动安装；preview.1 的 Mac/Windows 用户及 preview.2 用户可通过检查更新升级；Linux preview.1 需手动安装。
+
+从 Preview 3 开始，版本选择与下载缓存由用户管理；旧程序不会因此自动获得新入口。自动替换继续校验发布签名、安装包和资料格式，并在切换前备份当前网关配置。需手动安装的包会明确提示，打开安装器不代表安装已完成。
+
+Android 版本为 **2.2.2-preview.3**，build **63**，沿用 v2.2.1、preview.1 和 preview.2 的应用标识与持久签名，可覆盖升级。iOS marketing version 为 **2.2.2**、build **63**；未签名 IPA 需要自行签名。原生操作以客户端实际能力为准。
+
+---
+
+### English · Newer Codex native connections and gateway update improvements
+
+This preview supports newer Codex Desktop native connections and improves gateway update retries, configuration recovery and data retention during uninstall. [#252](https://github.com/try2love/codex-mobile-bridge/issues/252) · [#254](https://github.com/try2love/codex-mobile-bridge/issues/254)
+
+**Updating the gateway is recommended for compatibility with the latest Codex App native connection.**
+
+### Features and improvements
+
+- **Newer Codex native connections.** Read native chats, send messages, stop turns and handle approvals through newer hosted Desktop connections while retaining older connection support. Initial connection setup may require one Codex restart.
+- **Connection recovery and long chats.** Improve recovery after Codex reopens. Joining a cold chat or rebuilding one chat no longer disconnects other chats. Follow the current native turn first, load older history on demand, and retain readable history after editing and resending.
+- **Runtime status.** Fix excessively large elapsed times caused by mixed timestamp units. Automatic retry warnings no longer recur as terminal errors; actual failures and tool errors remain visible.
+- **Mobile app icons.** Update Android and iOS icons to match the new artwork previously shipped on desktop and web. [#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
+- **Choose any gateway release.** Browse all published stable and preview releases and select packages for the current OS and architecture. Download without installing, or explicitly switch to a newer, older or current version. Future stable releases and this preview support switching in either direction; older packages retain an explicit manual installation path.
+- **Manage download caches.** Keep complete packages after successful updates. See each version, OS, architecture, format and size, and select packages to delete. Revalidate cached files before reusing them for a download or installation.
+- **Windows configuration and recovery.** Improve configuration file permissions and retain recovery copies; restore compatible settings when returning to stable.
+- **Keep data during uninstall.** Preserve data by default, with an option to remove only Bridge-owned directories.
+
+### Installation
+
+v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 users on macOS/Windows and preview.2 users can check for updates. Linux preview.1 requires a manual install.
+
+Starting with Preview 3, users control version selection and download caches; previously installed older apps do not gain the new chooser automatically. Automatic replacement still validates the signed release, package and data format, and backs up current gateway settings before switching. Manual installation is clearly labeled; opening an installer does not mean installation has completed.
+
+Android version **2.2.2-preview.3**, build **63**, keeps the application and persistent signing identities used by v2.2.1, preview.1 and preview.2 for in-place upgrades. iOS marketing version is **2.2.2**, build **63**; the unsigned IPA requires your own signing. Native operations depend on the connected client's capabilities.
+
+## v2.2.2-preview.2 · 可定制输入区、原生聊天控制与更新渠道选择
+
+本次预览版重点改进聊天输入与过程阅读，补齐 Antigravity 原生会话操作，修复 preview.1 反馈中的连接、启动、模型和消息展示问题，并新增正式／预览版本选择。
+
+### 新增与改进
+
+- **选择预览版与返回正式版。** 网关更新页可分别查看正式版和预览版，切换选项只查询，不自动下载或重启。Mac、Windows 可在确认具体版本后安装预览版，或从本轮预览版返回已核验兼容的 v2.2.1；保留原数据目录，不自动用旧备份覆盖期间新增的配置。Linux 提供版本选择、受支持包的校验下载及系统安装入口；缺少签名包信息的旧版本通过对应官方发布页手动安装。
+- **可定制聊天输入区。** 支持单栏、双栏布局，工具拖动排序、面板收纳和图标／文字显示。统一发送与停止控件，排队和引导方式随当前会话能力同步，调整布局保留草稿。[#175](https://github.com/try2love/codex-mobile-bridge/issues/175) · [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201)
+- **试验性原生回合折叠。** 成功完成且具有明确最终回答的回合可收起中间思考与工具过程；用户输入、补充消息、文件结果和最终回答保持可见。运行中、失败、中断或信息不足时保持展开，手动展开在当前聊天刷新和补载时保留。有可信原生起止时间才显示耗时。[#212](https://github.com/try2love/codex-mobile-bridge/issues/212)
+- **查看 Codex 桌面待发消息。** 消息管理显示本机 Codex App 中“完成后发送”的原生队列，与网关队列区分。Codex 继续负责发送，原生条目的编辑、排序和撤回仍在桌面端完成。
+- **Antigravity 原生会话操作。** 支持改名、归档与恢复、新建标题，以及从已完成回复创建原生分支；操作继续核验任务、审批、队列、服务身份和项目归属。[#231](https://github.com/try2love/codex-mobile-bridge/issues/231) · [PR #232](https://github.com/try2love/codex-mobile-bridge/pull/232) · [#233](https://github.com/try2love/codex-mobile-bridge/issues/233) · [PR #234](https://github.com/try2love/codex-mobile-bridge/pull/234)
+- **Antigravity 任务与内容支持。** 查看后台任务和子代理，单独停止已核验归属的任务；补充原生上下文容量、系统消息、图片输入和工作区引用，改善停止后桌面新一轮任务的恢复判断。[PR #236](https://github.com/try2love/codex-mobile-bridge/pull/236) · [PR #238](https://github.com/try2love/codex-mobile-bridge/pull/238) · [PR #240](https://github.com/try2love/codex-mobile-bridge/pull/240) · [PR #242](https://github.com/try2love/codex-mobile-bridge/pull/242)
+- **Git 历史优先。** Git 子页先读取最近提交，再按需加载更早记录；大型工作区的变更扫描不再阻塞历史查看，变更列表仍可单独打开。
+- **新的明暗应用图标。** 桌面运行图标和网页标识跟随对应外观，macOS 菜单栏继续使用单色图标。[#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
+
+### 修复与优化
+
+- 改善手机慢连接判断：快速探测超时后进行一次有截止时间的确认，减少蜂窝、Tailscale 等慢响应场景的过早离线提示；修复 iOS 原生“刷新页面”未实际重新加载。[#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
+- 保留 Codex 已收到的流式正文，避免后续空快照抹去内容；省略没有正文和附件的空白回答占位，同步聊天标题，修复第三方 API 执行错误后连接错误退为只读。[#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- 改善 Windows 取消 CLI 恢复时的并发文件读取，避免取消操作偶发写入失败；不重启或重发未确认任务。
+- 修复 Windows Codex 正常退出，兼容原生菜单按需展开，继续核验任务和进程身份。[#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
+- 改善 Antigravity Linux AppImage、自定义解压目录与自动发现；修复新聊天项目绑定、旧模型缓存和变体思考强度选择。[#210](https://github.com/try2love/codex-mobile-bridge/issues/210) · [PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209) · [#213](https://github.com/try2love/codex-mobile-bridge/issues/213) · [#214](https://github.com/try2love/codex-mobile-bridge/issues/214) · [PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216)
+- 改善损坏状态和受保护 WindowsApps 目录对启动、扫描的影响；处理 ZCode 工作目录被删除、新聊天接入状态及 API 模型批量添加，兼容 DSH 原生凭据空配置段。[PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) · [#211](https://github.com/try2love/codex-mobile-bridge/issues/211) · [#204](https://github.com/try2love/codex-mobile-bridge/issues/204) · [#203](https://github.com/try2love/codex-mobile-bridge/issues/203) · [#217](https://github.com/try2love/codex-mobile-bridge/issues/217)
+- 修复公网 IPv6 地址处理、SSH 登录输出干扰和上传校验；统一阻止 `.git` 大小写变体路径。补齐旧浏览器消息管理兼容，新建聊天后取消已归档筛选，并改善异常队列文本处理。[#208](https://github.com/try2love/codex-mobile-bridge/issues/208) · [PR #220](https://github.com/try2love/codex-mobile-bridge/pull/220) · [PR #222](https://github.com/try2love/codex-mobile-bridge/pull/222) · [PR #228](https://github.com/try2love/codex-mobile-bridge/pull/228) · [PR #230](https://github.com/try2love/codex-mobile-bridge/pull/230)
+
+### 更新说明
+
+这是预览版，v2.2.1 仍为最新稳定版。现有 v2.2.1 更新器不会发现预览版，首次体验需手动安装；新版入口不能反向添加到已经安装的旧程序。preview.1 用户可通过检查更新升级。建议同步更新网关与手机 App，以获得手机探测和 iOS 刷新修复。
+
+返回正式版会再次验证具体目标、包签名及数据兼容范围，未知或不兼容的旧版不会直接安装。Linux 安装器可能需要本机管理员确认；打开安装器不表示安装已经完成。
+
+Android 沿用 v2.2.1 和 preview.1 的应用标识与持久签名，可覆盖升级；v2.2.0 旧 App 仍独立安装，绑定与草稿不会自动迁移。iOS 源码和未签名 IPA 需要自行签名。
+
+回合折叠属于试验性功能；原生分支、任务控制、上下文和耗时以当前客户端实际提供的能力与数据为准。欢迎在 [反馈区 #199](https://github.com/try2love/codex-mobile-bridge/issues/199) 反馈输入区定制、过程展开、慢连接、Antigravity 操作和版本切换体验。
+
+感谢 [@heiqiu47](https://github.com/heiqiu47)、[@windowmmk](https://github.com/windowmmk)、[@mc373906408](https://github.com/mc373906408) 和 [@hmho000](https://github.com/hmho000) 的功能贡献与修复建议。
+
+---
+
+### English · Customizable composer, native chat controls and release channels
+
+This preview improves composing and reading chats, adds native Antigravity operations, fixes connection and presentation issues reported for preview.1, and adds explicit stable/preview selection.
+
+### Features and improvements
+
+- **Choose previews or return to stable.** View stable and preview releases separately without downloading or restarting on selection. On macOS and Windows, explicitly confirm a preview installation or return from this preview series to the verified compatible v2.2.1. Keep the live data directory; do not overwrite newer settings with an old backup. Linux offers release selection, verified downloads where signed package metadata is available, and system installation; older releases without signed Linux metadata use their official release page for manual installation.
+- **Customize the composer.** Use one or two rows, drag tools between aligned regions and the tool panel, and choose icons, labels or both. Shared send/stop controls follow native capabilities while preserving drafts. [#175](https://github.com/try2love/codex-mobile-bridge/issues/175) · [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201)
+- **Experimental native-turn folding.** Fold intermediate reasoning and tools only for successful turns with an identified final answer. Keep user inputs, supplements, file results and final answers visible. Running, failed, interrupted or unverified turns stay expanded; manual expansion survives refreshes and history loading in the current chat. Show elapsed time only when native timestamps support it. [#212](https://github.com/try2love/codex-mobile-bridge/issues/212)
+- **Read Codex desktop follow-ups.** Message management shows messages queued in the local Codex App separately from gateway-owned entries. Codex retains dispatch ownership; edit, reorder and withdraw native entries in the desktop app.
+- **Antigravity native operations.** Rename, archive/restore, set new-chat titles and fork completed replies while retaining task, approval, queue, service and project checks. [PR #232](https://github.com/try2love/codex-mobile-bridge/pull/232) · [PR #234](https://github.com/try2love/codex-mobile-bridge/pull/234)
+- **Antigravity tasks and content.** View and individually stop verified background tasks and child agents; support native context capacity, system messages, image input and workspace references. Improve recovery when the desktop starts a new turn after stopping. [PR #236](https://github.com/try2love/codex-mobile-bridge/pull/236) · [PR #238](https://github.com/try2love/codex-mobile-bridge/pull/238) · [PR #240](https://github.com/try2love/codex-mobile-bridge/pull/240) · [PR #242](https://github.com/try2love/codex-mobile-bridge/pull/242)
+- **Git history first.** Read recent commits and paginate older history without waiting for a large working-tree scan. Changes remain a separate view.
+- **New themed icons.** Desktop runtime icons and web branding follow their applicable appearance; macOS retains a monochrome menu-bar icon. [#181](https://github.com/try2love/codex-mobile-bridge/issues/181) · [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182)
+
+### Fixes
+
+- Confirm slow mobile gateway reads within a shared deadline after the initial timeout; fix native iOS page refresh. [#218](https://github.com/try2love/codex-mobile-bridge/issues/218)
+- Preserve streamed Codex content across empty snapshots, omit empty assistant placeholders, synchronize titles, and keep terminal API errors from incorrectly making the conversation read-only. [#205](https://github.com/try2love/codex-mobile-bridge/issues/205)
+- Prevent concurrent recovery-record reads from intermittently blocking cancellation on Windows, without restarting or replaying uncertain tasks.
+- Restore normal Windows Codex quit through its verified lazy native menu. [#206](https://github.com/try2love/codex-mobile-bridge/issues/206)
+- Improve Antigravity Linux AppImage/discovery, new-chat project binding, stale model catalogs and legacy effort selection. [#210](https://github.com/try2love/codex-mobile-bridge/issues/210) · [PR #209](https://github.com/try2love/codex-mobile-bridge/pull/209) · [#213](https://github.com/try2love/codex-mobile-bridge/issues/213) · [#214](https://github.com/try2love/codex-mobile-bridge/issues/214) · [PR #216](https://github.com/try2love/codex-mobile-bridge/pull/216)
+- Handle corrupt rebuildable state, protected WindowsApps enumeration, removed ZCode workspaces, new-session readiness, bulk API model additions and empty native DSH credential sections. [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) · [#211](https://github.com/try2love/codex-mobile-bridge/issues/211) · [#204](https://github.com/try2love/codex-mobile-bridge/issues/204) · [#203](https://github.com/try2love/codex-mobile-bridge/issues/203) · [#217](https://github.com/try2love/codex-mobile-bridge/issues/217)
+- Fix public IPv6 origins, noisy SSH login output and upload verification; reject case variants of `.git` paths consistently. Support message management in older browsers and correct archived filters and nullable queue text. [#208](https://github.com/try2love/codex-mobile-bridge/issues/208) · [PR #220](https://github.com/try2love/codex-mobile-bridge/pull/220) · [PR #222](https://github.com/try2love/codex-mobile-bridge/pull/222) · [PR #228](https://github.com/try2love/codex-mobile-bridge/pull/228) · [PR #230](https://github.com/try2love/codex-mobile-bridge/pull/230)
+
+### Installation
+
+v2.2.1 remains the latest stable release. Its existing updater filters previews, so first-time preview users must install manually. Preview.1 users can check for updates. Update the gateway and mobile app for the full mobile probing and iOS refresh fixes.
+
+Returning to stable verifies the exact target, package signature and data compatibility. Unknown or incompatible older targets are not installed directly. Linux installation may require local administrator confirmation; opening the installer is not completion evidence.
+
+Android retains the identity and persistent signer used by v2.2.1 and preview.1. The legacy v2.2.0 app remains separate and its bindings/drafts do not migrate automatically. iOS source and unsigned IPA require your own signing.
+
+Turn folding is experimental; native operations and timing depend on the current client's capabilities and evidence. Share feedback in [#199](https://github.com/try2love/codex-mobile-bridge/issues/199).
+
+Thanks to [@heiqiu47](https://github.com/heiqiu47), [@windowmmk](https://github.com/windowmmk), [@mc373906408](https://github.com/mc373906408) and [@hmho000](https://github.com/hmho000).
+
+---
+
+## v2.2.2-preview.1 · 长会话阅读、Antigravity 操作与稳定性改进
+
+**预览版。** 本次更新重点改善长会话的打开、回看和过程阅读，并补齐 Antigravity 原生操作与多客户端异常处理。
+
+### 新增与改进
+
+- **长会话按需加载。** 对话正文与执行过程分别分页；思考、工具调用和已完成任务可折叠，展开时再读取过程详情。复用按已核验网关和会话隔离的近期历史缓存，保留上翻阅读位置与历史图片引用，避免新消息或过程展开将视图拉走。
+- **Antigravity 原生指令与模式。** 支持原生 `/` 指令、Skill 多选、`/compact` 及经能力核验的计划和目标模式；指令目录随当前模型和账号刷新。结构化操作不进入仅支持文本的忙碌队列。[PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)
+- **模型与思考强度分开选择。** Antigravity 将可确认的同一模型变体归组，保留原生模型标识和所选强度；无法可靠归组的模型仍独立显示。[PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **停止与分屏更直接。** Antigravity 停止操作覆盖原生任务树，发送尚未返回时仍可停止当前会话。宽屏工作台可从聊天直接打开右侧文件或工具分屏，并改善分屏图片缩略图刷新。[PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179) · [PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+
+### 修复与优化
+
+- **客户端更新与登录。** 改善应用升级后的路径发现、原生进程归属与 Codex 启动恢复，修复 SSH 模型目录读取；修复 ZCode 官方远控的 OAuth 弹窗和系统浏览器授权衔接。[#174](https://github.com/try2love/codex-mobile-bridge/issues/174)
+- **模型目录与原生响应。** 修复 Claude 上下文用量拆包、Codex 空值目录、ZCode 未知状态及 Claude/ZCode 问答校验；改善 DeepSeek 传输与错误响应提示。保留有效模型缓存；Fast 策略、账号身份或任务状态未核验时保持明确的受限状态。[#186](https://github.com/try2love/codex-mobile-bridge/issues/186) · [#187](https://github.com/try2love/codex-mobile-bridge/issues/187) · [PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189) · [PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190) · [PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191) · [PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192) · [PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **通知、重连与启动。** 可重建的通知状态损坏不再阻止网关启动或终止通知线程；配置写入不再被遗留临时文件持续阻塞。隔离单个会话维护失败，改善 Antigravity 观察数据库损坏、WebSocket 控制帧与分片处理、桌面数据目录保存及启动失败提示。已保存数据目录不可用时明确报错，避免误用空目录。[#184](https://github.com/try2love/codex-mobile-bridge/issues/184) · [#188](https://github.com/try2love/codex-mobile-bridge/issues/188) · [PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194) · [PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195) · [PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196) · [PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197) · [PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **手机外观与文件阅读。** 修复 Android 深色模式通知面板，按已核验电脑绑定共享外观设置，并改善文件地址栏长路径阅读。[#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+
+### 安装与兼容性
+
+桌面与 Android 版本 **2.2.2-preview.1**；Android/iOS build **61**，iOS marketing version **2.2.2**。这是预发布版本，不替换稳定版 latest。
+
+**Android：** 发布的 **Bridge** 使用与 v2.2.1、v2.2.1-preview.1 **Bridge Preview** 相同的独立应用标识，可覆盖升级并保留该 App 的连接和草稿。旧版 v2.2.0 App 与新版独立安装，不能直接覆盖：先安装新版、重新添加电脑并确认连接正常，保留旧版中需要的草稿后再卸载旧版；旧绑定和草稿不会自动迁移。
+
+更新网关后刷新网页；Android 原生通知外观等改进需要更新手机 App。iOS 源码和未签名 IPA 仍需自行签名。原生功能以当前接入能力为准，无法核验的关键状态不会被视为空闲；结果不明的写操作不会自动重放。本次对 #186 的处理涵盖 Claude 响应和 ZCode 状态读取，不表示已解决其中所有握手兼容问题。
+
+### 贡献
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 PR #173、#178、#179、#180 和 #189–#198 中贡献 Antigravity 原生指令、模型强度、停止、分屏与多客户端稳定性修复，并提交相关问题报告。原作者提交完整保留，整合与后续修正单独提交。
+
+---
+
+### English · Long-chat reading, Antigravity controls and reliability
+
+**Preview release.** This update improves opening and reading long chats, adds native Antigravity controls, and handles more client and background-service failures.
+
+### Features and improvements
+
+- **Load long chats on demand.** Conversation text and execution details use separate pages. Fold reasoning, tool calls and completed tasks, then load process details when expanded. Reuse recent-history caches scoped to verified gateways and chats, preserving reading positions and historical image references while new messages arrive or process groups expand.
+- **Native Antigravity commands and modes.** Use native `/` commands, multiple Skills, `/compact`, and verified plan/goal capabilities. Refresh commands for the current model and account; keep structured operations out of text-only busy queues. [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)
+- **Separate model and thinking effort.** Group identifiable Antigravity variants while retaining native model IDs and selected effort. Models that cannot be grouped reliably remain separate. [PR #180](https://github.com/try2love/codex-mobile-bridge/pull/180)
+- **Direct stop and split controls.** Stop the native Antigravity task tree, including while a send is still pending for the current chat. Open a right-hand file/tool pane directly from a wide-screen chat and refresh image thumbnails in split views. [PR #179](https://github.com/try2love/codex-mobile-bridge/pull/179) · [PR #178](https://github.com/try2love/codex-mobile-bridge/pull/178)
+
+### Fixes
+
+- **Client updates and sign-in:** improve installation discovery, native process ownership and Codex startup recovery, and fix SSH model-catalog reads; fix ZCode official-remote OAuth popups and system-browser authorization. [#174](https://github.com/try2love/codex-mobile-bridge/issues/174)
+- **Catalogs and native responses:** fix Claude context-usage extraction, nullable Codex catalogs, unknown ZCode states and Claude/ZCode question validation; improve DeepSeek transport and malformed-response errors. Retain valid model caches and restrict controls when Fast policy, account identity or task state is unverified. [#186](https://github.com/try2love/codex-mobile-bridge/issues/186) · [#187](https://github.com/try2love/codex-mobile-bridge/issues/187) · [PR #189](https://github.com/try2love/codex-mobile-bridge/pull/189) · [PR #190](https://github.com/try2love/codex-mobile-bridge/pull/190) · [PR #191](https://github.com/try2love/codex-mobile-bridge/pull/191) · [PR #192](https://github.com/try2love/codex-mobile-bridge/pull/192) · [PR #193](https://github.com/try2love/codex-mobile-bridge/pull/193)
+- **Notifications, recovery and startup:** corrupt rebuildable notification state no longer blocks startup or kills notification workers; stale temporary files no longer repeatedly block configuration saves. Isolate session-maintenance errors and improve corrupt Antigravity observation databases, WebSocket control/continuation frames, saved data-directory handling and startup errors. Report unavailable saved data directories instead of silently using an empty location. [#184](https://github.com/try2love/codex-mobile-bridge/issues/184) · [#188](https://github.com/try2love/codex-mobile-bridge/issues/188) · [PR #194](https://github.com/try2love/codex-mobile-bridge/pull/194) · [PR #195](https://github.com/try2love/codex-mobile-bridge/pull/195) · [PR #196](https://github.com/try2love/codex-mobile-bridge/pull/196) · [PR #197](https://github.com/try2love/codex-mobile-bridge/pull/197) · [PR #198](https://github.com/try2love/codex-mobile-bridge/pull/198)
+- **Mobile appearance and file reading:** fix Android notification panels in dark mode, share appearance across verified routes to the same computer, and improve long file-address reading. [#176](https://github.com/try2love/codex-mobile-bridge/issues/176)
+
+### Installation and compatibility
+
+Desktop/Android version **2.2.2-preview.1**; Android/iOS build **61**, iOS marketing version **2.2.2**. This prerelease does not replace the stable latest release.
+
+**Android:** the published **Bridge** app retains the separate identity used by v2.2.1 and v2.2.1-preview.1 **Bridge Preview**, allowing in-place upgrades with that app’s connections and drafts retained. The old v2.2.0 app installs separately and cannot be replaced in place. Install Bridge, add your computers and verify connections first; preserve needed old drafts before uninstalling the old app. Old bindings and drafts do not migrate automatically.
+
+Refresh browser pages after updating the gateway; update the mobile app for native changes such as Android notification appearance. iOS sources and the unsigned IPA require your own signing. Native features depend on the current connection’s capabilities; unverified critical state is not treated as idle, and uncertain writes are not replayed automatically. The #186 changes cover Claude responses and ZCode state reads, not every handshake-compatibility issue in that report.
+
+### Contributions
+
+Thanks to [@windowmmk](https://github.com/windowmmk) for native Antigravity commands, model/effort selection, stopping, split views and client reliability fixes in PRs #173, #178, #179, #180 and #189–#198, and for the related issue reports. Original commits are preserved; integration and follow-up corrections are separate.
+
+---
+
 ## v2.2.1 · Antigravity 接入、交互图表与原生会话兼容性改进
 
 **建议更新以适配最新版 Codex APP 原生连接。**

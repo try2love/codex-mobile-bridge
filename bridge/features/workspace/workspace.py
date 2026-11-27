@@ -17,6 +17,7 @@ import atexit
 
 MAX_TRANSFER = 20 * 1024 * 1024
 MAX_PREVIEW = 512 * 1024
+GIT_PAGE_SIZE = 200
 IMAGES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
 
 
@@ -125,6 +126,11 @@ def display_absolute_path(path):
     return path
 
 
+def _has_git_component(parts):
+    """Reject .git segments regardless of filesystem case sensitivity."""
+    return any(part.rstrip(' .').casefold() == '.git' for part in parts)
+
+
 class Workspace:
     def __init__(self, root):
         if not root or not Path(root).is_absolute():
@@ -176,9 +182,10 @@ class Workspace:
             raise PermissionError('暂不支持通过符号链接访问文件')
         return os.open(path, flags | getattr(os, 'O_BINARY', 0), mode)
 
-    def listing(self, path='', hidden=False, search='', offset=0):
+    def listing(self, path='', hidden=False, search='', offset=0, sort='name-asc'):
         parts = self.parts(path)
-        if not isinstance(search, str) or len(search) > 200 or not isinstance(offset, int) or offset < 0:
+        if (not isinstance(search, str) or len(search) > 200 or type(offset) is not int or offset < 0
+                or sort not in ('name-asc', 'name-desc', 'modified-asc', 'modified-desc', 'size-asc', 'size-desc')):
             raise ValueError('目录查询无效')
         rows = []
         with self.directory(parts) as (directory, fd):
@@ -196,9 +203,12 @@ class Workspace:
                                      'size': info.st_size if kind == 'file' else None, 'modified': info.st_mtime})
                     except OSError:
                         continue
-        rows.sort(key=lambda item: (item['kind'] != 'directory', item['name'].casefold(), item['name']))
+        field = sort.split('-')[0]
+        rows.sort(key=lambda item: (item['name'].casefold() if field == 'name' else item[field] or 0,
+                                   item['name'].casefold(), item['name']), reverse=sort.endswith('-desc'))
+        rows.sort(key=lambda item: item['kind'] != 'directory')
         return {'project': self.root.name, 'path': path, 'entries': rows[offset:offset + 200],
-                'total': len(rows), 'nextOffset': offset + 200 if len(rows) > offset + 200 else None}
+                'total': len(rows), 'nextOffset': offset + 200 if len(rows) > offset + 200 else None, 'sort': sort}
 
     def info(self, path):
         parts = self.parts(path)
@@ -382,8 +392,7 @@ class Workspace:
 
     def upload(self, path, encoded):
         parts = self.parts(path)
-        protected_parts = [part.rstrip(' .').casefold() for part in parts] if os.name == 'nt' else parts
-        if not parts or '.git' in protected_parts: raise PermissionError('请选择项目内的普通文件位置')
+        if not parts or _has_git_component(parts): raise PermissionError('请选择项目内的普通文件位置')
         try: data = base64.b64decode(encoded, validate=True)
         except (ValueError, TypeError): raise ValueError('上传内容无效') from None
         if len(data) > MAX_TRANSFER: raise ValueError('每个文件不能超过 20 MB')
@@ -430,7 +439,7 @@ class GitWorkspace:
         if source: source.write(message.encode('utf-8')); source.seek(0)
         try:
             process = subprocess.Popen((self.write_command if write else self.command) + args, cwd=self.workspace.root, env=self.environment,
-                                       stdin=source if source else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                       stdin=source if source else subprocess.DEVNULL, stdout=subprocess.DEVNULL if write else subprocess.PIPE, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             raise ValueError('此电脑或 SSH 服务器未安装 Git') from None
         finally:
@@ -442,30 +451,74 @@ class GitWorkspace:
             except OSError: pass
         timer = threading.Timer(30 if write else 10, timeout); timer.start()
         try:
-            data = process.stdout.read(limit + 1)
+            data = b'' if write else process.stdout.read(limit + 1)
             truncated = len(data) > limit
             if truncated: process.kill()
             code = process.wait()
             if expired.is_set(): raise ValueError('Git 操作结果未确认，请刷新状态和历史后再决定是否重试' if write else 'Git 读取超时，请在电脑上检查仓库后重试')
             return code, data[:limit], truncated
         finally:
-            timer.cancel(); process.stdout.close()
+            timer.cancel()
+            if process.stdout: process.stdout.close()
             if process.poll() is None: process.kill(); process.wait()
 
-    def status(self):
-        code, top, _ = self.run(['rev-parse', '--show-toplevel'])
-        if code: return {'available': False, 'message': '当前项目不是 Git 工作区，或仓库不可访问'}
-        repository = Path(os.fsdecode(top.rstrip(b'\n'))).resolve()
-        code, gitdir, _ = self.run(['rev-parse', '--absolute-git-dir'])
-        if code: raise ValueError('无法读取 Git 仓库位置')
-        self.gitdir = Path(os.fsdecode(gitdir.rstrip(b'\n')))
-        prefix = self.workspace.root.relative_to(repository).as_posix()
-        self.prefix = '' if prefix == '.' else prefix + '/'
-        code, raw, truncated = self.run(['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all',
-                                          '--renames', '--ignore-submodules=dirty', '--', '.'])
-        if code or truncated: raise ValueError('Git 变更列表过大或不可读取，请在电脑上检查仓库')
+    def status_records(self, fingerprint):
+        # Status must be complete for mutation fingerprints. Spool Git's output
+        # instead of interrupting a healthy command at the transport byte limit.
+        with tempfile.TemporaryFile() as output:
+            try:
+                process = subprocess.Popen(self.command + ['status', '--porcelain=v2', '--branch', '-z',
+                    '--untracked-files=all', '--renames', '--ignore-submodules=dirty', '--', '.'],
+                    cwd=self.workspace.root, env=self.environment, stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                raise ValueError('此电脑或 SSH 服务器未安装 Git') from None
+            try:
+                try:
+                    code = process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    raise ValueError('Git 状态读取超时，请稍后刷新或在电脑上检查仓库') from None
+                if code:
+                    raise ValueError('Git 状态无法读取，请检查仓库和目录访问权限')
+                output.seek(0)
+                pending = b''
+                while True:
+                    chunk = output.read(64 * 1024)
+                    if not chunk: break
+                    fingerprint.update(chunk)
+                    records = (pending + chunk).split(b'\0')
+                    pending = records.pop()
+                    for record in records:
+                        yield record.decode('utf-8', 'surrogateescape')
+                if pending:
+                    raise ValueError('Git 状态记录不完整，请刷新后重试')
+            finally:
+                if process.poll() is None:
+                    process.kill(); process.wait()
+
+    @staticmethod
+    def status_counts(entries):
+        return {'total': len(entries), 'conflict': sum(e['conflict'] for e in entries),
+                'staged': sum(not e['conflict'] and not e['untracked'] and e['index'] != '.' for e in entries),
+                'unstaged': sum(not e['conflict'] and not e['untracked'] and e['worktree'] != '.' for e in entries),
+                'untracked': sum(e['untracked'] for e in entries)}
+
+    def status(self, limit=None, offset=0, section='all', untracked_path='', collapse_untracked=False, version=None):
+        if (limit is not None and (type(limit) is not int or not 1 <= limit <= GIT_PAGE_SIZE)
+                or type(offset) is not int or offset < 0
+                or section not in ('all', 'staged', 'unstaged', 'untracked', 'conflict')
+                or type(collapse_untracked) is not bool):
+            raise ValueError('Git 列表分页参数无效')
+        if not isinstance(untracked_path, str):
+            raise ValueError('未跟踪目录无效')
+        if untracked_path:
+            untracked_path = '/'.join(self.workspace.parts(untracked_path.rstrip('/'))) + '/'
+        context = self.repository_context()
+        if not context['available']: return context
+        prefix = context['path_prefix']
+        fingerprint = hashlib.sha256()
         headers, entries = {}, []
-        records = iter(raw.decode('utf-8', 'surrogateescape').split('\0'))
+        records = iter(self.status_records(fingerprint))
         for record in records:
             if not record: continue
             if record.startswith('# '):
@@ -477,13 +530,12 @@ class GitWorkspace:
                 submodule = parts[2].startswith('S')
                 if kind == '2': old = next(records)
             else: continue
-            if not path.startswith(self.prefix): continue
-            relative = path[len(self.prefix):]
-            entries.append({'path': relative, 'oldPath': old[len(self.prefix):] if old and old.startswith(self.prefix) else None,
+            if not path.startswith(prefix): continue
+            relative = path[len(prefix):]
+            entries.append({'path': relative, 'oldPath': old[len(prefix):] if old and old.startswith(prefix) else None,
                             'index': xy[0], 'worktree': xy[1], 'conflict': kind == 'u', 'untracked': kind == '?', 'submodule': submodule})
         entries.sort(key=lambda entry: entry['path'].casefold())
-        counts = headers.get('branch.ab', '').split()
-        fingerprint = hashlib.sha256(raw)
+        ahead = headers.get('branch.ab', '').split()
         for name in ('index', 'HEAD', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'):
             try: fingerprint.update((self.gitdir / name).read_bytes())
             except FileNotFoundError: pass
@@ -492,11 +544,57 @@ class GitWorkspace:
                 info = (self.workspace.root / entry['path']).lstat()
                 fingerprint.update(str((entry['path'], info.st_mtime_ns, info.st_ctime_ns, info.st_size)).encode('utf-8', 'replace'))
             except FileNotFoundError: pass
+        snapshot = fingerprint.hexdigest()
+        if version is not None and version != snapshot:
+            raise ValueError('仓库已发生变化，请刷新并核对后继续查看')
+        counts = self.status_counts(entries)
+        if untracked_path:
+            entries = [e for e in entries if e['untracked'] and e['path'].startswith(untracked_path)]
+        if section == 'conflict':
+            entries = [e for e in entries if e['conflict']]
+        elif section == 'untracked':
+            entries = [e for e in entries if e['untracked']]
+        elif section in ('staged', 'unstaged'):
+            entries = [e for e in entries if not e['conflict'] and not e['untracked']
+                       and e['index' if section == 'staged' else 'worktree'] != '.']
+        view_counts = self.status_counts(entries)
+        if collapse_untracked and not untracked_path and len(entries) > GIT_PAGE_SIZE:
+            grouped, visible = {}, []
+            for entry in entries:
+                if not entry['untracked'] or '/' not in entry['path']:
+                    visible.append(entry); continue
+                directory = entry['path'].split('/', 1)[0] + '/'
+                if directory not in grouped:
+                    grouped[directory] = {**entry, 'path': directory, 'directory': True, 'count': 0}
+                    visible.append(grouped[directory])
+                grouped[directory]['count'] += 1
+            entries = sorted(visible, key=lambda e: e['path'].casefold())
+        total = len(entries)
+        if limit is not None and offset >= total:
+            offset = ((total - 1) // limit) * limit if total else 0
+        page = entries[offset:offset + limit] if limit is not None else entries
         operation = 'merge' if (self.gitdir / 'MERGE_HEAD').exists() else 'other' if any((self.gitdir / name).exists() for name in ('rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD')) else None
-        return {'available': True, 'project': self.workspace.root.name, 'repository': repository.name, 'scope': prefix, 'branch': headers.get('branch.head', ''),
-                'version': fingerprint.hexdigest(), 'operation': operation,
-                'commit': headers.get('branch.oid', ''), 'upstream': headers.get('branch.upstream'),
-                'ahead': int(counts[0]) if counts else None, 'behind': -int(counts[1]) if counts else None, 'entries': entries}
+        return {'available': True, 'project': self.workspace.root.name, 'repository': context['repository'], 'scope': context['scope'], 'branch': headers.get('branch.head', ''),
+                'version': snapshot, 'operation': operation, 'commit': headers.get('branch.oid', ''),
+                'upstream': headers.get('branch.upstream'), 'ahead': int(ahead[0]) if ahead else None,
+                'behind': -int(ahead[1]) if ahead else None, 'entries': page, 'counts': counts,
+                'viewCounts': view_counts, 'total': total, 'offset': offset,
+                'nextOffset': offset + len(page) if limit is not None and offset + len(page) < total else None,
+                'untrackedPath': untracked_path, 'section': section}
+
+    def repository_context(self):
+        """Prepare the repository boundary without enumerating working-tree changes."""
+        code, top, _ = self.run(['rev-parse', '--show-toplevel'])
+        if code: return {'available': False, 'message': '当前项目不是 Git 工作区，或仓库不可访问'}
+        repository = Path(os.fsdecode(top.rstrip(b'\n'))).resolve()
+        code, gitdir, _ = self.run(['rev-parse', '--absolute-git-dir'])
+        if code: raise ValueError('无法读取 Git 仓库位置')
+        self.gitdir = Path(os.fsdecode(gitdir.rstrip(b'\n')))
+        relative = self.workspace.root.relative_to(repository).as_posix()
+        self.prefix = '' if relative == '.' else relative + '/'
+        code, head, _ = self.run(['rev-parse', '--verify', 'HEAD'])
+        commit = head.decode('ascii', 'ignore').strip() if code == 0 else '(initial)'
+        return {'available': True, 'repository': repository.name, 'scope': relative, 'path_prefix': self.prefix, 'commit': commit}
 
     def blob(self, spec):
         code, data, truncated = self.run(['cat-file', 'blob', spec], MAX_PREVIEW)
@@ -562,7 +660,8 @@ class GitWorkspace:
         return value
 
     def history(self, limit=40, ref='all'):
-        state = self.require_repository()
+        state = self.repository_context()
+        if not state['available']: raise ValueError(state['message'])
         if not isinstance(limit, int) or not 1 <= limit <= 1000 or ref not in ('all', 'current'):
             raise ValueError('历史查询无效')
         revisions = ['--all'] if ref == 'all' else []
@@ -581,7 +680,9 @@ class GitWorkspace:
         return {'commits': commits[:limit], 'hasMore': len(commits) > limit, 'scope': state['scope']}
 
     def commit_detail(self, revision):
-        self.require_repository(); self.revision(revision)
+        context = self.repository_context()
+        if not context['available']: raise ValueError(context['message'])
+        self.revision(revision)
         code, raw, truncated = self.run(['show', '-s', '--format=%H%x00%P%x00%an%x00%aI%x00%B', revision, '--'], MAX_PREVIEW)
         if code or truncated: raise ValueError('提交详情不可读取')
         oid, parents, author, date, message = raw.decode('utf-8', 'replace').split('\0', 4)
@@ -640,7 +741,9 @@ class GitWorkspace:
                 if os.name == 'nt': lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
                 else: fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
-    def mutate(self, action, version, path='', branch='', message=''):
+    def mutate(self, action, version, path='', branch='', message='', limit=None):
+        if limit is not None and (type(limit) is not int or not 1 <= limit <= GIT_PAGE_SIZE):
+            raise ValueError('Git 列表分页参数无效')
         allowed = ('stage', 'unstage', 'stage-all', 'unstage-all', 'commit', 'create-branch', 'switch-branch', 'merge', 'abort-merge')
         if action not in allowed: raise ValueError('不支持此 Git 操作')
         self.require_repository()
@@ -653,7 +756,7 @@ class GitWorkspace:
                 raise ValueError('此操作影响整个仓库，请在仓库根目录对应的聊天中操作')
             if action in ('stage', 'unstage'):
                 parts = self.workspace.parts(path)
-                if not parts or '.git' in parts: raise ValueError('请选择项目中的变更文件')
+                if not parts or _has_git_component(parts): raise ValueError('请选择项目中的变更文件')
                 entry = next((e for e in state['entries'] if e['path'] == path), None)
                 if not entry or entry['submodule']: raise ValueError('文件状态已变化或为子模块，请刷新后在电脑上处理')
                 # Existing parent components must not redirect staging outside the project.
@@ -696,7 +799,7 @@ class GitWorkspace:
                     if branch not in names or branch == state['branch']: raise ValueError('请选择另一个已存在的本地分支')
                     command = ['switch', '--no-guess', branch] if action == 'switch-branch' else ['merge', '--no-edit', '--no-stat', '--no-autostash', 'refs/heads/' + branch]
             code, _, truncated = self.run(command, write=True, message=message if action == 'commit' else None)
-            result = self.status()
+            result = self.status(limit=limit, collapse_untracked=limit is not None)
             if code or truncated:
                 if action == 'merge' and result.get('operation') == 'merge':
                     return {'outcome': 'conflict' if any(e['conflict'] for e in result['entries']) else 'merge-pending',
@@ -708,8 +811,8 @@ class GitWorkspace:
 
 
 def host_operation(root, action, params, history_path=None):
-    """Explicit read-only host navigation; project writes keep their old root."""
-    if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream'):
+    """Explicit host file browsing and upload; other writes keep their project root."""
+    if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream', 'upload'):
         raise PermissionError('宿主机文件浏览仅支持读取')
     params = dict(params)
     params.pop('scope')
@@ -759,7 +862,7 @@ def operate(root, action, params, history_path=None):
         if params.get('scope') == 'host':
             return host_operation(root, action, params, history_path)
         workspace = Workspace(root)
-        if action == 'git-status': return GitWorkspace(workspace).status()
+        if action == 'git-status': return GitWorkspace(workspace).status(**params)
         if action == 'git-diff': return GitWorkspace(workspace).diff(**params)
         if action == 'git-history': return GitWorkspace(workspace).history(**params)
         if action == 'git-commit': return GitWorkspace(workspace).commit_detail(**params)

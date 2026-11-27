@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from bridge.features.sessions.identity import same_cwd
+from bridge.features.sessions.model import context_usage
 from bridge.clients.codex.app_server import (
     AppServerError, AppServerUnavailable, AppServerReadTimeout, AppServerUnknownResult, AppServerUnsupported, CodexAppServer)
 from bridge.clients.codex.catalog import Catalog, CatalogError, ModelStore, normalize_native_skills
@@ -135,6 +136,7 @@ class CliSessions:
         self.metadata = {}
         self.release_receipts = {}
         self.states = {}
+        self.turn_revisions = {}
         self.requests = {}
         self.consumed_requests = {}
         self.refreshing = set()
@@ -602,6 +604,7 @@ class CliSessions:
             starting_effort = starting.get('latestReasoningEffort')
             starting_turn_status = {turn.get('turnId'): turn.get('status')
                                     for turn in starting.get('turns', [])}
+            starting_revisions = dict(self.turn_revisions.get(thread_id, {}))
         result = self.client.request('thread/read', {'threadId': thread_id, 'includeTurns': True},
                                      replay_safe=True)
         thread = result.get('thread') or {}
@@ -627,20 +630,21 @@ class CliSessions:
                 previous_turns = {turn.get('turnId'): turn for turn in previous.get('turns', [])
                                   if turn.get('turnId')}
                 read_turn_ids = {turn.get('turnId') for turn in state['turns']}
-                newer_turn_event = any(turn_id not in starting_turn_status or
-                                       prior.get('status') != starting_turn_status[turn_id]
-                                       for turn_id, prior in previous_turns.items())
+                revisions = self.turn_revisions.get(thread_id, {})
+                updated_turns = {turn_id for turn_id, prior in previous_turns.items()
+                    if turn_id not in starting_turn_status or prior.get('status') != starting_turn_status[turn_id]
+                    or revisions.get(turn_id, 0) != starting_revisions.get(turn_id, 0)}
+                newer_turn_event = bool(updated_turns)
                 for index, turn in enumerate(state['turns']):
                     turn_id = turn.get('turnId')
                     prior = previous_turns.get(turn_id) or {}
-                    if turn_id in previous_turns and (turn_id not in starting_turn_status or
-                            prior.get('status') != starting_turn_status[turn_id]):
+                    if turn_id in updated_turns:
                         state['turns'][index] = copy.deepcopy(prior)
                         continue
                     if not (turn.get('params') or {}).get('model') and (prior.get('params') or {}).get('model'):
                         turn['params'] = copy.deepcopy(prior['params'])
                 for turn_id, prior in previous_turns.items():
-                    if turn_id not in starting_turn_status and turn_id not in read_turn_ids:
+                    if turn_id in updated_turns and turn_id not in read_turn_ids:
                         state['turns'].append(copy.deepcopy(prior))
                 if newer_turn_event:
                     state['threadRuntimeStatus'] = copy.deepcopy(previous['threadRuntimeStatus'])
@@ -653,13 +657,15 @@ class CliSessions:
                 elif 'reasoningEffort' not in thread and 'latestReasoningEffort' in previous:
                     state['latestReasoningEffort'] = previous['latestReasoningEffort']
                 for key in ('latestThreadSettings', 'currentPermissions', 'latestCollaborationMode', 'threadGoal',
-                            'completedThreadGoal', 'turnPlan'):
+                            'completedThreadGoal', 'turnPlan', 'latestTokenUsageInfo'):
                     if key in previous:
                         state[key] = copy.deepcopy(previous[key])
                 if state.get('latestThreadSettings'):
                     state['latestThreadSettings']['model'] = state['latestModel']
                     state['latestThreadSettings']['effort'] = state['latestReasoningEffort']
                 self.states[thread_id] = state
+                self.turn_revisions[thread_id] = {turn['turnId']: revisions.get(turn['turnId'], 0)
+                                                  for turn in state['turns']}
         if invalid_reason is not None:
             self._invalidate(thread_id, expected_process=process)
             raise AppServerUnavailable(invalid_reason)
@@ -735,8 +741,6 @@ class CliSessions:
             self._queue_refresh(thread_id)
             return {'applied': True}
         if desktop_method == 'thread-follower-steer-turn':
-            if params.get('attachments') or (params.get('restoreMessage') or {}).get('context', {}).get('fileAttachments'):
-                raise AppServerUnsupported('CLI steering with files is unavailable')
             with self.lock:
                 active = next((t for t in reversed(self.states[thread_id]['turns'])
                                if t.get('status') == 'inProgress'), None)
@@ -744,7 +748,7 @@ class CliSessions:
                 raise AppServerUnavailable('No active CLI turn to steer')
             result = self.client.request('turn/steer', {
                 'threadId': thread_id, 'expectedTurnId': active['turnId'],
-                'input': self._inputs(params.get('input', []), {}),
+                'input': self._inputs(params.get('input', []), (params.get('restoreMessage') or {}).get('context') or {}),
                 'clientUserMessageId': params.get('clientUserMessageId')}, timeout=timeout)
             self._queue_refresh(thread_id)
             return result
@@ -1071,6 +1075,8 @@ class CliSessions:
             row = {'turnId': turn.get('id'), 'status': turn.get('status'),
                           'turnStartedAtMs': (turn.get('startedAt') or 0) * 1000,
                           'items': turn.get('items') or [], 'error': turn.get('error')}
+            if turn.get('completedAt') is not None:
+                row['turnCompletedAtMs'] = turn['completedAt'] * 1000
             if turn.get('model'):
                 row['params'] = {'model': turn['model'], 'effort': turn.get('reasoningEffort')}
             turns.append(row)
@@ -1116,7 +1122,26 @@ class CliSessions:
             self._invalidate(thread_id)
             raise AppServerUnavailable('CLI thread identity changed before the operation')
 
-    def _event(self, event):
+    @staticmethod
+    def _merge_streamed_item(previous, incoming):
+        """Keep deltas when a native replacement omits an already streamed field."""
+        if not isinstance(previous, dict) or not isinstance(incoming, dict):
+            return incoming
+        if previous.get('id') != incoming.get('id') or previous.get('type') != incoming.get('type'):
+            return incoming
+        item = dict(incoming)
+        for field in ('text', 'aggregatedOutput'):
+            prior = previous.get(field)
+            if isinstance(prior, str) and prior and not item.get(field):
+                item[field] = prior
+        if incoming.get('type') == 'reasoning' and not item.get('summary') and not item.get('content'):
+            for field in ('summary', 'content'):
+                prior = previous.get(field)
+                if isinstance(prior, list) and not item.get(field):
+                    item[field] = copy.deepcopy(prior)
+        return item
+
+    def _event(self, event, *, publish=True):
         method = event.get('method')
         params = event.get('params') or {}
         thread_id = params.get('threadId')
@@ -1159,6 +1184,11 @@ class CliSessions:
                 self.metadata[thread_id]['goal'] = None
             elif method == 'turn/plan/updated':
                 state['turnPlan'] = copy.deepcopy(params.get('plan') or [])
+            elif method == 'thread/tokenUsage/updated':
+                usage = params.get('tokenUsage')
+                if context_usage({'latestTokenUsageInfo': usage}) is None:
+                    return
+                state['latestTokenUsageInfo'] = copy.deepcopy(usage)
             elif method == 'thread/status/changed':
                 state['threadRuntimeStatus'] = params.get('status') or state['threadRuntimeStatus']
             elif method == 'error':
@@ -1175,6 +1205,7 @@ class CliSessions:
                     row = {'turnId': turn.get('id'), 'items': []}
                     state['turns'].append(row)
                 if method == 'turn/started':
+                    row.pop('turnCompletedAtMs', None)
                     model = turn.get('model') or state.get('latestModel')
                     effort = turn.get('reasoningEffort') or state.get('latestReasoningEffort')
                     if model:
@@ -1184,12 +1215,15 @@ class CliSessions:
                 row.update(status=turn.get('status'), error=turn.get('error'))
                 if turn.get('startedAt') is not None:
                     row['turnStartedAtMs'] = turn['startedAt'] * 1000
+                if turn.get('completedAt') is not None:
+                    row['turnCompletedAtMs'] = turn['completedAt'] * 1000
                 row.pop('willRetry', None)
                 state['threadRuntimeStatus'] = {'type': 'active' if method == 'turn/started' else 'idle'}
                 if turn.get('items'):
-                    items = turn['items']
                     previous_times = {item.get('id'): item['timestamp'] for item in row['items'] if item.get('timestamp') is not None}
-                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in items]
+                    previous_items = {item.get('id'): item for item in row['items'] if item.get('id') is not None}
+                    items = [{**item, 'timestamp': previous_times[item.get('id')]} if item.get('timestamp') is None and item.get('id') in previous_times else item for item in turn['items']]
+                    items = [self._merge_streamed_item(previous_items.get(item.get('id')), item) for item in items]
                     if method == 'turn/completed':
                         incoming_ids = {item.get('id') for item in items}
                         # Completed event items can omit user messages still present in thread/read.
@@ -1211,10 +1245,7 @@ class CliSessions:
                         if existing.get('id') == item.get('id'):
                             if item.get('timestamp') is None and existing.get('timestamp') is not None:
                                 item = {**item, 'timestamp': existing['timestamp']}
-                            if method == 'item/started' and item.get('type') == existing.get('type') == 'reasoning':
-                                # A late start must not erase deltas already received.
-                                item = {**item, **{field: existing[field] for field in ('summary', 'content')
-                                                  if not item.get(field) and isinstance(existing.get(field), list)}}
+                            item = self._merge_streamed_item(existing, item)
                             items[index] = item
                             break
                     else:
@@ -1261,10 +1292,16 @@ class CliSessions:
                     parts[slot] = (parts[slot] if isinstance(parts[slot], str) else '') + delta
             else:
                 return
+            turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
+            if method != 'thread/tokenUsage/updated' and turn_id and any(turn['turnId'] == turn_id for turn in state['turns']):
+                revisions = self.turn_revisions.setdefault(thread_id, {})
+                revisions[turn_id] = revisions.get(turn_id, 0) + 1
+            if not publish:
+                return
             snapshot = copy.deepcopy(state)
         self.on_state(thread_id, snapshot)
 
-    def _server_request(self, request):
+    def _server_request(self, request, *, publish=True):
         thread_id = (request.get('params') or {}).get('threadId')
         with self.lock:
             if thread_id not in self.joined and thread_id not in self.attaching:
@@ -1275,6 +1312,8 @@ class CliSessions:
             state = self.states.get(thread_id)
             if state is not None:
                 state['requests'] = list(self.requests[thread_id].values())
+                if not publish:
+                    return
                 snapshot = copy.deepcopy(state)
             else:
                 snapshot = None
@@ -1342,12 +1381,13 @@ class CliSessions:
             self.attaching.clear()
             self.metadata.clear()
             self.states.clear()
+            self.turn_revisions.clear()
             self.requests.clear()
             self.consumed_requests.clear()
             self.refresh_pending.clear()
         self.on_disconnect()
 
-    def _invalidate(self, thread_id, expected_process=None):
+    def _invalidate(self, thread_id, expected_process=None, *, notify=True):
         with self.lock:
             if expected_process is not None and self.joined.get(thread_id) is not expected_process:
                 return
@@ -1360,9 +1400,11 @@ class CliSessions:
             self.attaching.discard(thread_id)
             self.metadata.pop(thread_id, None)
             self.states.pop(thread_id, None)
+            self.turn_revisions.pop(thread_id, None)
             self.requests.pop(thread_id, None)
             self.consumed_requests.pop(thread_id, None)
-        self.on_disconnect(thread_id)
+        if notify:
+            self.on_disconnect(thread_id)
 
     def close(self):
         self.client.close()

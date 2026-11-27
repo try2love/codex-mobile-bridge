@@ -17,11 +17,11 @@
   <a href="https://github.com/try2love/codex-mobile-bridge/releases"><img alt="Windows downloads" src="https://img.shields.io/endpoint?url=https%3A%2F%2Ftry2love.github.io%2Fcodex-mobile-bridge%2Fdownloads%2Fwindows.json&amp;style=flat"></a>
 </p>
 
-<p align="center"><sub>平台下载量统计所有公开正式版和预览版的安装资产（iOS 包括专用源码包与 IPA），排除更新元数据与校验文件。包含重复下载和自动更新下载，不代表用户数或安装数；每日更新。</sub></p>
+<p align="center"><sub>平台下载量统计所有公开正式版和预览版的安装资产（iOS 包括专用源码包与 IPA），排除更新元数据与校验文件。包含重复下载和自动更新下载；每日更新。</sub></p>
 
 # Codex Mobile Bridge · 多客户端远程工作台
 
-> **v2.2.1：** [正式版下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex APP 原生连接；新增 Antigravity、聊天内交互图表并改善长会话与模型缓存。
+> **v2.2.2 正式版：** [下载](https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.2) · [更新说明](RELEASE_NOTES.md)。建议更新以适配最新版 Codex App 原生连接；支持完整历史下载、离线阅读与待发消息，完善 Antigravity、网关版本管理及一键迁移旧凭据。请覆盖安装，保留原连接和草稿。
 
 **Android 安装说明：** 新版 **Bridge** 与旧版 v2.2.0 App 独立安装，不能直接覆盖旧版。请先安装新版、重新添加电脑并确认连接正常，保留好旧版中需要的草稿后，再卸载旧版。旧版绑定和草稿不会自动迁移。已安装 v2.2.1-preview.1 独立 **Bridge Preview** 的用户可直接覆盖升级，保留该预览 App 的连接和草稿。
 
@@ -913,6 +913,12 @@ PY
 还需你完成：[具体步骤 / 无；真实手机尚未验证时明确写出]
 ```
 
+## 额度恢复后自动继续与通用额度显示
+
+主页新增「额度恢复后自动继续」开关，默认关闭，手机 App、网页与桌面网关共用同一设置。开启后覆盖本机默认 Codex Desktop 的全部项目，识别明确的原生额度中断、确认当前个人额度可用后，继续普通任务或原生目标；错过零额度轮询也能触发，发送前临时故障会重试。已完成、手动停止、暂停、取消或归档的任务不会自动启动；手动停止的排除记录跨重启保留。
+
+聊天模型按钮旁显示紧凑额度环；模型设置和账号页复用可展开的额度池，查看各窗口的剩余比例、恢复时间和数据更新时间，详见[通用额度展示](docs/quota-display.md)。电脑、Codex App 与网关需持续运行。自动继续当前不覆盖 CLI、SSH、WSL、独立配置及其他客户端；完整条件、验证范围与限制见[使用说明](docs/quota-continuation.md)。
+
 ## 开发与测试
 
 项目图文介绍页位于 `site/`，使用 GitHub Pages 托管。修改 `site/` 并推送到 `main` 后，**Product website** 工作流自动发布；无需额外构建步骤。
@@ -931,7 +937,13 @@ python3 -B -m unittest discover -s tests -v
 
 ## 致谢
 
+感谢 [@a32556376](https://github.com/a32556376) 的 [PR #256](https://github.com/try2love/codex-mobile-bridge/pull/256) 额度恢复继续方案、[@windowmmk](https://github.com/windowmmk) 的 [PR #257](https://github.com/try2love/codex-mobile-bridge/pull/257) 额度展示与 [PR #250](https://github.com/try2love/codex-mobile-bridge/pull/250) 原生发现改进，以及 [@ufomaker](https://github.com/ufomaker) 的 [PR #245](https://github.com/try2love/codex-mobile-bridge/pull/245)、[#246](https://github.com/try2love/codex-mobile-bridge/pull/246)、[#247](https://github.com/try2love/codex-mobile-bridge/pull/247) Antigravity 改进和 [PR #248](https://github.com/try2love/codex-mobile-bridge/pull/248) HarmonyOS 实验客户端。采纳范围与后续适配见 [v2.2.2 更新说明](RELEASE_NOTES.md)，相关提交保留原作者贡献署名。
+
 感谢 [LINUX DO](https://linux.do/) 社区及各位佬友的支持。
+
+感谢 [@heiqiu47](https://github.com/heiqiu47) 的 [PR #201](https://github.com/try2love/codex-mobile-bridge/pull/201) 输入区定制、[@mc373906408](https://github.com/mc373906408) 的 [PR #182](https://github.com/try2love/codex-mobile-bridge/pull/182) 明暗图标、[@hmho000](https://github.com/hmho000) 的 [PR #200](https://github.com/try2love/codex-mobile-bridge/pull/200) 启动修复，以及 [@windowmmk](https://github.com/windowmmk) 的 Antigravity、SSH、文件与消息管理改进。各项关联与采纳范围见 [preview.2 更新说明](RELEASE_NOTES.md)。原作者贡献与后续修订分别保留。
+
+感谢 [@windowmmk](https://github.com/windowmmk) 在 [PR #173](https://github.com/try2love/codex-mobile-bridge/pull/173)、[#178](https://github.com/try2love/codex-mobile-bridge/pull/178)、[#179](https://github.com/try2love/codex-mobile-bridge/pull/179)、[#180](https://github.com/try2love/codex-mobile-bridge/pull/180) 和 [#189–#198](RELEASE_NOTES.md) 中贡献 Antigravity 原生指令、模型强度、停止、分屏及多客户端稳定性修复。
 
 感谢 [@heiqiu47](https://github.com/heiqiu47) 在 [PR #167](https://github.com/try2love/codex-mobile-bridge/pull/167) 与 [PR #169](https://github.com/try2love/codex-mobile-bridge/pull/169) 中贡献聊天内交互图表和 Codex 协议兼容，以及 [@windowmmk](https://github.com/windowmmk) 在 [PR #171](https://github.com/try2love/codex-mobile-bridge/pull/171) 中修复大型日志中的原生端口发现。
 
@@ -997,3 +1009,5 @@ PushPlus 通过微信接收通知，**接入前需要付费实名认证，最低
 - **设置 → 主页快捷入口** 可分别隐藏第三方通知和账户管理入口；功能仍可从设置打开，显示偏好仅保存在当前浏览器。通知策略保存在网关，各设备共享。
 - Token 保存到本机通知配置文件；电脑 App 默认遮罩显示并支持查看，网页不回传已保存的 Token。留空保留原 Token，关闭通道后可勾选清除。
 - 点击聊天顶部标题，在聊天详情中选择 **修改聊天名称**，输入新名称并保存（最多 120 个字符）。名称写入该聊天所在主机的 Codex；支持本机和 SSH 聊天，网页列表与标题同步更新。
+
+实验接入与新增选项：[IPv6 源码监听](docs/ipv6-listening.md)、[HarmonyOS 实验客户端](mobile/harmony/README.md)、[通知回答预览](docs/webhook-notifications.md#完成通知中的回答预览)。Git 工作区差异和提交历史差异可在“阅读设置”中调整文件字号和自动换行。

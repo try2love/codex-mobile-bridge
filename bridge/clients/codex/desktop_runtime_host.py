@@ -14,6 +14,7 @@ from bridge.clients.codex.desktop_runtime import (
     VERSION, _read, _write, directory, process_identity, server_arguments,
     exclusive_lock, private_directory, socket_path, require_inactive, verified_socket)
 from bridge.clients.websocket import WebSocket
+from bridge.clients.codex.ipc_json import FrameReader, has_stored_text, iter_wire_json
 from bridge.clients.codex.app_server import AppServerMessageTooLarge as MessageTooLarge
 
 
@@ -75,8 +76,11 @@ def run(configuration, arguments):
     # All unrelated native CLI calls retain their original behavior and IO.
     if server_args is None or Path(os.environ.get('CODEX_HOME', '')).resolve() != home:
         os.execv(cli, [cli, *arguments])
-    app = process_identity(os.getppid())
-    if app['image'] != value['application']:
+    parent = process_identity(os.getppid())
+    from bridge.clients.codex.desktop_runtime import desktop_owner
+    try:
+        app, host = desktop_owner(parent, value['application'])
+    except ValueError:
         os.execv(cli, [cli, *arguments])
     first = sys.stdin.buffer.readline(MAX_LINE + 1)
     if len(first) > MAX_LINE:
@@ -93,6 +97,9 @@ def run(configuration, arguments):
         # A different storage boundary is not an authorized default-home runtime.
         return _passthrough(cli, arguments, first)
     with exclusive_lock(home, 'runtime'):
+        if host is not None or sys.platform == 'linux':
+            from bridge.clients.codex.desktop_host import serve
+            return serve(value, app, host, arguments, initialize)
         private_directory(endpoint.parent)
         return _serve(value, app, server_args, endpoint, initialize, generation)
 
@@ -163,7 +170,9 @@ def _serve(config, app, arguments, endpoint, initialize, generation):
         def open_transport():
             try:
                 handshake.set_result(WebSocket(proxy.stdout, proxy.stdin,
-                                               max_message_bytes=MAX_LINE, oversized=MessageTooLarge))
+                                               max_message_bytes=MAX_LINE, oversized=MessageTooLarge,
+                                               message_reader=lambda stream: FrameReader(
+                                                   stream, None, 1024 * 1024, native_rpc=True).read()))
             except Exception as exc:
                 handshake.set_exception(exc)
         threading.Thread(target=open_transport, daemon=True).start()
@@ -176,7 +185,12 @@ def _serve(config, app, arguments, endpoint, initialize, generation):
             raise ValueError('Native Desktop process identity changed')
         def emit(packet):
             with output_lock:
-                sys.stdout.write(json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n')
+                if has_stored_text(packet):
+                    for chunk in iter_wire_json(packet):
+                        sys.stdout.write(chunk.decode('utf-8'))
+                    sys.stdout.write('\n')
+                else:
+                    sys.stdout.write(json.dumps(packet, ensure_ascii=False, separators=(',', ':')) + '\n')
                 sys.stdout.flush()
         def output_loop():
             try:

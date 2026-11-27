@@ -16,4 +16,4 @@
 .download-note{font-size:12px;margin:8px 0;color:var(--muted);overflow-wrap:anywhere}
 .download-actions{display:flex;justify-content:flex-end;gap:4px}.download-actions button:first-child,.download-actions button:nth-child(2){color:var(--accent)}
 .download-compact .download-head{border-bottom:0}
-@media(max-width:720px){.download-panel{border-radius:12px}.download-summary{cursor:pointer;touch-action:auto}.download-panel button{min-height:40px}.download-details{padding:11px 14px 9px}}
+@media(max-width:720px){.download-panel{border-radius:12px}.download-summary{cursor:grab;touch-action:none}.download-panel button{min-height:40px}.download-details{padding:11px 14px 9px}}

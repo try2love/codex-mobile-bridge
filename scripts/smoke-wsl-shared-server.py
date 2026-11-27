@@ -136,7 +136,12 @@ def main():
                 wait(lambda: any(e.get('method') == 'turn/completed' for e in owner_events))
                 row = {'id': 'wsl:isolated-fixture', 'distribution': 'isolated', 'user': 'fixture',
                        'home': str(home), 'label': 'Isolated WSL fixture'}
+                def read_local(alias, source, timeout=20):
+                    result = subprocess.run([os.sys.executable, '-'], input=source, env=environment,
+                        capture_output=True, text=True, timeout=timeout, check=True)
+                    return json.loads(result.stdout)
                 entry = WslEntry(row, root/'bridge')
+                entry.read = read_local
                 entry.store = SessionStore(home, source='cli')
                 entry.generation = 'isolated-generation'
                 def event(value):
@@ -198,10 +203,6 @@ def main():
                 entry.store = SessionStore(home, source='cli')
                 entry.generation = 'mobile-lifecycle'
                 entry.server = SharedServer(connect(), lambda value: entry._event(value, 'mobile-lifecycle')).start()
-                def read_local(alias, source, timeout=20):
-                    result = subprocess.run([os.sys.executable, '-c', source], env=environment,
-                        capture_output=True, text=True, timeout=timeout, check=True)
-                    return json.loads(result.stdout)
                 entry.read = read_local
                 assert not entry.view(sid)['connected'], 'Passive read unexpectedly restored a thread'
                 entry.activate(sid)

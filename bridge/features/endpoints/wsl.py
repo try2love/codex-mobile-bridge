@@ -8,6 +8,8 @@ import time
 import uuid
 from contextlib import contextmanager
 from functools import wraps
+from bridge.features.sessions.offline_delivery import (
+    DeliveryBlocked, admit as admit_delivery, fingerprint as delivery_fingerprint, proof as delivery_proof, require_intent, waiting_for_turn)
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,8 +22,9 @@ from bridge.clients.codex.configuration import magpie_managed
 from bridge.clients.codex.catalog import Catalog, normalize_native_skills
 from bridge.features.sessions import linux_permissions
 from bridge.features.accounts.draft_identity import draft_identity
-from bridge.features.sessions.model import normalize_state, normalize_request, computer_use_approval
+from bridge.features.sessions.model import normalize_state, normalize_request, computer_use_approval, context_usage
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.store import StoreUnavailable
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.organization_commands import OrganizationCommands
@@ -73,6 +76,7 @@ class Session:
         self.condition = threading.Condition(threading.RLock())
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
+        self.sync_timeline = Timeline()
         self.sequence = 0
         self.state = {'id': identifier, 'turns': [], 'threadRuntimeStatus': {'type': 'notLoaded'}}
         self.connected = False
@@ -82,6 +86,7 @@ class Session:
         self.viewers = 0
         self.touched = time.monotonic()
         self.history_limit = 20
+        self.sync_source_revision = None
         self.refreshing = False
         self.stamp = None
         self.watched = False
@@ -91,9 +96,9 @@ class Session:
         self.sequence += 1
         self.condition.notify_all()
 
-    def view(self):
+    def view(self, process_bodies=True):
         with self.condition:
-            return {**normalize_state(self.state, self.connected), 'permissionMode': linux_permissions.current_mode(self.state), 'sequence': self.sequence,
+            return {**normalize_state(self.state, self.connected, process_bodies=process_bodies), 'permissionMode': linux_permissions.current_mode(self.state), 'sequence': self.sequence,
                     'loadingHistory': self.loading, 'activating': self.activating, 'error': self.error}
 
 
@@ -254,6 +259,12 @@ class WslEntry(WslFeatures):
                     session.state['latestCollaborationMode'] = copy.deepcopy(settings['collaborationMode'])
             elif method == 'turn/plan/updated':
                 session.state['turnPlan'] = copy.deepcopy(params.get('plan') or [])
+            elif method == 'thread/tokenUsage/updated':
+                usage = params.get('tokenUsage')
+                if context_usage({'latestTokenUsageInfo': usage}) is None:
+                    return
+                session.state['latestTokenUsageInfo'] = copy.deepcopy(usage)
+                session.state.pop('tokenUsageFromHistory', None)
             elif method == 'thread/status/changed':
                 session.state['threadRuntimeStatus'] = copy.deepcopy(params.get('status') or {})
             elif method == 'thread/closed':
@@ -297,7 +308,10 @@ class WslEntry(WslFeatures):
             with session.condition:
                 requests = session.state.get('requests', [])
                 stamp = hashlib.sha256(json.dumps([state, connected, error], sort_keys=True).encode()).hexdigest()
-                for key in ('turnPlan', 'latestCollaborationMode', 'latestTokenUsageInfo'):
+                if context_usage(state) is None and context_usage(session.state) is not None:
+                    state['latestTokenUsageInfo'] = copy.deepcopy(session.state['latestTokenUsageInfo'])
+                    state['tokenUsageFromHistory'] = not connected or session.state.get('tokenUsageFromHistory') is True
+                for key in ('turnPlan', 'latestCollaborationMode'):
                     if key in session.state:
                         state[key] = copy.deepcopy(session.state[key])
                 state['latestThreadSettings'] = copy.deepcopy(session.state.get('latestThreadSettings') or {})
@@ -520,8 +534,9 @@ class WslEntry(WslFeatures):
             return None
 
     def view(self, identifier, **options):
+        process_bodies = options.pop('process_bodies', True)
         session = self.session(identifier, **options)
-        result = session.view()
+        result = session.view(process_bodies=process_bodies)
         result['draftAccountIdentity'] = self._management_identity(identifier, refresh=True)
         continuation = self._account_draft_continuation(identifier)
         if continuation is not None:
@@ -540,23 +555,96 @@ class WslEntry(WslFeatures):
             result['readOnlyReason'] = result.get('error') or '点击重新连接以恢复 WSL 会话'
         return self._view_features(session, result)
 
+    def sync_watch_source(self, identifier):
+        session = self.session(identifier, attach=False)
+
+        def probe():
+            try:
+                revision = self.store.history_revision(identifier)
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                revision = None
+            return session.sequence, revision
+
+        def wait(previous, delay):
+            with session.condition:
+                session.condition.wait_for(lambda: session.sequence != previous[0], timeout=delay)
+
+        return probe, wait, 2
+
+    def _sync_saved_history(self, session, *, refresh):
+        revision = self.store.history_revision(session.id)
+        if not refresh:
+            with session.condition:
+                if session.connected or session.sync_source_revision == revision:
+                    return
+        state = self.store.history(session.id, turn_limit=session.history_limit)
+        with session.condition:
+            if not session.connected:
+                changed = session.state != state or session.loading
+                session.state = state
+                session.loading = False
+                session.sync_source_revision = revision
+                if changed:
+                    session.changed()
+
     def timeline_read(self, identifier, mode='page', **options):
-        session = self.session(identifier, background=True)
-        if options.get('before') and not session.view()['historyComplete']:
+        sync_mode = options.pop('sync_mode', None)
+        session = (self.session(identifier, attach=False) if sync_mode
+                   else self.session(identifier, background=True))
+        timeline = session.sync_timeline if sync_mode else session.timeline
+        if sync_mode:
+            with session.condition:
+                connected, loading = session.connected, session.loading
+            if connected and sync_mode == 'watch':
+                self.session(identifier, background=True)
+            elif not connected and (loading or sync_mode in ('recent', 'watch')):
+                self._sync_saved_history(session, refresh=loading)
+        conversation = options.get('projection') == 'conversation' or mode == 'process' or bool(sync_mode)
+        if mode == 'detail':
+            options.pop('projection', None)
+        if not sync_mode and options.get('before') and not session.view()['historyComplete']:
             with session.action_lock:
                 session.history_limit += 50
             self._refresh(session)
         # view() reads write receipts; do not take the entry write gate while
         # holding the session condition (writers acquire them in reverse order).
-        snapshot = self.view(identifier, attach=False)
+        snapshot = self.view(identifier, attach=False, process_bodies=not conversation)
+        if sync_mode:
+            while not snapshot.get('historyComplete'):
+                with session.condition:
+                    if snapshot['sequence'] >= timeline.sequence:
+                        timeline.update(snapshot, conversation=True)
+                    expand = history_sync.needs_older(timeline, sync_mode, options)
+                if not expand:
+                    break
+                loaded_turns = len(snapshot.get('turns', ()))
+                with session.action_lock:
+                    session.history_limit += max(50, session.history_limit)
+                if session.connected:
+                    self._refresh(session)
+                else:
+                    self._sync_saved_history(session, refresh=True)
+                snapshot = self.view(identifier, attach=False, process_bodies=False)
+                if len(snapshot.get('turns', ())) <= loaded_turns:
+                    break
         with session.condition:
-            if snapshot['sequence'] >= session.timeline.sequence:
-                session.timeline.update(snapshot)
+            if snapshot['sequence'] >= timeline.sequence:
+                timeline.update(snapshot, conversation=conversation)
+            if sync_mode:
+                timeline.meta['syncSourceComplete'] = bool(snapshot.get('historyComplete') and not snapshot.get('loadingHistory'))
+                timeline.meta['syncSourceRevision'] = history_sync.digest(session.sync_source_revision)
+                result = history_sync.read(timeline, sync_mode, **options)
+                if sync_mode in ('watch', 'process') or result.get('notModified') and sync_mode == 'body':
+                    return result
+                messages = result['rows'] if sync_mode != 'body' else [{'role': 'assistant', 'text': result['text']}]
+                return {**result, 'files': workspace_references(messages, snapshot.get('cwd'), host_files=True)}
+            if mode == 'process':
+                return {**timeline.process(**options), 'files': []}
             if mode == 'detail':
-                result = session.timeline.detail(**options)
-                messages = [{'role': 'assistant', 'text': session.timeline.details[result['key']]}]
+                result = timeline.detail(**options)
+                messages = [{'role': 'assistant', 'text': timeline.details[result['key']]}]
             else:
-                result = session.timeline.changes(**options) if mode == 'changes' else session.timeline.page(**options)
+                result = timeline.changes(**options) if mode == 'changes' else timeline.page(**options)
                 messages = result['rows']
             return {**result, 'files': workspace_references(messages, snapshot.get('cwd'), host_files=True)}
 
@@ -1018,6 +1106,56 @@ class WslEntry(WslFeatures):
                 raise ValueError('相同请求标识不能用于不同操作')
             return dict(old['result'])
 
+    def _delivery_status(self, identifier, submission_id, account, intent=None):
+        old = self.receipts.get(identifier + ':send:' + submission_id)
+        if not old:
+            return 'notFound'
+        if (old.get('entry') or {}).get('deliveryAccount') != account:
+            return 'unknown'
+        require_intent((old.get('entry') or {}).get('deliveryFingerprint'), intent)
+        return old['result'].get('status') or 'unknown'
+
+    def _delivery_admission(self, session, *, fresh=False):
+        archived = bool(self.store.get(session.id).get('archived'))
+        with session.condition:
+            state = session.state
+            provider = state.get('modelProvider')
+            ready = bool(session.connected and self._access(session)['canSend']
+                         and state.get('threadRuntimeStatus', {}).get('type') == 'idle'
+                         and not state.get('requests'))
+        if fresh and provider:
+            try:
+                current = self._account_draft_state(provider)['accountIdentity']
+            except (IPCError, RemoteUnavailable, ValueError, KeyError):
+                current = ''
+        else:
+            current = self._management_identity(session.id, refresh=not fresh)
+        ready = ready and not any(key.startswith(session.id + ':send:') and waiting_for_turn(
+                                      {**(row.get('entry') or {}), **row['result']}, state.get('turns') or [], current)
+                                  for key, row in self.receipts.items())
+        return current, not archived and ready, archived
+
+    @_entry_write
+    def offline_delivery(self, identifier, submission_id, account, body=None):
+        session = self.session(identifier, attach=False, background=True)
+        current, ready, archived = self._delivery_admission(session, fresh=body is not None)
+        intent = delivery_fingerprint(body) if body is not None else None
+        status = self._delivery_status(identifier, submission_id, account, intent) if current == account else 'notFound'
+        if body is None:
+            if not archived and current in ('', account) and not session.connected and not self.released_cli.contains(identifier):
+                # Probe the existing registered daemon only. Passive refresh
+                # does not start it or resume a thread that is not loaded.
+                self.session(identifier, background=True)
+            return delivery_proof(current, account, ready=ready, status=status)
+        if status != 'notFound':
+            return {'status': status, 'duplicate': True, 'id': submission_id}
+        admit_delivery(current, account, ready, archived)
+        if body.get('plugins'):
+            raise DeliveryBlocked('此会话离线发送不支持插件')
+        return self._send(identifier, body['text'], submission_id, skills=body.get('skills'),
+                          work_mode=body.get('workMode'), attachments=body.get('attachments'),
+                          references=body.get('references'), delivery_account=account, delivery_intent=intent)
+
     @_entry_write
     def send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, **options):
         if work_mode == 'goal':
@@ -1027,7 +1165,7 @@ class WslEntry(WslFeatures):
                                   attachments=attachments, ui_locale=options.get('ui_locale'))
         return self._send(identifier, text, submission_id, mode, skills, work_mode, attachments, references=options.get('references'))
 
-    def _send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, *, references=None, queued=False, goal_activation=None):
+    def _send(self, identifier, text, submission_id, mode='send', skills=None, work_mode=None, attachments=None, *, references=None, queued=False, goal_activation=None, delivery_account=None, delivery_intent=None):
         uuid.UUID(identifier); uuid.UUID(submission_id)
         skills = skills or []
         if not isinstance(skills, list) or len(skills) > 8 or any(not isinstance(s, str) for s in skills):
@@ -1053,14 +1191,19 @@ class WslEntry(WslFeatures):
                 value['workMode'] = work_mode
             if goal_activation is not None:
                 value['goalActivation'] = copy.deepcopy(goal_activation)
+            if delivery_account is not None:
+                value['deliveryAccount'] = delivery_account
+                value['deliveryFingerprint'] = delivery_intent
             key = identifier + ':send:' + submission_id
             previous = self._previous_send(identifier, key, value)
             if previous is not None and not (queued and previous.get('status') == 'queued'):
                 return previous
             if not queued:
                 self._check_scope_new_work()
-            runtime, thread = self._target(identifier, activate=mode != 'queue', managed_control=True)
+            runtime, thread = self._target(identifier, activate=mode != 'queue' and delivery_account is None, managed_control=True)
             if (mode == 'send' or queued) and thread['status']['type'] == 'active':
+                if delivery_account is not None:
+                    raise DeliveryBlocked('WSL 会话正在执行，请稍后投递', wait=True)
                 raise ValueError('任务正在运行，请选择补充当前任务，或等待完成')
             if goal_activation is not None:
                 from bridge.features.sessions.goal import goal_identity
@@ -1110,6 +1253,16 @@ class WslEntry(WslFeatures):
             # Check immediately before creating an uncertain write receipt. A
             # known route rejection has not sent model bytes and stays retryable.
             self._check_account_route(runtime, thread)
+            if delivery_account is not None:
+                try:
+                    current = self._account_draft_state(thread.get('modelProvider') or '')['accountIdentity']
+                except (IPCError, RemoteUnavailable, ValueError, KeyError):
+                    current = ''
+                admit_delivery(current, delivery_account, True, bool(self.store.get(identifier).get('archived')))
+                session = self.session(identifier, attach=False)
+                with session.condition:
+                    observed = session.state.get('turns') or []
+                    value['deliveryBeforeTurn'] = observed[-1].get('id') if observed else None
             result = self._mutation(identifier, key, value, dispatch)
             self.session(identifier, background=True)
             return result

@@ -140,22 +140,23 @@ class SignedGatewayPeer:
             self.requirement = None
 
     def _verify_previous_build(self, moved_image, broker_hash):
-        # This exception is only for a live holder of a previous installation.
-        # Require the same installed product and its independently signed starter
-        # authorizing this exact broker hash, not just another gateway certificate.
+        # Relocated peers must prove the same published product and exact live
+        # broker. Callers separately prove the current profile gateway role or
+        # the original holder's live profile lock.
         current = Path(self.image)
         previous = Path(moved_image)
         layout = Path("Contents/Resources/gateway/codex-mobile-gateway")
         if (tuple(current.parts[-4:]) != layout.parts or tuple(previous.parts[-4:]) != layout.parts):
             raise PermissionError("Unexpected ZCode gateway layout")
         current_app, previous_app = current.parents[3], previous.parents[3]
-        if (previous_app.suffix != ".app" or current_app.suffix != ".app"
-                or previous_app.parent != current_app.parent):
+        if previous_app.suffix != ".app" or current_app.suffix != ".app":
             raise PermissionError("ZCode holder is outside this installation")
         if getattr(self, "published", None) is not None:
             release_identity.read(previous, broker_hash, expected_product=self.published['product'])
             self._starter_requirement(previous_app / "Contents/Helpers/CMBZCodePipeStarter.app", broker_hash)
             return
+        if previous_app.parent != current_app.parent:
+            raise PermissionError("ZCode holder is outside this installation")
         requirement = subprocess.run(
             ["/usr/bin/codesign", "--display", "-r-", str(current_app)],
             capture_output=True, text=True, timeout=5, check=True)

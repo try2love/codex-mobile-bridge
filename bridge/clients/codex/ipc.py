@@ -8,6 +8,7 @@ import time
 import uuid
 from concurrent.futures import Future, TimeoutError
 
+from bridge.clients.codex.ipc_json import FrameReader
 from bridge.clients.codex.transport import connect_stream, endpoint_identity
 
 
@@ -54,7 +55,10 @@ def validate_stream_state(version, state):
     require(isinstance(state.get('modelProvider'), str) and bool(state['modelProvider']))
     require(isinstance(state.get('cwd'), str) and bool(state['cwd']))
     runtime = state.get('threadRuntimeStatus')
-    require(isinstance(runtime, dict) and runtime.get('type') in ('idle', 'active', 'running', 'waiting', 'busy'))
+    # An upstream failure can leave a connected desktop thread in systemError;
+    # it is readable and may accept a fresh turn, but it never proves idle.
+    require(isinstance(runtime, dict) and runtime.get('type') in (
+        'idle', 'active', 'running', 'waiting', 'busy', 'systemError'))
     requests = state.get('requests')
     require(isinstance(requests, list))
     for request in requests:
@@ -83,9 +87,8 @@ class IPCError(Exception):
 
 
 class DesktopIPC:
-    # Desktop snapshots include the loaded history and can exceed 64 MiB.
-    # Keep a bounded receive budget without enlarging outbound operations.
-    MAX_FRAME = 256 * 1024 * 1024
+    # The native protocol has an unsigned 32-bit little-endian frame length.
+    MAX_FRAME = (1 << 32) - 1
     MAX_REQUEST = 64 * 1024 * 1024
     READ_CHUNK = 1024 * 1024
     VERSIONS = {
@@ -104,10 +107,17 @@ class DesktopIPC:
         "thread-follower-submit-user-input": 1,
         "thread-follower-submit-mcp-server-elicitation-response": 1,
         "thread-stream-following-changed": 1,
+        "native-metadata": 0,
     }
 
-    def __init__(self, path, on_event=None, on_disconnect=None):
+    def __init__(self, path, on_event=None, on_disconnect=None, *, codex_home=None):
         self.path = str(path)
+        self.original_path = str(path)
+        self.codex_home = codex_home
+        self.hosted = False
+        self.hosted_generation = None
+        self.legacy = None
+        self.legacy_owners = set()
         self.on_event = on_event or (lambda event: None)
         self.on_disconnect = on_disconnect or (lambda: None)
         self.socket = None
@@ -128,6 +138,16 @@ class DesktopIPC:
 
     def endpoint_changed(self):
         """Report a replacement, without interrupting any pending operation."""
+        if self.codex_home is not None:
+            from bridge.clients.codex.desktop_runtime import hosted_endpoint
+            try:
+                hosted = hosted_endpoint(self.codex_home)
+            except (OSError, ValueError, KeyError, TypeError):
+                return False  # An unverified replacement cannot select a route.
+            with self.lock:
+                if self.socket and hosted and (not self.hosted or self.path != hosted['path'] or
+                                               self.hosted_generation != hosted['generation']):
+                    return True
         current = endpoint_identity(self.path)
         with self.lock:
             return bool(self.socket and self.endpoint_identity is not None and
@@ -139,6 +159,16 @@ class DesktopIPC:
                 return
             with self.lock:
                 generation = self.generation
+            hosted = None
+            if self.codex_home is not None:
+                from bridge.clients.codex.desktop_runtime import hosted_endpoint
+                try:
+                    hosted = hosted_endpoint(self.codex_home)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise IPCError('原生桌面连接身份无法核验，请在账号管理中检查连接状态。') from exc
+                self.path = hosted['path'] if hosted else self.original_path
+            self.hosted = hosted is not None
+            self.hosted_generation = hosted['generation'] if hosted else None
             try:
                 identity = endpoint_identity(self.path)
                 if deadline is None:
@@ -158,7 +188,12 @@ class DesktopIPC:
                 self.endpoint_identity = identity
             threading.Thread(target=self._read_loop, args=(sock,), daemon=True).start()
             try:
-                result = self.request("initialize", {"clientType": "codex-mobile-bridge"}, timeout=5, deadline=deadline)
+                params = {"clientType": "codex-mobile-bridge"}
+                if hosted:
+                    params.update({key: hosted[key] for key in ('generation', 'controlToken')})
+                result = self.request("initialize", params, timeout=5, deadline=deadline)
+                if hosted and hosted_endpoint(self.codex_home) != hosted:
+                    raise IPCError('原生桌面连接在握手期间已变化。')
                 with self.lock:
                     if (generation != self.generation or self.socket is not sock or
                             deadline is not None and time.monotonic() >= deadline):
@@ -181,9 +216,11 @@ class DesktopIPC:
             except OSError as exc:
                 raise IPCError("桌面连接已断开；请检查会话后再决定是否重发。") from exc
 
-    def request(self, method, params, target=None, host="local", timeout=15, *, deadline=None):
+    def request(self, method, params, target=None, host="local", timeout=15, *, deadline=None, legacy_discovery=False):
         if method not in self.VERSIONS:
             raise IPCError("不支持的桌面操作")
+        if self.hosted and (target in self.legacy_owners or host != 'local'):
+            return self._legacy_request(method, params, target, host, timeout, deadline)
         if deadline is not None:
             timeout = min(timeout, max(0, deadline - time.monotonic()))
             if timeout <= 0:
@@ -209,7 +246,13 @@ class DesktopIPC:
             wait = timeout + 1 if deadline is None else min(timeout, max(0, deadline - time.monotonic()))
             response = future.result(timeout=wait)
             if response.get("resultType") != "success":
-                raise IPCError(response.get("error", "桌面请求未完成"))
+                # Only an explicit negative discovery may try the old router.
+                # Timeouts, unknown results and mutations never switch routes.
+                if legacy_discovery and self.hosted and method == 'thread-owner-discovery' and response.get('error') == 'no-client-found':
+                    return self._legacy_request(method, params, target, host, timeout, deadline)
+                error = IPCError(response.get("error", "桌面请求未完成"))
+                error.not_sent = response.get('notSent') is True
+                raise error
             return response
         except TimeoutError as exc:
             if method in ("initialize", "thread-owner-discovery", "thread-follower-load-complete-history"):
@@ -219,13 +262,30 @@ class DesktopIPC:
             with self.lock:
                 self.pending.pop(request_id, None)
 
-    def owner(self, session_id, host="local"):
+    def _legacy_connection(self, deadline=None):
+        with self.lock:
+            if self.legacy is None:
+                self.legacy = DesktopIPC(self.original_path, self.on_event, self.on_disconnect)
+            client = self.legacy
+        client.connect(deadline=deadline)
+        return client
+
+    def _legacy_request(self, method, params, target, host, timeout, deadline):
+        client = self._legacy_connection(deadline)
+        response = client.request(method, params, target, host, timeout, deadline=deadline)
+        if method == 'thread-owner-discovery' and response.get('handledByClientId'):
+            self.legacy_owners.add(response['handledByClientId'])
+        return response
+
+    def owner(self, session_id, host="local", *, legacy_discovery=True):
         self.connect()
         response = self.request("thread-owner-discovery", {
-            "hostId": host, "conversationId": session_id}, timeout=6)
+            "hostId": host, "conversationId": session_id}, timeout=6, legacy_discovery=legacy_discovery)
         return response["handledByClientId"]
 
     def follow(self, session_id, owner, enabled=True, host="local"):
+        if self.hosted and (owner in self.legacy_owners or host != 'local'):
+            return self._legacy_connection().follow(session_id, owner, enabled, host)
         message = {"type": "broadcast", "sourceClientId": self.client_id,
                    "method": "thread-stream-following-changed", "version": 1,
                    "params": {"hostId": host, "conversationId": session_id, "following": enabled}}
@@ -259,7 +319,12 @@ class DesktopIPC:
                     logging.getLogger(__name__).warning(
                         "Codex desktop IPC frame rejected: bytes=%s limit=%s", length, self.MAX_FRAME)
                     raise IPCError("桌面 IPC 帧长度不兼容")
-                message = json.loads(self._exact(sock, length))
+                if length <= 64 * 1024:
+                    message = json.loads(self._exact(sock, length))
+                    if not isinstance(message, dict):
+                        raise ValueError('Invalid JSON frame')
+                else:
+                    message = FrameReader(sock, length, self.READ_CHUNK).read()
                 if message.get("type") == "response":
                     with self.lock:
                         if self.socket is not sock:
@@ -287,6 +352,9 @@ class DesktopIPC:
             self.generation += 1
             sock = self.socket
         self._disconnect(sock)
+        if self.legacy is not None:
+            self.legacy.close()
+            self.legacy_owners.clear()
 
     def _disconnect(self, sock):
         if sock is None:

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qsl
 
@@ -16,10 +17,9 @@ from bridge.resources import project_root
 
 from bridge.features.auth.auth import Auth, password_record, session_hours, session_file_lock
 from bridge.app.lifecycle import read_record, request_stop, request_pairing
-from bridge.features.notifications.channels import Notifications, read_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
+from bridge.features.notifications.channels import Notifications, read_json, read_status_json, write_json, settings, save_settings, save_webhook_endpoint, webhook_config, publish, publish_bark, publish_pushplus, publish_webhook, visible_webhook, WebhookDeliveryError, resolved_webhook_provider
 from bridge.features.sessions.store import SessionStore, StoreUnavailable
 from bridge.clients.codex.remote import AppHosts
-from bridge.clients.codex.catalog import Catalog
 import bridge.features.network.access as access
 import bridge.features.network.addresses as network
 import bridge.features.network.interfaces as interfaces
@@ -56,22 +56,24 @@ class Desktop:
             raise ValueError('网关正在启动，请稍后重试')
         if self.local_bridge is None:
             from bridge.app.service import Bridge
-            from bridge.clients.manager import DesktopSessions
+            from bridge.clients.manager import DesktopSessions, read_client_settings, settings_path
             from bridge.clients.discovery import discover_clients, inventory_current
             p = self.preferences()
-            saved = read_json(self.data_dir/'desktop-sessions/settings.json', {})
+            saved = read_client_settings(settings_path(self.data_dir/'desktop-sessions')) or {}
             inputs = {**p, **{key: value for key, value in saved.items()
                                if key.endswith(('Home', 'Application', 'Applications'))}}
             if saved.get('discoveryPreferences', {}).get('desktopExecutable'):
                 inputs['desktopExecutable'] = saved['discoveryPreferences']['desktopExecutable']
             discovered = saved['discovered'] if inventory_current(saved, inputs) else discover_clients(inputs)
             runtime = p.get('codexBin')
-            # Keep ordinary Windows installations automatic across App updates.
-            # Preserve discovery's fallback for nonstandard desktop bundles.
-            if not runtime and (os.name != 'nt' or not Catalog.find_runtime()):
-                runtime = discovered['codex'].get('runtime')
             self.local_bridge = Bridge(Path(p['codexHome']).expanduser(), self.data_dir,
                                        ipc_path=p.get('ipcPath') or None, codex_bin=runtime or None)
+            if not runtime:
+                reader = self.local_bridge.catalog_reader
+                current = reader.executable
+                # Keep Windows' cached CLI preference and nonstandard bundle fallback.
+                if os.name != 'nt' or not current:
+                    reader.follow_runtime(current, discovered['codex'].get('runtime'))
             self.local_sessions = DesktopSessions(self.data_dir, self.local_bridge)
         return self.local_bridge, self.local_sessions
 
@@ -172,7 +174,7 @@ class Desktop:
         selected = interfaces.selected_interfaces(preferences.get('lanInterfaces'))
         network_status = {}
         if runtime['running']:
-            value = read_json(self.data_dir/'network-status.json', {})
+            value = read_status_json(self.data_dir/'network-status.json', {})
             if (value.get('pid') == runtime.get('pid') and
                     value.get('instanceId') == runtime.get('instanceId') and
                     value.get('mode') == ('off' if not preferences['lan'] else
@@ -189,7 +191,7 @@ class Desktop:
         hosts = ['127.0.0.1', 'localhost'] + static_addresses if preferences['lan'] else ['127.0.0.1', 'localhost']
         if not preferences['localAccess']:
             hosts = [host for host in hosts if host not in ('127.0.0.1', 'localhost')]
-        quick = read_json(self.data_dir/'cloudflare-status.json', {})
+        quick = read_status_json(self.data_dir/'cloudflare-status.json', {})
         if not runtime['running'] or quick.get('pid') != runtime.get('pid'):
             quick = {}
         quick_url = ''
@@ -203,7 +205,7 @@ class Desktop:
         urls = [url if url == quick_url else url+'/' for url in access.phone_urls(preferences, hosts, quick_url)]
         external = {}
         for entry in preferences['connections']:
-            status = read_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
+            status = read_status_json(self.data_dir/('ssh-status-'+entry['id']+'.json'), {})
             if runtime['running'] and status.get('pid') == runtime.get('pid'):
                 external[entry['id']] = status
         executable = preferences['cloudflared']
@@ -212,14 +214,16 @@ class Desktop:
         notification_urls = entry_urls(preferences, hosts, quick_url, external,
                                        lan_addresses=static_addresses) if runtime['running'] else []
         notifications = settings(self.data_dir)
+        from bridge.features.accounts.secrets import pending_migrations
         return {'preferences': preferences, 'auth': {'username': config['auth'].get('username', 'admin'), 'mode': config['auth']['mode'], 'sessionHours': config['auth'].get('sessionHours', 12)},
                 'origins': config.get('origins', []), 'notifications': {**notifications, 'token': '', 'hasToken': bool(notifications['token']), 'barkKey': '', 'hasBarkKey': bool(notifications['barkKey']), 'pushplusToken': '', 'hasPushplusToken': bool(notifications['pushplusToken']), **visible_webhook(notifications)},
                 'watches': self.notification_watches({'action': 'list'}, preferences=preferences)['watches'],
                 'notificationUrls': notification_urls,
-                'securityNotificationStatus': read_json(self.data_dir/'security-notifications.json', {}),
-                'addressNotificationStatus': read_json(self.data_dir/'address-notifications.json', {}),
-                'notificationStatus': read_json(self.data_dir/'notification-status.json', {}),
+                'securityNotificationStatus': read_status_json(self.data_dir/'security-notifications.json', {}),
+                'addressNotificationStatus': read_status_json(self.data_dir/'address-notifications.json', {}),
+                'notificationStatus': read_status_json(self.data_dir/'notification-status.json', {}),
                 'dataDir': str(self.data_dir), 'credentialsAvailable': (self.data_dir/'首次登录.txt').exists(),
+                'credentialMigrations': pending_migrations(self.data_dir, preferences['connections']),
                 'networkInterfaces': rows, 'networkStatus': network_status,
                 'networkAdaptation': {**adaptation_settings(self.data_dir),
                                       'running': runtime['running']},
@@ -298,7 +302,12 @@ class Desktop:
         if not isinstance(origins, list):
             raise FieldError('额外 HTTPS 源格式不正确', 'origins')
         origins = list(dict.fromkeys(at_field('origins', access.origin, origin) for origin in origins))
-        old_fixed = access.public_urls(old_preferences)
+        old_fixed = set()
+        for old_origin in access.public_urls(old_preferences):
+            try:
+                old_fixed.add(access.origin(old_origin))
+            except ValueError:
+                continue
         origins = [origin for origin in origins if origin not in old_fixed]
         for fixed in access.public_urls(preferences):
             if fixed not in origins:
@@ -343,6 +352,7 @@ class Desktop:
 
     def start(self, value=None):
         temporary = (value or {}).get('connectionSecrets', {})
+        defer_legacy = sys.platform == 'darwin' and (value or {}).get('deferLegacyCredentials') is True
         self.config()
         state = self.status()
         if state['running']:
@@ -361,6 +371,7 @@ class Desktop:
         if any(c['enabled'] and c['accessMode'] == 'server' and not managed(c, self.data_dir) for c in preferences['connections']) and not shutil.which('ssh'):
             raise ValueError('未找到 OpenSSH 客户端；请先安装或启用系统 SSH 客户端')
         from bridge.features.network.server_connection import credentials
+        from bridge.features.accounts.secrets import LegacyCredentialsRequired
         for entry in preferences['connections']:
             if not entry['enabled']:
                 continue
@@ -368,7 +379,12 @@ class Desktop:
                 from bridge.features.network.tailscale import require_identity
                 require_identity(entry)
             if entry['accessMode'] == 'cloudflare' or (entry['accessMode'] == 'server' and entry.get('sshAuth', 'config') != 'config'):
-                secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                try:
+                    secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                except LegacyCredentialsRequired:
+                    if not defer_legacy:
+                        raise
+                    continue
                 if entry['accessMode'] == 'cloudflare' and not secret.get('tunnelToken'):
                     raise FieldError('请先填写并保存 Cloudflare Tunnel Token。', 'tunnelToken', entry['id'])
                 if entry['accessMode'] == 'server' and entry.get('sshAuth') == 'password' and not secret.get('password'):
@@ -388,6 +404,8 @@ class Desktop:
                     probe.close()
         command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(project_root()/'desktop.py')]
         command += ['serve', '--data-dir', str(self.data_dir), '--connection-secrets-stdin']
+        if defer_legacy:
+            command.append('--defer-legacy-credentials')
         kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         # Frozen children run as independent applications, not multiprocessing workers.
         environment = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
@@ -447,7 +465,8 @@ class Desktop:
             return request_pairing(self.data_dir, {'action': 'devices', 'value': value})
         if read_record(self.data_dir/'gateway-control.json'):
             raise ValueError('网关状态暂不可用，请稍后刷新设备列表')
-        return Auth(self.config()['auth'], self.data_dir).manage(value)
+        with closing(Auth(self.config()['auth'], self.data_dir)) as auth:
+            return auth.manage(value)
 
     def notification_watches(self, value, *, preferences=None):
         if value.get('action') != 'list':
@@ -544,10 +563,13 @@ class Desktop:
                 raise ValueError('Webhook 地址读取请求格式不正确')
             return {'webhookUrl': webhook_config(settings(self.data_dir), value.get('webhookId', 'legacy')).get('webhookUrl', '')}
         if value.get('id'):
-            from bridge.features.accounts.secrets import read
+            from bridge.features.accounts.secrets import read, LegacyCredentialsRequired
             if not any(c['id'] == value['id'] for c in self.preferences()['connections']):
                 raise ValueError('请先保存连接配置。')
-            return read(self.data_dir, value['id'])
+            try:
+                return read(self.data_dir, value['id'])
+            except LegacyCredentialsRequired:
+                return {'migrationRequired': True}
         notification = settings(self.data_dir)
         result = {key: notification[key] for key in ('token', 'barkKey', 'pushplusToken')}
         initial = self.data_dir/'首次登录.txt'
@@ -564,9 +586,12 @@ class Desktop:
         entry = next((c for c in self.preferences()['connections'] if c['id'] == value.get('id')), None)
         if not entry:
             raise ValueError('请先保存连接配置。')
-        from bridge.features.accounts.secrets import save
-        save(self.data_dir, entry['id'], value.get('secrets', {}))
-        return {'message': '连接凭据已保存到系统凭据存储。'}
+        from bridge.features.accounts.secrets import save, migrate
+        if value.get('migrate') is True:
+            migrate(self.data_dir, entry['id'])
+        else:
+            save(self.data_dir, entry['id'], value.get('secrets', {}))
+        return {'message': '连接凭据已保存。'}
 
     def server_setup(self, value):
         entry = access.select_connection(self.preferences(), value, allow_disabled=True)

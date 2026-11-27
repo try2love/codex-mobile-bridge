@@ -2,6 +2,8 @@
 
 Status: implemented
 
+utility host 进程拓扑及新增控制端点见[宿主进程与旧 IPC 并存](2026-11-21-hosted-codex-desktop.md)；旧版的本篇路径保持，新版 Windows 成品仍需单独实测。
+
 ## 问题
 
 Windows 原 App 已持有父聊天时，另起元数据运行时会触发 `already has an active writer`。Mac 的共享 Unix transport 不能直接照搬：Windows App 关闭 stdio 子进程时会直接结束适配器，Python 的 `finally` 不保证执行，独立原生服务可能遗留。

@@ -120,6 +120,53 @@ class GitWorkspaceTests(unittest.TestCase):
         with patch('bridge.features.workspace.workspace.subprocess.Popen', side_effect=FileNotFoundError):
             with self.assertRaisesRegex(ValueError, '未安装 Git'): self.status()
 
+    def test_large_status_pages_and_untracked_groups_keep_full_fingerprint(self):
+        folder = self.root / 'bulk'; folder.mkdir()
+        for index in range(10000):
+            (folder / ('\u6d4b' * 70 + str(index).zfill(5) + '.txt')).touch()
+        raw = self.git('status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all').stdout
+        self.assertGreater(len(raw), 2 * 1024 * 1024)
+        owner = GitWorkspace(self.work)
+        grouped = owner.status(limit=200, collapse_untracked=True)
+        self.assertEqual(grouped['counts']['untracked'], 10000)
+        self.assertEqual(len(grouped['entries']), 1)
+        self.assertEqual(grouped['entries'][0]['path'], 'bulk/')
+        self.assertEqual(grouped['entries'][0]['count'], 10000)
+        self.assertTrue(grouped['entries'][0]['directory'])
+        first = owner.status(limit=200, section='untracked', untracked_path='bulk/', version=grouped['version'])
+        second = owner.status(limit=200, offset=200, section='untracked', untracked_path='bulk/', version=first['version'])
+        self.assertEqual(first['nextOffset'], 200)
+        self.assertEqual(len(second['entries']), 200)
+        self.assertEqual(first['version'], second['version'])
+        self.assertFalse(set(e['path'] for e in first['entries']) & set(e['path'] for e in second['entries']))
+        (self.root / second['entries'][0]['path']).write_text('changed after listing')
+        with self.assertRaisesRegex(ValueError, '已发生变化'):
+            owner.status(limit=200, offset=400, version=first['version'])
+        with self.assertRaisesRegex(ValueError, '已发生变化'):
+            owner.mutate('stage-all', first['version'], limit=200)
+        self.assertEqual(self.git('diff', '--cached').stdout, b'')
+
+    def test_paged_mutations_and_commit_cover_all_staged_files(self):
+        self.baseline()
+        for index in range(240):
+            (self.root / ('file-' + str(index).zfill(3) + '.txt')).write_text('fixture')
+        owner = GitWorkspace(self.work)
+        before = owner.status(limit=30)
+        self.assertEqual(len(before['entries']), 30)
+        staged = owner.mutate('stage-all', before['version'], limit=30)['state']
+        self.assertEqual(staged['counts']['staged'], 240)
+        self.assertEqual(len(staged['entries']), 30)
+        review = owner.status(limit=30, offset=210, section='staged', version=staged['version'])
+        self.assertEqual(len(review['entries']), 30)
+        self.assertEqual(review['counts']['staged'], 240)
+        result = owner.mutate('commit', review['version'], message='All staged files', limit=30)
+        self.assertEqual(result['state']['counts']['total'], 0)
+        names = self.git('ls-tree', '-r', '--name-only', 'HEAD').stdout.splitlines()
+        self.assertEqual(len(names), 241)
+        for bad in (True, 0, 201, '20'):
+            with self.assertRaises(ValueError):
+                owner.mutate('stage-all', result['state']['version'], limit=bad)
+
     def test_remote_routing_does_not_activate_owner(self):
         self.baseline(); (self.root / 'hello.txt').write_text('remote change\n')
         store = RemoteStore('fixture-host'); store.get = lambda _: {'cwd': str(self.root)}
@@ -210,6 +257,25 @@ class GitWorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError): work.commit_detail('--all')
         self.assertEqual(len(work.branches()['branches']), 2)
 
+    def test_history_remains_available_when_worktree_status_exceeds_output_limit(self):
+        self.baseline()
+        (self.root / 'hello.txt').write_text('second\n')
+        self.git('add', 'hello.txt'); self.git('commit', '-qm', 'second commit')
+        directory = self.root / 'untracked'
+        directory.mkdir()
+        for index in range(23000):
+            (directory / (f'{index:05d}-' + 'x' * 80)).write_text('untracked\n')
+
+        work = GitWorkspace(self.work)
+        code, _, truncated = work.run(['status', '--porcelain=v2', '--branch', '-z',
+                                       '--untracked-files=all', '--renames',
+                                       '--ignore-submodules=dirty', '--', '.'])
+        self.assertTrue(truncated, 'fixture reproduces the oversized change-list condition')
+        history = work.history(limit=1)
+        self.assertEqual(len(history['commits']), 1)
+        self.assertTrue(history['hasMore'])
+        self.assertEqual(work.commit_detail(history['commits'][0]['id'])['id'], history['commits'][0]['id'])
+
     def test_management_subdirectory_cannot_commit_other_project_files(self):
         self.baseline(); (self.root / 'nested').mkdir(); (self.root / 'nested/a.txt').write_text('nested')
         self.git('add', 'hello.txt'); (self.root / 'hello.txt').write_text('outside'); self.git('add', 'hello.txt')
@@ -253,6 +319,14 @@ class GitWorkspaceTests(unittest.TestCase):
                 GitWorkspace(self.work).mutate('stage-all', state['version'])
         self.assertEqual(self.git('diff', '--cached').stdout, b'')
 
+    def test_stage_and_unstage_reject_case_variants_of_git_directory(self):
+        self.baseline(); owner = GitWorkspace(self.work); state = owner.require_repository()
+        for action in ('stage', 'unstage'):
+            for path in ('.git/config', '.GIT/hooks/pre-commit', 'nested/.Git/HEAD'):
+                with self.subTest(action=action, path=path):
+                    with self.assertRaisesRegex(ValueError, '请选择项目中的变更文件'):
+                        owner.mutate(action, state['version'], path)
+
 
 class GitHttpTests(unittest.TestCase):
     setUpClass = classmethod(support.HttpTests.setUpClass.__func__)
@@ -278,6 +352,15 @@ class GitHttpTests(unittest.TestCase):
         connection = http.client.HTTPConnection('127.0.0.1', self.port)
         connection.request('GET', '/git-panel.js'); response = connection.getresponse()
         self.assertEqual(response.status, 200); self.assertIn(b'class GitPanel', response.read()); connection.close()
+
+    def test_status_paging_contract_is_forwarded_without_changing_legacy_calls(self):
+        auth = self.login()
+        target = self.path + 'git-status?limit=25&offset=50&section=untracked&untrackedPath=bulk%2F&collapseUntracked=true&version=' + 'a' * 64
+        self.assertEqual(self.request('GET', target, headers=auth)[0], 200)
+        self.assertEqual(self.calls[-1][2], {'limit':25, 'offset':50, 'section':'untracked',
+            'untracked_path':'bulk/', 'collapse_untracked':True, 'version':'a' * 64})
+        self.assertEqual(self.request('POST', self.path+'git-action', {'action':'stage-all','version':'fixture','limit':25}, auth)[0], 200)
+        self.assertEqual(self.calls[-1][2]['limit'], 25)
 
     def test_mutations_require_csrf_and_explicit_action(self):
         target = self.path + 'git-action'

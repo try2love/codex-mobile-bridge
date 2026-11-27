@@ -89,3 +89,9 @@ Saved endpoints stay masked during ordinary configuration reads. Use the address
 **Other presets:** choose Custom Webhook, DingTalk, Discord or Telegram and edit the supplied JSON. Custom text is preserved until you explicitly apply the selected template. The expandable field reference lists every supported placeholder. DingTalk uses `msgtype`/`text.content` and supports optional signing with its own millisecond timestamp algorithm. Discord uses `content` (up to 2000 characters), disables mentions by default and waits for message confirmation. Telegram uses the Bot API `/bot<token>/sendMessage` endpoint; fill `chat_id` in the template and keep `text` within 4096 characters. DingTalk requires `errcode: 0`; Telegram requires `ok: true`. These are outgoing notification presets, not incoming bot-update subscriptions.
 
 Delivery fans out to enabled destinations and reuses existing policies, with separate deduplication and retries for each destination. It does not activate chats or replay completed history. Disabling, deleting or changing one destination cancels only its pending retries. Generic HTTP 2xx confirms receiver acceptance; presets use service-specific success responses. Confirm downstream receipt and use the stable `event_id` to deduplicate retries after ambiguous timeouts. Dynamic signatures beyond Feishu/DingTalk and non-JSON protocols require a separate adapter.
+
+## 完成通知中的回答预览
+
+通知设置提供“包含最后回答预览”，默认关闭。打开后，已完成事件优先使用当前已读取的最后一条助手回答，合并空白并截取前 280 个字符；缺少最终回答时保持普通完成提醒。过程说明、待回答问题、失败事件和等待审批提醒不作为回答预览。
+
+预览可能出现在手机锁屏、系统通知和已配置的第三方通知服务中。发送前会重新检查开关；关闭后尚未发送的通知恢复通用文案，已送达的内容无法撤回。预览不额外激活或读取聊天，不写入完成去重账本；启用后的手机通知入箱会按既有通知保留规则保存通知正文。

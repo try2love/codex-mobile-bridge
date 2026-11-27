@@ -9,7 +9,7 @@ function fixture(desktop=false){
   class Clock extends Date{static now(){return now;}}
   const context=vm.createContext({document:{createElement:node,body:node('body'),hidden:false,activeElement:null,addEventListener:(name,fn)=>listeners.set(name,[...(listeners.get(name)||[]),fn])},root,Date:Clock,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].cancelled=true;},localStorage:{getItem(){return null;},setItem(){}},window:{confirm:message=>{prompts.push(message);return confirmed;},prompt:()=>null}});
-  for(const f of ['web/shared/i18n.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
+  for(const f of ['web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/accounts/account.js','web/features/accounts/api-editor.js','web/features/accounts/accounts.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',f),'utf8'),context);
   const Class=vm.runInContext('AccountsPanel',context),panel=new Class({root,desktop,read:force=>{readCalls++;return read(force);},request:v=>{requests.push(v);return request(v);}});
   const all=(n=root)=>[n,...n.children.flatMap(all)];
   return {panel,root,requests,prompts,all,timers,readCalls:()=>readCalls,focus:node=>context.document.activeElement=node,blur:()=>context.document.activeElement=context.document.body,active:()=>context.document.activeElement,now:()=>now,advance:ms=>now+=ms,hidden:value=>{context.document.hidden=value;for(const fn of listeners.get('visibilitychange')||[])fn();},configHidden:value=>{configHidden=value;for(const fn of listeners.get('bridge-client-config')||[])fn();},ancestorHidden:value=>{ancestorHidden=value;},fireTimer:async ms=>{const timer=timers.find(row=>!row.cancelled&&row.ms===ms);assert.ok(timer,`expected ${ms}ms timer`);timer.cancelled=true;await timer.fn();},noRandomUUID:()=>{context.crypto={getRandomValues:bytes=>require("node:crypto").randomFillSync(bytes)};},text:()=>all().map(n=>n.textContent).join('\n'),setValue:v=>value=v,value:()=>value,setRequest:v=>request=v,setRead:v=>read=v,confirm:v=>confirmed=v,
@@ -32,7 +32,7 @@ test('native login card survives an empty saved list without enrollment or switc
 test('web exposes saved account selection without enrollment or credential inputs',async()=>{
  const ui=fixture();await ui.panel.refresh();assert.equal(ui.all().some(n=>n.tag==='input'&&n.type!=='checkbox'),false);assert.match(ui.text(),/API <script>/);assert.equal(ui.all().some(n=>n.tag==='script'),false);
  ui.confirm(false);await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests.length,0);
- ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','syncLocalCli','tasksConfirmed']);
+ ui.confirm(true);await ui.panel.choose(ui.value().accounts[0]);assert.deepEqual(Object.keys(ui.requests[0]).sort(),['action','confirmed','id','requestId','sharedDaemonConfirmed','syncLocalCli','tasksConfirmed']);
  assert.equal(ui.requests[0].tasksConfirmed,true);assert.match(ui.prompts[0],/未在网页显示/);
 });
 
@@ -50,6 +50,13 @@ test('Codex switch always requests CLI verification without an opt-in checkbox',
  assert.match(ui.text(),/Desktop 与 CLI 共用接入/);
  assert.equal(ui.all().some(n=>n.textContent==='同时应用到本机 CLI'),false);
  await ui.panel.choose(ui.value().accounts[0]);assert.equal(ui.requests[0].syncLocalCli,true);
+ assert.equal(ui.requests[0].sharedDaemonConfirmed,true);assert.match(ui.prompts[0],/共享 CLI 服务/);
+});
+
+test('shared daemon shutdown is included in the existing account confirmation in English',async()=>{
+ const ui=fixture(true);await ui.panel.refresh();ui.language();
+ await ui.panel.choose(ui.value().accounts[0]);
+ assert.match(ui.prompts[0],/shared CLI service/);assert.equal(ui.requests[0].sharedDaemonConfirmed,true);
 });
 
 
@@ -64,7 +71,7 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} merges import
  assert.equal(cards.length,3);assert.equal(ui.all(cards[0]).find(n=>n.tag==='h3').textContent,login.name);
  assert.equal(ui.all().filter(n=>n.textContent==='已登录').length,1);
  assert.equal(ui.all().filter(n=>n.textContent==='当前接入').length,1);
- assert.equal(ui.all().filter(n=>n.tag==='progress').length,2);
+ assert.equal(ui.all().filter(n=>n.className?.includes('quota-pie-ring')).length,2);
  assert.equal(ui.all().filter(n=>n.tag==='button'&&n.textContent==='使用重置卡').length,2);
  const transient={...login,id:'current-login',transient:true};
  ui.panel.accept({...ui.value(),accounts:[],activeId:null,loginAccount:transient});
@@ -88,7 +95,7 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} explicitly in
  ui.panel.clear();assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('native initialization remains unavailable for passwordless remote access',async()=>{
- const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
+ const ui=fixture();ui.panel.accept({...ui.value(),canSwitch:false,canManageDesktop:false,desktopRuntime:{supported:true,configured:false}});assert.equal(ui.panel.initializeRuntime.disabled,true);
  ui.panel.accept({...ui.value(),desktopRuntime:{supported:false}});assert.equal(ui.panel.desktopRuntime.hidden,true);
 });
 test('automatic native preparation stays passive and offers unknown-task recovery',()=>{
@@ -108,8 +115,8 @@ for(const desktop of [false,true])test(`${desktop?'desktop':'web'} offers a conf
  ui.confirm(true);await ui.panel.forceInitializeRuntime.onclick();assert.equal(ui.requests[0].acknowledgeUnavailable,true);assert.match(ui.prompts[0],/正常重启.*可能中断/);
  ui.panel.accept({...state,switch:{phase:'failed',operation:'desktopRuntime',error:'known busy'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
  ui.panel.accept({...state,switch:{...state.switch,phase:'verifying'}});assert.equal(ui.panel.forceInitializeRuntime.hidden,true);
- if(!desktop){ui.panel.accept({...state,canSwitch:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
- ui.panel.accept({...state,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);
+ if(!desktop){ui.panel.accept({...state,canManageDesktop:false});assert.equal(ui.panel.forceInitializeRuntime.disabled,true);}
+ ui.panel.accept({...state,canSwitch:false,canManageDesktop:true,management:{external:true}});assert.equal(ui.panel.forceInitializeRuntime.disabled,false);
 });
 
 test('external Magpie management disables configuration replacement on both surfaces',async()=>{
@@ -199,7 +206,7 @@ test('actual current account is named and cannot be selected again',async()=>{
 });
 test('official rows show compact quota and reset count, while API rows only offer models',async()=>{
  const ui=fixture();ui.setValue({...ui.value(),accounts:[...ui.value().accounts,{id:'official',kind:'chatgpt',name:'Official',details:{usage:{status:'ready',checkedAt:Date.now()/1000,limits:[{name:'Codex',windows:[{remainingPercent:75,windowDurationMins:300}]}],resetCredits:{availableCount:2}},models:{status:'ready',models:[{id:'model-1',name:'Model one'}]}}}]});
- await ui.panel.refresh();assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.equal(ui.all().filter(n=>n.tag==='progress').length,1);
+ await ui.panel.refresh();assert.match(ui.text(),/剩余 75%/);assert.match(ui.text(),/重置卡 · 2/);assert.equal(ui.all().filter(n=>n.className?.includes('quota-pie-ring')).length,1);
  assert.equal(ui.all().filter(n=>n.textContent==='查看可用模型').length,2);
  ui.panel.expandedModels.add('official');ui.panel.render();assert.match(ui.text(),/Model one · model-1/);
 });
@@ -559,4 +566,11 @@ test('shared account confirmation keeps other clients quiet until synchronizatio
  const ui=fixture();await ui.panel.refresh();await ui.panel.choose(ui.value().accounts[0]);
  assert.match(ui.prompts[0],/切换完成前请勿从其他客户端发起任务/);
  assert.match(ui.prompts[0],/仅在需要时/);
+});
+
+for(const desktop of [false,true])test(`${desktop?'desktop':'web'} native connection is visible outside reminder disclosure`,()=>{
+ const ui=fixture(desktop);ui.panel.accept({...ui.value(),desktopRuntime:{supported:true},switch:{phase:'complete'}});
+ assert.equal(ui.root.children[0],ui.panel.desktopRuntime);assert.equal(ui.panel.desktopRuntime.parentNode,ui.root);
+ assert.equal(ui.panel.desktopRuntime.hidden,false);assert.equal(ui.panel.tools.children.includes(ui.panel.desktopRuntime),false);
+ assert.equal(ui.panel.tools.open,undefined);assert.equal(ui.panel.initializeRuntime.disabled,false);
 });

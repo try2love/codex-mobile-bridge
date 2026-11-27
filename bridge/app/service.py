@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from bridge.features.endpoints.registry import codex_list_hosts
 from bridge.app.lifecycle import private_json
 from bridge.resources import source_text
+from bridge.features.sessions.offline_delivery import (
+    DeliveryBlocked, admit as admit_delivery, fingerprint as delivery_fingerprint, proof as delivery_proof, require_intent, waiting_for_turn)
 from bridge.features.sessions.message_management import snapshot as management_snapshot, mutate as management_mutate
 
 from bridge.features.terminals.manager import TerminalManager
@@ -32,7 +34,8 @@ from bridge.clients.codex.cli_session import CliSessions
 from bridge.features.sessions.identity import same_cwd
 from bridge.clients.desktop_app import DesktopApp
 from bridge.clients.codex.transport import ipc_endpoint
-from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times
+from bridge.clients.codex.native_queue import read_native_queue
+from bridge.features.sessions.model import apply_patches, attachment_prompt, computer_use_approval, context_usage, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text, merge_saved_message_times, prepend_saved_process
 from bridge.features.sessions.store import SessionStore, StoreUnavailable, persisted_submission_ids
 from bridge.features.workspace.files import artifact_paths, referenced_model_images, host_file_links, visualization_files, visualization_paths
 from bridge.features.workspace.visualize import identifier as visualization_id, read_source as read_visualization
@@ -49,6 +52,7 @@ from bridge.features.sessions.create import (
 from bridge.features.sessions.archive import ArchiveCommands
 from bridge.features.sessions.deletion import DeleteCommands, deletion_scope, delete_native
 from bridge.features.sessions.compaction import CompactCommands
+from bridge.features.sessions.quota_continue import candidate as quota_candidate, CONTINUE_TEXT, quota_windows, scope_stamp, QuotaDeferred
 from bridge.features.sessions.cli_release import ReleasedSessions
 from bridge.features.sessions.cli_force import CliForce, maintenance_daemon_status
 from bridge.features.sessions.cli_scope import CliScope
@@ -60,6 +64,7 @@ from bridge.features.sessions.question_skips import QuestionSkips
 from bridge.features.sessions.organization import organization as native_organization
 from bridge.features.sessions.projects import Projects
 from bridge.features.sessions.timeline import Timeline
+from bridge.features.sessions import sync as history_sync
 from bridge.features.sessions.tool_images import TOOL_IMAGE_CACHE, public_turns
 from bridge.features.accounts.account import Account
 from bridge.features.accounts.accounts import Accounts, operation
@@ -96,8 +101,16 @@ class LiveSession:
         self.state = None
         self.history_state = None
         self.saved_view = None
+        self.saved_metadata = None
+        self.recorded_context_usage = None
+        self.context_usage_revision = None
+        self.saved_title = None
+        self.next_title_read = 0
         self.saved_file_changes = {}
         self.history_limit = 2
+        self.sync_history_lock = threading.Lock()
+        self.sync_history_revision = None
+        self.sync_history_item_limit, self.sync_history_turn_limit = 40, 2
         self.timeline_limit = 40
         self.timeline_source = None
         self.timeline_source_limit = None
@@ -137,6 +150,8 @@ class LiveSession:
         self.action_lock = threading.RLock()
         self.timeline = Timeline()
         self.tool_image_cache = image_cache if image_cache is not None else TOOL_IMAGE_CACHE
+        self.timeline.image_cache = self.tool_image_cache
+        self.sync_timeline = Timeline(self.tool_image_cache)
         self.tool_images = {}
         self.tool_images_sequence = -1
 
@@ -145,7 +160,24 @@ class LiveSession:
         self.timeline_source = None
         self.condition.notify_all()
 
-    def timeline_view(self):
+    def observe_saved_title(self, metadata):
+        title = metadata.get('name') or metadata.get('title')
+        if not isinstance(title, str) or not title.strip() or title == '未命名聊天':
+            return
+        # A list refresh only observes display metadata. Native state handling
+        # must not make the whole chat list wait for this optional title update.
+        if not self.condition.acquire(blocking=False):
+            return
+        try:
+            if title != self.saved_title:
+                self.saved_title = title
+                source = (self.state if self.connected else self.history_state or self.state) or {}
+                if source.get('title') in (None, '', '未命名聊天'):
+                    self.changed()
+        finally:
+            self.condition.release()
+
+    def timeline_view(self, conversation=False, *, sync_history=False):
         # Presentation only. Actions still call view() against current state.
         with self.condition:
             source = self.state if self.connected else self.history_state or self.state
@@ -172,14 +204,19 @@ class LiveSession:
                         after += int(found)
                 if found:
                     self.timeline_limit = max(self.timeline_limit, after)
-            if self.timeline_source is None or self.timeline_source_limit != self.timeline_limit:
-                self.timeline_source = self.view(item_limit=self.timeline_limit)
-                self.timeline_source_limit = self.timeline_limit
+            source_limit = (self.timeline_limit, conversation, sync_history)
+            if self.timeline_source is None or self.timeline_source_limit != source_limit:
+                self.timeline_source = self.view(item_limit=None if conversation else self.timeline_limit,
+                                                 process_bodies=not conversation, sync_history=sync_history)
+                self.timeline_source_limit = source_limit
             return dict(self.timeline_source)
 
     def set_history(self, state):
         self.history_state = state
         self.saved_view = normalize_state(state, False, image_cache=self.tool_image_cache, item_limit=self.timeline_limit)
+        # Native message clocks and turn labels have their own bounded query;
+        # a smaller body window must not discard metadata for already visible rows.
+        self.saved_metadata = state.get('_historyMetadata') or self.saved_view
         # Complete native patch evidence is retained by the saved reader even
         # when its messages are outside the current presentation window.
         self.saved_file_changes = {
@@ -196,11 +233,13 @@ class LiveSession:
         requests = pending_requests(self.state or {})
         return self.question_skips.project(self.id, requests) if self.question_skips else requests
 
-    def view(self, *, item_limit=None):
+    def view(self, *, item_limit=None, process_bodies=True, sync_history=False):
         with self.condition:
             source = (self.state if self.connected else self.history_state or self.state) or {"id": self.id}
             result = normalize_state(source, self.connected,
-                                     image_cache=self.tool_image_cache, item_limit=item_limit)
+                                     image_cache=self.tool_image_cache, item_limit=item_limit, process_bodies=process_bodies)
+            if result['title'] == '未命名聊天' and self.saved_title:
+                result['title'] = self.saved_title
             if self.question_skips:
                 result['requests'] = self.question_skips.project(self.id, result['requests'])
             if not self.connected:
@@ -213,17 +252,27 @@ class LiveSession:
                 saved_changes = self.saved_file_changes.get(turn['id'])
                 if turn.get('status') == 'completed' and not turn.get('fileChanges') and saved_changes:
                     turn['fileChanges'], turn['fileChangesBasis'] = saved_changes
-            if self.saved_view and result['contextUsage'] is None:
-                saved_usage = self.saved_view.get('contextUsage')
+            usage = result['contextUsage']
+            if self.connected and self.recorded_context_usage and (usage is None or usage['cached']):
+                result['contextUsage'] = dict(self.recorded_context_usage)
+            elif usage is None:
+                saved_usage = (self.saved_view or {}).get('contextUsage') or self.recorded_context_usage
                 if saved_usage:
                     result['contextUsage'] = {**saved_usage, 'cached': True}
             if self.saved_view:
                 if self.connected and result.get('id') == self.id:
-                    merge_saved_message_times(result, self.saved_view)
-                saved_labels = {turn['id']: turn for turn in self.saved_view['turns'] if turn.get('status') != 'inProgress'}
+                    merge_saved_message_times(result, self.saved_metadata or self.saved_view)
+                saved_labels = {turn['id']: turn for turn in (self.saved_metadata or self.saved_view)['turns']
+                                if turn.get('status') != 'inProgress' or (turn.get('_recordedReplyLabel') or {}).get('model')}
                 for turn in result['turns']:
                     saved = saved_labels.get(turn['id'])
-                    label_known = (self.history_state or {}).get('historyReadSource') != 'native-index' or saved and saved.get('model')
+                    label_known = (self.history_state or {}).get('historyReadSource') not in ('native-index', 'native-index-retained') or saved and saved.get('model')
+                    if saved is not None:
+                        # Indexed rollouts can recover historical labels independently
+                        # of the metadata used by earlier clients' body versions.
+                        recorded = saved.get('_recordedReplyLabel') or {}
+                        if self.runtime != 'cli' or recorded.get('model'):
+                            turn['_recordedReplyLabel'] = recorded
                     if saved is not None and label_known and (self.runtime != 'cli' or saved.get('model')):
                         # Desktop history hydration can substitute today's model.
                         # Recorded turn_context is authoritative for past replies.
@@ -231,13 +280,18 @@ class LiveSession:
                         turn['model'], turn['effort'] = saved.get('model'), saved.get('effort')
             # Native paginated snapshots only contain the loaded tail. Keep the
             # saved prefix in the presentation, never in the IPC patch base.
-            if self.saved_view and (not result['historyComplete'] or self.origin in ('cli', 'ide') and self.runtime == 'desktop'):
-                saved = self.saved_view['turns']
+            saved_prefix = self.saved_view
+            if sync_history and self.connected and self.history_state and (not result['historyComplete']
+                    or any(turn.get('itemsComplete') is False for turn in result['turns'])):
+                saved_prefix = normalize_state(self.history_state, False, image_cache=self.tool_image_cache, process_bodies=False)
+                prepend_saved_process(result['turns'], saved_prefix['turns'])
+            if saved_prefix and (not result['historyComplete'] or self.origin in ('cli', 'ide') and self.runtime == 'desktop'):
+                saved = saved_prefix['turns']
                 turns = result['turns']
                 first = next((i for i, turn in enumerate(saved) if turns and turn['id'] == turns[0]['id']), None)
                 if not turns or first is not None:
                     result['turns'] = saved[:first] + turns if turns else saved
-                    result['historyComplete'] = self.saved_view['historyComplete']
+                    result['historyComplete'] = saved_prefix['historyComplete']
             result["savedHistoryMore"] = bool(self.saved_view and not result["historyComplete"] and not self.saved_view["historyComplete"])
             result["sequence"] = self.sequence
             result["connectionError"] = self.error
@@ -346,7 +400,8 @@ class Bridge:
             cli=codex_bin or 'codex', alias=alias, allow_installed_runtime=self.local, clear_sqlite_home=host.startswith('codex:'))
         self.lock = threading.RLock()
         self.reconnect_pending = {}
-        self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected)
+        self.ipc = DesktopIPC(ipc_path or ipc_endpoint(codex_home), self._event, self._disconnected,
+                              codex_home=codex_home if host == 'local' and not ipc_path else None)
         self.side_chats = SideChats(codex_bin, self.codex_home, self.data_dir, self.native_host,
                                    executable_getter=executable_getter, **_runtime_scope(host))
         self.closed = threading.Event()
@@ -1205,11 +1260,23 @@ class Bridge:
             session = self._target(thread_id)
             with session.action_lock:
                 with session.condition:
-                    session.timeline.update(session.view(), limit=session.timeline_limit)
-                    position = session.timeline.position(body.get('key', ''))
+                    cursor = body.get('key', '')
+                    if isinstance(cursor, str) and cursor.startswith('sync.'):
+                        # Synchronization keys are locators only. Rebuild from
+                        # the current owner while holding the original write gate.
+                        timeline = Timeline()
+                        owner_turns = {turn.get('turnId') for turn in ordered_turns(session.state or {})}
+                        view = session.view(process_bodies=False)
+                        view['turns'] = [turn for turn in view['turns'] if turn['id'] in owner_turns]
+                        timeline.update(view, conversation=True)
+                        position = timeline.positions.get(cursor.partition('.')[2])
+                    else:
+                        timeline = session.timeline
+                        timeline.update(session.view(), limit=session.timeline_limit)
+                        position = timeline.position(cursor)
                     if position is None:
                         raise ValueError('消息位置已变化，请刷新后重试')
-                    row = session.timeline.rows[position]
+                    row = timeline.rows[position]
                     if row['version'] != body.get('version'):
                         raise ValueError('消息内容已变化，请重新打开编辑')
                     if action == 'fork' and not row['forkable'] or action != 'fork' and not row['editable']:
@@ -1217,7 +1284,7 @@ class Bridge:
                     if row.get('turnStatus') == 'inProgress':
                         raise ValueError('请先停止当前任务，再编辑或分支')
                     if action == 'edit':
-                        if session.timeline.meta['latestUserTurnId'] != row['turnId']:
+                        if timeline.meta['latestUserTurnId'] != row['turnId']:
                             raise ValueError('只有最近一条消息可原地编辑，请使用编辑并新建分支')
                         if session.state.get('threadRuntimeStatus', {}).get('type') == 'active':
                             raise ValueError('请先停止当前任务，再编辑或分支')
@@ -1317,7 +1384,7 @@ class Bridge:
             target.store.poll_results.clear()
 
     def assert_desktop_idle(self, timeout=20, identifiers=None, allow_missing_ipc=False, allow_stopped_app=False,
-                            *, desktop_only=False, desktop_executable=None):
+                            *, desktop_only=False, desktop_executable=None, validate_state=None, allow_quota_error=False):
         """Passively check every desktop owner before an application shutdown.
 
         The caller holds the account operation gate until shutdown completes.
@@ -1441,8 +1508,9 @@ class Bridge:
             with condition:
                 if message.get('method') == 'client-status-changed':
                     if params.get('status') == 'disconnected':
-                        for record in followed.values():
-                            if record['owner'] == params.get('clientId'):
+                        for key, record in followed.items():
+                            if (record['owner'] == params.get('clientId') and
+                                    (not params.get('conversationId') or key == (params.get('hostId'), params['conversationId']))):
                                 record['invalid'] = True
                         condition.notify_all()
                     return
@@ -1487,11 +1555,21 @@ class Bridge:
                         or any(turn.get('status') == 'inProgress' for turn in ordered_turns(state))):
                     raise ValueError(busy)
                 if runtime != 'idle':
-                    raise TaskStateUnavailable(unknown)
+                    # Quota failures are native systemError states, not idle.
+                    # Only the quota continuation preflight may admit this exact
+                    # terminal state, and it must still prove the quota failure.
+                    eligible_error = (runtime == 'systemError' and allow_quota_error and validate_state is not None
+                                      and quota_candidate(SimpleNamespace(connected=True, runtime='desktop', origin='desktop',
+                                          owner=record['owner'], state=state)) is not None)
+                    if not eligible_error:
+                        raise TaskStateUnavailable(unknown)
+                if validate_state is not None:
+                    validate_state(state, record['owner'])
             except (TypeError, AttributeError, KeyError) as exc:
                 raise TaskStateUnavailable(unknown) from exc
 
-        ipc = DesktopIPC(self.ipc.path, on_event=event, on_disconnect=disconnect)
+        options = {'codex_home': self.ipc.codex_home} if getattr(self.ipc, 'codex_home', None) is not None else {}
+        ipc = DesktopIPC(self.ipc.original_path, on_event=event, on_disconnect=disconnect, **options)
         audits = ThreadPoolExecutor(max_workers=min(8, max(1, len(threads))))
         try:
             remaining()
@@ -1525,7 +1603,7 @@ class Bridge:
                 native = native_connection(host, sid) if desktop_only else None
                 try:
                     response = ipc.request('thread-owner-discovery', {'hostId': host, 'conversationId': sid},
-                                           host=host, timeout=min(6, budget),
+                                           host=host, timeout=min(11, budget),
                                            deadline=min(deadline, time.monotonic() + budget))
                 except IPCError as exc:
                     if str(exc) == 'no-client-found':
@@ -1567,9 +1645,10 @@ class Bridge:
 
                 def submit_next():
                     nonlocal submitted
-                    # Reserve both discovery and snapshot time, scaled by the
-                    # bounded parallelism rather than dividing 20s by all history.
-                    budget = remaining() * workers / max(workers, len(candidates) - submitted) / 2
+                    # The native router can wait 10s for discovery clients before
+                    # replying no-client-found. Leave response and snapshot time
+                    # inside the same absolute operation deadline.
+                    budget = remaining() * workers / max(workers, len(candidates) - submitted) * 2 / 3
                     host, sid = candidates[submitted]
                     submitted += 1
                     pending.add(audits.submit(inspect_thread, host, sid, budget))
@@ -2373,7 +2452,10 @@ class Bridge:
 
     def _cli_recovery_record(self):
         path = self.data_dir / 'cli-daemon-recovery.json'
-        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        # Windows readers do not share deletion; cancellation replaces this
+        # record under the same lock after the short read has closed its handle.
+        with self.cli_maintenance.lock:
+            return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
 
     def _activate_cli_recovery(self, thread_id, plan):
         from bridge.clients.codex.cli_session import _managed_cli
@@ -3066,9 +3148,14 @@ class Bridge:
                 options = dict(limit=limit + offset, archived=archived, query=query, source=source,
                                **({'exclude_sources': excluded} if excluded else {}),
                                **({"pinned_ids": sorted(pins)} if pin_order else {}))
+                if bridge.host == 'local' or bridge.host.startswith('codex:'):
+                    options['project_roots'] = True
+                elif isinstance(bridge.store, RemoteStore):
+                    options['project_scope'] = True
                 rows = ([] if source == 'wsl' else bridge.store.poll('list', options) if remote else
                         bridge.store.list(**options))
                 rows = self.hosts.decorate(rows, bridge.host, label, bridge.organization_commands.native_memberships())
+                live_titles = []
                 with bridge.lock:
                     bridge.listed.update(row['id'] for row in rows)
                     for row in rows:
@@ -3078,6 +3165,10 @@ class Bridge:
                         row['connected'] = bool(session and session.connected)
                         row['access'] = bridge._access(row.get('origin', 'desktop'), session)
                         row['title'] = row.get('name') or row.get('title') or '未命名聊天'
+                        if session is not None:
+                            live_titles.append((session, row))
+                for session, row in live_titles:
+                    session.observe_saved_title(row)
                 return rows, None, available
             except (RemoteUnavailable, StoreUnavailable) as exc:
                 return [], {'host': bridge.host, 'label': label, 'error': str(exc)}, []
@@ -3515,6 +3606,7 @@ class Bridge:
             session.attached_parent = dict(parent, host=self.host) if parent else None
             session.origin_verified = True
             session.access = self._access(session.origin, session)
+            session.observe_saved_title(metadata)
 
     def _saved_history(self, session):
         return self.store.history(session.id, turn_limit=session.history_limit, item_limit=session.timeline_limit)
@@ -3553,7 +3645,8 @@ class Bridge:
                 time_key = tuple((turn['id'], turn.get('status'), message['id'], message['kind'], message['role'])
                                  for turn in session.timeline_view()['turns'] if turn.get('actionable', True)
                                  for message in turn['messages']
-                                 if message['role'] in ('user', 'assistant') and message.get('timestamp') is None
+                                 if message['role'] in ('user', 'assistant') and (message.get('timestamp') is None or
+                                     message['role'] == 'assistant' and not message.get('model') and not (turn.get('_recordedReplyLabel') or {}).get('model'))
                                  and isinstance(message.get('id'), str) and message['id'] and not message.get('_syntheticId'))
                 if not time_key:
                     return
@@ -3674,7 +3767,15 @@ class Bridge:
                         session.error = str(exc)
                         session.changed()
                     return
-            self._load_session_origin(session)
+            try:
+                self._load_session_origin(session)
+            except (OSError, ValueError, KeyError, RemoteUnavailable, StoreUnavailable) as exc:
+                # Metadata can fail after the transport preflight succeeds.
+                # Keep passive maintenance alive and retry on its usual budget.
+                with session.condition:
+                    session.error = str(exc)
+                    session.changed()
+                return
             if self.host.startswith('codex:') and session.origin == 'desktop':
                 with session.condition:
                     session.error = '此独立入口只接入原 VS Code / CLI 会话；桌面会话请使用默认入口。'
@@ -3747,11 +3848,13 @@ class Bridge:
                 if not self.observation_enabled():
                     self.suspend_observation()
                     return
+                owner = (self.ipc.owner(session.id, host=self.native_host, legacy_discovery=False)
+                         if self.ipc.hosted and self.native_host == 'local' else None)
                 with session.condition:
-                    session.owner = None
+                    session.owner = owner
                     session.revision = None
                     session.discovering = True
-                self.ipc.follow(session.id, None, host=self.native_host)
+                self.ipc.follow(session.id, owner, host=self.native_host)
                 with session.condition:
                     session.condition.wait_for(lambda: session.connected or self.closed.is_set(), timeout=timeout)
                     # Keep following: a cold chat can publish after this short
@@ -3763,6 +3866,30 @@ class Bridge:
                     session.error = None if session.origin in ('cli', 'ide') else str(exc)
                     session.access = self._access(session.origin, session)
                     session.changed()
+
+    def desktop_connection_ready(self):
+        """Only native connection evidence counts; config and a GUI PID do not."""
+        if not self.local or not self.observation_enabled():
+            return False
+        from bridge.clients.codex.desktop_runtime import hosted_endpoint
+        try:
+            # A ready record is published only after the App's native handshake.
+            # Verify the complete live generation and its private endpoint.
+            endpoint = hosted_endpoint(self.codex_home)
+            if endpoint is not None:
+                with self.ipc.lock:
+                    return bool(self.ipc.socket and self.ipc.client_id and self.ipc.hosted and
+                        self.ipc.path == endpoint['path'] and
+                        self.ipc.hosted_generation == endpoint['generation'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        with self.ipc.lock:
+            if not self.ipc.socket or not self.ipc.client_id:
+                return False
+        with self.lock:
+            sessions = list(self.live.values())
+        return any(session.origin == 'desktop' and session.runtime == 'desktop' and session.connected
+                   for session in sessions)
 
     def desktop_restart_recommended(self):
         with self.lock:
@@ -3805,12 +3932,34 @@ class Bridge:
                     followed.last_activation = None
                     followed.retry_at = 0
 
+    def _recover_desktop_transport(self):
+        if not self.ipc.endpoint_changed():
+            return
+        gate = self.accounts.gate if self.accounts is not None else None
+        if gate is not None and not gate.acquire(timeout=0):
+            return
+        try:
+            # Do not replace a follower during a write or replay its result.
+            # A newly prepared native route may coexist with a stale legacy
+            # socket that never closes; passive reads must notice that change.
+            if self.ipc.endpoint_changed():
+                self._rebuild_desktop_transport()
+        finally:
+            if gate is not None:
+                gate.release()
+
     @operation
     def rebuild_connection(self, thread_id):
         session = self.session(thread_id, background=True)
         self._load_session_origin(session)
         if session.origin != 'desktop' or self.host != 'local':
             raise IPCError('此会话不使用桌面连接，请使用继续会话。')
+        if self.ipc.hosted and self.ipc.socket and not self.ipc.endpoint_changed():
+            # A cold thread does not invalidate the verified shared runtime.
+            # Retry its owner and explicit activation without dropping siblings.
+            with session.condition:
+                session.last_activation = None
+            return self.activate(thread_id)
         # The host operation gate drains pending writes before this read-only
         # follower connection is replaced. Native tasks keep their original owner.
         rebuilt = False
@@ -3892,7 +4041,7 @@ class Bridge:
                         session.changed()
             endpoint_changed = not _transport_rebuilt and session.runtime == 'desktop' and self.ipc.endpoint_changed()
             replace_transport = endpoint_changed or (not _transport_rebuilt and session.runtime == 'desktop' and
-                not session.connected and session.rebuild_recommended)
+                not self.ipc.hosted and not session.connected and session.rebuild_recommended)
             if session.connected and not replace_transport:
                 return session
             with session.condition:
@@ -4014,7 +4163,9 @@ class Bridge:
                 with self.lock:
                     sessions = list(self.live.values())
                 for session in sessions:
-                    if session.owner == params.get("clientId"):
+                    if (session.owner == params.get("clientId") and
+                            (not params.get('conversationId') or params.get('hostId') == self.native_host
+                             and params['conversationId'] == session.id)):
                         self._invalidate(session, "桌面会话连接已断开，正在等待重连", runtime='desktop',
                                          owner=params.get("clientId"), reason='desktop_client_disconnected')
             # Owner changes can make previously unanswered probes available.
@@ -4162,60 +4313,88 @@ class Bridge:
         for source in list(self.remote_bridges.values()):
             source.suspend_observation()
 
+    def _maintain_session(self, session):
+        # Desktop's automatic naming can update the local index without
+        # publishing another conversation patch. Only read the open chat.
+        with session.condition:
+            source = (session.state if session.connected else session.history_state or session.state) or {}
+            now = time.monotonic()
+            read_title = (self.local and session.viewers > 0 and session.origin_verified and session.origin == 'desktop'
+                          and not session.saved_title and source.get('title') in (None, '', '未命名聊天')
+                          and now >= session.next_title_read)
+            if read_title:
+                session.next_title_read = now + 3
+        if read_title:
+            try:
+                session.observe_saved_title(self.store.get(session.id))
+            except (KeyError, StoreUnavailable):
+                pass
+        with self.submit_lock:
+            queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
+        if queued and session.connected and session.view().get("status") == "idle":
+            for paused_key, paused in queued:
+                if paused.get('cliRelease'):
+                    self._settle_scope_queued(session, paused_key)
+            with self.submit_lock:
+                queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
+                          and row['status'] == 'queued' and not row.get('cliRelease')]
+            if queued:
+                key, entry = queued[0]
+                try:
+                    self._send_queued(session, key, entry)
+                except Exception:
+                    pass  # Unknown outcomes stay recorded and are never automatically replayed.
+        if (session.viewers > 0 or queued or session.watched) and not session.connected:
+            if session.activity_only and session.viewers == 0 and not queued:
+                if time.monotonic() >= session.retry_at:
+                    with session.condition:
+                        now = time.monotonic()
+                        session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
+                    self._attach(session, timeout=0)
+            else:
+                self._refresh_async(session)
+        elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
+            with self.lock:
+                if session.viewers != 0 or session.watched:
+                    return
+                self.live.pop(session.id, None)
+            if (session.connected or session.discovering) and session.runtime != "cli":
+                try:
+                    self.ipc.follow(session.id, session.owner, False, host=self.native_host)
+                except IPCError:
+                    pass
+
     def _maintain(self):
         delay = 3
         while not self.closed.wait(delay):
-            if not self.observation_enabled():
-                continue
-            if isinstance(self.store, RemoteStore):
-                current = self.hosts.hosts(cached=True).get(self.host)
-                if current and current['alias'] == self.store.alias:
-                    retry_ssh(self.store.alias, manual=False)
-            if self.accounts is not None:
-                try:
-                    self.accounts.check_ready()
-                except ValueError:
+            try:
+                if not self.observation_enabled():
                     continue
-            with self.lock:
-                sessions = list(self.live.values())
-            for session in sessions:
-                with self.submit_lock:
-                    queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
-                if queued and session.connected and session.view().get("status") == "idle":
-                    for paused_key, paused in queued:
-                        if paused.get('cliRelease'):
-                            self._settle_scope_queued(session, paused_key)
-                    with self.submit_lock:
-                        queued = [(key, dict(row)) for key, row in self.submissions.items() if key.startswith(session.id + ':')
-                                  and row['status'] == 'queued' and not row.get('cliRelease')]
-                    if queued:
-                        key, entry = queued[0]
-                        try:
-                            self._send_queued(session, key, entry)
-                        except Exception:
-                            pass  # Unknown outcomes stay recorded and are never automatically replayed.
-                if (session.viewers > 0 or queued or session.watched) and not session.connected:
-                    if session.activity_only and session.viewers == 0 and not queued:
-                        if time.monotonic() >= session.retry_at:
-                            with session.condition:
-                                now = time.monotonic()
-                                session.retry_at = now + (.5 if now < session.desktop_recovery_until else 15)
-                            self._attach(session, timeout=0)
-                    else:
-                        self._refresh_async(session)
-                elif session.viewers == 0 and not queued and not session.watched and time.monotonic() - session.touched > 300:
-                    with self.lock:
-                        if session.viewers != 0 or session.watched:
-                            continue
-                        self.live.pop(session.id, None)
-                    if (session.connected or session.discovering) and session.runtime != "cli":
-                        try:
-                            self.ipc.follow(session.id, session.owner, False, host=self.native_host)
-                        except IPCError:
-                            pass
-            recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
-                             for session in sessions)
-            delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+                if isinstance(self.store, RemoteStore):
+                    current = self.hosts.hosts(cached=True).get(self.host)
+                    if current and current['alias'] == self.store.alias:
+                        retry_ssh(self.store.alias, manual=False)
+                if self.accounts is not None:
+                    try:
+                        self.accounts.check_ready()
+                    except ValueError:
+                        continue
+                self._recover_desktop_transport()
+                with self.lock:
+                    sessions = list(self.live.values())
+                for session in sessions:
+                    try:
+                        self._maintain_session(session)
+                    except Exception:
+                        # 单个会话维护异常（例如原会话消失导致 store.get 抛 KeyError）
+                        # 不得中断其他会话维护或杀死后台线程。
+                        logging.getLogger(__name__).exception("后台维护会话 %s 失败", session.id)
+                recovering = any(not session.connected and time.monotonic() < session.desktop_recovery_until
+                                 for session in sessions)
+                delay = 3 if self.ipc.client_id or recovering else min(30, delay * 2)
+            except Exception:
+                # 远程主机探测等外层瞬时异常同样不应终止后台维护循环。
+                logging.getLogger(__name__).exception("后台维护循环迭代失败")
 
     def _target(self, thread_id, *, defer_cli_account=False):
         if self.released_cli.contains(thread_id):
@@ -4304,6 +4483,7 @@ class Bridge:
         with self._draft_remote_lock:
             self._draft_remote_cache[key] = (time.monotonic(), identity)
             self._draft_remote_pending.discard(key)
+        return identity
 
     def view(self, thread_id, attach=True, background=False, force=False):
         session = self.session(thread_id, attach=attach, background=background, force=force)
@@ -4682,13 +4862,125 @@ class Bridge:
             view["goal"] = None
         return view
 
+    def sync_watch_source(self, thread_id):
+        session = self.session(thread_id, background=True, attach=False)
+
+        def probe():
+            try:
+                revision = self.store.history_revision(thread_id)
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                revision = None
+            return session.sequence, revision
+
+        def wait(previous, delay):
+            with session.condition:
+                session.condition.wait_for(lambda: session.sequence != previous[0], timeout=delay)
+
+        return probe, wait, .2 if self.local else 2
+
+    def _recent_revision(self, session):
+        with session.condition:
+            live_usage = context_usage(session.state or {})
+            needs_usage = session.connected and (live_usage is None or live_usage['cached'])
+            since = session.context_usage_revision
+        if not needs_usage:
+            return self.store.history_revision(session.id)
+        # Read the saved counter in the same request as the rollout revision.
+        # A complete owner timeline need not import message bodies to show it.
+        status = self.store.history_status(session.id, include_usage=True, known_revision=since)
+        usage = context_usage({'latestTokenUsageInfo': status.get('tokenUsage'), 'tokenUsageFromHistory': True})
+        with session.condition:
+            session.context_usage_revision = status['revision']
+            if usage is not None and session.recorded_context_usage != usage:
+                session.recorded_context_usage = usage
+                session.changed()
+        return status['revision']
+
+    def _sync_history_source(self, session, mode, options):
+        # History synchronization is passive. Use the already established owner
+        # or bounded persistent history; explicit control reconnect is separate.
+        with session.condition:
+            refresh = not session.connected and (not session.history_state or mode in ('watch', 'recent'))
+            saved_limit = max(session.history_limit, session.sync_history_turn_limit)
+            item_limit = max(session.timeline_limit, session.sync_history_item_limit)
+            revision = session.sync_history_revision
+        if mode in ('watch', 'recent') or refresh:
+            try:
+                revision = self._recent_revision(session) if mode == 'recent' else self.store.history_revision(session.id)
+            except FileNotFoundError:
+                # A newly opened native session can be visible to its owner
+                # before its first rollout file is present.
+                if refresh and not session.history_state:
+                    return revision
+            except (OSError, RemoteUnavailable, StoreUnavailable):
+                if refresh and not session.history_state and mode != 'watch':
+                    raise
+            with session.condition:
+                refresh = refresh and (session.history_state is None or session.sync_history_revision != revision)
+                if mode != 'watch' and session.connected and session.sync_history_revision != revision:
+                    live = session.timeline_view(True)
+                    refresh = not live.get('historyComplete') or any(
+                        turn.get('itemsComplete') is False for turn in live.get('turns', ()))
+        if mode == 'watch':
+            return revision
+        expanding = False
+        while True:
+            if refresh:
+                try:
+                    saved = self.store.history(session.id, turn_limit=saved_limit, item_limit=item_limit)
+                except (FileNotFoundError, RemoteUnavailable, StoreUnavailable):
+                    if not session.connected:
+                        raise
+                    break
+                with session.condition:
+                    session.sync_history_turn_limit = max(session.sync_history_turn_limit, saved_limit)
+                    session.sync_history_item_limit = max(session.sync_history_item_limit, item_limit)
+                    if session.history_state != saved:
+                        session.set_history(saved)
+                    elif expanding:
+                        # A partial native source may have reached its own read boundary.
+                        # A larger request returning the same snapshot cannot extend it.
+                        break
+                    session.sync_history_revision = revision
+            with session.condition:
+                view = session.timeline_view(True, sync_history=True)
+                partial_head = bool(view.get('turns') and view['turns'][0].get('itemsComplete') is False)
+                if view.get('historyComplete') and not partial_head:
+                    break
+                session.sync_timeline.update(view, conversation=True)
+                session.sync_timeline.meta['syncPartialHead'] = partial_head
+                if mode == 'recent' and session.history_state and session.history_state.get('savedHistoryPartial'):
+                    break
+                if not history_sync.needs_older(session.sync_timeline, mode, options):
+                    break
+                if refresh and not partial_head and session.saved_view and session.saved_view['historyComplete']:
+                    break
+                # A single turn can contain tens of thousands of process rows
+                # between its input and answer. Grow until the requested interval
+                # is covered, keeping the resulting projection for later pages.
+                saved_limit += max(20, saved_limit)
+                item_limit += max(100, item_limit)
+                expanding = refresh = True
+        return revision
+
     def timeline_read(self, thread_id, mode='page', **options):
-        session = self.session(thread_id, background=True)
+        sync_mode = options.pop('sync_mode', None)
+        session = (self.session(thread_id, background=True, attach=False) if sync_mode
+                   else self.session(thread_id, background=True))
+        conversation = options.get('projection') == 'conversation' or mode == 'process' or bool(sync_mode)
+        if sync_mode:
+            with session.sync_history_lock if sync_mode != 'watch' else nullcontext():
+                sync_revision = self._sync_history_source(session, sync_mode, options)
+            if sync_mode == 'watch':
+                self._refresh_async(session)
+        if mode == 'detail':
+            options.pop('projection', None)
         goal_available = self._refresh_session_goal(session)
         # Expand saved history only when the reader reaches its loaded edge.
         if mode == 'page' and options.get('before'):
             with session.condition:
-                position = session.timeline.position(options['before'])
+                position = (session.timeline.conversation_positions.get(options['before'].partition('.')[2])
+                            if conversation else session.timeline.position(options['before']))
                 near_edge = position is not None and position < options.get('limit', 20)
                 expand = near_edge and not session.timeline.window_more and session.saved_view and not session.saved_view['historyComplete']
                 if near_edge:
@@ -4701,41 +4993,61 @@ class Bridge:
                     session.set_history(saved)
         with session.condition:
             session.access = self._access(session.origin, session)
-            projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view())
+            projection = session.sync_timeline if sync_mode else session.timeline
+            authoritative_view = self._overlay_native_goal(session, thread_id, session.timeline_view(conversation, sync_history=bool(sync_mode)))
             authoritative_view['access'] = dict(session.access)
-            projection.update(authoritative_view, limit=session.timeline_limit)
+            projection.update(authoritative_view, limit=None if sync_mode else session.timeline_limit, conversation=conversation)
+            if sync_mode:
+                projection.meta['syncPartialHead'] = bool(authoritative_view.get('turns') and
+                    authoritative_view['turns'][0].get('itemsComplete') is False)
+                projection.meta['syncSourceComplete'] = bool(authoritative_view.get('historyComplete')
+                    and not authoritative_view.get('loadingHistory')
+                    and all(turn.get('itemsComplete', True) for turn in authoritative_view['turns']))
+                projection.meta['syncSourceRevision'] = history_sync.digest(sync_revision)
             # Goals/access may change independently of the history revision.
             projection.meta.update(goal=authoritative_view.get('goal'), access=authoritative_view['access'])
             # Annotate the full projection, not only the returned page. Otherwise
             # older pages briefly render raw localImage paths after an upgrade.
             self._annotate_upload_attachments(session, projection.rows)
             self._merge_submission_attachments(session, projection.rows)
-            if mode == 'detail':
-                result = projection.detail(**options)
-                file_items = [{'type': 'agentMessage', 'text': projection.details[result['key']]}]
+            if mode == 'process':
+                return {**projection.process(**options), 'files': []}
+            if sync_mode:
+                result = history_sync.read(projection, sync_mode, **options)
+                if sync_mode == 'watch' or sync_mode == 'body' and result.get('notModified'):
+                    return result
+            detail = mode == 'detail' or sync_mode == 'body'
+            if detail:
+                if not sync_mode:
+                    result = projection.detail(**options)
+                session.tool_images.update({attachment['desktopId']: attachment for attachment in
+                                            projection.detail_image_evidence.get(result['key'], ())})
+                self._annotate_upload_attachments(session, [result])
+                file_items = [{'type': 'agentMessage', 'text': result['text']}]
             else:
-                result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
-                result['meta'] = dict(result['meta'], host=self.host,
-                                      hostLabel=self.host_label,
-                                      goalRuntimeAvailable=goal_available)
-                if linux_permissions.enabled(self.native_host):
-                    result['meta']['linuxPermissionChecks'] = True
-                    if session.connected:
-                        result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
+                if not sync_mode:
+                    result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
+                if sync_mode != 'process':
+                    result['meta'] = dict(result['meta'], host=self.host,
+                                          hostLabel=self.host_label,
+                                          goalRuntimeAvailable=goal_available)
+                    if linux_permissions.enabled(self.native_host):
+                        result['meta']['linuxPermissionChecks'] = True
+                        if session.connected:
+                            result['meta']['permissionMode'] = linux_permissions.current_mode(session.state)
+                file_rows = history_sync.reference_rows(projection, result) if sync_mode else result['rows']
                 file_items = [{'type': 'userMessage' if row['role'] == 'user' else 'agentMessage',
                                'text': row.get('text', ''), 'content': row.get('attachments', [])}
-                              for row in result['rows'] if row['role'] in ('user', 'assistant')]
+                              for row in file_rows if row['role'] in ('user', 'assistant')]
             cwd = authoritative_view.get('cwd')
             # Resolve only evidence in the displayed window, not the entire
             # native snapshot on every poll.
-            media_items = [{'type': 'ImageView', 'path': attachment['path']}
-                           for turn in authoritative_view['turns'] for row in turn['messages']
-                           for attachment in row.get('attachments', [])
-                           if attachment.get('type') == 'localImage' and attachment.get('path')]
+            media_items = [{'type': 'ImageView', 'path': path}
+                           for row in (projection.rows[projection.positions[result['key']]:projection.positions[result['key']] + 1] if detail else file_rows)
+                           for path in projection.image_views.get(row['key'], [])]
         # Resolve links in the delivered page, plus runtime ImageView evidence
         # retained separately from the paged message text.
-        if mode != 'detail':
+        if not detail and sync_mode != 'process':
             result['meta']['draftAccountIdentity'] = self._draft_account_identity(authoritative_view)
         file_state = {'cwd': cwd, 'turns': [
             {'items': file_items},
@@ -4744,7 +5056,7 @@ class Bridge:
         artifacts = artifact_paths(file_state, self.store.home) if self.local else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'references': v['references'], 'image': v['image']} for k, v in artifacts.items()]
         result['files'] = visualization_files(file_state, host_file_links(file_state, result['files']))
-        if mode != 'detail':
+        if not detail and sync_mode != 'process':
             self._submission_meta(session, result['meta'])
             result['meta']['forkedFrom'] = self._fork_origin(thread_id)
         return result
@@ -5294,6 +5606,10 @@ class Bridge:
                 objective=objective, status=status, ui_locale=ui_locale, expected=expected)
             if response.get('confirmed') and action in ('pause', 'cancel', 'edit'):
                 self._cancel_goal_activation_queues(thread_id)
+                if self.accounts is not None:
+                    turns = ordered_turns(session.state or {})
+                    if turns:
+                        self.accounts.monitor.continuation.note_manual_stop(thread_id, turns[-1].get('turnId'))
             if action == 'resume':
                 response['activation'] = self._send_goal_activation(session, response, action)
             with session.condition:
@@ -5350,9 +5666,105 @@ class Bridge:
         result['draftAccountIdentity'] = identity
         result['identityPending'] = not identity and (bool(getattr(self, '_draft_remote_pending', ())) or
                                                     (self.host != 'local' and bool(self._management_identity(thread_id))))
+        if self.host == 'local' and identity:
+            with self.lock:
+                session = self.live.get(thread_id)
+            if session is not None:
+                with session.condition:
+                    native_desktop = session.origin_verified and session.origin == 'desktop'
+                if native_desktop:
+                    queue = read_native_queue(self.codex_home, thread_id)
+                    # An account change during the read invalidates this projection.
+                    current = self._management_identity(thread_id)
+                    if current != identity:
+                        result.update(draftAccountIdentity=current,
+                                      capabilities=dict.fromkeys(result['capabilities'], False))
+                        return result
+                    result['nativeQueue'] = queue
         if not identity:
             result['capabilities'] = dict.fromkeys(result['capabilities'], False)
         return result
+
+    def _delivery_identity(self, session, *, fresh=False):
+        if not fresh or self.local:
+            return self._management_identity(session.id, refresh=not fresh)
+        with session.condition:
+            provider = (session.state or {}).get('modelProvider') or session.saved_provider
+        alias = self.cli_sessions.alias
+        if not provider or not alias:
+            return ''
+        home = str(self.cli_sessions.remote_home) if self.cli_sessions.remote_home else None
+        return self._probe_remote_draft_identity((self.host, alias, home, provider), alias, home, provider)
+
+    def _delivery_status(self, thread_id, submission_id, account, intent=None):
+        with self.goal_lock, self.submit_lock:
+            key = thread_id + ':' + submission_id
+            existing = self.submissions.get(key)
+            if key in self.goal_commands or existing and existing.get('deliveryAccount') != account:
+                return 'unknown'
+            if existing:
+                require_intent(existing.get('deliveryFingerprint'), intent)
+            return (existing.get('status') or 'unknown') if existing else 'notFound'
+
+    def _delivery_admission(self, session, *, fresh=False):
+        metadata = self.store.get(session.id)
+        identity = self._delivery_identity(session, fresh=fresh)
+        with session.condition:
+            access = self._access(session.origin, session)
+            state = session.state or {}
+            runtime = state.get('threadRuntimeStatus', {}).get('type')
+            turns = ordered_turns(state)
+            ready = bool(session.connected and session.owner and access['canSend'] and not access['readOnly']
+                         and runtime == 'idle' and not session.pending_requests())
+        with self.submit_lock:
+            ready = ready and not any(key.startswith(session.id + ':') and waiting_for_turn(row, turns, identity)
+                                      for key, row in self.submissions.items())
+        return identity, not metadata.get('archived') and ready, bool(metadata.get('archived'))
+
+    def offline_delivery(self, thread_id, submission_id, account, body=None):
+        session = self.session(thread_id, attach=False, background=True)
+        if body is None:
+            current, ready, archived = self._delivery_admission(session)
+            # Before a fresh owner snapshot, old indexes may not have the saved
+            # provider. A passive follow can establish it without opening a chat.
+            if (not archived and current in ('', account) and not session.connected
+                    and session.origin in ('desktop', 'ide')):
+                self._refresh_async(session)
+            status = self._delivery_status(thread_id, submission_id, account) if current == account else 'notFound'
+            return delivery_proof(current, account, ready=ready, status=status)
+        current, ready, archived = self._delivery_admission(session)
+        intent = delivery_fingerprint(body)
+        if current == account:
+            status = self._delivery_status(thread_id, submission_id, account, intent)
+            if status != 'notFound':
+                return {'status': status, 'duplicate': True, 'id': submission_id}
+        admit_delivery(current, account, ready, archived)
+        try:
+            if body.get('plugins'):
+                raise DeliveryBlocked('此会话离线发送不支持插件')
+            return self.send(thread_id, body['text'], submission_id, skills=body.get('skills', []),
+                             work_mode=body.get('workMode'), attachments=body.get('attachments'),
+                             references=body.get('references'), ui_locale=body.get('uiLocale'),
+                             _delivery_account=account, _delivery_intent=intent)
+        except DeliveryBlocked as exc:
+            if exc.code == 'offline_delivery_rejected':
+                # A negative receipt survives a lost response. Never overwrite a
+                # concurrent send or turn an existing unknown result into rejection.
+                with session.action_lock, self.goal_lock:
+                    status = self._delivery_status(thread_id, submission_id, account, intent)
+                    if status != 'notFound':
+                        return {'status': status, 'duplicate': True, 'id': submission_id}
+                    key = thread_id + ':' + submission_id
+                    with self.submit_lock:
+                        self.submissions[key] = {'text': body['text'], 'mode': 'send', 'status': 'rejected',
+                                                 'at': time.time(), 'deliveryAccount': account,
+                                                 'deliveryFingerprint': intent}
+                        try:
+                            self._save_ledger()
+                        except OSError:
+                            del self.submissions[key]
+                            raise
+            raise
 
     @operation
     def manage_messages(self, thread_id, body):
@@ -5422,21 +5834,79 @@ class Bridge:
         return {'status': 'ignored', 'id': submission_id}
 
     @operation
+    def continue_after_quota(self, thread_id, expected, submission_id, account_stamp, account_key, generation=None,
+                             *, before_write=None):
+        uuid.UUID(submission_id)
+        try:
+            session = self._target(thread_id)
+        except Exception as exc:
+            raise QuotaDeferred('原会话连接暂不可用，尚未发送') from exc
+        with session.action_lock:
+            try:
+                if self.store.get(thread_id).get('archived'):
+                    raise QuotaDeferred('聊天已归档，取消自动继续', cancel=True)
+                def validate(state, owner):
+                    if quota_candidate(session, state=state, owner=owner) != expected:
+                        raise QuotaDeferred('原生任务已变化，取消自动继续', cancel=True)
+                self.assert_desktop_idle(timeout=8, identifiers=[thread_id], validate_state=validate, allow_quota_error=True)
+                account = self.account.read(refresh=True)
+                windows = quota_windows(account)
+                if account.get('accountKey') != account_key:
+                    raise QuotaDeferred('账号已变化，取消自动继续', cancel=True)
+                if not windows or any(v <= 0 for v in windows.values()):
+                    raise QuotaDeferred('个人额度尚未确认可用，尚未发送')
+                with session.condition:
+                    if (quota_candidate(session) != expected or
+                            self.accounts.monitor.continuation.is_manually_stopped(thread_id, expected['turnId']) or
+                            thread_id in self.accounts.monitor.continuation.excluded or
+                            not self.accounts.monitor.preferences.get('autoContinue') or
+                            generation is not None and self.accounts.monitor.continuation.generation != generation or
+                            scope_stamp(self.accounts) != account_stamp):
+                        raise QuotaDeferred('额度自动继续的账号、开关或任务已变化', cancel=True)
+                native = None
+                if expected.get('goal'):
+                    native = self._native_goal_state(thread_id, strict=True)
+                    if not native or native['status'] != 'usageLimited' or goal_identity(native) != goal_identity(expected['goal']):
+                        raise QuotaDeferred('原生目标已变化', cancel=True)
+            except QuotaDeferred:
+                raise
+            except Exception as exc:
+                raise QuotaDeferred('发送前核验暂不可用，尚未发送') from exc
+            # Commit the durable no-replay marker only after the read-only preflight.
+            if before_write:
+                before_write()
+            if native:
+                return self.set_goal_status(thread_id, 'active', submission_id, expected=native)
+            key = thread_id + ':' + submission_id
+            with self.submit_lock:
+                if key in self.submissions:
+                    return {'status': self.submissions[key]['status'], 'duplicate': True}
+                entry = {'text': CONTINUE_TEXT, 'mode': 'send', 'skills': [], 'status': 'unknown', 'at': time.time()}
+                self.submissions[key] = entry
+                self._save_ledger()
+            return self._dispatch(session, key, entry)
+
+    @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
              plan_response=None, attachments=None, references=None, ui_locale=None, activation=None,
-             _async_response=None):
+             _async_response=None, _delivery_account=None, _delivery_intent=None):
         uuid.UUID(submission_id)
         identifiers = [] if attachments is None else attachments
-        files = self.uploads.resolve(thread_id, identifiers)
         references = [] if references is None else references
-        if references:
-            files += self.workspace(thread_id, 'references', {'references': references})
-        elif not isinstance(references, list):
-            raise ValueError('项目文件引用无效，请重新选择')
-        if len(files) > 10:
-            raise ValueError('每条消息最多添加 10 个不同附件')
-        if not isinstance(text, str) or (not text.strip() and not files) or len(text) > 100000:
-            raise ValueError("请输入 1–100000 字的消息")
+        try:
+            files = self.uploads.resolve(thread_id, identifiers)
+            if references:
+                files += self.workspace(thread_id, 'references', {'references': references})
+            elif not isinstance(references, list):
+                raise ValueError('项目文件引用无效，请重新选择')
+            if len(files) > 10:
+                raise ValueError('每条消息最多添加 10 个不同附件')
+            if not isinstance(text, str) or (not text.strip() and not files) or len(text) > 100000:
+                raise ValueError("请输入 1–100000 字的消息")
+        except (ValueError, FileNotFoundError) as exc:
+            if _delivery_account is not None:
+                raise DeliveryBlocked(str(exc)) from exc
+            raise
         if mode not in ("send", "steer", "queue"):
             raise ValueError("未知发送方式")
         if work_mode not in (None, "default", "plan", "goal"):
@@ -5475,15 +5945,30 @@ class Bridge:
                 result["activation"] = self._send_goal_activation(
                     session, response, "create", ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 return result
-        session = self._target(thread_id, **target_options)
+        if _delivery_account is not None:
+            session = self.session(thread_id, attach=False, background=True)
+        else:
+            session = self._target(thread_id, **target_options)
         access = self._access(session.origin, session)
-        if work_mode is not None and not access['canUseModes']:
-            raise ValueError('此会话暂不能切换工作模式')
-        if skills and not access['canSelectSkills']:
-            raise ValueError('此会话暂不能选择 Skill')
-        selected = self._resolve_skills(session, [] if skills is None else skills)
+        try:
+            if work_mode is not None and not access['canUseModes']:
+                raise ValueError('此会话暂不能切换工作模式')
+            if skills and not access['canSelectSkills']:
+                raise ValueError('此会话暂不能选择 Skill')
+            selected = self._resolve_skills(session, [] if skills is None else skills)
+        except ValueError as exc:
+            if _delivery_account is not None:
+                raise DeliveryBlocked(str(exc)) from exc
+            raise
         key = thread_id + ":" + submission_id
         with session.action_lock:
+            if _delivery_account is not None:
+                current, ready, archived = self._delivery_admission(session, fresh=True)
+                if current == _delivery_account:
+                    status = self._delivery_status(thread_id, submission_id, _delivery_account, _delivery_intent)
+                    if status != 'notFound':
+                        return {'status': status, 'duplicate': True, 'id': submission_id}
+                admit_delivery(current, _delivery_account, ready, archived)
             with self.submit_lock:
                 prior = self.submissions.get(key)
                 if prior:
@@ -5501,12 +5986,19 @@ class Bridge:
                     if not pending or self._async_reply_text(pending, response) != text:
                         raise ValueError('此请求已处理或已过期')
                 active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
+                if _delivery_account is not None:
+                    turns = ordered_turns(session.state or {})
+                    before_turn = turns[-1].get('id') if turns else None
                 if active and mode == "send":
+                    if _delivery_account is not None:
+                        raise DeliveryBlocked('Codex 正在执行，请稍后投递', wait=True)
                     raise SubmissionRejected("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
                 if not active and mode == "steer":
                     raise SubmissionRejected("当前任务已经结束，请使用普通发送")
                 if work_mode is not None and not (session.state.get("latestModel") or
                         (session.state.get("latestCollaborationMode") or {}).get("settings", {}).get("model")):
+                    if _delivery_account is not None:
+                        raise DeliveryBlocked('尚未取得模型设置，请重新连接后再切换模式', wait=True)
                     raise ValueError("尚未取得模型设置，请重新连接后再切换模式")
                 if plan_response is not None:
                     pending = next((r for r in session.state.get("requests", [])
@@ -5538,6 +6030,10 @@ class Bridge:
                             record.get('phase') == 'released' and token in record.get('connections', ()))):
                         raise IPCError('目标 CLI 释放意图或连接已变化，请明确重新连接后发送；消息未入队。')
                 entry = {"text": text, "mode": mode, "skills": selected, "status": "queued" if mode == "queue" else "unknown", "at": time.time()}
+                if _delivery_account is not None:
+                    entry['deliveryAccount'] = _delivery_account
+                    entry['deliveryFingerprint'] = _delivery_intent
+                    entry['deliveryBeforeTurn'] = before_turn
                 if self.cli_scope.target is not None:
                     entry.update(origin=session.origin, runtime=session.runtime)
                     if session.runtime == 'cli' and self.cli_sessions.remote_home:
@@ -5672,10 +6168,15 @@ class Bridge:
     def interrupt(self, thread_id):
         session = self._target(thread_id)
         with session.condition:
-            active = next((t for t in reversed(ordered_turns(session.state)) if t.get("status") == "inProgress"), None)
-            if not active or not active.get("turnId"):
-                raise ValueError("当前没有可停止的任务")
-            turn_id = active["turnId"]
+            turns = ordered_turns(session.state)
+            active = next((t for t in reversed(turns) if t.get("status") == "inProgress"), None)
+            turn_id = (active or (turns[-1] if turns else {})).get('turnId')
+        # Record intent before the RPC: a stale failure snapshot cannot revive a
+        # manually stopped task, even when its native stop result is delayed.
+        if self.accounts is not None:
+            self.accounts.monitor.continuation.note_manual_stop(thread_id, turn_id)
+        if not active or not active.get('turnId'):
+            raise ValueError("当前没有可停止的任务")
         return self._call(session, "thread-follower-interrupt-turn", {"mode": "user-stop", "expectedTurnId": turn_id})
 
     def full_history(self, thread_id):
@@ -5686,6 +6187,12 @@ class Bridge:
                 session.set_history(fallback)
             return {"loaded": True}
         session = self._target(thread_id)
+        if getattr(self.ipc, 'hosted', False) and (session.owner or '').startswith('desktop-runtime:') and (
+                'turnsPagination' in (session.state or {})):
+            saved = self.store.history(thread_id, turn_limit=None)
+            with session.condition:
+                session.set_history(saved)
+            return {"loaded": True}
         return self._call(session, "thread-follower-load-complete-history", {}, timeout=180)
 
     def _skip_question(self, thread_id, request_id, response):

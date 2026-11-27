@@ -164,7 +164,55 @@ const BridgeDownload = (() => {
       return this.storage?this.storage.blob():new Blob(this.parts, {type:'application/octet-stream'});
     }
   }
-  return {Task, eligible, native, filename};
+  function placePanel(panel, {details, summary, toggle, collapsed = false, dragged = null, label = value => value}) {
+    if (!panel || panel.hidden) return;
+    const viewport = window.visualViewport, narrow = matchMedia('(max-width:720px)').matches;
+    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
+    panel.style.width = Math.min(width - 24, collapsed ? 230 : 340) + 'px';
+    const panelLeft = left + width - panel.offsetWidth - 12;
+    let bottom = top + height - 12;
+    for (const node of document.querySelectorAll(narrow ? '.composer, .client-navigation' : '.composer')) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width && rect.height && rect.right > panelLeft && rect.bottom > top && rect.top > top) bottom = Math.min(bottom, rect.top - 10);
+    }
+    // In very short keyboard viewports the compact bar keeps controls out of the composer.
+    const cramped = narrow && bottom - top < 215;
+    details.hidden = collapsed || cramped; panel.classList.toggle('download-compact', details.hidden);
+    summary.setAttribute('aria-expanded', String(!details.hidden));
+    toggle.textContent = details.hidden ? '+' : '−'; toggle.setAttribute('aria-label', label(details.hidden ? '展开下载浮窗' : '收起下载浮窗'));
+    const h = panel.offsetHeight, w = panel.offsetWidth;
+    const x = dragged ? dragged.x : left + width - w - 12;
+    const y = dragged ? dragged.y : bottom - h;
+    panel.style.left = Math.max(left + 12, Math.min(x, left + width - w - 12)) + 'px';
+    panel.style.top = Math.max(top + 8, Math.min(y, top + height - h - 8)) + 'px';
+  }
+
+  function bindPanelDrag(panel, summary, {place, moved, toggle}) {
+    let drag;
+    summary.onclick = () => { if (!drag?.moved) toggle(); };
+    summary.onpointerdown = event => {
+      if (event.button || event.isPrimary === false) return;
+      const rect = panel.getBoundingClientRect();
+      drag = {x:event.clientX,y:event.clientY,left:rect.left,top:rect.top,moved:false};
+      summary.setPointerCapture(event.pointerId);
+    };
+    summary.onpointermove = event => {
+      if (!drag || !summary.hasPointerCapture(event.pointerId)) return;
+      if (Math.abs(event.clientX-drag.x)+Math.abs(event.clientY-drag.y)>5) drag.moved=true;
+      if (drag.moved) { moved({x:drag.left+event.clientX-drag.x,y:drag.top+event.clientY-drag.y});place(); }
+    };
+    summary.onpointerup = () => { setTimeout(() => { drag=null; },0); };
+    summary.onpointercancel = () => { drag=null; };
+    summary.onkeydown = event => {
+      const direction={ArrowLeft:[-16,0],ArrowRight:[16,0],ArrowUp:[0,-16],ArrowDown:[0,16]}[event.key];
+      if (!direction) return;
+      event.preventDefault();const rect=panel.getBoundingClientRect();
+      moved({x:rect.left+direction[0],y:rect.top+direction[1]});place();
+    };
+  }
+
+  return {Task, eligible, native, filename, placePanel, bindPanelDrag};
 })();
 if (typeof module !== 'undefined') module.exports = BridgeDownload;
 
@@ -177,7 +225,7 @@ if (typeof document !== 'undefined') (() => {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
   let panel, summary, details, name, state, progress, amount, speed, toggle, pause, save, cancel, note;
-  let collapsed = false, dragged = null, drag = null, frame = null;
+  let collapsed = false, dragged = null, frame = null;
   const objectURLs = new Set();
   const task = new BridgeDownload.Task({onChange:render});
   function element(tag, className, parent) {
@@ -195,26 +243,8 @@ if (typeof document !== 'undefined') (() => {
     panel.setAttribute('aria-label', t('文件下载'));
     const header = element('div', 'download-head', panel);
     summary = element('button', 'download-summary', header); summary.type = 'button';
-    summary.onclick = () => { if (!drag?.moved) { collapsed = !collapsed; render(); } };
-    summary.onpointerdown = event => {
-      if (event.button || matchMedia('(max-width:720px)').matches) return;
-      const rect = panel.getBoundingClientRect();
-      drag = {x:event.clientX, y:event.clientY, left:rect.left, top:rect.top, moved:false};
-      summary.setPointerCapture(event.pointerId);
-    };
-    summary.onpointermove = event => {
-      if (!drag || !summary.hasPointerCapture(event.pointerId)) return;
-      if (Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) > 5) drag.moved = true;
-      if (drag.moved) { dragged = {x:drag.left + event.clientX - drag.x, y:drag.top + event.clientY - drag.y}; place(); }
-    };
-    summary.onpointerup = () => { setTimeout(() => { drag = null; }, 0); };
-    summary.onpointercancel = () => { drag = null; };
-    summary.onkeydown = event => {
-      const direction = {ArrowLeft:[-16,0], ArrowRight:[16,0], ArrowUp:[0,-16], ArrowDown:[0,16]}[event.key];
-      if (!direction || matchMedia('(max-width:720px)').matches) return;
-      event.preventDefault(); const rect = panel.getBoundingClientRect();
-      dragged = {x:rect.left + direction[0], y:rect.top + direction[1]}; place();
-    };
+    BridgeDownload.bindPanelDrag(panel,summary,{place,
+      moved:value=>{dragged=value;},toggle:()=>{collapsed=!collapsed;render();}});
     toggle = button(header, () => { collapsed = !collapsed; render(); }); toggle.className = 'download-toggle';
     details = element('div', 'download-details', panel);
     name = element('strong', 'download-name', details);
@@ -242,27 +272,7 @@ if (typeof document !== 'undefined') (() => {
     if (!frame) frame = requestAnimationFrame(() => { frame = null; place(); });
   }
   function place() {
-    if (!panel || panel.hidden) return;
-    const viewport = window.visualViewport, narrow = matchMedia('(max-width:720px)').matches;
-    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
-    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
-    panel.style.width = Math.min(width - 24, collapsed ? 230 : 340) + 'px';
-    const panelLeft = left + width - panel.offsetWidth - 12;
-    let bottom = top + height - 12;
-    for (const node of document.querySelectorAll(narrow ? '.composer, .client-navigation' : '.composer')) {
-      const rect = node.getBoundingClientRect();
-      if (rect.width && rect.height && rect.right > panelLeft && rect.bottom > top && rect.top > top) bottom = Math.min(bottom, rect.top - 10);
-    }
-    // In very short keyboard viewports the compact bar keeps controls out of the composer.
-    const cramped = narrow && bottom - top < 215;
-    details.hidden = collapsed || cramped; panel.classList.toggle('download-compact', details.hidden);
-    summary.setAttribute('aria-expanded', String(!details.hidden));
-    toggle.textContent = details.hidden ? '+' : '−'; toggle.setAttribute('aria-label', t(details.hidden ? '展开下载浮窗' : '收起下载浮窗'));
-    const h = panel.offsetHeight, w = panel.offsetWidth;
-    const x = !narrow && dragged ? dragged.x : left + width - w - 12;
-    const y = !narrow && dragged ? dragged.y : bottom - h;
-    panel.style.left = Math.max(left + 12, Math.min(x, left + width - w - 12)) + 'px';
-    panel.style.top = Math.max(top + 8, Math.min(y, top + height - h - 8)) + 'px';
+    BridgeDownload.placePanel(panel, {details, summary, toggle, collapsed, dragged, label:t});
   }
   function render() {
     if (!panel && task.status === 'idle') return;

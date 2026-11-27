@@ -1,0 +1,24 @@
+.local-transfer-progress{right:12px;top:80px;width:min(340px,calc(100vw - 24px))}
+.local-transfer-dialog{width:min(550px,calc(100vw - 32px));max-height:85dvh}
+.local-transfer-sessions{max-height:45dvh;overflow:auto;margin-block:12px}
+.local-transfer-dialog .local-transfer-choice{display:flex;align-items:center;gap:12px;padding:12px 2px;margin:0;border-bottom:1px solid var(--line)}
+.local-transfer-choice input{flex:none;width:18px;height:18px;margin:0}.local-transfer-choice>span{display:grid;gap:4px;min-width:0}.local-transfer-choice strong{font-weight:500;overflow-wrap:anywhere}.local-transfer-choice small{color:var(--muted)}
+.local-transfer-sizes{display:grid;grid-template-columns:1fr auto;gap:14px 24px;margin:20px 0}.local-transfer-sizes dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.transfer-usage-scroll{max-height:min(360px,50dvh);overflow:auto;border:1px solid var(--line);border-radius:9px;overscroll-behavior:contain}
+.transfer-usage-scroll table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:12px}
+.transfer-usage-scroll th,.transfer-usage-scroll td{text-align:left;padding:10px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-bottom:1px solid var(--line)}
+.transfer-usage-scroll th{position:sticky;top:0;background:var(--surface,#f6f7f9);z-index:1}.transfer-usage-scroll th:first-child{width:35%}.transfer-usage-scroll th:nth-child(2){width:27%}.transfer-usage-scroll :is(th,td):nth-child(2){text-align:right;font-variant-numeric:tabular-nums}
+.transfer-choice{display:flex;align-items:center;gap:.6em;padding-block:.3em}
+[data-offline-reader] :is(.composer:not([data-offline-composer]),#new-chat,.ds-new-chat){display:none!important}
+[data-offline-composer-readonly] :is(.composer-frame textarea,.composer-submit){display:none!important}
+.offline-outbox{flex:none;max-height:min(22dvh,180px);overflow:auto;margin-inline:12px}
+.offline-outbox .queue-card p{white-space:pre-wrap;overflow-wrap:anywhere;margin-block:6px}
+.offline-outbox-editor textarea{display:block;min-height:96px;width:100%;margin-block:12px;resize:vertical}
+.offline-readonly-notice:not([hidden]){display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px}
+.offline-readonly-notice .recovery-actions>button:not(#reconnect){display:none!important}.offline-list-status{font-size:12px;line-height:1.5;flex:none;margin:2px 0 6px}
+
+.local-transfer-tabs{display:flex;gap:6px;overflow:auto;padding-block:8px}.local-transfer-tabs button{flex:none;padding:7px 10px}.local-transfer-tabs [aria-selected="true"]{color:var(--accent);background:var(--accent-soft,#4477ee12)}.local-transfer-count{font-variant-numeric:tabular-nums;margin:8px 0}
+
+.local-transfer-progress .download-head .download-summary{background:linear-gradient(to right,var(--accent-soft,#4664ed24) 0 var(--transfer-progress,0%),transparent var(--transfer-progress,0%) 100%)}
+
+.local-transfer-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:16px}

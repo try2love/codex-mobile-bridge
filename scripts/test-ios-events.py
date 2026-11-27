@@ -70,7 +70,7 @@ for _ in range(2):
 source = (ROOT / 'mobile/ios/BridgePreview/App.swift').read_text()
 def section(start, end):
     return source[source.index(start):source.index(end, source.index(start))]
-fetch = section('    private func fetch(', '    private func sheet(')
+fetch = section('    private static func offlineHTTPRejection(', '    private func sheet(')
 sync = section('    @objc private func active()', '    private func sourceSwitch(').replace('self.computerNotifications[address]?.arrangedSubviews.forEach { $0.removeFromSuperview() }', 'self.computerNotifications[address]?.isHidden = true')
 redirect = section('final class NoRedirect:', '// Foreground-only')
 # OS/platform substitutes only. The production fetch, sync, foreground/background
@@ -137,6 +137,9 @@ final class BridgeController: NSObject {
     var timer: Timer?
     var activityTimer: Timer?
     let downloads = Downloads()
+    var offlineWiFi = false
+    func resumeOfflineReader() {}
+    func pushOfflineState(foreground: Bool? = nil) {}
 '''
 if 'private var pollGeneration' in source:
     fields += '    var pollGeneration = 0\n    var pollTasks: [String: URLSessionDataTask] = [:]\n'

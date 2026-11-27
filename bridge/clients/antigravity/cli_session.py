@@ -1,18 +1,24 @@
 """Use the verified original Antigravity server; never spawn a competing CLI."""
+import copy
+import hashlib
 import json
+import logging
 import re
 import math
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 import threading
 import subprocess
 import time
 import urllib.error
 import urllib.request
 
-from bridge.clients.errors import BridgeUnavailable
+from bridge.clients.errors import BridgeUnavailable, ResumePreflightBlocked
 from bridge.platforms.antigravity import endpoint, verify_endpoint
 from .model import SURFACE_LABELS, format_tool_call, _parse_iso_seconds
+from .store import SURFACE_DIRS, local_file_path
+from .quota import quota_groups, model_windows, overlay as overlay_quota
 
 _CONFIRM_INTERACTION_LABELS = {
     'openBrowserUrl': '开启网页确认',
@@ -519,24 +525,75 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise BridgeUnavailable('Antigravity 本机服务不允许重定向')
 
 
+_EFFORT_ORDER = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+_EFFORT_RANK = {name: idx for idx, name in enumerate(_EFFORT_ORDER)}
+_EFFORT_LABEL_RE = re.compile(
+    r'^(?P<base>.+?)\s*\((?P<effort>' + '|'.join(_EFFORT_ORDER) + r')\)$',
+    re.IGNORECASE,
+)
+
+
+def _explicit_native_model(model):
+    """提取并规范化用户显式输入的原生 MODEL_ 枚举标识。"""
+    if not isinstance(model, str):
+        return ''
+    stripped = model.strip()
+    return stripped.upper() if re.fullmatch(r'MODEL_[A-Z0-9_]+', stripped, re.IGNORECASE | re.ASCII) else ''
+
+
+def _split_model_variant(model_id, label):
+    """Extract (base_id, base_name, effort) when a model label carries an effort suffix."""
+    text = str(label or '').strip()
+    match = _EFFORT_LABEL_RE.match(text)
+    if not match:
+        return model_id, (text or model_id), ''
+    base_name = match.group('base').strip()
+    effort = match.group('effort').lower()
+    if not base_name:
+        return model_id, (text or model_id), ''
+    stripped_id = re.sub(rf'[-_]{re.escape(effort)}$', '', model_id, flags=re.IGNORECASE).strip('-_')
+    if stripped_id and stripped_id != model_id:
+        return stripped_id, base_name, effort
+    slug = re.sub(r'[^a-z0-9.]+', '-', base_name.lower()).strip('-')
+    return (slug or model_id), base_name, effort
+
+
 class AntigravityCli:
     _ALLOWED_METHODS = (
         'GetUserStatus',
+        'RetrieveUserQuotaSummary',
         'GetAllCascadeTrajectories',
         'GetCascadeTrajectory',
+        'GetCascadeTrajectoryGeneratorMetadata',
+        'GetSlashCommands',
         'StartCascade',
         'SendUserCascadeMessage',
         'CancelCascadeInvocation',
+        'RevertToCascadeStep',
+        'ForceStopCascadeTree',
         'HandleCascadeUserInteraction',
+        'UpdateConversationAnnotations',
+        'ForkConversation',
+        'ListBackgroundTasks',
+        'CancelCascadeSteps',
     )
 
     def __init__(self, home=None, model_catalog=None):
         self.home = Path(home or Path.home()).resolve()
         self.model_catalog = model_catalog
         self._lock = threading.RLock()
+        self._stop_lock = threading.RLock()
+        self._turn_lock = threading.Lock()
+        self._stop_generations = {}
+        self._stop_generation = 0
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._trajectories_cache = {}
+        self._annotations_cache = {}
+        self._context_window_cache = {}
         self._waiting_cache = {}
+        self._variant_cache = {}
+        self._base_cache = {}
+        self._quota_cache = {}
 
     def available(self, surface='app'):
         try:
@@ -545,11 +602,21 @@ class AntigravityCli:
         except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
-    def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None):
+    def source_identity(self, surface='app'):
+        try:
+            target = endpoint(surface, self.home)
+            verify_endpoint(target)
+            return target['identity']
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise BridgeUnavailable('无法核验 Antigravity 原生服务身份，请重新连接') from None
+
+    def call_ls_rpc(self, method, payload=None, *, surface='app', expected_identity=None, return_identity=False):
         if method not in self._ALLOWED_METHODS:
             raise ValueError('不支持的 Antigravity 原生操作')
-        # This serializes bridge writes; ownership remains with the native LS.
-        with self._lock:
+        # Native cancellation must reach the LS while SendUserCascadeMessage is
+        # still waiting for its response. Other writes retain their serialization.
+        with self._stop_lock if method in ('CancelCascadeInvocation', 'ForceStopCascadeTree', 'CancelCascadeSteps',
+                                           'ListBackgroundTasks', 'GetAllCascadeTrajectories') else self._lock:
             try:
                 target = endpoint(surface, self.home)
                 if expected_identity is not None and target['identity'] != expected_identity:
@@ -559,7 +626,8 @@ class AntigravityCli:
                     target['address'] + '/exa.language_server_pb.LanguageServerService/' + method,
                     data=json.dumps(payload or {}).encode('utf-8'),
                     headers={'Content-Type': 'application/json', 'x-codeium-csrf-token': target['token']})
-                with self._opener.open(request, timeout=8) as response:
+                timeout = 30 if method in ('StartCascade', 'SendUserCascadeMessage') else 8
+                with self._opener.open(request, timeout=timeout) as response:
                     raw = response.read(8 * 1024 * 1024 + 1)
                 if len(raw) > 8 * 1024 * 1024:
                     raise ValueError('Antigravity 原生回复过大')
@@ -569,8 +637,24 @@ class AntigravityCli:
                 if not isinstance(result, dict):
                     raise ValueError('Antigravity 原生回复无效')
                 verify_endpoint(target)
-                return result
-            except (OSError, ValueError, urllib.error.URLError):
+                return (result, target['identity']) if return_identity else result
+            except urllib.error.HTTPError as exc:
+                logging.getLogger(__name__).warning('Antigravity RPC %s failed: HTTP %s', method, exc.code)
+                if method == 'ForkConversation':
+                    try:
+                        detail = exc.read(4096).decode('utf-8', errors='replace').lower()
+                    except OSError:
+                        detail = ''
+                    if 'invoked subagents' in detail:
+                        raise ResumePreflightBlocked('该对话已调用子代理，Antigravity 原生暂不支持从此处分支') from None
+                    if 'cannot fork a subagent' in detail:
+                        raise ResumePreflightBlocked('不支持对子代理会话创建分支') from None
+                    if 'end of a turn' in detail:
+                        raise ResumePreflightBlocked('只能从已完成回复的轮次末尾创建分支') from None
+                # Do not expose native error bodies, tokens or retry a write.
+                raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
+            except (OSError, ValueError, urllib.error.URLError) as exc:
+                logging.getLogger(__name__).warning('Antigravity RPC %s failed: %s', method, type(exc).__name__)
                 # Do not expose native error bodies, tokens or retry a write.
                 raise BridgeUnavailable('Antigravity 原生操作未确认，请检查电脑原会话后再操作') from None
 
@@ -578,8 +662,13 @@ class AntigravityCli:
         with self._lock:
             if surface is None:
                 self._trajectories_cache.clear()
+                self._annotations_cache.clear()
+                self._context_window_cache.clear()
             else:
                 self._trajectories_cache.pop(surface, None)
+                self._annotations_cache.pop(surface, None)
+                for key in [k for k in self._context_window_cache if k[0] == surface]:
+                    self._context_window_cache.pop(key, None)
 
     def _collect_step_fallback(self, cascade_id, step_index, *, surface='app'):
         try:
@@ -591,26 +680,91 @@ class AntigravityCli:
             return steps[step_index]
         return None
 
-    def waiting_state_by_cid(self, *, surface='app', max_age=2.0):
+    @staticmethod
+    def _coerce_nonneg_int(value):
+        if type(value) is int and value >= 0:
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    def context_window_metadata(self, conversation_id, *, surface='app', step_count=None, max_age=15.0):
+        """Read latest native context window size (and estimated tokens) from generator metadata."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return None
+        cache_key = (surface, conversation_id)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._context_window_cache.get(cache_key)
+            if max_age > 0 and cached and cached[1] == step_count and (now - cached[0]) < max_age:
+                return dict(cached[2]) if isinstance(cached[2], dict) else None
+        res = self.call_ls_rpc(
+            'GetCascadeTrajectoryGeneratorMetadata',
+            {'cascadeId': conversation_id},
+            surface=surface,
+        )
+        entries = res.get('generatorMetadata') or res.get('generator_metadata')
+        found = None
+        if isinstance(entries, list):
+            for entry in reversed(entries):
+                if not isinstance(entry, dict):
+                    continue
+                chat_model = entry.get('chatModel') or entry.get('chat_model')
+                if not isinstance(chat_model, dict):
+                    continue
+                start_meta = chat_model.get('chatStartMetadata') or chat_model.get('chat_start_metadata')
+                if not isinstance(start_meta, dict):
+                    continue
+                cwm = start_meta.get('contextWindowMetadata') or start_meta.get('context_window_metadata')
+                if not isinstance(cwm, dict):
+                    continue
+                max_tokens = self._coerce_nonneg_int(cwm.get('maxContextTokens', cwm.get('max_context_tokens')))
+                if not max_tokens or max_tokens <= 0:
+                    continue
+                used = self._coerce_nonneg_int(cwm.get('estimatedTokensUsed', cwm.get('estimated_tokens_used')))
+                found = {'contextWindow': max_tokens}
+                if used is not None:
+                    found['estimatedTokensUsed'] = used
+                break
+        with self._lock:
+            self._context_window_cache[cache_key] = (time.monotonic(), step_count, dict(found) if found else None)
+            if len(self._context_window_cache) > 128:
+                for stale in list(self._context_window_cache.keys())[:-64]:
+                    if stale != cache_key:
+                        self._context_window_cache.pop(stale, None)
+        return found
+
+    def waiting_state_by_cid(self, *, surface='app', max_age=2.0, expected_identity=None):
         """Return (waiting_requests_by_cid, active_cids) for a surface."""
         with self._lock:
             now = time.monotonic()
             with self._lock:
                 cached = self._trajectories_cache.get(surface)
-                if max_age > 0 and cached and (now - cached[0]) < max_age:
+                if expected_identity is None and max_age > 0 and cached and (now - cached[0]) < max_age:
                     return {k: [dict(r) for r in v] for k, v in cached[1].items()}, set(cached[2])
 
-            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface)
+            res = self.call_ls_rpc('GetAllCascadeTrajectories', {}, surface=surface,
+                                   **({'expected_identity': expected_identity} if expected_identity is not None else {}))
             summaries = res.get('trajectorySummaries', {})
             if not isinstance(summaries, dict):
                 raise BridgeUnavailable('原会话等待状态未确认，请稍后重试')
 
             waiting_by_cid = {}
             active_cids = set()
+            annotations_by_cid = {}
             fresh_cache = {}
             for traj_cid, summary in summaries.items():
                 if not isinstance(summary, dict):
                     continue
+                raw_ann = summary.get('annotations')
+                if isinstance(raw_ann, dict):
+                    ann = {}
+                    if isinstance(raw_ann.get('title'), str) and raw_ann['title'].strip():
+                        ann['title'] = raw_ann['title'].strip()
+                    if isinstance(raw_ann.get('archived'), bool):
+                        ann['archived'] = raw_ann['archived']
+                    if ann:
+                        annotations_by_cid[traj_cid] = ann
                 status = str(summary.get('status') or '')
                 meta = summary.get('trajectoryMetadata') if isinstance(summary.get('trajectoryMetadata'), dict) else {}
                 root_cid = str(meta.get('rootCascadeId') or meta.get('rootConversationId') or '').strip()
@@ -663,6 +817,7 @@ class AntigravityCli:
 
             with self._lock:
                 self._trajectories_cache[surface] = (time.monotonic(), {k: [dict(r) for r in v] for k, v in waiting_by_cid.items()}, set(active_cids))
+                self._annotations_cache[surface] = {k: dict(v) for k, v in annotations_by_cid.items()}
                 self._waiting_cache = {key: value for key, value in self._waiting_cache.items() if value.get('surface') != surface}
                 self._waiting_cache.update(fresh_cache)
                 if len(self._waiting_cache) > 256:
@@ -671,6 +826,37 @@ class AntigravityCli:
                             self._waiting_cache.pop(stale_key, None)
 
             return waiting_by_cid, active_cids
+
+    def annotations_for(self, conversation_id, *, surface='app', fresh=False):
+        """Return cached or freshly read native annotations (title/archived) for a conversation."""
+        if not conversation_id:
+            return {}
+        if fresh:
+            self.waiting_state_by_cid(surface=surface, max_age=0.0)
+        with self._lock:
+            return dict((self._annotations_cache.get(surface) or {}).get(conversation_id) or {})
+
+    def update_annotations(self, conversation_id, *, title=None, archived=None, surface='app', expected_identity=None):
+        """Update native conversation annotations via UpdateConversationAnnotations (merge)."""
+        annotations = {}
+        if title is not None:
+            annotations['title'] = title
+        if archived is not None:
+            annotations['archived'] = bool(archived)
+        if not annotations:
+            raise ValueError('缺少要更新的会话标注字段')
+        result = self.call_ls_rpc(
+            'UpdateConversationAnnotations',
+            {
+                'cascadeId': conversation_id,
+                'annotations': annotations,
+                'mergeAnnotations': True,
+            },
+            surface=surface,
+            **({'expected_identity': expected_identity} if expected_identity is not None else {}),
+        )
+        self._invalidate_trajectories_cache(surface)
+        return result
 
     def has_waiting_interactions(self, conversation_id, *, surface='app'):
         if not conversation_id:
@@ -717,6 +903,60 @@ class AntigravityCli:
 
     def user_status(self, surface='app'):
         return self.call_ls_rpc('GetUserStatus', surface=surface).get('userStatus') or {}
+
+    def quota_snapshot(self, surface='app', *, refresh=False):
+        """Bounded, account/process-scoped display reads; never used to authorize writes."""
+        def scope():
+            identity = self.source_identity(surface)
+            user = self.user_status(surface)
+            account = user.get('email') or user.get('userId')
+            if not isinstance(account, str) or not account:
+                raise BridgeUnavailable('Antigravity 账号状态暂不可用')
+            return identity, hashlib.sha256(account.encode()).hexdigest()
+
+        with self._lock:
+            try:
+                identity = scope()
+            except (OSError, ValueError, BridgeUnavailable):
+                self._quota_cache.pop(surface, None)
+                return {'groups': [], 'status': 'unavailable'}
+            cached = self._quota_cache.get(surface)
+            if cached and cached[0] != identity:
+                self._quota_cache.pop(surface, None)
+                cached = None
+            if cached and not refresh and time.monotonic() - cached[1] < 60:
+                return copy.deepcopy(cached[2])
+            try:
+                response = self.call_ls_rpc('RetrieveUserQuotaSummary', {'forceRefresh': refresh},
+                                            surface=surface, expected_identity=identity[0])
+                raw = response.get('response')
+                if not isinstance(raw, dict) or not isinstance(raw.get('groups'), list):
+                    raise ValueError('额度回复无效')
+                value = {'groups': quota_groups(raw), 'status': 'ready', 'checkedAt': time.time()}
+            except (OSError, ValueError, BridgeUnavailable):
+                value = {**copy.deepcopy(cached[2]), 'status': 'stale'} if cached and cached[2].get('groups') else {'groups': [], 'status': 'unavailable'}
+            try:
+                if scope() != identity:
+                    raise BridgeUnavailable('Antigravity 账号或进程已变化')
+            except (OSError, ValueError, BridgeUnavailable):
+                self._quota_cache.pop(surface, None)
+                return {'groups': [], 'status': 'unavailable'}
+            self._quota_cache[surface] = (identity, time.monotonic(), value)
+            return copy.deepcopy(value)
+
+    def current_model_quota(self, surface, model_id, model_name=''):
+        snapshot = self.quota_snapshot(surface)
+        return {'quotaWindows': model_windows(snapshot['groups'], model_id, model_name),
+                'quotaStatus': snapshot['status'], 'quotaUpdatedAt': snapshot.get('checkedAt')}
+
+    def overlay_live_quota(self, surface, catalog):
+        if surface is not None:
+            return overlay_quota(catalog, self.quota_snapshot(surface))
+        value = copy.deepcopy(catalog)
+        value['groups'] = [overlay_quota(group, self.quota_snapshot(group['surface']))
+                           if group.get('surface') in SURFACE_LABELS else group
+                           for group in value.get('groups', [])]
+        return value
 
     def assert_idle(self, surface, expected_identity):
         # Request every trajectory, including children. Saved history is neither
@@ -769,75 +1009,478 @@ class AntigravityCli:
             'resetNote': reset_note,
         }
 
-    def catalog_models(self, *, refresh=False, surface='app'):
-        status = self.user_status(surface)
-        configs = status.get('cascadeModelConfigData', {}).get('clientModelConfigs', [])
+    def _build_catalog_from_status(self, status, *, surface='app'):
+        model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
+        configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
+        default_override = model_data.get('defaultOverrideModelConfig') if isinstance(model_data.get('defaultOverrideModelConfig'), dict) else {}
+        default_alias = default_override.get('modelOrAlias') if isinstance(default_override.get('modelOrAlias'), dict) else {}
+        default_override_enum = str(default_alias.get('model') or '').strip()
+
         user_tier = status.get('userTier') if isinstance(status.get('userTier'), dict) else {}
         tier_name = str(user_tier.get('name') or '').strip()
         plan_status = status.get('planStatus') if isinstance(status.get('planStatus'), dict) else {}
-        models = []
-        usage_items = []
-        notice_lines = []
+
+        # Detect ungrouped IDs first so grouped base IDs never collide with standalone rows.
+        ungrouped_ids = set()
+        parsed_rows = []
+        variant_ids = {}
         for row in configs:
-            if not isinstance(row, dict) or row.get('disabled') is True or not isinstance(row.get('modelId'), str):
+            if not self._is_enabled_model_row(row):
                 continue
             mid = row['modelId']
-            if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
-                continue
-            alias = row.get('modelOrAlias')
-            if not isinstance(alias, dict) or not alias.get('model'):
-                continue
-            name = row.get('label') or mid
-            entry = {'id': mid, 'name': name, 'efforts': [], 'supportsEffort': False, 'nativeModel': alias['model']}
+            raw_label = row.get('label') or mid
+            base_id, base_name, effort = _split_model_variant(mid, raw_label)
+            if not effort:
+                ungrouped_ids.add(mid)
+            else:
+                variant = (mid, row['modelOrAlias']['model'])
+                previous = variant_ids.setdefault((base_id, effort), variant)
+                if previous != variant:
+                    # A display label is not an identity. Keep ambiguous native
+                    # variants selectable rather than overwriting one model.
+                    ungrouped_ids.add(base_id)
+            parsed_rows.append((row, mid, raw_label, base_id, base_name, effort))
+
+        groups = {}
+        ordered_keys = []
+        for row, mid, raw_label, base_id, base_name, effort in parsed_rows:
+            alias = row['modelOrAlias']
+            native_model = alias['model']
             quota = self._quota_info(row)
-            if quota:
+            q_raw = row.get('quotaInfo') if isinstance(row.get('quotaInfo'), dict) else {}
+            frac = q_raw.get('remainingFraction', 0) if q_raw else None
+            if effort and base_id not in ungrouped_ids:
+                key = ('grouped', base_id)
+                bucket = groups.get(key)
+                if bucket is None:
+                    bucket = {
+                        'grouped': True,
+                        'id': base_id,
+                        'name': base_name,
+                        'variants': {},
+                        'quotas': [],
+                    }
+                    groups[key] = bucket
+                    ordered_keys.append(key)
+                bucket['variants'][effort] = {'id': mid, 'nativeModel': native_model, 'label': raw_label}
+                if quota:
+                    bucket['quotas'].append((frac if isinstance(frac, (int, float)) else 2.0, quota))
+            else:
+                key = ('flat', mid)
+                groups[key] = {
+                    'grouped': False,
+                    'id': mid,
+                    'name': raw_label,
+                    'nativeModel': native_model,
+                    'quotas': [(frac if isinstance(frac, (int, float)) else 2.0, quota)] if quota else [],
+                }
+                ordered_keys.append(key)
+
+        models = []
+        usage_items = []
+        variant_cache = {}
+        base_cache = {}
+
+        for key in ordered_keys:
+            bucket = groups[key]
+            if bucket['grouped']:
+                variants = bucket['variants']
+                efforts = sorted(variants.keys(), key=lambda item: _EFFORT_RANK.get(item, len(_EFFORT_ORDER)))
+                ordered_variants = {eff: variants[eff] for eff in efforts}
+                default_effort = next(
+                    (eff for eff in efforts if ordered_variants[eff]['nativeModel'] == default_override_enum),
+                    'medium' if 'medium' in ordered_variants else efforts[0],
+                )
+                entry = {
+                    'id': bucket['id'],
+                    'name': bucket['name'],
+                    'efforts': efforts,
+                    'supportsEffort': True,
+                    'defaultEffort': default_effort,
+                    'nativeModel': ordered_variants[default_effort]['nativeModel'],
+                    'variants': ordered_variants,
+                }
+                for eff, variant in ordered_variants.items():
+                    variant_cache[variant['id']] = (bucket['id'], eff, bucket['name'])
+                base_cache[bucket['id']] = {
+                    'name': bucket['name'],
+                    'efforts': efforts,
+                    'defaultEffort': default_effort,
+                }
+            else:
+                entry = {
+                    'id': bucket['id'],
+                    'name': bucket['name'],
+                    'efforts': [],
+                    'supportsEffort': False,
+                    'nativeModel': bucket['nativeModel'],
+                }
+                base_cache[bucket['id']] = {'name': bucket['name'], 'efforts': [], 'defaultEffort': ''}
+
+            if bucket['quotas']:
+                _, quota = min(bucket['quotas'], key=lambda pair: pair[0])
                 entry.update({k: v for k, v in quota.items() if v})
                 if quota['quotaTag']:
                     usage_items.append({
-                        'name': name,
+                        'name': entry['name'],
                         'val': quota['quotaTag'],
                         'note': quota['resetNote'],
                         'status': quota['quotaStatus'],
                     })
-                    line = f"• {name}: {quota['quotaTag']}"
-                    if quota['resetNote']:
-                        line += f" ({quota['resetNote']})"
-                    notice_lines.append(line)
             models.append(entry)
+
+        with self._lock:
+            self._variant_cache[surface] = variant_cache
+            self._base_cache[surface] = base_cache
 
         p_credits = plan_status.get('availablePromptCredits', 0)
         f_credits = plan_status.get('availableFlowCredits', 0)
         credits_line = ''
         if isinstance(status.get('planStatus'), dict):
             credits_line = f'可用 Prompt 点数: {p_credits or 0} · Flow 点数: {f_credits or 0}'
-            notice_lines.append(credits_line)
-
-        if notice_lines and tier_name:
-            notice_lines.insert(0, f'账号等级 · {tier_name}')
-        notice = '\n'.join(notice_lines) if notice_lines else ('' if models else '原客户端暂未提供可用模型列表')
+        notice = '' if models else '原客户端暂未提供可用模型列表'
         result = {'models': models, 'userStatus': status, 'notice': notice}
         if usage_items or credits_line:
             result['usageSummary'] = {'tier': tier_name, 'items': usage_items, 'credits': credits_line}
         return result
 
-    def _model(self, model, surface):
-        if model is None:
-            return None  # Preserve the original server's selected default.
-        if isinstance(model, str) and re.fullmatch(r'MODEL_[A-Z0-9_]+', model):
-            return model  # Explicit native enum, validated by the original service.
-        catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
-        found = [row.get('nativeModel') for row in catalog.get('models', [])
-                 if isinstance(row, dict) and row.get('id') == model]
-        if len(found) != 1 or not found[0]:
-            raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
-        return found[0]
 
-    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app'):
-        body = {'cascade_id': conversation_id, 'items': [{'text': prompt}]}
-        selected = self._model(model, surface)
+    @staticmethod
+    def _resolve_from_catalog(model, effort, catalog, *, require_effort=False):
+        rows = catalog.get('models', []) if isinstance(catalog, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
+            if row.get('id') == model:
+                if variants:
+                    if effort:
+                        variant = variants.get(effort)
+                        if isinstance(variant, dict) and variant.get('nativeModel'):
+                            return variant['nativeModel'], row['id'], effort, row.get('name') or row['id']
+                        raise ValueError('所选模型不支持此思考强度，请重新选择')
+                    if require_effort:
+                        raise ValueError('请先选择思考强度')
+                    default_eff = row.get('defaultEffort')
+                    if default_eff and isinstance(variants.get(default_eff), dict) and variants[default_eff].get('nativeModel'):
+                        return variants[default_eff]['nativeModel'], row['id'], default_eff, row.get('name') or row['id']
+                    if row.get('nativeModel'):
+                        return row['nativeModel'], row['id'], default_eff or '', row.get('name') or row['id']
+                else:
+                    if effort:
+                        raise ValueError('所选模型不支持单独设置思考强度')
+                    if row.get('nativeModel'):
+                        return row['nativeModel'], row['id'], '', row.get('name') or row['id']
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else None
+            if not variants:
+                continue
+            for eff, variant in variants.items():
+                if isinstance(variant, dict) and variant.get('id') == model and variant.get('nativeModel'):
+                    if not effort or effort in ('auto', eff):
+                        return variant['nativeModel'], row['id'], eff, row.get('name') or row['id']
+                    raise ValueError('所选模型不支持此思考强度，请重新选择')
+        return None, None, '', ''
+
+
+    def _index_catalog_display(self, surface, catalog):
+        variant_cache = {}
+        base_cache = {}
+        for row in catalog.get('models', []) if isinstance(catalog, dict) else []:
+            if not isinstance(row, dict) or not row.get('id'):
+                continue
+            rid = row['id']
+            name = row.get('name') or rid
+            efforts = list(row.get('efforts') or [])
+            base_cache[rid] = {'name': name, 'efforts': efforts, 'defaultEffort': row.get('defaultEffort') or ''}
+            variants = row.get('variants') if isinstance(row.get('variants'), dict) else {}
+            for eff, variant in variants.items():
+                if isinstance(variant, dict) and variant.get('id'):
+                    variant_cache[variant['id']] = (rid, eff, name)
+        with self._lock:
+            self._variant_cache[surface] = variant_cache
+            self._base_cache[surface] = base_cache
+
+
+    def resolve_model_display(self, surface, model, effort='', *, refresh_if_unknown=False):
+        """Map a stored flat or grouped model into (model, effort, displayName)."""
+        if not model:
+            return '', '', ''
+        explicit = _explicit_native_model(model)
+        if explicit:
+            return explicit, '', explicit
+        with self._lock:
+            variants = dict(self._variant_cache.get(surface, {}))
+            bases = dict(self._base_cache.get(surface, {}))
+        if refresh_if_unknown and model not in bases and model not in variants:
+            catalog = self.model_catalog(surface) if self.model_catalog else self.catalog_models(surface=surface)
+            self._index_catalog_display(surface, catalog)
+            with self._lock:
+                variants = dict(self._variant_cache.get(surface, {}))
+                bases = dict(self._base_cache.get(surface, {}))
+        if model in variants and (not effort or effort in ('auto', variants[model][1])):
+            base_id, var_eff, base_name = variants[model]
+            return base_id, var_eff, base_name
+        if model in bases:
+            return model, effort, bases[model]['name']
+        return model, effort, ''
+
+
+    def canonicalize_model_selection(self, model, effort=None, *, surface='app', require_effort=False):
+        if model is None:
+            if effort:
+                raise ValueError('请先选择模型后再设置思考强度')
+            return None, None, '', ''
+        explicit = _explicit_native_model(model)
+        if explicit:
+            if effort:
+                raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
+            return explicit, explicit, '', explicit
+        if self.model_catalog is not None:
+            def missing(cached):
+                # Older catalogs could store a variant as an ordinary row.
+                # Let the live catalog identify the variant before rejecting auto.
+                if effort == 'auto' and any(isinstance(row, dict) and row.get('id') == model
+                        and not row.get('variants') for row in cached.get('models', [])):
+                    return True
+                return not self._resolve_from_catalog(model, effort, cached, require_effort=require_effort)[0]
+
+            catalog = self.model_catalog(surface, refresh_if=missing)
+        else:
+            catalog = self.catalog_models(surface=surface)
+        self._index_catalog_display(surface, catalog)
+        native_enum, canonical_model, canonical_effort, display_name = self._resolve_from_catalog(
+            model, effort, catalog, require_effort=require_effort,
+        )
+        if not native_enum:
+            raise ValueError('未找到此模型的原生标识，请刷新目录或手动填写完整 MODEL_ 标识')
+        return native_enum, canonical_model, canonical_effort, display_name
+
+
+    def catalog_models(self, *, refresh=False, surface='app'):
+        status = self.user_status(surface)
+        catalog = self._build_catalog_from_status(status, surface=surface)
+        return overlay_quota(catalog, self.quota_snapshot(surface, refresh=refresh)) if catalog['models'] else catalog
+
+    @staticmethod
+    def _is_enabled_model_row(row):
+        if not isinstance(row, dict):
+            return False
+        mid = row.get('modelId')
+        if not isinstance(mid, str) or not mid:
+            return False
+        if row.get('disabled') or row.get('tagTitle') == 'Unavailable' or mid.endswith('-disabled'):
+            return False
+        alias = row.get('modelOrAlias')
+        return isinstance(alias, dict) and bool(alias.get('model'))
+
+    def _model(self, model, surface, effort=None, *, require_effort=False):
+        if model is None:
+            if effort:
+                raise ValueError('请先选择模型后再设置思考强度')
+            return None  # Preserve the original server's selected default.
+        explicit = _explicit_native_model(model)
+        if explicit:
+            if effort:
+                raise ValueError('手动填写原生模型标识不支持单独选择思考强度')
+            return explicit  # Explicit native enum, validated by the original service.
+        native_enum, _, _, _ = self.canonicalize_model_selection(
+            model, effort, surface=surface, require_effort=require_effort,
+        )
+        return native_enum
+
+    def _raw_model_for_commands(self, model=None, surface='app', effort=None):
+        if model and model != 'auto':
+            return self._model(model, surface, effort=effort)
+        if effort:
+            raise ValueError('请先选择模型后再设置思考强度')
+        status = self.user_status(surface)
+        model_data = status.get('cascadeModelConfigData') if isinstance(status.get('cascadeModelConfigData'), dict) else {}
+        configs = model_data.get('clientModelConfigs') if isinstance(model_data.get('clientModelConfigs'), list) else []
+        default_cfg = model_data.get('defaultOverrideModelConfig')
+        if isinstance(default_cfg, dict):
+            alias = default_cfg.get('modelOrAlias')
+            if isinstance(alias, dict) and alias.get('model'):
+                return alias['model']
+        for row in configs:
+            if self._is_enabled_model_row(row):
+                return row['modelOrAlias']['model']
+        return None
+
+    def slash_commands(self, *, surface='app', conversation_id=None, model=None, effort=None, cwd=None):
+        payload = {'enablePersonal': True}
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            payload['cascadeId'] = conversation_id.strip()
+        if isinstance(cwd, str) and cwd.strip():
+            try:
+                path = Path(cwd).resolve()
+                if path.is_dir():
+                    payload['workspaceUris'] = [path.as_uri()]
+            except (OSError, ValueError):
+                pass
+        raw_model = self._raw_model_for_commands(model, surface, effort)
+        if raw_model:
+            payload['cascadeConfig'] = {'plannerConfig': {'requestedModel': {'model': raw_model}}}
+        res = self.call_ls_rpc('GetSlashCommands', payload, surface=surface)
+        raw_commands = res.get('commands') if isinstance(res.get('commands'), list) else []
+        commands = []
+        seen = set()
+        for row in raw_commands:
+            if not isinstance(row, dict):
+                continue
+            info = row.get('info')
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get('name') or '').strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cmd_type = str(info.get('type') or '')
+            if cmd_type == 'SLASH_COMMAND_TYPE_SYSTEM':
+                category = 'system'
+            elif cmd_type == 'SLASH_COMMAND_TYPE_SKILL':
+                category = 'skill'
+            else:
+                category = 'workflow'
+            title = str(row.get('title') or name).strip() or name
+            description = str(row.get('description') or '').strip()
+            commands.append({
+                'id': name,
+                'name': name,
+                'title': title,
+                'description': description,
+                'category': category,
+                'type': cmd_type,
+                'info': dict(info),
+            })
+        return commands
+
+    def turn_generation(self, conversation_id=None, *, surface='app'):
+        with self._turn_lock:
+            if conversation_id is None:
+                return self._stop_generation
+            return self._stop_generations.get((surface, conversation_id), 0)
+
+    @staticmethod
+    def _workspace_uri_matches(value, expected_path, expected_uri):
+        if not isinstance(value, str):
+            return False
+        if value == expected_uri:
+            return True
+        try:
+            local = Path(local_file_path(value))
+            return local.is_absolute() and local.resolve() == expected_path
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    @classmethod
+    def _single_workspace_matches(cls, uris, path, uri):
+        return (isinstance(uris, list) and len(uris) == 1
+                and cls._workspace_uri_matches(uris[0], path, uri))
+
+    @classmethod
+    def _workspace_declarations_match(cls, metadata, expected_path, expected_uri, *, include_workspaces=False):
+        if not isinstance(metadata, dict):
+            return False
+        declarations = [metadata[key] for key in ('workspaceUris', 'workspace_uris') if key in metadata]
+        if include_workspaces and 'workspaces' in metadata:
+            workspaces = metadata['workspaces']
+            if not isinstance(workspaces, list) or len(workspaces) != 1 or not isinstance(workspaces[0], dict):
+                return False
+            workspace = workspaces[0]
+            workspace_uris = [[workspace[key]] for key in ('workspaceFolderAbsoluteUri', 'workspace_folder_absolute_uri')
+                              if key in workspace]
+            if not workspace_uris:
+                return False
+            declarations.extend(workspace_uris)
+        return bool(declarations) and all(
+            cls._single_workspace_matches(uris, expected_path, expected_uri) for uris in declarations
+        )
+
+    def _summary_db_workspace(self, surface_root, cascade_id, path, uri):
+        """Return True for a match, False for a contradiction, None without DB evidence."""
+        db_path = surface_root / 'conversation_summaries.db'
+        try:
+            # A linked surface or DB must not supply evidence for a different profile.
+            if db_path.resolve() != db_path or not db_path.is_file():
+                return None
+            connection = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=1.5)
+            try:
+                rows = connection.execute(
+                    'SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?',
+                    (cascade_id,),
+                ).fetchmany(2)
+            finally:
+                connection.close()
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
+            return None
+        if not rows:
+            return None
+        if len(rows) != 1 or not isinstance(rows[0][0], str):
+            return False
+        try:
+            return self._single_workspace_matches(json.loads(rows[0][0]), path, uri)
+        except (ValueError, RecursionError):
+            return False
+
+    def _verify_cascade_workspace(self, result, cascade_id, path, uri, surface, expected_identity):
+        # Explicit native project data is authoritative, including malformed or empty values.
+        environment_keys = [key for key in ('projectEnvInfo', 'project_env_info') if key in result]
+        if environment_keys:
+            return all(self._workspace_declarations_match(result[key], path, uri)
+                       for key in environment_keys)
+
+        relative = dict(SURFACE_DIRS).get(surface)
+        if relative is None:
+            return False
+        db_match = self._summary_db_workspace(self.home / relative, cascade_id, path, uri)
+        if db_match is not None:
+            return db_match
+
+        trajectory = self.call_ls_rpc('GetCascadeTrajectory', {'cascadeId': cascade_id}, surface=surface,
+                                      expected_identity=expected_identity)
+        native_trajectory = trajectory.get('trajectory')
+        metadata = native_trajectory.get('metadata') if isinstance(native_trajectory, dict) else None
+        for envelope in (trajectory, native_trajectory, metadata):
+            if isinstance(envelope, dict) and any(
+                envelope[key] != cascade_id for key in ('cascadeId', 'cascade_id', 'conversationId', 'conversation_id')
+                if key in envelope
+            ):
+                return False
+        return self._workspace_declarations_match(metadata, path, uri, include_workspaces=True)
+
+    def send_user_message(self, conversation_id, prompt, model=None, effort=None, *, surface='app', items=None,
+                          media=None, turn_generation=None, before_send=None, expected_identity=None):
+        if turn_generation is None:
+            turn_generation = self.turn_generation(conversation_id, surface=surface)
+        normalized_media = [dict(row) for row in (media or []) if isinstance(row, dict)]
+        if items is not None:
+            normalized_items = list(items)
+        elif prompt or normalized_media:
+            normalized_items = [{'text': prompt or ''}]
+        else:
+            normalized_items = []
+        if not normalized_items and not normalized_media:
+            raise ValueError('Antigravity 消息内容不能为空')
+        if not normalized_items:
+            normalized_items = [{'text': ''}]
+        body = {'cascade_id': conversation_id, 'items': normalized_items}
+        if normalized_media:
+            body['media'] = normalized_media
+        selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['cascade_config'] = {'planner_config': {'requested_model': {'model': selected}}}
-        result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface)
+        with self._lock:
+            with self._turn_lock:
+                if turn_generation < self._stop_generations.get((surface, conversation_id), 0):
+                    raise BridgeUnavailable('此消息准备期间会话已停止，请明确重新发送')
+                if before_send is not None:
+                    before_send()
+            # No generation lock spans HTTP: native RPC has no atomic cancel/submit token.
+            identity = {'expected_identity': expected_identity} if expected_identity is not None else {}
+            result = self.call_ls_rpc('SendUserCascadeMessage', body, surface=surface, **identity)
         self._invalidate_trajectories_cache(surface)
         return result
 
@@ -847,21 +1490,182 @@ class AntigravityCli:
             raise ValueError('请选择有效的本机项目目录')
         uri = path.as_uri()
         body = {'source': 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', 'workspace_uris': [uri]}
-        selected = self._model(model, surface)
+        selected = self._model(model, surface, effort=effort) if effort else self._model(model, surface)
         if selected:
             body['requested_model'] = selected
-        result = self.call_ls_rpc('StartCascade', body, surface=surface)
+        result, expected_identity = self.call_ls_rpc('StartCascade', body, surface=surface, return_identity=True)
         cid = result.get('cascadeId') or result.get('cascade_id')
-        if not isinstance(cid, str) or not cid:
+        if (not isinstance(cid, str) or not cid.strip()
+                or any(result[key] != cid for key in ('cascadeId', 'cascade_id') if key in result)):
             raise BridgeUnavailable('Antigravity 原客户端未确认新会话标识')
-        environment = result.get('projectEnvInfo') or result.get('project_env_info') or {}
-        if environment.get('workspaceUris', environment.get('workspace_uris')) != [uri]:
+        if not self._verify_cascade_workspace(result, cid, path, uri, surface, expected_identity):
             raise BridgeUnavailable('原客户端尚未确认新会话项目绑定，首条消息未发送；请在电脑检查已创建的会话')
         self._invalidate_trajectories_cache(surface)
-        return cid
+        return cid, expected_identity
 
-    def stop(self, conversation_id, *, surface='app'):
-        result = self.call_ls_rpc('CancelCascadeInvocation', {'cascade_id': conversation_id}, surface=surface)
+    def fork_conversation(self, conversation_id, step_index, *, cwd=None, surface='app', expected_identity=None):
+        """Fork a conversation at a verified turn-end step into the current workspace."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            raise ValueError('源会话标识无效')
+        if type(step_index) is not int or step_index < 0:
+            raise ValueError('分支消息位置无效')
+        path = Path(cwd or '').resolve()
+        if not cwd or not path.is_dir():
+            raise ResumePreflightBlocked('请选择有效的原会话项目目录后再创建分支')
+        uri = path.as_uri()
+        if expected_identity is None:
+            expected_identity = self.source_identity(surface)
+        payload = {
+            'sourceCascadeId': conversation_id,
+            'forkAtStepIndex': step_index,
+            'targetForkWorkspace': 'FORK_TARGET_CURRENT_WORKSPACE',
+            'sourceWorkspaceUris': [uri],
+        }
+        result = self.call_ls_rpc('ForkConversation', payload, surface=surface, expected_identity=expected_identity)
+        new_cid = result.get('newCascadeId') or result.get('new_cascade_id')
+        if (not isinstance(new_cid, str) or not new_cid.strip() or new_cid == conversation_id
+                or any(result[key] != new_cid for key in ('newCascadeId', 'new_cascade_id') if key in result)):
+            raise BridgeUnavailable('Antigravity 尚未确认分支结果，请在电脑核对')
+        self._invalidate_trajectories_cache(surface)
+        if not self._verify_cascade_workspace(result, new_cid, path, uri, surface, expected_identity):
+            raise BridgeUnavailable('原客户端尚未确认分支的项目归属，请在电脑核对；不会重复创建分支')
+        return new_cid.strip()
+
+    def stop(self, conversation_id, *, surface='app', before_stop=None):
+        with self._turn_lock:
+            key = (surface, conversation_id)
+            self._stop_generation += 1
+            self._stop_generations[key] = self._stop_generation
+            if before_stop is not None:
+                before_stop()
+        cancel_result = None
+        try:
+            try:
+                cancel_result = self.call_ls_rpc(
+                    'CancelCascadeInvocation',
+                    {'cascade_id': conversation_id, 'kill_background_tasks': True},
+                    surface=surface,
+                )
+            except BridgeUnavailable:
+                cancel_result = None
+            tree_result = self.call_ls_rpc(
+                'ForceStopCascadeTree',
+                {'conversationId': conversation_id},
+                surface=surface,
+            )
+        finally:
+            self._invalidate_trajectories_cache(surface)
+        if isinstance(tree_result, dict) and tree_result:
+            return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
+        return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
+
+    def running_child_cids(self, conversation_id, *, surface='app', expected_identity):
+        result = self.call_ls_rpc('GetAllCascadeTrajectories', {'exclude_subtrajectories': False},
+                                  surface=surface, expected_identity=expected_identity)
+        summaries = result.get('trajectorySummaries', {})
+        if not isinstance(summaries, dict):
+            raise BridgeUnavailable('原生子任务状态未确认')
+        children = set()
+        for cid, summary in summaries.items():
+            if cid == conversation_id or not isinstance(summary, dict):
+                continue
+            meta = summary.get('trajectoryMetadata')
+            meta = meta if isinstance(meta, dict) else {}
+            parents = [item[name] for item in (summary, meta)
+                       for name in ('parentCascadeId', 'parentConversationId') if item.get(name)]
+            if (parents and all(parent == conversation_id for parent in parents)
+                    and (summary.get('status') in _ACTIVE_RUN_STATUSES or summary.get('notFullyIdle') is True)):
+                children.add(cid)
+        return children
+
+    def list_background_tasks(self, conversation_id, *, surface='app', expected_identity=None):
+        """Return live background command tasks belonging exclusively to conversation_id."""
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return []
+        result = self.call_ls_rpc('ListBackgroundTasks', {}, surface=surface,
+                                  **({'expected_identity': expected_identity} if expected_identity is not None else {}))
+        raw_tasks = result.get('tasks')
+        if not isinstance(raw_tasks, list):
+            return []
+        tasks = []
+        seen = set()
+        for entry in raw_tasks:
+            if not isinstance(entry, dict) or entry.get('conversationId') != conversation_id:
+                continue
+            task = entry.get('task')
+            if not isinstance(task, dict):
+                continue
+            step_index = task.get('stepIndex')
+            has_step = type(step_index) is int and step_index >= 0
+            raw_id = str(task.get('taskId') or '').strip()
+            task_id = f'bg:{step_index}' if has_step else raw_id
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            label = str(task.get('toolSummary') or task.get('description') or task.get('toolName') or '后台任务').strip()
+            if task.get('isDaemon') is True and not label.startswith('[常驻]'):
+                label = '[常驻] ' + label
+            tasks.append({
+                'id': task_id,
+                'title': label[:120],
+                'status': 'running',
+                'cancellable': has_step,
+            })
+        return tasks
+
+    def stop_background_step(self, conversation_id, step_index, *, surface='app', expected_identity):
+        """Cancel a single live background step within conversation_id without stopping the turn."""
+        if type(step_index) is not int or step_index < 0:
+            raise ValueError('后台任务步骤标识无效')
+        try:
+            return self.call_ls_rpc(
+                'CancelCascadeSteps',
+                {'cascade_id': conversation_id, 'step_indices': [step_index]},
+                surface=surface,
+                expected_identity=expected_identity,
+            )
+        finally:
+            self._invalidate_trajectories_cache(surface)
+
+    def stop_child_cascade(self, child_conversation_id, *, surface='app', before_stop=None, expected_identity):
+        """Stop only a verified child subagent cascade tree without touching the parent conversation."""
+        with self._turn_lock:
+            self._stop_generation += 1
+            self._stop_generations[(surface, child_conversation_id)] = self._stop_generation
+            if before_stop is not None:
+                before_stop()
+        cancel_result = None
+        tree_result = None
+        try:
+            try:
+                cancel_result = self.call_ls_rpc(
+                    'CancelCascadeInvocation',
+                    {'cascade_id': child_conversation_id, 'kill_background_tasks': True, 'notify_parent': True},
+                    surface=surface,
+                    expected_identity=expected_identity,
+                )
+            except BridgeUnavailable:
+                cancel_result = None
+            tree_result = self.call_ls_rpc(
+                'ForceStopCascadeTree',
+                {'conversationId': child_conversation_id},
+                surface=surface,
+                expected_identity=expected_identity,
+            )
+        finally:
+            self._invalidate_trajectories_cache(surface)
+        if isinstance(tree_result, dict) and tree_result:
+            return {**(cancel_result if isinstance(cancel_result, dict) else {}), **tree_result}
+        return cancel_result if isinstance(cancel_result, dict) else (tree_result or {})
+
+    def revert_to_step(self, conversation_id, step_index, *, conversation_only=True, surface='app', expected_identity=None):
+        if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
+            raise ValueError('撤回步骤位置无效')
+        result = self.call_ls_rpc(
+            'RevertToCascadeStep',
+            {'cascadeId': conversation_id, 'stepIndex': step_index, 'conversationOnly': bool(conversation_only)},
+            surface=surface, expected_identity=expected_identity,
+        )
         self._invalidate_trajectories_cache(surface)
         return result
 

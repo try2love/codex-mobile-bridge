@@ -98,8 +98,8 @@ class DesktopClientAccountsPanel {
     if(!this.desktop||this.busy||this.loading||row.saved===false)return;
     if(window.confirm(this.text('删除此已保存接入？仅删除网关保存的副本，不会退出电脑上的账号。')))return this.perform({action:'remove',id:row.id});
   }
-  dispose(){this.generation++;clearTimeout(this.timer);this.closeEditor();this.disposed=true;document.removeEventListener('bridge-language',this.languageListener);document.removeEventListener('visibilitychange',this.visibilityListener);}
-  resume(){clearTimeout(this.timer);if(this.disposed||!this.visible())return;if(!this.checkedAt||Date.now()-this.checkedAt>=300000)return this.refresh(false);this.schedule();}
+  dispose(){this.generation++;clearTimeout(this.timer);clearTimeout(this.modelsTimer);this.closeEditor();this.disposed=true;document.removeEventListener('bridge-language',this.languageListener);document.removeEventListener('visibilitychange',this.visibilityListener);}
+  resume(){clearTimeout(this.timer);this.scheduleModels();if(this.disposed||!this.visible())return;if(!this.checkedAt||Date.now()-this.checkedAt>=300000)return this.refresh(false);this.schedule();}
   schedule(){clearTimeout(this.timer);if(!this.disposed&&this.visible())this.timer=setTimeout(()=>this.resume(),Math.max(0,300000-(Date.now()-this.checkedAt)));}
   activeIds(value=this.value){return new Set(value?.activeIds||[value?.activeId].filter(Boolean));}
   accept(value,notifyChange=true){
@@ -158,16 +158,7 @@ class DesktopClientAccountsPanel {
     box.append(heading);
     const results=this.node('div',undefined,'accounts-client-usage-results');
     let shown=false;
-    for(const bucket of usage?.limits||[])for(const window of bucket.windows||[]){
-      const line=this.node('div',undefined,'accounts-window'),percent=window.remainingPercent;
-      const remaining=Number.isFinite(percent)?this.text('剩余 ')+Math.round(percent*10)/10+'%':window.remaining!=null?[window.remaining,window.total].filter(value=>value!=null).join(' / '):this.text('暂未提供');
-      const tokens=window.unit==='tokens'&&Number.isFinite(window.remaining);
-      const quantity=tokens?[window.remaining,window.total].filter(Number.isFinite).map(n=>n.toLocaleString(BridgeI18n.locale())).join(' / ')+' tokens':remaining;
-      line.append(this.node('span',tokens?bucket.name:[bucket.name,this.text(this.duration(window.windowDurationMins))].filter(Boolean).join(' · ')),this.node('strong',quantity));
-      if(Number.isFinite(percent)){const progress=this.node('progress');progress.max=100;progress.value=Math.min(100,Math.max(0,percent));progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
-      if(window.resetsAt)line.append(this.node('small',this.text('恢复时间：')+new Date(window.resetsAt*1000).toLocaleString(BridgeI18n.locale()),'account-reset-time'));
-      results.append(line);shown=true;
-    }
+    if(usage?.limits?.some(bucket=>bucket.windows?.length)){results.append(QuotaDisplay.pools(usage.limits,{stale:usage.status==='error'}));shown=true;}
     for(const wallet of usage?.balance?.wallets||[]){
       const line=this.node('div',undefined,'accounts-window');line.append(this.node('span','账户余额'),this.node('strong',[wallet.currency,wallet.remaining].filter(value=>value!=null).join(' ')));
       if(wallet.toppedUp!=null||wallet.granted!=null)line.append(this.node('small',[wallet.toppedUp!=null?this.text('充值余额：')+wallet.toppedUp:'',wallet.granted!=null?this.text('赠送余额：')+wallet.granted:''].filter(Boolean).join(' · '),'account-reset-time'));
@@ -178,8 +169,13 @@ class DesktopClientAccountsPanel {
     if(shown&&usage?.status==='error')results.append(this.node('small',this.text(usage.error||failure)+' · '+this.text('保留上次结果，数据尚未更新'),'account-muted'));
     box.append(results);
   }
+  scheduleModels(){
+    clearTimeout(this.modelsTimer);
+    const hasWindows=this.models?.models?.some(row=>row.quotaWindows?.length)||this.models?.groups?.some(group=>group.models?.some(row=>row.quotaWindows?.length));
+    if(!this.disposed&&this.visible()&&this.modelsOpen&&hasWindows)this.modelsTimer=setTimeout(async()=>{if(this.disposed||!this.visible()||!this.modelsOpen)return;if(!this.modelsLoading&&!this.busy&&!this.loading)await this.loadModels(false);else this.scheduleModels();},60000);
+  }
   async toggleModels(){
-    this.modelsOpen=!this.modelsOpen;if(!this.modelsOpen){this.render();return;}
+    this.modelsOpen=!this.modelsOpen;if(!this.modelsOpen){clearTimeout(this.modelsTimer);this.render();return;}
     if(!this.value?.modelCatalogIdentity)this.models=null;
     return this.loadModels();
   }
@@ -187,23 +183,34 @@ class DesktopClientAccountsPanel {
     const focused=refresh&&document.activeElement===this.modelsRefreshButton,generation=this.generation,revision=++this.modelsRevision,identity=this.value?.modelCatalogIdentity||'';this.modelsError='';this.modelsLoading=true;this.render();
     try{const value=await this.readModels(refresh);if(generation!==this.generation||revision!==this.modelsRevision)return;if(identity&&value.cache?.identity!==identity){this.models=null;throw Error(this.text('账号已切换，请重新打开模型设置'));}this.models=value;}
     catch(error){if(generation===this.generation&&revision===this.modelsRevision)this.modelsError=error.message;}
-    finally{if(generation===this.generation&&revision===this.modelsRevision){this.modelsLoading=false;this.render();if(focused&&this.modelsRefreshButton.isConnected&&(document.activeElement===document.body||document.activeElement===this.modelsRefreshButton)&&!this.modelsTouching)this.modelsRefreshButton.focus({preventScroll:true});}}
+    finally{if(generation===this.generation&&revision===this.modelsRevision){this.modelsLoading=false;this.render();this.scheduleModels();if(focused&&this.modelsRefreshButton.isConnected&&(document.activeElement===document.body||document.activeElement===this.modelsRefreshButton)&&!this.modelsTouching)this.modelsRefreshButton.focus({preventScroll:true});}}
   }
   renderModels(box){
+    const expanded=new Set([...(box.querySelectorAll?.('details')||[])].filter(row=>row.open).map(row=>row.dataset.quotaKey));
     box.replaceChildren();this.modelsRefreshButton.disabled=this.modelsLoading;
     const updated=this.models?.cache?.updatedAt;this.modelsUpdated.hidden=!(Number.isFinite(updated)&&updated>0);this.modelsUpdated.textContent=this.modelsUpdated.hidden?'':this.text('更新于：')+new Date(updated*1000).toLocaleString(BridgeI18n.locale());
     if(this.modelsLoading&&!this.models)box.append(this.node('p','正在读取模型…','account-muted'));
     if(this.modelsError||this.models?.modelError)box.append(this.node('p',this.modelsError||this.models.modelError,'error'));
     if(!this.models&&(this.modelsLoading||this.modelsError))return;
     if(this.models?.notice)box.append(this.node('p',this.models.notice,'account-muted'));
-    let count=0;const groups=this.models?.groups?.length?this.models.groups:[{models:this.models?.models||this.models?.catalog?.models||[]}];
+    let count=0;const groups=this.models?.groups?.length?this.models.groups:[{models:this.models?.models||this.models?.catalog?.models||[],usageSummary:this.models?.usageSummary}];
     for(const group of groups){
       if(!group.models?.length&&!group.notice)continue;count+=group.models?.length||0;
       box.append(this.node('strong',[group.surface==='code'?'Code':group.surface==='cowork'?'Cowork':group.label||group.name||group.id,this.text(group.source==='session-history'?'历史模型':group.source==='desktop-config'?'配置模型':'可用模型')].filter(Boolean).join(' · ')));
-      if(group.notice)box.append(this.node('p',group.notice,'account-muted'));
-      if(!group.models?.length)continue;
-      const list=this.node('ul');for(const model of group.models){const row=this.node('li',typeof model==='string'?model:model.name||model.id);if(model.efforts?.length)row.append(this.node('small',' · '+model.efforts.map(effort=>this.text(typeof effort==='string'?effort:effort.name||effort.id)).join(' / '),'account-muted'));list.append(row);}box.append(list);
+      if(group.notice)box.append(this.node('p',group.notice,'account-muted account-model-notice'));
+      const slots=QuotaDisplay.columns((group.models||[]).map(model=>model.quotaWindows));
+      if(group.usageSummary){const summary=this.node('div');QuotaDisplay.summary(summary,group.usageSummary,{slots,models:group.models});box.append(summary);}
+      const list=this.node('ul',undefined,'accounts-model-list');
+      for(const model of group.models||[]){
+        const row=this.node('li',undefined,'accounts-model-row'),main=this.node('span',typeof model==='string'?model:model.name||model.id,'accounts-model-main');
+        if(model.efforts?.length)main.append(this.node('small',model.efforts.map(effort=>this.text(typeof effort==='string'?effort:effort.name||effort.id)).join(' / '),'account-muted'));
+        if(model.quotaWindows?.length){const detail=this.node('details'),head=this.node('summary',undefined,'accounts-model-top');detail.dataset.quotaKey=(group.surface||'')+':'+model.id;head.append(main,QuotaDisplay.badges(model.quotaWindows,{slots,stale:group.usageSummary?.status==='stale'}));detail.append(head,QuotaDisplay.details(model.quotaWindows));row.append(detail);}
+        else{row.append(main);if(model.quotaTag)row.append(this.node('small',[model.quotaTag,model.resetNote].filter(Boolean).join(' · '),'account-muted'));}
+        list.append(row);
+      }
+      box.append(list);
     }
+    for(const detail of box.querySelectorAll?.('details')||[])detail.open=expanded.has(detail.dataset.quotaKey);
     if(!count&&!this.models?.notice&&!groups.some(group=>group.notice))box.append(this.node('p','当前客户端未返回可用模型，请检查客户端登录与模型配置。','account-muted'));
   }
   reconcileRows(cards,modelTargetId){

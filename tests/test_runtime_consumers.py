@@ -145,7 +145,7 @@ class RuntimeConsumerTests(unittest.TestCase):
         for name, configured, automatic, expected in (
             ('automatic', '', self.new, None),
             ('explicit', str(self.old), self.new, str(self.old)),
-            ('nonstandard', '', None, str(self.old)),
+            ('nonstandard', '', None, None),
         ):
             with self.subTest(name=name):
                 desktop = Desktop(self.root / name)
@@ -157,5 +157,11 @@ class RuntimeConsumerTests(unittest.TestCase):
                            return_value={'codex': {'runtime': str(self.old)}}), \
                      patch('bridge.app.service.Bridge') as bridge, \
                      patch('bridge.clients.manager.DesktopSessions'):
+                    reader = bridge.return_value.catalog_reader
+                    reader.executable = automatic
                     desktop.local_services()
                     self.assertEqual(bridge.call_args.kwargs['codex_bin'], expected)
+                    if not configured and automatic is None:
+                        reader.follow_runtime.assert_called_once_with(None, str(self.old))
+                    else:
+                        reader.follow_runtime.assert_not_called()

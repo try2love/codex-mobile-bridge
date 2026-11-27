@@ -14,7 +14,7 @@ from bridge.clients.errors import BridgeUnavailable
 
 SOURCE = Path(__file__).resolve().parent
 PACKAGE = 'dsh-codex-mobile-bridge'
-# Wire schemas are reviewed independently of bundle patch releases.
+# Wire schemas are reviewed independently of plugin release versions.
 PROTOCOL = 1
 SUPPORTED_REVISIONS = (9, 11)
 # Previously shipped 0.1.0 bundle: retained without trusting arbitrary legacy code.
@@ -23,7 +23,7 @@ LEGACY_HASHES = {'host.mjs': '80cc10b76e18621b90dbdd5675ce8dd3932eb381a3380f0a53
 def _compatible(plugin):
     return (isinstance(plugin, dict) and plugin.get('name') == PACKAGE
             and isinstance(plugin.get('version'), str)
-            and re.fullmatch(r'0\.2\.\d+', plugin['version']) is not None
+            and re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?', plugin['version']) is not None
             and type(plugin.get('protocol')) is int and plugin['protocol'] == PROTOCOL
             and type(plugin.get('revision')) is int and plugin['revision'] in SUPPORTED_REVISIONS)
 

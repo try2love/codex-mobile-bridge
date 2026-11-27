@@ -98,6 +98,39 @@ class DeepSeekTransportTests(unittest.TestCase):
             self.adapter.call('list')
         self.assertEqual(self.forwarded, [])
 
+    def test_malformed_http_responses_map_to_bridge_unavailable(self):
+        # 半包 HTTPException、非法 JSON 响应体及非字典 HTTPError 错误体都应统一转为 BridgeUnavailable。
+        import http.client
+        import io
+        import urllib.error
+
+        class FakeOpener:
+            def __init__(self, outcome):
+                self.outcome = outcome
+            def open(self, req, timeout=30):
+                if isinstance(self.outcome, Exception):
+                    raise self.outcome
+                return self.outcome
+
+        class RawResponse:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return self.payload
+
+        for outcome in (
+            http.client.IncompleteRead(b'{"sessions":', 5),
+            RawResponse(b'<html>502</html>'),
+            RawResponse(b'\xff\xfe'),
+            RawResponse(b'[1, 2]'),
+            urllib.error.HTTPError('http://127.0.0.1/mobile', 502, 'Bad Gateway', {}, io.BytesIO(b'[1, 2]')),
+        ):
+            with self.subTest(outcome=type(outcome).__name__):
+                with patch('urllib.request.build_opener', return_value=FakeOpener(outcome)):
+                    with self.assertRaises(BridgeUnavailable):
+                        self.adapter.call('status')
+
     def test_native_project_mentions_keep_the_existing_plugin_protocol(self):
         body = {'id': 'fixture-id', 'text': '检查文件', 'resolvedReferences': [
             {'path': '/project/中文 文件.md', 'kind': 'file'}, {'path': '/project/folder', 'kind': 'directory'}]}

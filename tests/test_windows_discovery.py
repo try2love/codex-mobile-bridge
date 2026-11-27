@@ -67,9 +67,30 @@ class WindowsDiscoveryTests(unittest.TestCase):
             '<uap:VisualElements AppListEntry="none"/></Application>'
             '<Application Id="App" Executable="gui\\ChatGPT.exe"><uap:VisualElements/></Application>'
             '</Applications></Package>')
-        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent)}]})
+        rows = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(shim.parent.parent),
+                                       'PackageFamilyName': 'OpenAI.Codex_fixture'}]})
         self.assertEqual(rows['codex']['executable'], str(gui))
+        self.assertEqual(rows['codex']['applicationUserModelId'], 'OpenAI.Codex_fixture!App')
         self.assertNotEqual(rows['codex']['executable'], str(helper))
+
+    def test_aumid_requires_valid_family_and_visible_manifest_identifier(self):
+        gui = self.executable('Store/App/app/ChatGPT.exe')
+        manifest = gui.parent.parent/'AppxManifest.xml'
+        for family, identifier, visual, expected in (
+            ('OpenAI.Codex_fixture', 'Native.App-1', '<VisualElements/>', 'OpenAI.Codex_fixture!Native.App-1'),
+            ('OpenAI.Codex_fixture', '', '<VisualElements/>', None),
+            ('OpenAI.Codex_fixture', 'Bad!Id', '<VisualElements/>', None),
+            ('Bad!Family', 'App', '<VisualElements/>', None),
+            ('', 'App', '<VisualElements/>', None),
+            ('OpenAI.Codex_fixture', 'Hidden', '<VisualElements AppListEntry="none"/>', None),
+            ('OpenAI.Codex_fixture', 'Invisible', '', None)):
+            with self.subTest(family=family, identifier=identifier, visual=visual):
+                manifest.write_text('<Package><Applications><Application Id="'+identifier+'" '
+                                    'Executable="app/ChatGPT.exe">'+visual+'</Application></Applications></Package>')
+                row = self.scan({'packages': [{'Name': 'OpenAI.Codex', 'InstallLocation': str(gui.parent.parent),
+                                              'PackageFamilyName': family}]})['codex']
+                self.assertEqual(row['executable'], str(gui))
+                self.assertEqual(row.get('applicationUserModelId'), expected)
 
     def test_store_fallback_prefers_chatgpt_over_codex_shim(self):
         shim = self.executable('Store/App/app/Codex.exe')
@@ -85,6 +106,26 @@ class WindowsDiscoveryTests(unittest.TestCase):
         self.executable('Program Files/WindowsApps/OpenAI.Codex_1/app/Codex.exe')
         gui = self.executable('Program Files/WindowsApps/OpenAI.Codex_1/app/ChatGPT.exe')
         self.assertEqual(self.scan({})['codex']['executable'], str(gui))
+
+    def test_squirrel_filesystem_fallback_prefers_newest_numeric_version(self):
+        for provider, name in (('codex', 'Codex'), ('claude', 'Claude'),
+                               ('deepseek', 'DSH Desktop'), ('zcode', 'ZCode')):
+            with self.subTest(provider=provider):
+                self.executable(f'Local/{name}/app-2.9.10/{name}.exe')
+                newest = self.executable(f'Local/{name}/app-2.10.0/{name}.exe')
+                self.assertEqual(self.scan({})[provider]['executable'], str(newest))
+
+    def test_store_filesystem_fallback_prefers_newest_numeric_version(self):
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.9.0_x64/app/ChatGPT.exe')
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/Codex.exe')
+        gui = self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/ChatGPT.exe')
+        runtime = self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.10.0_x64/app/resources/codex.exe',
+                                  electron=False)
+        self.executable('Program Files/WindowsApps/OpenAI.Codex_1.2.11.0_x64/app/resources/codex.exe',
+                        electron=False)
+        row = self.scan({})['codex']
+        self.assertEqual(row['executable'], str(gui))
+        self.assertEqual(row['runtime'], str(runtime))
 
     def test_bundled_runtime_discovery_prefers_gui_over_codex_shim(self):
         from bridge.clients.desktop_app import DesktopApp
@@ -137,9 +178,12 @@ class WindowsDiscoveryTests(unittest.TestCase):
         self.assertTrue(rows['deepseek']['installed'])
         self.assertFalse(rows['claude']['installed'])
 
-    def test_explicit_application_precedes_registered_app(self):
+    def test_explicit_and_registered_applications_precede_filesystem_versions(self):
         explicit = self.executable('Selected/Claude.exe')
         registered = self.executable('Registered/Claude.exe')
+        self.executable('Local/Claude/app-99.0.0/Claude.exe')
+        self.assertEqual(self.scan({'processes': [{'ProcessName': 'Claude', 'Path': str(registered)}]})
+                         ['claude']['executable'], str(registered))
         rows = self.scan({'processes': [{'ProcessName': 'Claude', 'Path': str(registered)}]},
                          {'claudeApplication': str(explicit)})
         self.assertEqual(rows['claude']['executable'], str(explicit))

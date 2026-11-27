@@ -13,8 +13,8 @@ Antigravity App、IDE、CLI 将历史保存在不同目录。把端口日志、�
 - 写入只发送到同用户、同进程世代、官方安装映像、匹配 `--app_data_dir` 且独占 IPv4 loopback 监听的原服务。日志仅提供候选端口；每次 RPC 前后重新核验，不跟随重定向，也不使用代理或重试未知写入。
 - 原生发现同时覆盖官方 App 的 `language_server` 与 `.gemini/bin/agy` 的内嵌 LS。新版 IDE hub 的前端端口不替代原生 RPC 监听，资料归属仍由实际 `app_data_dir` 决定。三类程序通过共享默认应用表单补录；安装清单缓存、官方启动形态和无账号真实只读验证见[发现与添加修复](../bug-fix/2026-11-10-client-inventory-and-agy-discovery.md)。
 - SQLite 使用 `mode=ro`。不分别复制 main/WAL/SHM 作为快照；历史不可读时该来源暂不可用。发送前直接查询原库，缺行、空状态、查询失败均不能证明空闲。
-- 新建聊天携带已登记目录的 file URI；只在原服务返回相同 `projectEnvInfo.workspaceUris` 和新会话 ID 后发送首条消息。绑定回复缺失或不符保留未知回执，不重试创建或首条发送。
-- 模型仅取原服务目录，目录缓存和设置校验包含来源。思考强度由完整原生模型条目表达，不提供猜测的独立 effort 或额度数据。
+- 新建聊天携带已登记目录的 file URI。取得新会话 ID 后，按[新会话项目核验](../bug-fix/2026-11-18-antigravity-cascade-workspace.md)确认同来源、同原生进程世代及唯一项目目录，再发送首条消息。明确不匹配、证据缺失、身份变化或结果未知时阻断首条发送；不重试创建或首条发送，保留未知回执。
+- 模型仅取原服务目录，目录缓存和设置校验包含来源。旧目录结构或目标缺失时，每次查找对当前选中的在线来源最多实时刷新一次；读写缓存均受原生账号身份约束。刷新失败保留同账号最后成功缓存及原更新时间，目标仍然无法解析时明确报错。旧扁平变体配 `auto` 时从原生目录还原实际档位，手填 `MODEL_` 标识只规范化 ASCII 字母大小写和首尾空白；不提供猜测的独立 effort 或额度数据。
 - `accounts=true` 开放共享账号页面；原生身份按 APP、CLI、IDE 分别读取，单来源失败不会遮住其他来源，不依赖先有聊天历史。账号列表仅投影身份白名单和已保存副本的元数据，不读钥匙串或令牌。模型目录按来源分组，不将同名模型合并为另一来源的权限。未保存的原生身份不提供切换操作，额度按钮遵循能力门。
 - 默认本机 Google 账号支持保存、改名、删除副本和显式应用。已安装 App 2.29.1、CLI 1.5.3 的二进制静态核验证实普通 OAuth 的 `auth_method=consumer`、空活动 `wif_provider`、非空 `token.refresh_token` 契约；`id_token_email` 只作展示及跨副本一致性核验，不证明登录有效。完整保留原始 JSON 和未知字段；GCP、WIF、旧式无方法记录及自定义 home 不推断为默认登录。
 - 三类入口共用系统凭据 `service=gemini/user=antigravity`。默认回退文件是 `.gemini/jetski-standalone-oauth-token`、`.gemini/antigravity-cli/antigravity-oauth-token`、`.gemini/antigravity/antigravity-oauth-token`，保存时保留存在/缺失状态。使用同一系统登录的自定义入口也会受影响，确认文案明确说明；不复制 Electron 数据、聊天、插件秘密或其他目录。平台模块操作系统凭据，客户端处理 Go 编码：Mac 兼容 Base64/旧 hex 前缀，通过 `security -i` stdin、`-U` 更新，不先删后写、不加 `-A`；Windows 使用 `gemini:antigravity`、UTF-8 blob、Persist=2；Linux 选择 login collection，仅不存在时采用 default，锁定或多匹配项不静默绕过。
@@ -83,3 +83,5 @@ MCP 表单复用共享问题控件，保留字符串、有限数值、严格布�
 七项 Python 回归覆盖类型与约束反例，两项共享 UI 回归覆盖固定选项、跳过、取消及刷新保留草稿。字符串枚举及数组元素保留原值空格，不用文本清理改变合法答案。依据为已安装官方原生 descriptor 和 [MCP 的表单验证约定](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/2025-11-25/docs/docs/learn/client-concepts.mdx)，尚不代表真实上游表单往返。
 
 额度随同来源、同账号模型目录保存为成功查询快照，沿用原更新时间与手动刷新，不增加自动请求。官方 protobuf 中存在 `quotaInfo` 或 `planStatus` 消息而省略非 optional 数值字段时代表零；整个消息缺失仍不显示未知额度。重置时间复用原时间解析并显示本机时区，不把 UTC 文本截断为本地时间。三项定向回归及原目录/上下文用例覆盖消息缺失、零值与 UTC 转换。
+
+[新版发现、历史读取与撤回](../bug-fix/2026-11-21-antigravity-read-and-revert.md)补充 CSRF 环境回退、有界缓存及默认仅撤回对话的控制链；本篇原来源和未知写入边界继续生效。

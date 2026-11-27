@@ -9,10 +9,10 @@ for(const status of ['accepted','unknown'])test(`Codex fallback ${status} preser
  const scope={gateway:'gateway',provider:'codex',account:'account',host:'local',session:'chat'};
  const drafts=new ComposerDrafts(failedStorage),quotes={quotes:[{text:'first',source:'reply',provider:'codex'}],serialize(text){return ComposerQuotes.serialize(text,this.quotes);},reset(){this.quotes=[];}};
  const temporary=new Map(),provisionals=new Map();let resolve,submitted,entered;const requestStarted=new Promise(done=>entered=done);
- const context={
+ const context={composerToolbar:{actionMode:()=>'send'},
   $:id=>nodes.get(id),t:text=>text,sending:false,currentId:'chat',currentHost:'local',state:{},currentAccess:()=>({canSend:true}),
   codexQuotes:quotes,codexDraftScope:scope,composerDrafts:drafts,draftGateway:'gateway',codexProvisionalDrafts:provisionals,messageManagement:null,
-  attachments:{ready:()=>true,ids:()=>[],references:()=>[],rows:[],setLocked(){},clear(){}},workModes:{value:()=> 'default',render(){},submitted(){}},
+  attachments:{ready:()=>true,ids:()=>[],references:()=>[],rows:[],setLocked(){},clear(){}},renderCodexWorkModes(){},workModes:{value:()=> 'default',render(){},submitted(){}},
   invalidSkills:new Set(),selectedSkills:new Set(),BridgeI18n:{locale:()=> 'zh'},chatKey:()=> 'local|chat',uuid:()=> 'send-id',
   saveDraft(){const fields={text:nodes.get('message').value,quotes:quotes.quotes};const saved=drafts.save(scope,fields);if(!saved)provisionals.set('local|chat',JSON.parse(JSON.stringify(fields)));return saved;},
   sessionStorage:{getItem:key=>temporary.get(key)||null,setItem:(key,value)=>temporary.set(key,value),removeItem:key=>temporary.delete(key)},

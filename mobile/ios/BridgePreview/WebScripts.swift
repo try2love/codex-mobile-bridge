@@ -6,12 +6,14 @@ struct WebScripts {
     let appearance: String
     let clipboard: String
     let systemBars: String
+    let offline: String
 
     init(bundle: Bundle = .main) throws {
         route = try Self.source("channel-link", bundle: bundle)
         appearance = try Self.source("mobile-ui", bundle: bundle)
         clipboard = try Self.source("mobile-clipboard", bundle: bundle)
         systemBars = try Self.source("mobile-system-bars", bundle: bundle)
+        offline = try Self.source("mobile-offline", bundle: bundle)
     }
 
     private static func source(_ name: String, bundle: Bundle) throws -> String {

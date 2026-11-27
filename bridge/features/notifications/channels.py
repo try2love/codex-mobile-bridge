@@ -4,6 +4,7 @@ from bridge.features.notifications.providers import PROVIDERS, desktop_provider,
 import hashlib
 import base64
 import hmac
+import os
 from bridge.api.validation import FieldError, at_field
 import json
 import logging
@@ -16,7 +17,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit, urlunsplit, parse_qsl, urlencode
 from urllib.request import Request, build_opener, HTTPRedirectHandler, HTTPSHandler, ProxyHandler
 
-from bridge.features.sessions.model import pending_requests, ordered_turns
+from bridge.features.sessions.model import pending_requests, ordered_turns, items_array
 from bridge.features.auth.tls import client_context
 from bridge.features.auth.auth import session_file_lock
 
@@ -26,7 +27,7 @@ DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token':
             'webhookEnabled': False, 'webhookUrl': '', 'webhookHeaders': {},
             'webhookProvider': 'auto', 'webhookSignEnabled': False, 'webhookSignSecret': '',
             'webhookBodyTemplate': '{\n  "event": "{{event}}",\n  "title": "{{title}}",\n  "body": "{{body}}",\n  "session_name": "{{session_name}}",\n  "url": "{{url}}"\n}',
-            'clickBase': '', 'includeTitle': True, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': True, 'mobileAppLinks': False}
+            'clickBase': '', 'includeTitle': True, 'includeAnswer': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True, 'mobileEnabled': True, 'mobileAppLinks': False}
 
 WEBHOOK_FIELDS = frozenset(('event', 'event_id', 'title', 'body', 'session_name', 'url', 'client', 'host', 'count'))
 WEBHOOK_TEMPLATES = {
@@ -179,8 +180,27 @@ def read_json(path, default):
         return default
 
 
+def read_status_json(path, default=None):
+    """读取非关键状态 JSON；文件损坏或非字典时记录告警并回退默认值，防止状态上报链路二次崩溃。"""
+    # 严格配置与密钥仍复用 read_json()，仅对可重建的状态快照做损坏容错。
+    fallback = {} if default is None else default
+    try:
+        value = read_json(path, fallback)
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        logging.warning('忽略损坏的状态文件 %s：%s', path, exc)
+        return dict(fallback) if isinstance(fallback, dict) else fallback
+    if isinstance(fallback, dict) and not isinstance(value, dict):
+        logging.warning('忽略非字典格式的状态文件 %s', path)
+        return dict(fallback)
+    return value
+
+
 def write_json(path, value):
     path = Path(path)
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -267,7 +287,7 @@ def _save_settings_unlocked(data_dir, value):
     result = {**prior, **{k: value[k] for k in DEFAULTS if k in value}}
     result['server'] = at_field('ntfy-server', valid_url, str(result['server']), allow_path=True)
     result['barkServer'] = at_field('bark-server', valid_url, str(result['barkServer']), allow_path=True)
-    for key in ('enabled', 'barkEnabled', 'pushplusEnabled', 'webhookEnabled', 'webhookSignEnabled', 'includeTitle', 'addressEnabled', 'securityEnabled', 'mobileEnabled', 'mobileAppLinks'):
+    for key in ('enabled', 'barkEnabled', 'pushplusEnabled', 'webhookEnabled', 'webhookSignEnabled', 'includeTitle', 'includeAnswer', 'addressEnabled', 'securityEnabled', 'mobileEnabled', 'mobileAppLinks'):
         if not isinstance(result[key], bool):
             raise ValueError('通知开关格式不正确')
     if not isinstance(result['addressName'], str) or len(result['addressName']) > 80 or any(not c.isprintable() for c in result['addressName']):
@@ -978,7 +998,27 @@ class Notifications:
             return 'codexbridge://open?origin=' + quote(base.rstrip('/'), safe='') + '&thread=' + thread_id + '&host=' + quote(host, safe='')
         return base.rstrip('/') + '/#' + thread_id + '~' + quote(host, safe='') if base else ''
 
-    def _dispatch(self, config, row, title, channel, target, keys, completed):
+    @staticmethod
+    def _answer_preview(turn):
+        if turn.get('status') != 'completed':
+            return ''
+        messages = items_array(turn.get('items', [])) or turn.get('messages', [])
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get('phase') == 'commentary' or message.get('questions'):
+                continue
+            if message.get('type') != 'agentMessage' and message.get('role') != 'assistant':
+                continue
+            text = message.get('text') or message.get('content')
+            if isinstance(text, str) and text.strip():
+                text = ' '.join(text.split())
+                return text[:280] + ('…' if len(text) > 280 else '')
+        return ''
+
+    def _dispatch(self, config, row, title, channel, target, keys, completed, *, answer_previews=None):
+        if completed is True and config.get('includeAnswer') and answer_previews:
+            row = {**row, '_answerPreviews': {
+                self._delivery_key(row, turn_id, completion=True, target=target): preview
+                for turn_id, preview in answer_previews.items() if preview}}
         detected = time.monotonic()
         observed = self.attached.get((row['host'], row['id']))
         observation = None
@@ -1053,6 +1093,11 @@ class Notifications:
                     f'有 {len(pending)} 次运行已完成，请打开聊天查看。' if completed else f'有 {len(pending)} 项请求等待处理，请打开聊天查看。')
             if config['includeTitle']:
                 body = title[:120] if channel == 'mobile' else title[:120] + '\n' + body
+            if completed is True and config.get('includeAnswer'):
+                preview = next((row.get('_answerPreviews', {}).get(key) for key in reversed(pending)
+                                if row.get('_answerPreviews', {}).get(key)), None)
+                if preview:
+                    body = (title[:120] + '\n' if config['includeTitle'] else '') + preview
         success = False
         try:
             if channel == 'mobile':
@@ -1199,12 +1244,15 @@ class Notifications:
                         self.mobile_push.update_activity(row, 'waiting' if requests else 'running' if live_running else 'ready')
                         title = session.state.get('title') or '聊天'
                         turns = [{k: t[k] for k in ('turnId', 'status', 'willRetry') if k in t} for t in ordered_turns(session.state)]
+                        previews = {t['turnId']: self._answer_preview(t) for t in ordered_turns(session.state)
+                                    if t.get('turnId')} if config.get('includeAnswer') else {}
                     completed_keys = {channel: self._completion_pending({**current, 'title': title}, turns, target) if current.get('notifyOnCompletion') else [] for channel, target in targets.items()}
                     attention_keys = {channel: self._attention_pending({**current, 'title': title}, turns, target) for channel, target in targets.items()}
                 for channel, target in targets.items():
                     with self.lock:
                         for completed, keys in ((False, [self._delivery_key(row, r['id'], target=target) for r in requests]), (True, completed_keys[channel]), ('attention', attention_keys[channel])):
-                            changed = self._dispatch(config, row, title, channel, target, keys, completed) or changed
+                            changed = self._dispatch(config, row, title, channel, target, keys, completed,
+                                                     answer_previews=previews) or changed
                 if hasattr(source, 'release_notification_session'):
                     # Keep only live tasks and approvals attached. Completion retry
                     # records above are independent of the thread subscription.
@@ -1295,7 +1343,8 @@ class Notifications:
                     continue
             for channel, target in targets.items():
                 keys = self._completion_pending({**current, 'title': title}, cached[1], target)
-                changed = self._dispatch(config, row, title, channel, target, keys, True) or changed
+                previews = {t['turnId']: self._answer_preview(t) for t in cached[1] if t.get('turnId')} if config.get('includeAnswer') else {}
+                changed = self._dispatch(config, row, title, channel, target, keys, True, answer_previews=previews) or changed
                 keys = self._attention_pending({**current, 'title': title}, cached[1], target)
                 changed = self._dispatch(config, row, title, channel, target, keys, 'attention') or changed
         return changed
@@ -1304,11 +1353,20 @@ class Notifications:
         with self.lock:
             self._write_status(channel, **values)
 
+    def _report_worker_error(self, channel=None, *, error):
+        # 后台守护线程的兜底分支自身绝不能再抛异常导致线程永久退出。
+        try:
+            self._status(channel, error=error)
+        except Exception:
+            logging.exception('记录通知线程状态失败')
+
     def _write_status(self, channel=None, **values):
         path = self.data_dir/'notification-status.json'
-        prior = read_json(path, {})
+        prior = read_status_json(path, {})
         if channel:
-            record = prior.get(channel, {})
+            record = prior.get(channel)
+            if not isinstance(record, dict):
+                record = {}
             if 'target' in values and record.get('target') != values['target']:
                 record = {}
             current = {**prior, channel: {**record, **values}}
@@ -1322,7 +1380,7 @@ class Notifications:
             try:
                 self.scan(deliver=False)
             except Exception:
-                self._status(error='通知配置读取失败，请在电脑启动器重新保存配置。')
+                self._report_worker_error(error='通知配置读取失败，请在电脑启动器重新保存配置。')
             self.wakeup.wait(3)
             self.wakeup.clear()
             # Coalesce a burst of stream patches rather than scan per token.
@@ -1336,7 +1394,7 @@ class Notifications:
                 if not self.closed.is_set():
                     self.security.scan()
             except Exception:
-                self._status(error='通知配置读取失败，请在电脑启动器重新保存配置。')
+                self._report_worker_error(error='通知配置读取失败，请在电脑启动器重新保存配置。')
             self.delivery_wakeup.wait(3)
 
     def _push_allowed(self, event):
@@ -1353,5 +1411,5 @@ class Notifications:
             try:
                 self.mobile_push.drain(settings(self.data_dir).get('mobileEnabled', False), self._push_allowed)
             except Exception:
-                self._status('nativePush', error='系统推送暂不可用，请检查平台配置')
+                self._report_worker_error('nativePush', error='系统推送暂不可用，请检查平台配置')
             self.closed.wait(3)

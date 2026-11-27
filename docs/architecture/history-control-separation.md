@@ -119,3 +119,12 @@ Windows 临时文件和构建产物均位于 F 盘；安装成功后删除旧 Te
 
 本机记录：`.tmp/history-control-verified-20261023/`；其中构建清单固定源提交、安装包哈希、
 Test 隔离覆盖项及测试夹具修订，未包含在 Git 提交中。
+
+
+## 手机消息级存档（2026-11-23）
+
+Android/iOS 存档把回合日期与清理标记、消息预览、正文分块分开保存。最近页使用消息索引，过程展开使用回合区间索引，正文按消息版本与偏移读取；首屏不遍历整个会话或解码整回合。旧记录在后台逐回合转换，成功事务才清除旧 JSON。
+
+前台网络请求与本地预览并行；原生缓存导入、状态查询和写入均不阻塞网络首屏。缓存只负责展示，控制权限仍来自当前原生 owner。具体表、迁移与回归边界见[消息级原生历史](../../.agents/notes/implemented/architecture/2026-11-23-message-level-native-history.md)。
+
+原始rollout缺失时，Codex可从同一已授权home的原生消息索引读取保存历史；不等原执行器连接，不改变原生运行态。传输来源与不完整提示见[原生保存记录来源](../../.agents/notes/implemented/bug-fix/2026-11-24-retained-native-history-source.md)。

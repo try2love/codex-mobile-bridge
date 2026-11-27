@@ -41,3 +41,12 @@ class WindowsUpdatePreflightTests(unittest.TestCase):
         self.check(argv=['other-installation', *self.argv[1:]])
         with self.assertRaises(PermissionError):
             self.check(owner=PermissionError('Cannot verify process'))
+
+    def test_codex_desktop_and_auxiliary_runtime_block_without_stopping_them(self):
+        for arguments in [
+                ['-c', 'check_for_update_on_startup=false', 'app-server', '--analytics-default-enabled'],
+                ['exec-server', '--concurrent-requests', '8', '--remote', 'fixture'],
+                ['codex-desktop-launch', '--configuration', 'fixture', '--', 'app-server'],
+                ['codex-desktop-runtime', '--configuration', 'fixture', '--', 'app-server']]:
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, '正常退出 Codex'):
+                self.check(argv=[str(self.worker), *arguments])

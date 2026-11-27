@@ -22,7 +22,7 @@ window.runHostFileNavigationChecks=async({project,outside})=>{
   const list=tab.list;wb.select('chat');wb.files();check(tab.list===list,'returning to files reuses the existing list');
   let address=tab.body.querySelector('.wb-address input');address.value=outside;address.form.requestSubmit();
   await wait(()=>session.directory===outside&&tab.loaded&&!tab.loading);
-  check(tab.upload.disabled&&!tab.up.disabled,'outside navigation permits parent but blocks upload');
+  check(!tab.upload.disabled&&!tab.up.disabled,'outside navigation permits parent and explicit upload');
   const target=outside+'/报告.txt',row=[...tab.list.children].find(n=>n.dataset.path===target);
   check(!!row,'host list keeps absolute file identity');
   row.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
@@ -35,7 +35,7 @@ window.runHostFileNavigationChecks=async({project,outside})=>{
   check(tab.list===row.parentNode,'locate reuses the cached directory list');
   address=tab.body.querySelector('.wb-address input');address.value='/';address.form.requestSubmit();
   await wait(()=>session.directory==='/'&&tab.loaded&&!tab.loading);
-  check(tab.up.disabled&&tab.upload.disabled,'filesystem root cannot navigate above itself or upload');
+  check(tab.up.disabled&&!tab.upload.disabled,'filesystem root stops parent navigation and allows explicit upload');
   address=tab.body.querySelector('.wb-address input');address.value=project;address.form.requestSubmit();
   await wait(()=>session.directory===project&&tab.loaded&&!tab.loading);
   check(!tab.upload.disabled&&wb.back()&&session.active==='chat','return to initial directory retains project actions and chat back');

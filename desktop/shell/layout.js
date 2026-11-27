@@ -5,7 +5,7 @@
   const text=(tag,key,cls='')=>{const n=document.createElement(tag);n.className=cls;n.dataset.i18n=key;n.textContent=t(key);return n;};
   const module=name=>{const n=document.createElement('section');n.dataset.panel=name;n.hidden=true;$('settings').insertBefore(n,$('save-bar'));return n;};
   const paths={overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',accounts:'M3 4h18v13H3z M8 21h8 M12 17v4',network:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',devices:'M12 3 3 7v5c0 5 9 10 9 10s9-5 9-10V7z M8 12l3 3 5-6',notifications:'M4 4h16v13H9l-5 4z',advanced:'M4 7h16 M4 17h16 M8 4v6 M16 14v6'};
-  document.querySelector('.brand').innerHTML='<img src="assets/icon.png" alt=""><span>Bridge<small>DESKTOP GATEWAY</small></span>';
+  document.querySelector('.brand').innerHTML='<img src="assets/icon.png" data-icon-light="assets/icon.png" data-icon-dark="assets/icon-dark.png" alt=""><span>Bridge<small>DESKTOP GATEWAY</small></span>';
   document.querySelector('.sidebar-caption').remove();
   for(const [index,button] of [...document.querySelectorAll('aside [data-tab]')].entries()){
     if([0,2,5].includes(index))button.before(text('div',index===0?'工作台':index===2?'访问与提醒':'应用','nav-group'));
@@ -52,6 +52,9 @@
   const overview=document.querySelector('[data-panel="overview"]');overview.querySelector('[data-jump="accounts"]').remove();
   const addresses=$('addresses');addresses.classList.add('address-summary');const entrances=document.createElement('article');entrances.className='entrances';addresses.previousElementSibling.before(entrances);entrances.append(addresses.previousElementSibling,addresses,$('quick-tunnel-state'),$('quick-setup'));
   const footer=document.createElement('div');footer.className='entrance-footer';const network=text('button','管理网络访问 →');network.type='button';network.dataset.jump='network';footer.append(network);entrances.append(footer);
+  const transfer=document.createElement('article');transfer.id='local-data-transfer';
+  transfer.append(text('h2','本地数据传输'),text('p','选择会话，将完整历史保存到手机。','hint'));
+  const transferEntries=document.createElement('div');transferEntries.id='local-transfer-entries';transfer.append(transferEntries);overview.append(transfer);
   let state;
   document.querySelectorAll('[data-open-workbench]').forEach(b=>b.onclick=()=>{const url=state?.urls?.find(url=>url.startsWith('https:'))||state?.urls?.[0];if(url)window.bridgeDesktop.open(url);});
   window.GatewayLayout={selectClient,hasClient,clientPage,forgetClient,tab(name,{section='general'}={}){description.dataset.i18n=descriptions[name];description.textContent=t(descriptions[name]);back.hidden=name!=='accounts'||!client;maintenanceTabs.hidden=name!=='advanced';if(name==='advanced')maintenanceTab(['updates','logs'].includes(section)?section:'general');},update(value,{starting=false,stopping=false}={}){state=value;document.querySelectorAll('[data-gateway-status]').forEach(n=>n.textContent=t(stopping?'正在停止网关':starting?'正在启动网关':value.runtime.running?'网关运行中':'网关未启动'));document.querySelectorAll('[data-open-workbench]').forEach(b=>b.disabled=!value.runtime.running||!value.urls?.length);}};

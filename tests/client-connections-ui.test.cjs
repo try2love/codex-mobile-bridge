@@ -11,13 +11,24 @@ function fixture({accounts=false}={}){
   const layout={hasClient:id=>['codex','claude','deepseek'].includes(id)||id.startsWith('codex:')||pages.has(id),clientPage(id){if(pages.has(id))return pages.get(id);const page=node('section');pages.set(id,page);return page;},forgetClient(id){pages.delete(id);this.selectClient(null);},selectClient(id){selected.push(id);listeners['bridge-client-config']?.({detail:id});}};
   const context=vm.createContext({crypto:require('node:crypto').webcrypto,ClientLifecycle:{...require('../web/features/clients/client-lifecycle.js'),chooseDisable(client){choices.push(client.id);return closeChoice==='pending'?new Promise(resolve=>finishChoice=resolve):closeChoice;}},CustomEvent:class{constructor(type){this.type=type;}},document:{body:node('body'),documentElement:{},getElementById:id=>nodes[id],createElement:node,querySelector:()=>null,querySelectorAll:selector=>selector==='[data-i18n]'?Object.values(statuses):[],hidden:false,addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type,fn){if(listeners[type]===fn)delete listeners[type];},dispatchEvent(event){listeners[event.type]?.(event);}},setInterval(fn,ms){timers.push({fn,ms});return timers.length;},clearInterval(id){if(id)timers[id-1]=null;},setTimeout(){},clearTimeout(){},localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},window:{confirm:message=>{prompts.push(message);return confirmed;},GatewayLayout:layout}});
   context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
-  for(const file of ['web/shared/i18n.js','web/shared/creation-model-picker.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+  for(const file of ['web/shared/i18n.js','web/features/accounts/quota-display.js','web/shared/creation-model-picker.js','web/features/accounts/wsl-accounts.js',...(accounts?['web/features/accounts/api-editor.js','web/features/accounts/client-accounts.js']:[]),'desktop/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
   context.ClientLifecycle.mountConnectionModes=vm.runInContext('(function(){'+fs.readFileSync('web/features/clients/client-lifecycle.js','utf8')+';return ClientLifecycle.mountConnectionModes;})()',context);context.ClientLifecycle.confirmConnectionMode=async()=>confirmed;
   const Class=vm.runInContext('DesktopConnectionsPanel',context),panel=new Class({root,api:{choose:async()=>chosen,cliAccess:body=>{calls.push(body);return handler(body);},desktopSessions:body=>{calls.push(body);return handler(body);}},feedback:message=>errors.push(message)});
   const all=n=>[n,...n.children.flatMap(all)];
   return {panel,nodes,timers,calls,errors,scan,pages,selected,storage,prompts,choices,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),setChoice:value=>closeChoice=value,decide:value=>finishChoice(value),statuses,workspace,claudeHome,claudeData,input,choose,root,document:context.document,setChosen:value=>chosen=value,poll:async()=>{panel.syncPolling();await timers.find(Boolean)?.fn();},apply:()=>vm.runInContext('BridgeI18n.apply()',context),confirm:value=>confirmed=value,setHandler:fn=>handler=fn,all:()=>all(nodes['client-overview']),text:()=>all(nodes['client-overview']).map(n=>n.textContent).join('\n'),english:()=>vm.runInContext("BridgeI18n.setLanguage('en')",context)};
 }
 
+test('Codex gateway initialization uses the same account transaction and has no separate toggle write',async()=>{
+ for(const accepted of [false,true]){
+  const ui=fixture(),panel=ui.panel,calls=[];
+  panel.clients=[{id:'codex',name:'Codex',enabled:true,installed:true,configured:true,connected:false,canInitializeDesktop:true}];panel.gatewayRunning=true;
+  panel.api.accounts=async body=>{calls.push(body);return {switch:{phase:'preparing'}};};panel.refreshClients=async()=>{};
+  panel.renderClients();assert.match(ui.text(),/初始化连接/);
+  ui.setInitializeChoice(accepted);await panel.toggleClient('codex',true,{initializeDesktop:true});
+  assert.equal(calls.length,accepted?1:0);assert.equal(ui.calls.length,0);
+  if(accepted){assert.equal(calls[0].action,'initializeDesktopRuntime');assert.match(calls[0].requestId,/^[0-9a-f-]{36}$/);}
+ }
+});
 test('Antigravity management edits only the selected source session without claiming accounts support',async()=>{
   const ui=fixture(),client={id:'antigravity',name:'Antigravity',enabled:true,installed:true,capabilities:{accounts:false,management:true}};ui.panel.clients=[client];
   const sources=['app','cli','ide'].map(id=>({id,name:id.toUpperCase(),historyAvailable:true,connected:id==='cli',sessions:[{id:id+'-session',title:id,model:'',permissionMode:'desktop'}]}));
@@ -95,6 +106,41 @@ test('desktop fast polling is limited to visible startup states and deduplicates
  const ui=fixture();ui.panel.clients=[{id:'deepseek',enabled:true,connectionState:'connecting'}];let finish;ui.setHandler(()=>new Promise(resolve=>finish=resolve));const pending=ui.panel.pollClients(true);const duplicate=ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
  finish({clients:[{id:'deepseek',enabled:true,connectionState:'connected',connected:true}]});await Promise.all([pending,duplicate]);await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
  ui.panel.clients[0].connectionState='starting';ui.panel.clients[0].connected=false;ui.document.hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);ui.document.hidden=false;ui.nodes['clients-page'].hidden=true;await ui.panel.pollClients(true);assert.equal(ui.calls.length,1);
+});
+
+test('desktop pending inventory preserves displayed rows and polls until a ready snapshot',async()=>{
+ const ui=fixture(),cached=[{id:'codex',name:'Codex',enabled:true,connected:true}];ui.panel.clients=cached;ui.panel.renderClients();
+ ui.setHandler(async()=>({clients:[],pending:true}));await ui.panel.refreshClients();
+ assert.equal(ui.panel.clients,cached);assert.match(ui.text(),/Codex/);assert.equal(ui.panel.pollInterval,2000);
+ await ui.panel.pollClients(true);assert.equal(ui.calls.length,2,'pending inventory permits the fast poll even without a waiting client');
+ const ready=[{id:'deepseek',name:'DSH',enabled:true,connected:true}];ui.setHandler(async()=>({clients:ready,pending:false}));await ui.poll();
+ assert.equal(ui.panel.clients,ready);assert.match(ui.text(),/DSH/);assert.doesNotMatch(ui.text(),/Codex/);assert.equal(ui.panel.pollInterval,15000);
+});
+
+test('desktop cold pending inventory starts fast polling without inventing client rows',async()=>{
+ const ui=fixture();ui.setHandler(async()=>({clients:[],pending:true}));await ui.panel.refreshClients();
+ assert.equal(ui.panel.clients.length,0);assert.equal(ui.panel.pollInterval,2000);
+ ui.setHandler(async()=>({clients:[],pending:false}));await ui.poll();assert.equal(ui.panel.pollInterval,15000);
+});
+
+test('desktop inventory failures preserve cached rows and manual refresh can clear the error',async()=>{
+ for(const reject of [false,true]){
+  const ui=fixture(),cached=[{id:'codex',name:'Codex',enabled:true,connected:true}];ui.panel.clients=cached;
+  ui.setHandler(async()=>{if(reject)throw Error('inventory unavailable');return {clients:[],pending:false,refreshError:'inventory unavailable'};});
+  await ui.panel.refreshClients();assert.equal(ui.panel.clients,cached);assert.match(ui.text(),/Codex/);assert.match(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);assert.equal(ui.panel.pollInterval,15000);
+  ui.setHandler(async()=>({clients:cached,pending:true}));await ui.panel.refreshClients(true);assert.equal(ui.calls.at(-1).refresh,true);assert.equal(ui.panel.pollInterval,2000);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+  ui.setHandler(async()=>({clients:cached,pending:false}));await ui.poll();assert.equal(ui.panel.pollInterval,15000);assert.doesNotMatch(ui.nodes['client-scan-status'].textContent,/inventory unavailable/);
+ }
+});
+
+test('desktop pending cached inventory cannot confirm an uncertain write but continues its status refresh',async()=>{
+ const ui=fixture(),cached=[{id:'codex',name:'Codex',installed:true,enabled:false,running:false}];ui.panel.clients=cached;
+ ui.panel.operationFailures=new Map([['codex',{action:'disable',uncertain:true,message:'awaiting result'}]]);
+ for(const state of [{pending:true},{pending:false,refreshError:'inventory unavailable'}]){
+  ui.setHandler(async()=>({clients:cached,...state}));await ui.panel.refreshClients(true);assert.equal(ui.panel.hasUncertain(),true,'cached inventory is not fresh evidence of the write outcome');
+ }
+ ui.setHandler(async()=>({clients:cached,pending:true}));await ui.panel.refreshClients(true);const count=ui.calls.length;
+ ui.setHandler(async()=>({clients:cached,pending:false}));await ui.poll();assert.equal(ui.calls.length,count+1);assert.equal(ui.calls.at(-1).action,'clients');assert.equal(ui.panel.hasUncertain(),false);assert.equal(ui.panel.pollInterval,15000);
 });
 
 test('DSH directory picker and plugin actions never use the account name field',async()=>{
@@ -550,6 +596,20 @@ test('official settings save independently and connect through the shared client
  await button('disconnect').onclick();assert.equal(state.selected,true);assert.equal(state.configured,true);
  const count=ui.calls.length;ui.confirm(false);await button('forget').onclick();assert.equal(ui.calls.length,count);assert.match(ui.prompts.at(-1),/原 App.*账号和任务会保留/);
  ui.confirm(true);await button('forget').onclick();assert.equal(state.configured,false);assert.equal(input.value,state.link);assert.ok(state.link);
+});
+
+test('system browser login and receipt preserve drafts and refresh status only once',async()=>{
+ const ui=fixture(),client={id:'zcode',name:'ZCode',installed:true,configured:true,connectionMode:'private-pipe',connectionModes};ui.panel.clients=[client];
+ const state={configured:false,connected:false,link:'https://zcode.z.ai/remote/v4?sid=fixture&mid=fixture',browserLoginPending:false,canSubmitLoginReceipt:false};
+ ui.setHandler(async request=>{if(request.action==='clients')return {clients:[client]};if(request.action==='zcode-official-browser-login')state.browserLoginPending=true;return {...state};});
+ await ui.panel.manageClient(client);const section=ui.pages.get('zcode').querySelector('[data-zcode-official]'),[linkInput,receipt]=section.querySelectorAll('input'),button=action=>section.querySelector('[data-official-action="'+action+'"]');
+ await button('browser-login').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-browser-login',link:state.link});
+ const callback='https://zcode.z.ai/remote/v4?state=fixture&code=fixture';receipt.value=' '+callback+' ';receipt.oninput();assert.equal(button('login-receipt').disabled,false,'pending browser login accepts a receipt despite the initial stale canSubmit value');
+ linkInput.value=state.link+'&name=draft';linkInput.oninput();assert.equal(button('login-receipt').disabled,true);
+ const reads=ui.calls.filter(request=>request.action==='zcode-official-state').length;await ui.panel.zcodeOfficial.refresh();await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(request=>request.action==='zcode-official-state').length,reads+1);assert.equal(linkInput.value,state.link+'&name=draft');assert.equal(receipt.value,' '+callback+' ');
+ linkInput.value=state.link;linkInput.oninput();await button('login-receipt').onclick();assert.deepEqual(JSON.parse(JSON.stringify(ui.calls.at(-1))),{action:'zcode-official-login-receipt',receipt:callback});assert.equal(receipt.value,'');
+ receipt.value=callback;receipt.oninput();state.browserLoginPending=false;await ui.panel.zcodeOfficial.refresh();assert.equal(receipt.value,'');assert.equal(receipt.parent.parent.hidden,true);assert.equal(button('login-receipt').disabled,true);
 });
 
 test('official actions block overlap and reread state after a failed save without losing the draft',async()=>{

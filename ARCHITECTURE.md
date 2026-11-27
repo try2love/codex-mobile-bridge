@@ -8,6 +8,8 @@
 
 默认继承已有会话的设置。显式选择模型时更新 `model`、`effort` 或速度档位。账号切换是独立的全局操作：仅桌面端添加凭据，双端选择已保存接入，退出官方桌面后替换本机认证及默认 provider，再启动核验。已有聊天的 provider 和审批策略不直接迁移；详情见 [账号与接入](docs/account-switching.md)。
 
+本机新版 Codex Desktop 若由 utility host 启动运行时，原生连接准备后使用 App 持有的透明 stdio 接入；旧版继续使用原 IPC。新路径按进程身份和实际运行记录选择，不依赖 App 版本号。状态读取不恢复线程，发送与审批仍使用同一原生执行连接，详见[宿主进程接入边界](.agents/notes/implemented/bug-fix/2026-11-21-hosted-codex-desktop.md)。
+
 ## 原生 Goal 控制
 
 App 执行的本地聊天，其 Goal 元数据通过受限的官方运行时连接读写，只允许 `initialize` 和 `thread/goal/get/set/clear`；该连接不加载或恢复聊天，不调用 `turn/start`，也不修改 provider、认证或审批设置。原桌面 owner 继续拥有实际执行和审批。已连接原生 CLI 的本地或 SSH 聊天通过其同一 daemon 读写 Goal，能力经原生接口探测；两条路径共用操作 ID 与结果确认规则。当前 follower IPC 没有 Goal 写接口，因此 SSH 上由 App owner 执行的聊天仍不支持 Goal 控制；不能把此通路当作任意 App Server RPC 代理。

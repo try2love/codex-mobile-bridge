@@ -142,6 +142,7 @@ else {
     });
     ipcMain.on('fixture-expanded', event => {
       fs.appendFileSync(path.join(base, 'expands.log'), 'expand\n');
+      if (state.mode === 'cancel-after-open') fs.writeFileSync(path.join(base, 'cancel'), 'cancel');
       event.returnValue = true;
     });
     await window.loadFile(path.join(__dirname, 'index.html'));
@@ -161,16 +162,18 @@ const mode=MODE, label=LABEL, accelerator=mode==='wrong-accelerator'?'Ctrl+W':'C
 function open(){
   file.setAttribute('aria-expanded','true');content.hidden=false;
   window.fixture.expanded();
-  render();
+  if(mode==='delayed-menu')setTimeout(render,200);else render();
 }
 function render(){
   content.innerHTML='<div role="menuitem" tabindex="0">退出登录</div><div role="menuitem" tabindex="0" class="quit"><span>'+label+'</span> <span>'+accelerator+'</span></div>';
   if(mode==='duplicate')content.innerHTML+='<div role="menuitem" tabindex="0" class="quit">'+label+' '+accelerator+'</div>';
   for(const item of document.querySelectorAll('.quit'))item.addEventListener('click',()=>window.fixture.quit());
 }
-file.addEventListener('click',()=>file.getAttribute('aria-expanded')==='false'?open():close());
+file.addEventListener('click',()=>content.hidden?open():close());
+if(mode==='invoke-menu'){file.removeAttribute('aria-haspopup');file.removeAttribute('aria-expanded');}
 function close(){file.setAttribute('aria-expanded','false');content.hidden=true;content.replaceChildren();}
-if(mode!=='closed-menu'){file.setAttribute('aria-expanded','true');content.hidden=false;render();}
+if(!['closed-menu','invoke-menu','delayed-menu','closed-cancelled','cancel-after-open','duplicate-trigger'].includes(mode)){file.setAttribute('aria-expanded','true');content.hidden=false;render();}
+if(mode==='duplicate-trigger')file.parentElement.append(file.cloneNode(true));
 </script>'''
 
 
@@ -220,7 +223,7 @@ class CodexNativeQuit(unittest.TestCase):
         (app/'main.js').write_text(MAIN, encoding='utf-8')
         (app/'preload.js').write_text(PRELOAD, encoding='utf-8')
         state = target/'resources'
-        for mode in ('normal', 'hidden', 'closed-menu', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'wrong-creation'):
+        for mode in ('normal', 'hidden', 'closed-menu', 'invoke-menu', 'delayed-menu', 'pending', 'duplicate', 'wrong-accelerator', 'cancelled', 'wrong-creation', 'closed-cancelled', 'cancel-after-open', 'duplicate-trigger'):
             with self.subTest(mode=mode):
                 for name in ('stop', 'ready.json', 'dispatches.log', 'reopens.log', 'expands.log'):
                     (state/name).unlink(missing_ok=True)
@@ -241,7 +244,7 @@ class CodexNativeQuit(unittest.TestCase):
                     log = state/'helper.log'
                     cancel = state/'cancel'
                     cancel.unlink(missing_ok=True)
-                    if mode == 'cancelled':
+                    if mode in ('cancelled', 'closed-cancelled'):
                         cancel.write_text('cancel', encoding='utf-8')
                     helper, _ = desktop.start([self.helper, str(pid), '--quit', target/'electron.exe', str(created_filetime(pid)+(1 if mode == 'wrong-creation' else 0)), cancel], log, target)
                     exit_code = desktop.wait(helper, 23)
@@ -250,11 +253,13 @@ class CodexNativeQuit(unittest.TestCase):
                     rows = [json.loads(line) for line in output.splitlines()]
                     reply = rows[-1]
                     sent = (state/'dispatches.log').read_text().splitlines() if (state/'dispatches.log').exists() else []
-                    expected = mode in ('normal', 'pending')
+                    expected = mode in ('normal', 'closed-menu', 'invoke-menu', 'delayed-menu', 'pending')
                     self.assertEqual(len(sent), int(expected), output)
                     self.assertEqual(sum(row.get('quitPhase') == 'dispatching' for row in rows), int(expected), output)
+                    opened = mode in ('closed-menu', 'invoke-menu', 'delayed-menu', 'cancel-after-open')
+                    self.assertEqual(sum(row.get('quitPhase') == 'opening-menu' for row in rows), int(opened), output)
                     self.assertEqual(reply['pid'], pid)
-                    if mode == 'normal':
+                    if mode in ('normal', 'closed-menu', 'invoke-menu', 'delayed-menu'):
                         # The helper may finish before Electron's child cleanup.
                         # Independently require actual normal exit, without stop.
                         self.assertIn(reply['quitState'], ('exited', 'submitted'), output)
@@ -269,7 +274,7 @@ class CodexNativeQuit(unittest.TestCase):
                     self.assertEqual(len(reopens), 0, output)
                     if mode == 'wrong-creation':
                         self.assertIn('启动身份', reply['reason'])
-                    self.assertFalse((state/'expands.log').exists(), 'helper opened a visible application menu')
+                    self.assertEqual((state/'expands.log').read_text().splitlines() if (state/'expands.log').exists() else [], ['expand'] if opened else [], 'only the selected closed File menu may be expanded once')
                     if mode == 'hidden':
                         self.assertFalse(desktop.user.IsWindowVisible(int(ready['handle'])), 'helper exposed the hidden window')
                     self.assertEqual(desktop.user.GetForegroundWindow(), desktop.foreground)

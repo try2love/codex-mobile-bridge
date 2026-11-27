@@ -30,7 +30,7 @@ Status: implemented
 
 消息链接补验包括六项新 Python 检查（含实际 WSL 时间线分页与完整详情调用）、既有 artifact/引用边界回归、桌面共享附件引用以及时间线检查；一项 Windows 专项在 Mac 跳过。前端十一项时间线检查通过。生产 HTTP 元信息检查通过，真实浏览器六项点击流程验证了项目外文本预览、绝对定位、下载入口以及图片不自动加载。独立复审未发现阻塞问题。
 
-本改动按用户新授权部分替代[当前项目文件引用](2026-10-29-project-file-references.md)的只读浏览限制；发送引用与上传仍遵守该笔记的项目边界。[音视频播放](../bug-fix/2026-11-12-chat-media-playback.md)继续复用相同授权下载接口。
+本改动按用户新授权部分替代[当前项目文件引用](2026-10-29-project-file-references.md)的只读浏览限制；发送引用仍遵守该笔记的项目边界；上传已由[当前宿主目录上传](2026-11-22-host-directory-upload.md)按用户授权扩展。[音视频播放](../bug-fix/2026-11-12-chat-media-playback.md)继续复用相同授权下载接口。
 
 记录定位补验：七项专门检查、Claude 原生 ID 核验及 ZCode 存储位置回归、HTTP 登录和 scope 边界通过；DSH 两项原生插件契约检查通过。Mac 真实 Claude metadata 20 个文件均匹配定位函数；AGY 真实日志和 summary DB 路径布局对照通过，未冒充原生 API 端到端验证。ZCode 在 Python 3.12/SQLite 3.45.3 的正常 mode=ro 产品调用中六条全部成功（五条正文库、一条索引库）；更早的另一运行环境曾报 unable to open database file，未修改原生库或降级读取限制，不能将该次失败的根因视为已定位。DSH 真实已安装版本的 stat 契约已核对，旧 Linux 插件不具有该可选能力时仍需新版插件。独立增量复审无阻塞问题。
 

@@ -3,7 +3,7 @@
   const t = text => typeof BridgeI18n === 'undefined' ? text : BridgeI18n.t(text);
   const registered = new WeakMap(), registeredSources = new WeakSet(), pointers = new Map();
   let dialog, title, content, status, close, zoomIn, zoomOut, fit, percentage, opener, image, observer, reuse, save;
-  let composer, reuseValue, reuseScope;
+  let composer, reuseValue, reuseScope, releaseOffline;
   let zoom = 1, x = 0, y = 0, width = 0, height = 0, frame = 0, gesture, lastTap;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const ready = () => dialog?.open && image?.naturalWidth > 0 && !image.hidden && width > 0;
@@ -29,6 +29,7 @@
     if (frame) cancelAnimationFrame(frame); frame = 0;
     observer?.disconnect(); clearPointers();
     if (image) { image.onload = null; image.onerror = null; }
+    releaseOffline?.(); releaseOffline=null;
     image = null; reuseValue = null; reuseScope = null; zoom = 1; x = y = width = height = 0;
   }
   function measure() {
@@ -145,7 +146,11 @@
   }
   function open(target, event) {
     const value = source(target); if (!value) return;
-    event.preventDefault(); if (!dialog) create(); cleanup(); opener = target;
+    event.preventDefault(); openImage(target,value);
+  }
+  function openImage(target,value) {
+    if (!dialog) create(); cleanup(); opener = target;
+    releaseOffline=value.release;
     reuseScope=composer?.scope();reuseValue=canReuse(value,reuseScope)?value:null;
     reuse.textContent=t('引用');reuse.hidden=!reuseValue;reuse.disabled=false;
     const download=new URL(value.downloadUrl||value.url,location.href);
@@ -164,6 +169,10 @@
   }
   window.BridgeImageViewer = {
     configureComposer(value) { composer=value; },
+    openOffline(target,{url,name,release}) {
+      if(!window.OfflineChatReader?.enabled || !/^(?:blob:|data:image\/(?:png|jpeg|gif|webp);base64,)/.test(url))return false;
+      openImage(target,{url,name,release});return true;
+    },
     isRegisteredSource(value) { return registeredSources.has(value); },
     composerScope(context) { return composer?.canReuse({context}) ? composer.scope() : null; },
     registerWorkspaceImage(target, result, context, composerScope=null, downloadUrl=null) {

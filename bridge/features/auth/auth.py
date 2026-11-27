@@ -2,16 +2,20 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from bridge.features.accounts.draft_identity import draft_identity
+from .device_info import describe as describe_device, refresh as refresh_device
+from .session_transfer import TransferUsage, namespace
 
 
 @contextmanager
@@ -37,6 +41,10 @@ def session_file_lock(path):
 
 
 def replace_session_file(path, contents):
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, contents)
+        return
     temporary = path.with_name(path.name + '.' + secrets.token_hex(8) + '.tmp')
     try:
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:
@@ -106,9 +114,9 @@ class Auth:
     @staticmethod
     def mobile_client(user_agent):
         # Only selects lifetime AFTER authentication; this is not proof of identity.
-        return bool(re.search(r'(?:^|\s)BridgeMobile/[\w.-]+-(?:iOS|Android)(?:\s|$)', user_agent))
+        return bool(re.search(r'(?:^|\s)BridgeMobile/[\w.-]+-(?:iOS|Android|HarmonyOS)(?:\s|$)', user_agent))
 
-    def __init__(self, config, data_dir=None):
+    def __init__(self, config, data_dir=None, *, transfer_usage=None):
         self.config = config
         self.hours = session_hours(config.get('sessionHours', 12))
         identity = {k: config.get(k) for k in ('mode', 'username', 'salt', 'hash', 'iterations')}
@@ -119,6 +127,9 @@ class Auth:
         # process or its (possibly changed) login policy.
         self.cookie_name = self.COOKIE + '_' + secrets.token_hex(12)
         self.sessions = {}
+        self.usage = transfer_usage if transfer_usage is not None else TransferUsage(data_dir)
+        self._owns_usage = transfer_usage is None
+        self._closed = False
         self.policy = access_policy({})
         self.failures = {}
         self.auto_blocks = {}
@@ -140,6 +151,7 @@ class Auth:
                 self.persist()
         elif self.path:
             self.persist()
+        self.session_sync = namespace(data_dir, self.cookie_name, config.get('username') or '')
 
     @property
     def draft_identity(self):
@@ -269,7 +281,7 @@ class Auth:
             session = {"csrf": secrets.token_urlsafe(32), "expires": now + hours * 3600 if hours else 0,
                        "persistent": trusted or remember is not False,
                        'trustedDevice': trusted, 'remembered': remember is True and not trusted,
-                       'created': now, 'lastSeen': now, 'userAgent': user_agent[:512],
+                       'created': now, 'lastSeen': now, 'userAgent': user_agent[:512], 'clientInfo': describe_device(user_agent),
                        **(client or {'ip': address, 'peer': address, 'source': 'direct'})}
             self.sessions[self.key(token)] = session
             # Password login and one-use pairing are both successful authentication.
@@ -289,12 +301,13 @@ class Auth:
                     # Migrate previously issued seven-day cookies while they are valid.
                     remembered = session.get('remembered', session.get('persistent', True) and
                                              session['expires'] - session['created'] == self.REMEMBER_HOURS * 3600)
-                    changed = upgrade or session['ip'] != client['ip'] or now - session['lastSeen'] >= 60
+                    client_info = refresh_device(session.get('clientInfo'), user_agent)
+                    changed = upgrade or session['ip'] != client['ip'] or now - session['lastSeen'] >= 60 or client_info != session.get('clientInfo')
                     if upgrade:
                         session.update(expires=0, persistent=True, trustedDevice=True, remembered=False)
                     elif remembered and changed:
                         session.update(expires=now + self.REMEMBER_HOURS * 3600, remembered=True)
-                    session.update(client, userAgent=user_agent[:512], lastSeen=now if changed else session['lastSeen'])
+                    session.update(client, userAgent=user_agent[:512], clientInfo=client_info, lastSeen=now if changed else session['lastSeen'])
                     if changed:
                         self.persist()
                 return session
@@ -313,8 +326,37 @@ class Auth:
 
     def logout(self, token):
         with self.lock:
-            if self.sessions.pop(self.key(token), None):
+            key = self.key(token)
+            if self.sessions.pop(key, None):
+                self._discard_usage(key)
                 self.persist()
+
+    def close(self):
+        with self.lock:
+            self._closed = True
+            if self._owns_usage:
+                self.usage.close()
+
+    def transfer_summary(self, token):
+        with self.lock:
+            key = self.key(token)
+            session = self.sessions.get(key)
+            if not self._closed and session and self.valid(session):
+                return self.usage.summary(session.get('transferOwner', key))
+        return {'totalBytes': 0, 'totalReusedBytes': 0, 'sessions': []}
+
+    def record_transfer(self, key, provider, host, session_id, title, size, *, method='', host_label='', reused_bytes=0):
+        with self.lock:
+            session = self.sessions.get(key)
+            if not self._closed and session and self.valid(session):
+                self.usage.record(session.get('transferOwner', key), provider, host, session_id, title, size,
+                                  method=method, host_label=host_label, reused_bytes=reused_bytes)
+
+    def _discard_usage(self, key):
+        try:
+            self.usage.discard(key)
+        except (OSError, sqlite3.Error):
+            logging.getLogger(__name__).warning('无法清理已失效登录的传输统计', exc_info=True)
 
     def manage(self, value):
         """Local desktop control only; never exposed as a public HTTP endpoint."""
@@ -335,14 +377,34 @@ class Auth:
                 if session and action == 'block':
                     address = canonical_ip(session['ip'])
                     self.policy = access_policy({**self.policy, 'blocklist': list(dict.fromkeys(self.policy['blocklist'] + [address]))})
+                    for key, row in self.sessions.items():
+                        if row['ip'] == address:
+                            self._discard_usage(key)
                     self.sessions = {k: v for k, v in self.sessions.items() if v['ip'] != address}
                 else:
                     self.sessions.pop(value.get('id'), None)
+                    if session:
+                        self._discard_usage(value['id'])
                 self.persist()
+            elif action == 'rename':
+                session = self.sessions.get(value.get('id'))
+                name = value.get('name')
+                if not session or not self.valid(session):
+                    raise ValueError('登录设备已失效')
+                if (set(value) != {'action', 'id', 'name'} or not isinstance(name, str)
+                        or len(name.strip()) > 80 or any(not char.isprintable() for char in name)):
+                    raise ValueError('设备名称无效，请输入不超过 80 个可见字符')
+                session['name'] = name.strip()
+                self.persist()
+            elif action == 'usage':
+                key = value.get('id')
+                if key not in self.sessions or not self.valid(self.sessions[key]):
+                    raise ValueError('登录设备已失效')
+                return self.usage.summary(key)
             elif action != 'list':
                 raise ValueError('未知设备管理操作')
             return {'policy': {k: list(v) if isinstance(v, list) else v for k, v in self.policy.items()},
                     'autoBlocks': sorted(self.auto_blocks.values(), key=lambda row: row['blockedAt'], reverse=True),
-                    'sessions': sorted([{'id': k, **{field: val for field, val in v.items() if field not in ('csrf', 'routeBindings', 'routeRenewal', 'routeLegacyRenewal')}}
+                    'sessions': sorted([{'id': k, 'clientInfo': v.get('clientInfo') or describe_device(v.get('userAgent', '')), **{field: val for field, val in v.items() if field not in ('csrf', 'routeBindings', 'routeRenewal', 'routeLegacyRenewal')}}
                                         for k, v in self.sessions.items() if self.valid(v)],
                                        key=lambda row: row['lastSeen'], reverse=True)}

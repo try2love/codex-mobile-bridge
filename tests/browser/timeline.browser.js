@@ -1,4 +1,41 @@
 // Run in a gateway browser page with timeline.js loaded. Uses synthetic data only.
+async function runTimelineSlidingWindowChecks(){
+  const checks=[],check=(value,label)=>{if(!value)throw Error(label);checks.push(label);};
+  const root=document.createElement('section');root.style.cssText='position:fixed;inset:0;z-index:20;background:var(--bg)';
+  const viewport=document.createElement('div'),container=document.createElement('div'),older=document.createElement('button'),newer=document.createElement('button'),draft=document.createElement('textarea');
+  viewport.style.cssText='height:350px;overflow:auto';viewport.append(container);root.append(older,viewport,newer,draft);document.body.append(root);
+  const row=i=>({key:'sliding-'+i,order:i,role:'assistant',version:'v1',text:'Synthetic continuous reply '+i});
+  const page=(from,to,sequence=to)=>({rows:Array.from({length:to-from},(_,i)=>row(from+i)),sequence,epoch:'sliding',before:'sliding.sliding-'+from,hasMore:from>0,files:[],meta:{requests:[{id:'current-approval'}],status:'active'}});
+  const requests=[];let resolveOlder,meta;
+  const timeline=new ChatTimeline({elements:{viewport,container,older,newer},url:action=>'/fixture/'+action+'?host=local',request:async url=>{requests.push(new URL(url,location.href));return new Promise(resolve=>resolveOlder=resolve);},renderMeta:value=>meta=value,renderText:(node,text)=>node.textContent=text,status(){}});
+  const seed=count=>{timeline.following=true;timeline.apply(page(0,count),true);};
+  try{
+    draft.value='Unsent continuous-update draft';seed(20);let maxRows=0,maxDom=0;
+    for(let i=20;i<641;i++){
+      timeline.apply(page(i,i+1));maxRows=Math.max(maxRows,timeline.rows.size);maxDom=Math.max(maxDom,container.children.length);
+    }
+    check(maxRows<=240&&maxDom<=240&&timeline.rows.size>=160,'Codex 621 live appends bound both rows and DOM to the display window');
+    check(!timeline.rows.has('sliding-0')&&timeline.rows.has('sliding-640'),'Codex discards the old prefix and retains the newest reply');
+    check(meta.requests[0].id==='current-approval'&&timeline.pendingRequests&&draft.value==='Unsent continuous-update draft','Codex sliding retains fresh approvals and the unsent draft');
+    const first=[...timeline.rows.values()][0].row.order,cursor=timeline.before;
+    older.click();check(timeline.busy&&requests.at(-1).searchParams.get('before')===cursor,'Codex older button requests the retained original epoch cursor');
+    const size=timeline.rows.size;timeline.apply(page(641,742));
+    check(timeline.rows.size===size+101,'Codex never slides while an older page is in flight');
+    timeline.following=false;resolveOlder(page(first-40,first));await new Promise(resolve=>setTimeout(resolve,0));
+    check(!timeline.busy&&timeline.rows.has('sliding-'+(first-40)),'Codex older button retrieves rows omitted from the live display');
+    const manual=timeline.rows.size;timeline.apply(page(742,743));
+    check(timeline.rows.size===manual+1&&timeline.rows.has('sliding-'+(first-40)),'Codex live updates retain the manually loaded history window while reading upward');
+    seed(260);check(timeline.rows.size===260,'Codex reset pages are not silently trimmed');
+    const selected=container.firstChild.querySelector('.message-body'),range=document.createRange();range.selectNodeContents(selected);document.getSelection().removeAllRanges();document.getSelection().addRange(range);
+    timeline.apply(page(260,261));check(timeline.rows.size===261&&!document.getSelection().isCollapsed,'Codex text selection prevents sliding and survives a live append');
+    document.getSelection().removeAllRanges();timeline.apply(page(261,262));
+    check(timeline.rows.size===160,'Codex resumes sliding after selection clears while following latest');
+    seed(260);timeline.apply(page(260,300),false,true);
+    check(timeline.rows.size===300,'Codex explicit history pages are never trimmed by the live-window limit');
+    return {passed:checks.length,checks,maxRows,maxDom};
+  }finally{document.getSelection().removeAllRanges();timeline.dispose();root.remove();}
+}
+
 async function runTimelineTests() {
   const checks=[];
   function check(value,label){if(!value)throw Error(label);checks.push(label);}

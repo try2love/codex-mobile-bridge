@@ -1,0 +1,9 @@
+/entry/src/main/resources/rawfile/generated/
+.hvigor/
+.idea/
+oh_modules/
+**/build/
+local.properties
+*.p12
+*.p7b
+*.cer

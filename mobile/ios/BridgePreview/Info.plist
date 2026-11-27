@@ -13,11 +13,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.2.1</string>
+	<string>2.2.2</string>
 	<key>CFBundleVersion</key>
-	<string>60</string>
+	<string>93</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Verify your identity before viewing saved offline chats.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UILaunchScreen</key>
@@ -76,6 +78,6 @@
 		</dict>
 	</array>
 	<key>BridgeReleaseVersion</key>
-	<string>2.2.1</string>
+	<string>2.2.2</string>
 </dict>
 </plist>

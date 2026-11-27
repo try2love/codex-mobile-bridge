@@ -8,32 +8,178 @@ on:
       source_ref:
         type: string
         default: ''
+      acceptance_only:
+        type: boolean
+        default: false
+      native_codex_acceptance:
+        type: boolean
+        default: false
+      candidate_run_id:
+        type: string
+        default: ''
+      acceptance_target_os:
+        type: string
+        default: all
+      build_target:
+        type: string
+        default: all
+      reuse_run_id:
+        type: string
+        default: ''
+      reuse_source_ref:
+        type: string
+        default: ''
+      reuse_mac_arm_run_id:
+        type: string
+        default: ''
+      reuse_mac_arm_source_ref:
+        type: string
+        default: ''
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact product source commit (empty uses this workflow run SHA)
+        type: string
+        default: ''
+      acceptance_only:
+        description: Validate an existing build from official stable and preview1 packages without rebuilding
+        type: boolean
+        default: false
+      native_codex_acceptance:
+        description: Only verify real official Windows Codex initialization in a fresh hosted profile
+        type: boolean
+        default: false
+      candidate_run_id:
+        description: Successful Desktop builds run ID (acceptance only)
+        type: string
+        default: ''
+      acceptance_target_os:
+        description: Acceptance platforms (ignored by ordinary builds)
+        type: choice
+        options: [all, Windows]
+        default: all
+      build_target:
+        description: Build all or selected platforms with verified reuse of unaffected packages
+        type: choice
+        options: [all, intel, mac-windows-reuse, windows-reuse, mac-arm-reuse]
+        default: all
+      reuse_run_id:
+        description: Completed upstream Desktop run with successful Intel and Linux jobs
+        type: string
+        default: ''
+      reuse_source_ref:
+        description: Exact upstream product SHA (selective reuse only)
+        type: string
+        default: ''
+      reuse_mac_arm_run_id:
+        description: Optional successful original Mac ARM package run
+        type: string
+        default: ''
+      reuse_mac_arm_source_ref:
+        description: Exact source for the Mac ARM override (both override inputs required)
+        type: string
+        default: ''
   push:
     # Main receives source updates without building Apps; use manual or release builds.
     branches: [feature/desktop-ntfy, codex/windows-desktop-app, integration/desktop-cross-platform, codex/ubuntu-support]
     paths: ['desktop/**', 'desktop.py', 'bridge/**', 'web/**', 'run.py', 'scripts/**', 'tests/**', 'package*.json', 'requirements-desktop.txt', '.github/workflows/desktop.yml']
 permissions:
   contents: read
+  actions: read
 jobs:
+  native-codex:
+    if: inputs.native_codex_acceptance == true && inputs.acceptance_only != true
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check exact native acceptance source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          assert re.fullmatch('[0-9a-f]{40}', source), 'Exact source SHA required'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source
+          PY
+      - run: python -m pip install -r requirements-desktop.txt
+      - run: python scripts/build-client-helpers.py
+      - name: Verify the selected packaged gateway source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_ONLY: 'true'
+        run: python scripts/prepare-upgrade-acceptance.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-Windows-x64
+          path: .tmp/windows-official-artifact
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Real official Codex normal exit, initialization and restart
+        run: python -B scripts/accept-windows-codex.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-official-codex-acceptance
+          path: .tmp/windows-official-codex/result.json
+          if-no-files-found: error
+  published-upgrade:
+    if: inputs.acceptance_only == true && inputs.native_codex_acceptance != true
+    uses: ./.github/workflows/upgrade-acceptance.yml
+    secrets:
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      candidate_run_id: ${{ inputs.candidate_run_id }}
+      target_os: ${{ inputs.acceptance_target_os }}
   package:
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            arch: arm64
-            app-dir: mac-arm64
-          - os: macos-15-intel
-            arch: x64
-            app-dir: mac
-          - os: windows-latest
-            arch: x64
+        include: ${{ fromJSON(inputs.build_target == 'mac-arm-reuse' && '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"}]' || inputs.build_target == 'windows-reuse' && '[{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'mac-windows-reuse' && '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"windows-latest","arch":"x64"}]' || inputs.build_target == 'intel' && '[{"os":"macos-15-intel","arch":"x64","app-dir":"mac"}]' || '[{"os":"macos-15","arch":"arm64","app-dir":"mac-arm64"},{"os":"macos-15-intel","arch":"x64","app-dir":"mac"},{"os":"windows-latest","arch":"x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Verify exact selected rebuild source
+        if: inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          source = os.environ['SOURCE_REF']
+          assert re.fullmatch('[0-9a-f]{40}', source), 'Exact build SHA required'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == source, 'Build checkout mismatch'
+          PY
+      - name: Verify reuse of completed release CI for Intel-only packaging
+        if: inputs.build_target == 'intel'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import json, subprocess
+          source = 'ad5e929dbade70ec1bb8429abb99f6a9a6477e7f'
+          run = json.loads(subprocess.check_output(['gh', 'api', 'repos/try2love/codex-mobile-bridge/actions/runs/44759627600'], text=True))
+          assert run['head_sha'] == source and run['conclusion'] == 'success'
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', source], check=True)
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only', source, 'HEAD'], text=True).splitlines())
+          assert changed <= {'.github/workflows/desktop.yml', 'scripts/smoke-update-controller.cjs', 'tests/release-assets.test.cjs'}, changed
+          PYCODE
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -46,11 +192,14 @@ jobs:
         run: OPENSSL_STATIC=1 python -m pip install --no-cache-dir --no-binary cryptography cryptography==50.0.2
       - run: python -m pip install -r requirements-desktop.txt
       - run: npm ci
-      - run: python -B -m unittest discover -s tests -v
-      - run: npm run test:desktop
-      - run: npm run test:updater
+      - if: inputs.build_target != 'intel'
+        run: python -B -m unittest discover -s tests -v
+      - if: inputs.build_target != 'intel'
+        run: npm run test:desktop
+      - if: inputs.build_target != 'intel'
+        run: npm run test:updater
       - name: Verify native macOS published-peer upgrade handoff
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.build_target != 'intel'
         run: python -B tests/acceptance/zcode_published_peer.py
       - run: python scripts/build-desktop.py
       - name: Verify packaged Windows continuous terminal
@@ -113,6 +262,7 @@ jobs:
             dist/desktop/*.exe
 
   linux:
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true && inputs.build_target != 'intel' && inputs.build_target != 'mac-windows-reuse' && inputs.build_target != 'windows-reuse' && inputs.build_target != 'mac-arm-reuse'
     strategy:
       fail-fast: false
       matrix:
@@ -129,7 +279,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -186,3 +336,39 @@ jobs:
           name: linux-smoke-screenshots-${{ matrix.arch }}
           include-hidden-files: true
           path: .tmp/linux-app-*/desktop-*.png
+
+  reuse:
+    if: inputs.acceptance_only != true && inputs.native_codex_acceptance != true && (inputs.build_target == 'mac-windows-reuse' || inputs.build_target == 'windows-reuse' || inputs.build_target == 'mac-arm-reuse')
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: ${{ fromJSON(inputs.build_target == 'mac-arm-reuse' && '["desktop-Windows-x64","desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]' || inputs.build_target == 'windows-reuse' && '["desktop-macOS-arm64","desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]' || '["desktop-macOS-x64","desktop-Linux-x64","desktop-Linux-arm64"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify source equivalence and successful upstream packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ inputs.source_ref || github.sha }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+          REUSE_SOURCE_REF: ${{ inputs.reuse_source_ref }}
+          REUSE_ARTIFACT: ${{ matrix.artifact }}
+          REUSE_MAC_ARM_RUN_ID: ${{ inputs.reuse_mac_arm_run_id }}
+          REUSE_MAC_ARM_SOURCE_REF: ${{ inputs.reuse_mac_arm_source_ref }}
+        run: python -B scripts/reuse-desktop-artifacts.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: .tmp/desktop-reuse/${{ matrix.artifact }}/packages/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reuse-provenance-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: .tmp/desktop-reuse/${{ matrix.artifact }}/provenance.json

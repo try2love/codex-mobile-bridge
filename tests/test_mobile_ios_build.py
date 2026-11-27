@@ -80,7 +80,9 @@ class IOSReleaseBuildTests(unittest.TestCase):
                     'CFBundleVersion': '27', 'CFBundleExecutable': bundle.stem, 'BridgeReleaseVersion': '2.0.0'}
             (bundle/'Info.plist').write_bytes(plistlib.dumps(info))
             (bundle/bundle.stem).write_bytes(b'fixture executable')
-        for name in ('mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'channel-link.js', 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png', 'LICENSE', 'NOTICE'):
+        for name in ('mobile-ui.js', 'mobile-clipboard.js', 'mobile-system-bars.js', 'channel-link.js', 'mobile-offline.js',
+                     'offline-shell/manifest.json', 'offline-shell/index.html', 'offline-shell/bootstrap.js', 'offline-shell/app.js', 'codex.png', 'claude.png', 'deepseek.png', 'zcode.png', 'LICENSE', 'NOTICE'):
+            (app/name).parent.mkdir(parents=True, exist_ok=True)
             (app/name).write_bytes(b'fixture resource')
         with patch.object(builder.subprocess, 'run') as native:
             builder.verify_app(app, '2.0.0', '27')

@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 import ntpath
+from bridge.clients.codex.ipc_json import StoredString, join_text, json_body
 from bridge.features.sessions.tool_images import extract_tool_images
 from bridge.features.sessions.store import items_array, native_file_changes, native_turn_file_changes, native_patch_counts
 
@@ -70,7 +71,9 @@ def text_content(content):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(str(x.get("text", "")) for x in content if isinstance(x, dict) and x.get("type") in ("text", "input_text", "output_text", "inputText"))
+        parts = [x.get("text", "") for x in content if isinstance(x, dict)
+                 and x.get("type") in ("text", "input_text", "output_text", "inputText")]
+        return join_text([part if isinstance(part, str) else str(part) for part in parts])
     return ""
 
 
@@ -153,7 +156,7 @@ def user_display_text(text):
     return text[boundary:].strip("\r\n")
 
 
-def normalize_item(item, *, image_cache=None):
+def normalize_item(item, *, image_cache=None, include_body=True, retain_transfer_attachments=False):
     kind = item.get("type", "unknown")
     row = {"id": item.get("id"), "kind": kind, "status": item.get("status")}
     if item.get("timestamp") is not None:
@@ -162,6 +165,16 @@ def normalize_item(item, *, image_cache=None):
             row['_timestampSource'] = item['_timestampSource']
     if item.get('_syntheticId'):
         row['_syntheticId'] = True
+    if kind == 'reasoning':
+        row.update({field: item[field] for field in ('model', 'effort') if field in item})
+    if not include_body and kind not in ('userMessage', 'steeringUserMessage', 'agentMessage', 'assistantMessage', 'error', 'planImplementation'):
+        titles = {'reasoning': '思考摘要', 'commandExecution': '执行命令', 'fileChange': '文件变更',
+                  'FileChange': '文件变更', 'ImageView': '图片预览', 'imageView': '图片预览'}
+        tool = item.get('tool') or item.get('toolName')
+        row.update(role='activity', title=titles.get(kind) or tool or kind, text='', _detailSource=[item])
+        if tool:
+            row['toolName'] = (str(item['server']) + '.' + tool if item.get('server') else tool)[:160]
+        return row
     if kind in ("userMessage", "steeringUserMessage"):
         if kind == "steeringUserMessage":
             item = {**item, "content": item.get("input", [])}
@@ -174,11 +187,18 @@ def normalize_item(item, *, image_cache=None):
         if replies:
             text = "\n\n".join(str(r.get("question", "")) + "\n" + str(r.get("answer", "")) for r in replies)
         row.update(role="user", text=text)
+        # Display-only: a native answered card is not a new user task. Keep
+        # role/kind/request identity intact for submission and pending checks.
+        if (replies and all(isinstance(r.get('questionItemId'), str) and r['questionItemId']
+                            and isinstance(r.get('answer'), str) for r in replies)
+                and (kind == 'userMessage' or item.get('status') == 'accepted')):
+            row['interaction'] = 'response'
         desktop_attachments = desktop_file_attachments(raw_text)
         if desktop_attachments:
             row["attachments"] = desktop_attachments
     elif kind in ("agentMessage", "assistantMessage"):
-        row.update(role="assistant", text=item.get("text", ""), phase=item.get("phase"))
+        row.update(role="assistant", text=item.get("text", ""), phase=item.get("phase"),
+                   **{field: item[field] for field in ('model', 'effort') if field in item})
     elif kind in ("ImageView", "imageView"):
         raw = item.get("path", "")
         path = raw
@@ -201,11 +221,13 @@ def normalize_item(item, *, image_cache=None):
         # chain of thought in `content` only. Fall back to it so the row is not
         # an expandable but visually empty panel.
         content = [x for x in item.get("content", []) if isinstance(x, str) and x.strip()] if isinstance(item.get("content"), list) else []
-        row.update(role="activity", title="思考摘要", text="\n".join(summary or content))
+        row.update(role="activity", title="思考摘要", text=join_text(summary or content))
     elif kind == "commandExecution":
         row.update(role="activity", title="执行命令", text=item.get("command", ""), output=item.get("aggregatedOutput", ""), exitCode=item.get("exitCode"))
     elif kind in ("fileChange", "FileChange"):
-        row.update(role="activity", title="文件变更", text="\n\n".join(c["path"] + "\n" + c["diff"] for c in native_file_changes([item])))
+        changes = native_file_changes([item])
+        row.update(role="activity", title="文件变更", text="\n\n".join(c["path"] + "\n" + c["diff"] for c in changes),
+                   activityFiles=[{key: change[key] for key in ('path', 'added', 'removed')} for change in changes])
     elif kind in ("mcpToolCall", "dynamicToolCall"):
         extract = image_cache.extract if image_cache is not None else extract_tool_images
         source = item.get("result", item.get("contentItems", item.get("content", item.get("error", ""))))
@@ -215,7 +237,10 @@ def normalize_item(item, *, image_cache=None):
             output = clean["result"]
         else:
             output, images = extract(source)
-        row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json.dumps(item.get("arguments", {}), ensure_ascii=False, indent=2), output=json.dumps(output, ensure_ascii=False, indent=2))
+        row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json_body(item.get("arguments", {})), output=json_body(output))
+        tool = item.get('tool') or item.get('toolName')
+        if isinstance(tool, str) and tool:
+            row['toolName'] = (str(item['server']) + '.' + tool if item.get('server') else tool)[:160]
         if images:
             row['attachments'] = images
     elif kind == "error":
@@ -223,11 +248,29 @@ def normalize_item(item, *, image_cache=None):
     elif kind == "planImplementation":
         row.update(role="assistant", title="计划", text=item.get("planContent", ""))
     else:
-        row.update(role="activity", title=kind, text=json.dumps(item, ensure_ascii=False, indent=2))
+        row.update(role="activity", title=kind, text=json_body(item))
     # Preserve non-text attachment descriptors. They are not fetched from arbitrary URLs.
     # Tool content is handled by bounded extraction above. Never append its raw
     # blocks as attachments after sanitizing the tool result.
-    attachments = [x for x in item.get("content", []) if isinstance(x, dict) and x.get("type") not in ("text", "input_text", "output_text")] if kind not in ("mcpToolCall", "dynamicToolCall") and isinstance(item.get("content"), list) else []
+    attachments = [x for x in item.get("content", []) if isinstance(x, dict) and x.get("type") not in ("text", "input_text", "output_text", "inputText")] if kind not in ("mcpToolCall", "dynamicToolCall") and isinstance(item.get("content"), list) else []
+    if attachments:
+        if retain_transfer_attachments:
+            row['_transferAttachments'] = attachments + (row.get('attachments') or [])
+        # An IPC snapshot may carry inline user images in the same shapes
+        # as tool result blocks. Keep source bytes private and use the
+        # existing thread-scoped image endpoint for stored payloads.
+        visible = []
+        for attachment in attachments:
+            url = attachment.get('imageUrl', attachment.get('image_url', attachment.get('url')))
+            if isinstance(url, dict):
+                url = url.get('url')
+            if (isinstance(attachment.get('data'), StoredString)
+                    or isinstance(url, StoredString) and url.startswith('data:')):
+                clean, images = extract_tool_images(attachment)
+                visible.extend(images or [clean])
+            else:
+                visible.append(attachment)
+        attachments = visible
     if attachments:
         if "attachments" not in row:
             row["attachments"] = attachments
@@ -269,9 +312,23 @@ def context_usage(state):
 
 
 def merge_saved_message_times(view, saved):
-    """Enrich presentation only, using unique native identities on both sides."""
+    """Enrich presentation clocks only, using unique native identities."""
     if not view.get('id') or view['id'] != saved.get('id'):
         return
+    turn_groups = []
+    for source in (view, saved):
+        turns = {}
+        for turn in source['turns']:
+            if turn.get('actionable', True):
+                turns.setdefault(turn['id'], []).append(turn)
+        turn_groups.append(turns)
+    for identity, turns in turn_groups[0].items():
+        prior = turn_groups[1].get(identity, [])
+        if (len(turns) == len(prior) == 1 and turns[0].get('status') in ('completed', 'interrupted', 'failed')
+                and turns[0]['status'] == prior[0].get('status')):
+            for clock in ('startedAt', 'completedAt'):
+                if turns[0].get(clock) is None and prior[0].get(clock) is not None:
+                    turns[0][clock] = prior[0][clock]
     groups = []
     for source in (view, saved):
         rows = {}
@@ -296,7 +353,34 @@ def merge_saved_message_times(view, saved):
             rows[0]['_timestampSource'] = prior[0].get('_timestampSource', 'saved-native-message')
 
 
-def normalize_state(state, connected=True, *, image_cache=None, item_limit=None):
+def prepend_saved_process(live_turns, saved_turns):
+    """Join a paginated owner turn only at an unambiguous native message ID."""
+    saved_by_id = {turn['id']: turn for turn in saved_turns}
+    for turn in live_turns:
+        if turn.get('itemsComplete', True) or not turn['messages']:
+            continue
+        saved = saved_by_id.get(turn['id'])
+        if not saved:
+            continue
+        first = turn['messages'][0]
+        if not first.get('id'):
+            continue
+        matches = [i for i, message in enumerate(saved['messages'])
+                   if (message.get('id'), message['kind']) == (first['id'], first['kind'])]
+        if len(matches) != 1:
+            continue
+        prefix = saved['messages'][:matches[0]]
+        messages = turn['messages']
+        if any(message.get('_firstUser') for message in prefix):
+            messages = [dict(message, _firstUser=False) if message.get('_firstUser') else message
+                        for message in messages]
+        turn['messages'] = prefix + messages
+        if saved.get('itemsComplete', True):
+            turn.pop('itemsComplete', None)
+
+
+def normalize_state(state, connected=True, *, image_cache=None, item_limit=None, process_bodies=True,
+                    retain_transfer_attachments=False):
     turns = ordered_turns(state)
     # Select bodies before normalization (tool results can contain megabytes).
     # The original state remains intact for revisions, approvals and commands.
@@ -306,6 +390,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
     result = []
     for ordinal, turn in enumerate(turns):
         started_at = turn.get('turnStartedAtMs') or turn.get('startedAt')
+        completed_at = turn.get('turnCompletedAtMs') or turn.get('completedAt')
         items = items_array(turn.get("items", []))
         if skip >= len(items) and skip:
             skip -= len(items)
@@ -344,11 +429,19 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
         for item in items:
             kind = item.get('type')
             if kind in ('function_call', 'custom_tool_call'):
+                arguments = item.get('arguments', item.get('input', ''))
                 message = {'id': item.get('call_id', item.get('id')), 'kind': 'storedToolEvent',
                            'role': 'activity', 'title': item.get('name') or '工具调用',
-                           'text': str(item.get('arguments', item.get('input', '')))}
+                           'text': (arguments if isinstance(arguments, StoredString) else str(arguments)) if process_bodies else ''}
+                if not process_bodies:
+                    message['_detailSource'] = [item]
+                if isinstance(item.get('name'), str) and item['name']:
+                    message['toolName'] = item['name'][:160]
                 calls[message['id']] = message
             elif kind in ('function_call_output', 'custom_tool_call_output') and item.get('call_id') in calls:
+                if not process_bodies:
+                    calls[item['call_id']]['_detailSource'].append(item)
+                    continue
                 extract = image_cache.extract if image_cache is not None else extract_tool_images
                 output, images = extract(item.get('output', ''))
                 calls[item['call_id']]['output'] = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
@@ -358,18 +451,26 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
                     calls[item['call_id']].pop('attachments', None)
                 continue
             else:
-                message = normalize_item(item, image_cache=image_cache)
+                message = normalize_item(item, image_cache=image_cache, include_body=process_bodies,
+                                         retain_transfer_attachments=retain_transfer_attachments)
+            if (kind in ('agentMessage', 'assistantMessage') and message.get('role') == 'assistant'
+                    and not str(message.get('text') or '').strip() and not message.get('attachments')):
+                # Codex can persist whitespace-only assistant items around a
+                # real answer (for example an auxiliary item before the final
+                # card). They have no phone-visible content; omit them before
+                # timeline projection so they cannot render model/action/time rows.
+                continue
             first_user = (item.get('id') == turn['_firstUserItemId']
                           if '_firstUserItemId' in turn else id(item) == first_user_id)
             if message['role'] == 'user' and message.get('timestamp') is None and first_user and started_at is not None:
                 message['timestamp'] = started_at
                 message['_timestampSource'] = 'native-turn-start'
+            message['_firstUser'] = first_user
             if item_limit is not None:
                 message['_historyCarry'] = id(item) in carry_ids
                 key = (message.get('id'), message['kind'])
                 message['_timelineOrdinal'] = prefix_ordinals.get(key, 0) + occurrences.get(key, 0)
                 occurrences[key] = occurrences.get(key, 0) + 1
-                message['_firstUser'] = first_user
             messages.append(message)
         if not omitted and not any(x.get("role") == "user" for x in messages):
             opening_input = turn.get("params", {}).get("input", [])
@@ -382,10 +483,21 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
         settings = (params.get('collaborationMode') or {}).get('settings') or {}
         model = params.get('model') or settings.get('model') or turn.get('model')
         effort = params.get('effort') or params.get('reasoningEffort') or settings.get('reasoning_effort') or turn.get('reasoningEffort')
-        result.append({"model": model, "effort": effort, "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
-                       "startedAt": started_at, "messages": messages,
+        label = turn.get('_recordedReplyLabel')
+        if label is None:
+            recorded_effort = next((source[key] for source, key in (
+                (params, 'effort'), (params, 'reasoningEffort'), (settings, 'reasoning_effort'),
+                (turn, 'reasoningEffort')) if key in source), None)
+            label = {'model': model, 'effort': recorded_effort}
+        result.append({"model": model, "effort": effort, "_recordedReplyLabel": label,
+                       "id": turn.get("turnId") or str(ordinal), "status": turn.get("status"),
+                       "startedAt": started_at, "completedAt": completed_at, "messages": messages,
                        "actionable": bool(turn.get("turnId")) and turn.get("turnId") != "history",
-                       "error": turn.get("error"), "diff": turn.get("diff"),
+                       **({'itemsComplete': False} if not items_complete else {}),
+                       # Native automatic retries keep the turn running. Their last
+                       # warning must not trail every new item as a terminal error.
+                       "error": None if turn.get('willRetry') is True and turn.get('status') == 'inProgress' else turn.get("error"),
+                       "diff": turn.get("diff"),
                        # A partial turn cannot establish complete totals. Defer its footer
                        # until backfill includes the whole turn; never scan omitted patches.
                        "fileChanges": native_turn_file_changes(turn) if '_nativeFileChanges' in turn or (not omitted and (items_complete or authoritative_diff)) else [],
@@ -398,6 +510,7 @@ def normalize_state(state, connected=True, *, image_cache=None, item_limit=None)
             "connected": connected, "status": state.get("threadRuntimeStatus", {}).get("type", "idle"),
             "permissionMode": permission_mode(state),
             "contextUsage": context_usage(state),
+            **{key: state[key] for key in ('contextUsageStatus', 'lastPromptContextUsage') if key in state},
             "collaborationMode": (state.get("latestCollaborationMode") or {}).get("mode"),
             **({'serviceTier': tier['serviceTier']} if 'serviceTier' in tier else {}),
             "goal": copy.deepcopy(state.get("threadGoal") or state.get("completedThreadGoal")),

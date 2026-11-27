@@ -12,6 +12,7 @@ import hashlib
 import subprocess
 import time
 import uuid
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -85,6 +86,10 @@ def verified_socket(endpoint):
 
 class DesktopRuntimeBusy(ValueError):
     """Another verified lifecycle operation still owns this runtime lock."""
+
+
+class DesktopRuntimeOutdated(ValueError):
+    """Valid shared settings refer to a replaced App or gateway launcher."""
 
 
 @contextmanager
@@ -187,7 +192,7 @@ def record_preparation(home, request_id, *, complete=False):
 
 def configure(home, application, cli):
     """Called only after the lifecycle owner has verified idle and normal exit."""
-    if sys.platform not in ('darwin', 'win32'):
+    if sys.platform not in ('darwin', 'win32', 'linux'):
         raise ValueError('此系统尚未验证 Codex 共享接入')
     # GUI exit precedes the adapter's cooperative proxy/native shutdown.
     with exclusive_lock(home, 'runtime', timeout=35):
@@ -221,12 +226,20 @@ def _configure(home, application, cli):
     command = ([sys.executable] if getattr(sys, 'frozen', False) else
                [sys.executable, str(project_root() / 'desktop.py')])
     command += ['codex-desktop-runtime', '--configuration', str(root / 'settings.json'), '--']
-    _write(launcher, '#!/bin/sh\nexec ' + shlex.join(command) + ' "$@"\n', 0o700)
+    script = '#!/bin/sh\n'
+    if sys.platform == 'linux':
+        script += 'if [ ! -x '+shlex.quote(command[0])+' ]; then exec '+shlex.quote(value['cli'])+' "$@"; fi\n'
+    _write(launcher, script+'exec ' + shlex.join(command) + ' "$@"\n', 0o700)
     _write(root / 'settings.json', json.dumps(value))
 
 
 def launcher_settings(application):
     """Check Windows launch prerequisites before quitting the original App."""
+    if sys.platform == 'linux':
+        from bridge.platforms.linux.codex_launch import supported
+        if not supported(application):
+            raise ValueError('此 Linux Codex 安装布局尚未核验原生初始化，请继续使用原有接入')
+        return {}
     if sys.platform != 'win32':
         return {}
     if not getattr(sys, 'frozen', False):
@@ -257,15 +270,15 @@ def validate_runtime(cli):
 
 
 def launch_environment(home, application):
-    value = settings(home) if sys.platform in ('darwin', 'win32') else None
+    value = settings(home) if sys.platform in ('darwin', 'win32', 'linux') else None
     if value is None:
         return {}
     if value['application'] != os.path.normcase(str(Path(application).resolve())):
-        raise ValueError('Codex 程序已变化，请重新初始化共享接入')
+        raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
     if sys.platform == 'win32':
         launcher = Path(value['launcher'])
         if not launcher.is_file() or launcher.resolve() != Path(sys.executable).resolve():
-            raise ValueError('网关程序已变化，请重新初始化 Codex 原生连接')
+            raise DesktopRuntimeOutdated('网关程序已变化，请重新初始化 Codex 原生连接')
         return {'CODEX_CLI_PATH': str(launcher), 'CMB_CODEX_DESKTOP_CONFIGURATION': str(directory(home) / 'settings.json'),
                 'CODEX_APP_SERVER_WS_URL': '', 'CODEX_APP_SERVER_FORCE_CLI': '0'}
     launcher = directory(home) / 'codex-cli'
@@ -276,16 +289,129 @@ def launch_environment(home, application):
             'CODEX_APP_SERVER_FORCE_CLI': '0'}
 
 
+def ordinary_launch_helper():
+    root = project_root()
+    if not getattr(sys, 'frozen', False):
+        root = root / 'dist'
+    return root / 'client-helpers' / ('codex-launcher.exe' if sys.platform == 'win32' else 'codex-launcher')
+
+
+def enable_ordinary_launch(home, application):
+    """Prepare normal GUI opening without changing the App or restarting it."""
+    if sys.platform == 'win32':
+        value = settings(home)
+        if value is None:
+            return False
+        if value['application'] != os.path.normcase(str(Path(application).resolve())):
+            raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
+        from bridge.platforms.windows.codex_launch import install
+        with exclusive_lock(home, 'ordinary-launch'):
+            command = [sys.executable]
+            if not getattr(sys, 'frozen', False):
+                command.append(str(project_root()/'desktop.py'))
+            command += ['codex-desktop-launch', '--configuration', str(directory(home)/'settings.json'), '--']
+            install(directory(home), value, ordinary_launch_helper(), command)
+            if value['launcher'] != str(Path(sys.executable).resolve()):
+                _write(directory(home)/'settings.json', json.dumps({**value, 'launcher': str(Path(sys.executable).resolve())}))
+        return True
+    if sys.platform == 'linux':
+        from bridge.platforms.linux.codex_launch import install
+        install(application, home, directory(home)/'codex-cli')
+        return True
+    if sys.platform != 'darwin':
+        return False
+    value = settings(home)
+    if value is None:
+        return False
+    if value['application'] != str(Path(application).resolve()):
+        raise DesktopRuntimeOutdated('Codex 程序已变化，请重新初始化共享接入')
+    from bridge.platforms.macos import codex_launch
+    root = private_directory(directory(home))
+    helper = ordinary_launch_helper()
+    if not helper.is_file():
+        raise ValueError('普通启动接入组件尚未编译')
+    with exclusive_lock(home, 'ordinary-launch'):
+        previous = codex_launch.get_environment()
+        gui = private_directory(root / 'gui')
+        if previous and not (Path(previous).parent.parent == gui and Path(previous).name == 'codex-launcher'):
+            raise ValueError('已有其他 Codex 启动配置，保留原配置；当前连接不受影响')
+        digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+        generation = private_directory(gui / digest)
+        launcher = generation / 'codex-launcher'
+        if launcher.is_symlink():
+            raise ValueError('普通启动接入组件身份已变化')
+        if not launcher.exists():
+            shutil.copyfile(helper, launcher, follow_symlinks=False)
+            launcher.chmod(0o700)
+        elif launcher.is_symlink() or hashlib.sha256(launcher.read_bytes()).hexdigest() != digest:
+            raise ValueError('普通启动接入组件身份已变化')
+        command = ([sys.executable] if getattr(sys, 'frozen', False) else
+                   [sys.executable, str(project_root() / 'desktop.py')])
+        command += ['codex-desktop-runtime', '--configuration', str(root / 'settings.json'), '--']
+        record = {**value, 'command': command}
+        target = root / 'ordinary-launch.json'
+        if not target.exists() or _read(target) != record:
+            _write(target, json.dumps(record))
+        if previous != str(launcher):
+            codex_launch.set_environment(launcher)
+        codex_launch.install_login_environment(launcher)
+        return True
+
+
 def process_identity(pid):
     # Keep the protocol independent of the platform identity implementation.
     if sys.platform == 'win32':
         from bridge.platforms.windows.zcode_pipe import _identity
         return _identity(pid, parent=True)
+    if sys.platform == 'linux':
+        from bridge.platforms.linux.codex_runtime import identity
+        return identity(pid)
     from bridge.platforms.macos.force_exit import Native
     value = Native().identity(pid)
     if value['uid'] != os.getuid() or value['ruid'] != os.getuid() or value['zombie']:
         raise ValueError('共享运行时进程身份无法确认')
     return {key: (list(item) if isinstance(item, tuple) else item) for key, item in value.items()}
+
+
+def desktop_owner(parent, application):
+    """Bind either the original App or its bundled utility host to that App."""
+    if parent['image'] == application:
+        if sys.platform not in ('win32', 'linux'):
+            return parent, None
+        try:
+            ancestor = process_identity(parent['parent'])
+        except (OSError, ValueError):
+            return parent, None  # A verified main App need not retain its launcher.
+        if ancestor['image'] != application:
+            return parent, None
+        if process_identity(parent['pid']) != parent:
+            raise ValueError('Desktop host generation changed')
+        return ancestor, parent
+    if sys.platform != 'darwin':
+        raise ValueError('Desktop runtime parent is not the selected App')
+    frameworks = Path(application).parent.parent / 'Frameworks'
+    if frameworks not in Path(parent['image']).parents:
+        raise ValueError('Desktop runtime host is outside the selected App')
+    app = process_identity(parent['parent'])
+    if app['image'] != application or process_identity(parent['pid']) != parent:
+        raise ValueError('Desktop runtime host owner changed')
+    return app, parent
+
+
+def verify_record(record):
+    """Recheck every process generation, including the optional utility host."""
+    parent = record.get('host', record['app'])
+    dispatcher = record.get('dispatcher')
+    if dispatcher is not None and (sys.platform != 'win32' or dispatcher['parent'] != parent['pid']):
+        raise ValueError('Shared runtime dispatcher ancestry changed')
+    if (record['adapter']['parent'] != (dispatcher or parent)['pid'] or
+            record['runtime']['parent'] != record['adapter']['pid']):
+        raise ValueError('Shared runtime process ancestry changed')
+    if 'host' in record and desktop_owner(record['host'], record['app']['image']) != (record['app'], record['host']):
+        raise ValueError('Shared runtime host changed')
+    for kind in ('app', 'host', 'dispatcher', 'adapter', 'runtime'):
+        if kind in record and process_identity(record[kind]['pid']) != record[kind]:
+            raise ValueError('Shared runtime generation changed')
 
 
 def runtime_alive(identity):
@@ -330,7 +456,7 @@ def require_inactive(record):
 def connect(home, cli):
     """None means never configured; configured but unavailable must fail closed."""
     try:
-        value = settings(home) if sys.platform in ('darwin', 'win32') else None
+        value = settings(home) if sys.platform in ('darwin', 'win32', 'linux') else None
         if value is None:
             return None
         record = _read(directory(home) / 'active.json')
@@ -338,12 +464,15 @@ def connect(home, cli):
                 record.get('home') != value['home'] or
                 record.get('cli') != value['cli'] or value['cli'] != str(Path(cli).resolve()) or
                 record['app']['image'] != value['application'] or
-                record['adapter']['parent'] != record['app']['pid'] or
+                record['adapter']['parent'] != record.get('dispatcher', record.get('host', record['app']))['pid'] or
                 record['runtime']['parent'] != record['adapter']['pid']):
             raise ValueError('Shared runtime owner mismatch')
-        for kind in ('app', 'adapter', 'runtime'):
-            if process_identity(record[kind]['pid']) != record[kind]:
-                raise ValueError('Shared runtime generation changed')
+        verify_record(record)
+        if record.get('transport') == 'desktop-stdio':
+            from bridge.clients.codex.desktop_host import MetadataClient
+            client = MetadataClient(home)
+            client.connect()
+            return client
         if sys.platform == 'win32':
             from bridge.clients.codex.desktop_runtime_windows import MetadataClient
             client = MetadataClient(directory(home), record)
@@ -371,34 +500,70 @@ def connect(home, cli):
         raise AppServerUnavailable('Codex 原生共享连接尚未就绪，可在账号管理中查看自动准备状态；不会另起运行时重试写入') from exc
 
 
+def hosted_endpoint(home):
+    """An authenticated, live hosted record selects the new control transport."""
+    value = settings(home) if sys.platform in ('darwin', 'win32', 'linux') else None
+    if value is None:
+        return None
+    active = directory(home) / 'active.json'
+    if not active.exists():
+        return None
+    record = _read(active)
+    if record.get('transport') != 'desktop-stdio':
+        return None
+    if (record.get('version') != VERSION or record.get('ready') is not True or
+            record.get('home') != value['home'] or record.get('cli') != value['cli'] or
+            record['app']['image'] != value['application']):
+        raise ValueError('原生桌面接入记录尚未就绪或归属已变化')
+    verify_record(record)
+    expected = (r'\\.\pipe\cmb-codex-desktop-' + record['generation'] if sys.platform == 'win32'
+                else str(socket_path(home, record['generation'])))
+    if record.get('socket') != expected or not isinstance(record.get('controlToken'), str) or len(record['controlToken']) != 64:
+        raise ValueError('原生桌面接入端点身份不匹配')
+    identity = verified_socket(expected) if sys.platform != 'win32' else None
+    return {'path': expected, 'generation': record['generation'], 'controlToken': record['controlToken'],
+            'record': record, 'identity': identity}
+
+
 def server_arguments(arguments, socket_path):
     """Select only the Desktop stdio server, preserving every native override."""
     args = list(arguments)
-    i = 0
-    while i < len(args):
-        token = args[i]
-        if token in ('-c', '--config') and i + 1 < len(args):
-            i += 2
-        elif token.startswith('--config='):
-            i += 1
-        else:
-            break
-    if i == len(args) or args[i] != 'app-server':
+    try:
+        i = args.index('app-server')
+    except ValueError:
+        return None
+    # Keep global feature/config additions before the unchanged subcommand.
+    # One-shot native invocations never consume a Desktop initialize message.
+    if any(token in ('--help', '-h', '--version', '-V') for token in args[:i]):
         return None
     result = args[:i + 1]
     i += 1
+    auxiliary_position = True
     while i < len(args):
         token = args[i]
         if token in ('-c', '--config') and i + 1 < len(args):
             result.extend(args[i:i + 2]); i += 2
         elif token.startswith('--config=') or token == '--analytics-default-enabled':
             result.append(token); i += 1
+        elif token in ('--plugin-mcp-launch-cwd', '--mcp-launch-cwd'):
+            if i + 3 >= len(args):
+                return None
+            result.extend(args[i:i + 4]); i += 4
         elif token == '--stdio':
             i += 1
         elif token == '--listen' and i + 1 < len(args) and args[i + 1] == 'stdio://':
             i += 2
         elif token == '--listen=stdio://':
             i += 1
+        elif (token == '--listen' or token.startswith('--listen=') or
+              token in ('--print-startup-config', '--help', '-h', '--version', '-V') or
+              auxiliary_position and token in ('proxy', 'daemon', 'generate-ts', 'generate-json-schema')):
+            return None  # Auxiliary commands and explicit other transports stay native.
         else:
-            return None  # One-shot, proxy, auxiliary or newer unknown invocation.
+            # Feature additions may add startup flags while keeping the same
+            # stdio/initialize contract. Preserve them for the native parser;
+            # the App's primary initialize and owner proof still gate sharing.
+            # A value after an unknown flag may itself spell "proxy"/"daemon".
+            auxiliary_position = False
+            result.append(token); i += 1
     return [*result, '--listen', 'unix://' + str(socket_path)]

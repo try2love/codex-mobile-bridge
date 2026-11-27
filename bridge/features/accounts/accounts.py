@@ -14,6 +14,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,6 +23,11 @@ import uuid
 from pathlib import Path
 from contextlib import nullcontext
 from urllib.parse import urlsplit
+
+try:
+    import tomllib
+except ImportError:
+    from bridge.vendor import wsl_tomli as tomllib
 
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
 from bridge.clients.desktop_app import DesktopApp
@@ -40,6 +46,10 @@ def private_bytes(path, content):
     path = Path(path)
     if path.is_symlink():
         raise ValueError('账号文件不能是符号链接')
+    if os.name == 'nt':
+        from bridge.platforms.windows.local_service import write_private
+        write_private(path, content)
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix='.account-', dir=path.parent)
     try:
@@ -47,18 +57,7 @@ def private_bytes(path, content):
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        deadline = time.monotonic() + 2 if os.name == 'nt' else 0
-        while True:
-            try:
-                os.replace(name, path)
-                break
-            except PermissionError as exc:
-                if os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33):
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                time.sleep(min(.05, remaining))
+        os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -181,6 +180,8 @@ class Accounts:
         self.api_model_retry_at = {}
         self.index = read_json(self.root/'index.json', {'accounts': [], 'activeId': None, 'desktopExecutable': ''})
         self.state = read_json(self.root/'switch.json', {'phase': 'idle'})
+        self.shared_daemon_stop = read_json(self.root/'shared-daemon-stop.json',
+                                           self.state.get('sharedDaemonStop') or {})
         if self.state.get('phase') in ('preparing', 'stopping', 'applying', 'migrating', 'starting', 'verifying', 'restoring'):
             self.state.update(phase='interrupted', error='上次切换中断，请在桌面端恢复原接入')
             if self.state.get('operation') == 'desktopRuntime':
@@ -219,7 +220,7 @@ class Accounts:
             home = self.directory(identifier)
             catalog = self.saved_model_catalogs.get(identifier)
             if catalog is None:
-                catalog = Catalog(home, self.runtime,
+                catalog = Catalog(home, executable_getter=lambda: self.runtime,
                     observation_enabled=lambda: getattr(self.bridge, 'observation_enabled', lambda: True)())
                 self.saved_model_catalogs[identifier] = catalog
             return catalog
@@ -314,12 +315,12 @@ class Accounts:
     def management(self):
         try:
             text = (self.home/'config.toml').read_text(encoding='utf-8')
+            detected = magpie_managed(config=tomllib.loads(text))
         except FileNotFoundError:
-            text = ''
-        except (OSError, UnicodeError):
+            detected = False
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError, ImportError):
             return {'mode': 'external', 'external': True, 'reason': '无法确认接入配置，已暂停覆盖配置'}
         configured = self.index.get('accessManagement', 'auto')
-        detected = magpie_managed(text=text)
         return {'mode': configured, 'external': configured == 'external' or detected,
                 'detected': 'magpie' if detected else None,
                 'reason': '此入口由 Magpie 或外部工具管理；请在原工具中切换接入' if configured == 'external' or detected else None}
@@ -336,7 +337,11 @@ class Accounts:
         return result
 
     def desktop_runtime_status(self):
-        supported = sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local'
+        supported = sys.platform in ('darwin', 'win32', 'linux') and getattr(self.bridge, 'host', 'local') == 'local'
+        if supported and sys.platform == 'linux':
+            from bridge.platforms.linux.codex_launch import supported as supported_layout
+            application = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
+            supported = bool(application and supported_layout(application))
         result = {'supported': supported, 'configured': False, 'preparation': dict(self.desktop_preparation)}
         if supported:
             from bridge.clients.codex.desktop_runtime import settings
@@ -841,6 +846,9 @@ class Accounts:
             return self.desktop_status()
         if action == 'account':
             return self.account(value)
+        if action == 'quotaContinuation':
+            changes = {k: v for k, v in value.items() if k != 'action'}
+            return self.monitor.continuation.configure(changes) if changes else self.monitor.continuation.public()
         if action == 'reminders':
             self.monitor.configure(value.get('preferences'))
             return self.desktop_status()
@@ -876,6 +884,7 @@ class Accounts:
             self.assert_editable()
             if action == 'scanDesktop':
                 self.index['desktopExecutable'] = DesktopApp.scan(self.runtime, self.home)
+                self.index['desktopExecutableSource'] = 'scan'
             elif action == 'configure':
                 executable = value.get('desktopExecutable')
                 if not isinstance(executable, str) or not Path(executable).is_absolute():
@@ -883,6 +892,7 @@ class Accounts:
                 app = DesktopApp(executable, self.home)
                 app.validate(self.runtime)
                 self.index['desktopExecutable'] = str(app.executable)
+                self.index['desktopExecutableSource'] = 'manual'
             elif action in ('rename', 'delete'):
                 row = self.row(value.get('id'))
                 if action == 'rename':
@@ -961,7 +971,7 @@ class Accounts:
     def desktop_runtime_lifecycle(self):
         # Lock even before initialization has saved settings: another gateway
         # may be between its idle audit and the first shared configuration write.
-        if sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local':
+        if sys.platform in ('darwin', 'win32', 'linux') and getattr(self.bridge, 'host', 'local') == 'local':
             from bridge.clients.codex.desktop_runtime import initialization_lock
             return initialization_lock(self.home)
         return nullcontext()
@@ -994,9 +1004,12 @@ class Accounts:
             self.assert_editable()
             if sync.switch_live_api(row, request_id):
                 return self.public()
-            if self.info.current().get('id') != row['id']:
-                sync.prepare_profile_switch()
-            preflight = sync.preflight('codex')
+            if self.info.current().get('id') == row['id']:
+                return self.public()
+            sync.prepare_profile_switch()
+            shared_daemon_confirmed = value.get('sharedDaemonConfirmed') is True
+            preflight = (sync.preflight('codex', shared_daemon_confirmed=True) if shared_daemon_confirmed
+                         else sync.preflight('codex'))
             self.assert_editable()
             if self.info.current().get('id') == row['id']:
                 return self.public()
@@ -1024,6 +1037,7 @@ class Accounts:
             ledger[request_id] = row['id']
             private_json(self.root/'requests.json', ledger)
             self.state = {'phase': 'preparing', 'requestId': request_id, 'targetId': row['id'], 'error': None,
+                          'sharedDaemonConfirmed': shared_daemon_confirmed,
                           'cliSync': {'status': 'pending' if sync_cli else 'shared-config-unverified'}}
             self.phase('preparing')
             self.thread = threading.Thread(target=self._switch, args=(row, app), daemon=True)
@@ -1031,7 +1045,7 @@ class Accounts:
             return self.public()
 
     def initialize_desktop_runtime(self, value):
-        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+        if sys.platform not in ('darwin', 'win32', 'linux') or getattr(self.bridge, 'host', 'local') != 'local':
             raise ValueError('此入口不支持 Codex 原生连接初始化')
         required = {'action', 'confirmed', 'tasksConfirmed', 'requestId'}
         if (set(value) - {'acknowledgeUnavailable'} != required or value.get('confirmed') is not True
@@ -1046,7 +1060,7 @@ class Accounts:
         if not valid_id:
             raise ValueError('初始化请求标识无效')
         with self.gate, self.bridge.account.lock, self.lock:
-            self.require_managed_writes()
+            # Preparing transport does not replace authentication or providers.
             if self.state.get('operation') == 'desktopRuntime' and self.state.get('requestId') == request_id:
                 return self.public()
             self.assert_editable()
@@ -1072,13 +1086,13 @@ class Accounts:
             self.thread.start()
             return self.public()
 
-    def prepare_desktop_runtime(self, app, *, cancelled=lambda: False):
+    def prepare_desktop_runtime(self, app, *, cancelled=lambda: False, allow_cold_start=True):
         """Startup preparation; return True only when a passive retry is safe.
 
         Waiting does not change account state or hold a gate between attempts.
         Once a lifecycle write starts, a failure requires explicit recovery.
         """
-        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+        if sys.platform not in ('darwin', 'win32', 'linux') or getattr(self.bridge, 'host', 'local') != 'local':
             return False
         if not self.gate.acquire(timeout=0):
             self.desktop_preparation = {'state': 'waiting', 'reason': '等待当前操作结束后自动准备原生侧聊'}
@@ -1087,14 +1101,16 @@ class Accounts:
             if self.bridge.closed.is_set() or cancelled():
                 return False
             self.assert_editable()
-            return self._initialize_desktop_runtime(app, automatic=True, cancelled=cancelled)
+            return self._initialize_desktop_runtime(app, automatic=True, cancelled=cancelled,
+                                                    allow_cold_start=allow_cold_start)
         except ValueError as exc:
             self.desktop_preparation = {'state': 'waiting', 'reason': str(exc)}
             return True
         finally:
             self.gate.release()
 
-    def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False):
+    def _initialize_desktop_runtime(self, app, acknowledged=False, *, automatic=False, cancelled=lambda: False,
+                                    allow_cold_start=True):
         from bridge.clients.codex.desktop_runtime import configure, connect, initialization_lock, process_identity, DesktopRuntimeBusy
         from bridge.clients.codex.desktop_runtime import preparation, record_preparation, settings
         from bridge.clients.codex.app_server import AppServerUnavailable
@@ -1102,10 +1118,22 @@ class Accounts:
         if sys.platform == 'win32':
             from bridge.platforms.windows.codex_daemon_env import read_process_environment
             from bridge.platforms.windows.desktop import commands
+        elif sys.platform == 'linux':
+            from bridge.platforms.linux.codex_daemon_env import read_process_environment
+            from bridge.platforms.linux.desktop import commands
         else:
             from bridge.platforms.macos.codex_daemon_env import read_process_environment
             from bridge.platforms.macos.desktop import commands
         descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
+
+        def ordinary_launch():
+            from bridge.clients.codex.desktop_runtime import enable_ordinary_launch
+            try:
+                return {'ordinaryLaunch': enable_ordinary_launch(self.home, app.executable)}
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                # A launch-environment conflict must not discard a healthy
+                # connection or cause another desktop restart.
+                return {'ordinaryLaunch': False, 'ordinaryLaunchError': str(exc)}
 
         def observed():
             state = inspect_client(descriptor)
@@ -1118,6 +1146,7 @@ class Accounts:
             launch_commands = commands(main) if main else {}
             for pid, identity in identities.items():
                 record = ({'processStartTime': str(identity['created'])} if sys.platform == 'win32' else
+                          {'processIdentity': {'bootId': identity['bootId'], 'startTicks': identity['birth'][0]}} if sys.platform == 'linux' else
                           {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
                                                'startMicroseconds': identity['started'][1]}})
                 environment, _ = read_process_environment(pid, record, app.executable,
@@ -1149,7 +1178,7 @@ class Accounts:
                         prior = preparation(self.home)
                         if prior and prior['state'] == 'pending':
                             record_preparation(self.home, prior['requestId'], complete=True)
-                        self.desktop_preparation = {'state': 'ready'}
+                        self.desktop_preparation = {'state': 'ready', **ordinary_launch()}
                         return False
                     prior = preparation(self.home)
                     if prior and prior['state'] == 'pending':
@@ -1158,7 +1187,6 @@ class Accounts:
                     app.validate(self.runtime)
                     from bridge.clients.codex.desktop_runtime import validate_runtime, launcher_settings
                     try:
-                        self.require_managed_writes()
                         validate_runtime(self.runtime)
                         launcher_settings(app.executable)
                     except ValueError as exc:
@@ -1169,6 +1197,9 @@ class Accounts:
                             raise
                         preparation_error = exc
                 state, identities = observed()
+                if automatic and not state['running'] and not allow_cold_start:
+                    self.desktop_preparation = {'state': 'waiting', 'reason': '等待 Codex 启动后自动恢复原生连接'}
+                    return True
                 if preparation_error and state['running']:
                     raise preparation_error
                 try:
@@ -1224,7 +1255,7 @@ class Accounts:
                 record_preparation(self.home, self.state['requestId'], complete=True)
                 self.phase('complete', error=None)
                 self.desktop_preparation = ({'state': 'failed', 'reason': str(preparation_error)}
-                                            if preparation_error else {'state': 'ready'})
+                                            if preparation_error else {'state': 'ready', **ordinary_launch()})
                 return False
         except Exception as exc:
             # Keep a successfully saved configuration available for an explicit
@@ -1308,7 +1339,7 @@ class Accounts:
             try:
                 stream = connect_stream(self.bridge.ipc.path, timeout=.5)
             except OSError:
-                if sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local':
+                if sys.platform in ('darwin', 'linux') and getattr(self.bridge, 'host', 'local') == 'local':
                     from bridge.clients.codex.desktop_runtime import wait_stopped
                     wait_stopped(self.home)
                 return
@@ -1406,7 +1437,9 @@ class Accounts:
             if changed:
                 folder = self.prepare(row, before)
             from bridge.features.accounts.cli_sync import LocalCliSync
-            LocalCliSync(self.bridge)._codex_idle()
+            local_cli = LocalCliSync(self.bridge)
+            local_cli.prepare_shared_daemon_switch(confirmed=self.state.get('sharedDaemonConfirmed') is True)
+            local_cli._codex_idle()
             self.phase('applying')
             self.require_managed_writes()
             if self.snapshot_files() != before:

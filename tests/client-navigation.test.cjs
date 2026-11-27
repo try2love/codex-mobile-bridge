@@ -54,10 +54,21 @@ test('older, malformed and password-free gateway responses do not leave active r
   nav.request=async()=>({enabled:false,canEdit:false});await nav.readNetworkAdaptation();assert.equal(panel.box.disabled,true);assert.match(panel.status.textContent,/免密访问/);
   nav.request=()=>{throw Error('must not write');};await nav.setNetworkAdaptation(true);
 });
+test('Codex initialization uses authenticated client management through relay and cancellation writes nothing',async()=>{
+ for(const accepted of [false,true]){
+  const ui=fixture(),nav=ui.nav,calls=[];
+  const client={id:'codex',enabled:true,installed:true,configured:true,connected:false,canInitializeDesktop:true};
+  nav.clients=[client];nav.managementClients=()=>[client];nav.notify=()=>{};nav.refresh=async()=>{};
+  nav.request=async(path,body)=>{calls.push({path,body});return {};};
+  ui.setInitializeChoice(accepted);await nav.initialize('codex');
+  assert.equal(calls.length,accepted?1:0);
+  if(accepted){assert.equal(calls[0].path,'/api/clients');assert.equal(calls[0].body.provider,'codex');assert.equal(calls[0].body.initializeDesktop,true);assert.equal(calls[0].body.confirmed,true);assert.equal(calls[0].body.tasksConfirmed,true);assert.match(calls[0].body.requestId,/^[0-9a-f-]{36}$/);}
+ }
+});
 test('notification settings stay hidden on shared relay while remaining actions use all columns',()=>{
   const ui=fixture(),classes=new Set();
   ui.nav.switchToggle={hidden:false};ui.nav.settingsNotifications={hidden:false};
-  ui.nav.settingsActions={classList:{toggle(name,enabled){if(enabled)classes.add(name);else classes.delete(name);}}};
+  ui.nav.settingsActions={children:[ui.nav.switchToggle,ui.nav.settingsNotifications,{},{}],classList:{toggle(name,enabled){if(enabled)classes.add(name);else classes.delete(name);}}};
   ui.window.BridgeSharedRelay=false;ui.nav.paintSettingsActions();
   assert.equal(ui.nav.settingsNotifications.hidden,false);assert.equal(classes.size,0);
   ui.window.BridgeSharedRelay=true;ui.nav.paintSettingsActions();

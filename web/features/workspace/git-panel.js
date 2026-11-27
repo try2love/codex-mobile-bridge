@@ -2,24 +2,58 @@
 
 class GitPanel {
   constructor(workbench, session, tab) {
-    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'changes'; this.historyLimit = 40; this.windowStates = {};
+    this.workbench = workbench; this.session = session; this.tab = tab; this.mode = 'history'; this.historyLimit = 40; this.windowStates = {}; this.offset = 0; this.untrackedPath = ''; this.pageSize = 200;
     this.node = (...args) => workbench.node(...args);
     this.button = (...args) => workbench.button(...args);
   }
-  dispose() { this.floating?.destroy(); this.floating = null; this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
+  dispose() { this.diffFont?.dispose(); this.diffFont=null; this.floating?.destroy(); this.floating = null; this.tab.controller?.abort(); this.diffController?.abort(); this.historyDiffController?.abort(); }
+  counts(state = this.state) {
+    if (state.counts) return state.counts;
+    const rows = state.entries;
+    return {total:rows.length, staged:rows.filter(e=>!e.conflict&&!e.untracked&&e.index!=='.').length,
+      unstaged:rows.filter(e=>!e.conflict&&!e.untracked&&e.worktree!=='.').length,
+      untracked:rows.filter(e=>e.untracked).length, conflict:rows.filter(e=>e.conflict).length};
+  }
+  statusUrl({offset=this.offset, untrackedPath=this.untrackedPath, section=untrackedPath?'untracked':'all', version} = {}) {
+    const params = new URLSearchParams({limit:String(this.pageSize), offset:String(offset), collapseUntracked:'true', section});
+    if (untrackedPath) params.set('untrackedPath', untrackedPath);
+    if (version) params.set('version', version);
+    return this.workbench.url(this.session, 'git-status') + '&' + params;
+  }
+  page(offset) {
+    this.offset=offset;this.pageVersion=this.state.version;return this.load();
+  }
+  openUntracked(path) {
+    this.untrackedPath=path;this.offset=0;this.pageVersion=this.state.version;return this.load();
+  }
+  pagination(result) {
+    if (!result.offset && result.nextOffset == null) return;
+    const pager=this.node('div','wb-git-actions wb-git-pages'),previous=this.button(BridgeI18n.t('上一页'),()=>this.page(Math.max(0,result.offset-this.pageSize))),next=this.button(BridgeI18n.t('下一页'),()=>this.page(result.nextOffset));
+    previous.disabled=!result.offset;next.disabled=result.nextOffset==null;
+    pager.setAttribute('aria-label',BridgeI18n.t('Git 变更分页'));
+    pager.append(previous,this.node('span','wb-status',(result.offset+1)+'–'+(result.offset+result.entries.length)+' / '+result.total),next);this.tab.body.append(pager);
+  }
   async load() {
+    const pageVersion=this.pageVersion;this.pageVersion=null;
     this.dispose(); const controller = this.tab.controller = new AbortController();
     const head = this.node('div', 'wb-git-head'), title = this.node('div', 'wb-git-heading');
-    title.append(this.node('strong', '', 'Git'), this.node('span', '', BridgeI18n.t('当前项目的变更')));
-    const refresh = this.button(BridgeI18n.t('刷新'), () => this.load(), BridgeI18n.t('刷新 Git 状态'));
+    title.append(this.node('strong', '', 'Git'), this.node('span', '', BridgeI18n.t(this.mode === 'history' ? '提交历史' : '当前项目的变更')));
+    const refresh = this.button(BridgeI18n.t('刷新'), () => {this.offset=0;this.pageVersion=null;this.load();}, BridgeI18n.t('刷新 Git 状态'));
     head.append(title, refresh);
+    const modes = this.node('div', 'wb-git-modes');
+    for (const [key, label] of [['changes', BridgeI18n.t('变更')], ['history', BridgeI18n.t('历史')], ['branches', BridgeI18n.t('分支')]]) {
+      const button = this.button(label, () => { this.mode = key; this.offset=0;this.untrackedPath='';this.pageVersion=null;this.load(); }); button.setAttribute('aria-pressed', String(this.mode === key)); modes.append(button);
+    }
     const status = this.node('p', 'wb-status', BridgeI18n.t('正在读取 Git 状态…')); status.setAttribute('role', 'status');
-    this.tab.body.replaceChildren(head, status);
+    status.hidden = this.mode === 'history';
+    this.tab.body.replaceChildren(head, modes, status);
     try {
-      const result = await this.workbench.request(this.workbench.url(this.session, 'git-status'), undefined, controller.signal);
+      if (this.mode === 'history') { await this.history(controller); return; }
+      const result = await this.workbench.request(this.statusUrl({version:pageVersion}), undefined, controller.signal);
       if (controller.signal.aborted) return;
       if (!result.available) { status.textContent = result.message; return; }
-      this.state = result;
+      this.state = result;this.offset=result.offset||0;
+      const counts=this.counts(result);
       const branch = result.branch === '(detached)' ? BridgeI18n.t('分离 HEAD · ') + result.commit.slice(0, 8) : result.branch;
       title.replaceChildren(this.node('strong', '', branch || 'Git'), this.node('span', '', result.project + ' · ' + (this.session.host === 'local' ? BridgeI18n.t('此电脑') : 'SSH')));
       title.firstChild.title = branch;
@@ -29,21 +63,16 @@ class GitPanel {
       if (result.scope !== '.') notes.push(BridgeI18n.t('文件差异仅限当前项目目录'));
       if (result.upstream) notes.push(result.upstream + (result.ahead === null ? '' : BridgeI18n.t(' · 领先 ') + result.ahead + BridgeI18n.t(' / 落后 ') + result.behind) + BridgeI18n.t('（本地记录）'));
       status.textContent = notes.join(' · '); status.hidden = !notes.length;
-      const modes = this.node('div', 'wb-git-modes');
-      for (const [key, label] of [['changes', BridgeI18n.t('变更')], ['history', BridgeI18n.t('历史')], ['branches', BridgeI18n.t('分支')]]) {
-        const button = this.button(label, () => { this.mode = key; this.load(); }); button.setAttribute('aria-pressed', String(this.mode === key)); modes.append(button);
-      }
-      this.tab.body.append(modes);
       if (this.actionError) this.tab.body.append(this.node('p', 'wb-status error', this.actionError));
-      if (this.mode === 'history') { await this.history(controller); return; }
       if (this.mode === 'branches') { await this.branches(controller); return; }
+      if(this.untrackedPath)this.tab.body.append(this.button(BridgeI18n.t('返回项目变更'),()=>this.openUntracked('')),this.workbench.raw(this.node('p','wb-status',this.untrackedPath)));
+      if(result.nextOffset!=null||this.offset||this.untrackedPath||result.entries.some(e=>e.directory))this.tab.body.append(this.node('p','wb-status',BridgeI18n.t('全部暂存、取消暂存和提交作用于整个项目')));
       const actions = this.node('div', 'wb-git-actions');
       const stage = this.button(BridgeI18n.t('全部暂存'), () => this.execute({action:'stage-all'}).catch(()=>{}));
       const unstage = this.button(BridgeI18n.t('全部取消暂存'), () => this.execute({action:'unstage-all'}).catch(()=>{}));
-      const staged = result.entries.filter(e => !e.untracked && !e.conflict && e.index !== '.');
-      stage.disabled = !result.entries.some(e => e.untracked || e.conflict || e.worktree !== '.'); unstage.disabled = !staged.length;
-      const commit = this.button((result.operation === 'merge' ? BridgeI18n.t('完成合并') : BridgeI18n.t('提交')) + (staged.length ? ' · ' + staged.length : ''), () => this.commitDialog()); commit.className = 'primary';
-      commit.disabled = (!staged.length && result.operation !== 'merge') || result.scope !== '.' || result.entries.some(e => e.conflict) || result.branch === '(detached)';
+      stage.disabled = !counts.untracked&&!counts.unstaged&&!counts.conflict;unstage.disabled=!counts.staged;
+      const commit = this.button((result.operation === 'merge' ? BridgeI18n.t('完成合并') : BridgeI18n.t('提交')) + (counts.staged ? ' · ' + counts.staged : ''), () => this.commitDialog()); commit.className = 'primary';
+      commit.disabled = (!counts.staged && result.operation !== 'merge') || result.scope !== '.' || counts.conflict>0 || result.branch === '(detached)';
       actions.append(stage, unstage, commit);
       if (result.operation === 'merge') actions.append(this.button(BridgeI18n.t('中止合并'), () => this.confirm(BridgeI18n.t('中止本次合并'), BridgeI18n.t('将恢复合并前的状态，本次合并中的冲突处理也会被撤销。'), {action:'abort-merge'}, BridgeI18n.t('中止合并'))));
       this.tab.body.append(actions);
@@ -54,33 +83,39 @@ class GitPanel {
       let restored;
       for (const [section, name, filter] of groups) {
         const entries = result.entries.filter(filter); if (!entries.length) continue;
-        const group = this.node('section', 'wb-git-group'); group.append(this.node('h3', '', name + ' · ' + entries.length));
+        const group = this.node('section', 'wb-git-group'); group.append(this.node('h3', '', name + ' · ' + ((result.viewCounts||counts)[section]??entries.length)));
         for (const entry of entries) {
-          const row = this.button('', () => this.show(entry, section, row), entry.path); row.className = 'wb-git-file'; row.dataset.section = section; row.dataset.path = entry.path;
+          const row = this.button('', () => entry.directory?this.openUntracked(entry.path):this.show(entry, section, row), entry.path); row.className = 'wb-git-file'; row.dataset.section = section; row.dataset.path = entry.path;
           const code = section === 'conflict' ? 'U' : section === 'untracked' ? '?' : entry[section === 'staged' ? 'index' : 'worktree'];
           const labels = {M: BridgeI18n.t('修改'), A: BridgeI18n.t('新增'), D: BridgeI18n.t('删除'), R: BridgeI18n.t('重命名'), C: BridgeI18n.t('复制'), T: BridgeI18n.t('类型变化'), U: BridgeI18n.t('冲突'), '?': BridgeI18n.t('新文件')};
           const badge = this.node('span', 'wb-git-badge', code); badge.dataset.change = code; badge.title = labels[code] || code; badge.setAttribute('aria-label', badge.title);
           const paths = this.node('span', 'wb-git-path'); paths.append(this.workbench.raw(this.node('strong', '', entry.path)));
+          if(entry.directory)paths.append(this.node('small','',entry.count+' · '+BridgeI18n.t('展开未跟踪目录')));
           if (entry.oldPath) paths.append(this.node('small', '', BridgeI18n.t('原路径：') + entry.oldPath));
           row.append(badge, paths);
-          const rowGroup = this.node('div', 'wb-git-row'), action = this.button(section === 'staged' ? '−' : '＋', () => this.execute({action:section === 'staged' ? 'unstage' : 'stage', path:entry.path}).catch(()=>{}), (section === 'staged' ? BridgeI18n.t('取消暂存 ') : BridgeI18n.t('暂存 ')) + entry.path);
-          action.className = 'wb-git-row-action'; action.disabled = !!entry.submodule; rowGroup.append(row, action); group.append(rowGroup);
-          if (this.selected === section + ':' + entry.path) restored = [entry, section, row];
+          const rowGroup = this.node('div', 'wb-git-row'), action = entry.directory
+            ?this.button(BridgeI18n.t('展开'),()=>this.openUntracked(entry.path),BridgeI18n.t('展开未跟踪目录')+' '+entry.path)
+            :this.button(section === 'staged' ? '−' : '＋', () => this.execute({action:section === 'staged' ? 'unstage' : 'stage', path:entry.path}).catch(()=>{}), (section === 'staged' ? BridgeI18n.t('取消暂存 ') : BridgeI18n.t('暂存 ')) + entry.path);
+          action.className = 'wb-git-row-action' + (entry.directory ? ' wb-git-folder-action' : ''); action.disabled = !!entry.submodule; rowGroup.append(row, action); group.append(rowGroup);
+          if (!entry.directory&&this.selected === section + ':' + entry.path) restored = [entry, section, row];
         }
         this.list.append(group);
       }
       if (!result.entries.length) {
-        layout.replaceChildren(this.node('div', 'wb-git-clean', BridgeI18n.t('当前项目没有未提交的改动')));
+        layout.replaceChildren(this.node('div', 'wb-git-clean', BridgeI18n.t(counts.total?'当前筛选没有变更':'当前项目没有未提交的改动')));
         this.selected = null;
       } else if (restored) this.show(...restored);
+      this.pagination(result);
     } catch (error) { if (!controller.signal.aborted) { status.hidden = false; status.textContent=BridgeI18n.t(error.message); status.classList.add('error'); } }
   }
   openDetail(title) {
+    this.diffFont?.dispose();this.diffFont=null;
     this.floating?.destroy();
     this.detail = this.node('div', 'wb-git-detail');
     this.floating = new FloatingPanel({host:this.tab.body, content:this.detail, title,
       state:this.windowStates[this.mode] ||= {}, node:this.node, button:this.button,
       close:() => {
+        this.diffFont?.dispose();this.diffFont=null;
         this.diffController?.abort(); this.historyDiffController?.abort();
         this.selected = this.selectedCommit = null; this.floating = null;
         for (const row of this.layoutHost.querySelectorAll('.selected')) { row.classList.remove('selected'); row.setAttribute('aria-pressed', 'false'); }
@@ -104,6 +139,18 @@ class GitPanel {
   }
   renderDiff(result, content, header) {
       content.replaceChildren();
+      this.diffFont?.dispose();
+      header.querySelector('.wb-git-reading')?.remove();
+      const settings=this.node('details','wb-git-reading'),label=this.node('summary','',BridgeI18n.t('阅读设置'));
+      this.diffFont=FileFont.control(this.workbench);
+      let wrapped=false;try{wrapped=localStorage.getItem('bridge-git-wrap')==='true';}catch{}
+      const wrap=this.button('',()=>{
+        const top=content.scrollTop,left=content.scrollLeft;
+        wrapped=!wrapped;paint();try{localStorage.setItem('bridge-git-wrap',String(wrapped));}catch{}
+        content.scrollTop=top;content.scrollLeft=left;
+      });
+      const paint=()=>{content.dataset.wrap=String(wrapped);wrap.textContent=BridgeI18n.t(wrapped?'原始行宽':'自动换行');wrap.setAttribute('aria-pressed',String(wrapped));};
+      paint();settings.append(label,this.diffFont.element,wrap);header.append(settings);
       const messages = {binary: BridgeI18n.t('二进制或非 UTF-8 文件，暂不提供文本差异。'), large: BridgeI18n.t('文件超过差异预览限制，请在电脑上查看。'), submodule: BridgeI18n.t('此项为子模块，请在电脑上查看子模块内部的改动。')};
       if (messages[result.kind]) { content.append(this.node('p', 'wb-status', messages[result.kind])); return; }
       if (result.kind === 'conflict') { const pre = this.node('pre', 'wb-git-conflict', result.text); content.append(pre); return; }
@@ -131,7 +178,7 @@ class GitPanel {
     this.busy = true; this.actionError = '';
     for (const button of this.tab.body.querySelectorAll('button')) button.disabled = true;
     try {
-      const result = await this.workbench.request(this.workbench.url(this.session, 'git-action'), {...params, version});
+      const result = await this.workbench.request(this.workbench.url(this.session, 'git-action'), {...params, version, limit:this.pageSize});
       this.workbench.notify(result.message);
       if (result.outcome !== 'success') this.actionError = result.message;
       return result;
@@ -161,12 +208,31 @@ class GitPanel {
     this.dialog(title, description, label, () => this.execute(params, version));
   }
   commitDialog() {
-    const version = this.state.version, list = this.node('ul', 'wb-commit-files');
-    for (const entry of this.state.entries.filter(e => !e.untracked && e.index !== '.')) list.append(this.node('li', '', entry.path));
-    if (!list.children.length && this.state.operation === 'merge') list.append(this.node('li', '', BridgeI18n.t('文件内容不变，本次提交记录分支合并关系。')));
-    const message = this.node('textarea'); message.required = true; message.rows = 4; message.setAttribute("data-i18n-placeholder",'提交说明');message.placeholder = BridgeI18n.t('提交说明'); message.setAttribute("data-i18n-aria-label",'提交说明');message.setAttribute('aria-label', BridgeI18n.t('提交说明'));
-    this.dialog(BridgeI18n.t('提交到 ') + this.state.branch, BridgeI18n.t('仅提交下列已暂存的内容，保留未暂存改动。使用电脑或服务器现有的 Git 身份、签名和 hooks。'), BridgeI18n.t('确认提交'), () => this.execute({action:'commit', message:message.value}, version), [list, message]);
+    const version=this.state.version,count=this.counts().staged,list=this.node('ul','wb-commit-files');
+    const message=this.node('textarea');message.required=true;message.rows=4;message.setAttribute('data-i18n-placeholder','提交说明');message.placeholder=BridgeI18n.t('提交说明');message.setAttribute('aria-label',BridgeI18n.t('提交说明'));
+    const progress=this.node('p','wb-status'),more=this.button(BridgeI18n.t('加载更多'),()=>load());
+    let offset=0,loading=false,ready=false;const controller=new AbortController();
+    const dialog=this.dialog(BridgeI18n.t('提交到 ')+this.state.branch,
+      BridgeI18n.t('提交整个项目全部已暂存内容，保留未暂存改动。')+' '+count+' '+BridgeI18n.t('个文件'),
+      BridgeI18n.t('确认提交'),()=>{if(!ready||loading||!dialog.open||this.tab.controller?.signal.aborted)throw Error(BridgeI18n.t('请等待暂存列表加载完成'));return this.execute({action:'commit',message:message.value},version);},[list,progress,more,message]);
+    const submit=dialog.querySelector('.primary');submit.disabled=true;
+    dialog.addEventListener('close',()=>controller.abort());
+    const load=async()=>{
+      if(loading||controller.signal.aborted)return;loading=true;more.disabled=true;submit.disabled=true;
+      try{
+        const result=await this.workbench.request(this.statusUrl({offset,section:'staged',untrackedPath:'',version}),undefined,controller.signal);
+        if(controller.signal.aborted||!dialog.open)return;
+        if(result.version!==version)throw Error(BridgeI18n.t('仓库已发生变化，请刷新并核对后继续查看'));
+        for(const entry of result.entries)list.append(this.workbench.raw(this.node('li','',entry.path)));
+        if(!result.entries.length&&this.state.operation==='merge')list.append(this.node('li','',BridgeI18n.t('文件内容不变，本次提交记录分支合并关系。')));
+        offset=result.nextOffset;more.hidden=offset==null;ready=true;progress.className='wb-status';
+        progress.textContent=list.children.length+' / '+count;
+      }catch(error){if(!controller.signal.aborted){ready=false;progress.className='wb-status error';progress.textContent=BridgeI18n.t(error.message);}}
+      finally{loading=false;if(dialog.open){more.disabled=false;submit.disabled=!ready;}}
+    };
+    load();return dialog;
   }
+
   graph(commit, lanes) {
     let lane = lanes.indexOf(commit.id), incoming = lane >= 0;
     if (lane < 0) { lane = lanes.length; lanes.push(commit.id); }
@@ -259,7 +325,7 @@ class GitPanel {
       card.append(name, actions); list.append(card);
     }
     if (!result.branches.length) list.append(this.node('p', 'wb-status', BridgeI18n.t('首次提交后会显示分支记录')));
-    if (this.state.entries.length) list.prepend(this.node('p', 'wb-status', BridgeI18n.t('切换和合并前，请先提交或在电脑上保存未提交的改动。')));
+    if (this.counts().total) list.prepend(this.node('p', 'wb-status', BridgeI18n.t('切换和合并前，请先提交或在电脑上保存未提交的改动。')));
   }
 
 }

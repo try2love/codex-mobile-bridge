@@ -14,25 +14,35 @@ class MessageManagement {
     const headerActions=this.node('div','message-management-header-actions');headerActions.append(this.refreshButton,this.closeButton);head.append(headerActions);
     this.dialog.append(head,this.status,this.content);this.doc.body.append(this.dialog);
     this.dialog.addEventListener('cancel',event=>{if(this.busy||this.drag)event.preventDefault();});
-    this.dialog.addEventListener('close',()=>{this.generation++;this.cancelDrag();this.opener?.focus({preventScroll:true});});
+    this.dialog.addEventListener('close',()=>{this.generation++;this.stopNativeRefresh();this.cancelDrag();this.opener?.focus({preventScroll:true});});
   }
   node(tag,className=''){const node=this.doc.createElement(tag);node.className=className;return node;}
   button(label,action){const button=this.node('button');button.type='button';button.textContent=this.t(label);button.addEventListener('click',action);return button;}
+  cloneValue(value){if(typeof structuredClone==='function')return structuredClone(value);return value===undefined?undefined:JSON.parse(JSON.stringify(value));}
   current(token){return this.dialog.open&&this.generation===token;}
   async open(){
-    if(this.busy)return;this.target=structuredClone(typeof this.scope==='function'?this.scope():this.scope);if(!this.target)return;
+    if(this.busy)return;this.target=this.cloneValue(typeof this.scope==='function'?this.scope():this.scope);if(!this.target)return;
     const token=++this.generation;
-    this.opener=this.doc.activeElement;this.beforeOpen();await Promise.resolve(this.editorSave).catch(()=>{});this.editor=await this.loadEditor(this.target);this.persistedEditor=structuredClone(this.editor);if(token!==this.generation)return;
+    this.data=null;this.local=[];this.content.replaceChildren();
+    this.opener=this.doc.activeElement;this.beforeOpen();await Promise.resolve(this.editorSave).catch(()=>{});this.editor=await this.loadEditor(this.target);this.persistedEditor=this.cloneValue(this.editor);if(token!==this.generation)return;
     this.dialog.showModal();this.generation++;await this.refresh();
   }
   locked(){return this.busy||!!this.drag||!!this.editor||Date.now()<(this.scrollingUntil||0);}
-  async refresh(){
+  stopNativeRefresh(){clearInterval(this.nativeTimer);this.nativeTimer=null;}
+  async refresh(quiet=false){
     if(this.busy||this.drag)return;
-    const token=this.generation,request=this.refreshGeneration=(this.refreshGeneration||0)+1,editor=this.editor,scroll=this.scrollEpoch||0;const valid=()=>this.current(token)&&request===this.refreshGeneration&&!this.busy&&!this.drag&&this.editor===editor&&(this.scrollEpoch||0)===scroll;this.status.textContent=this.t('正在读取消息…');
+    if(quiet&&(this.refreshing||this.locked()||this.doc.hidden||!this.dialog.open))return;
+    const token=this.generation,request=this.refreshGeneration=(this.refreshGeneration||0)+1,editor=this.editor,scroll=this.scrollEpoch||0;const valid=()=>this.current(token)&&request===this.refreshGeneration&&!this.busy&&!this.drag&&this.editor===editor&&(this.scrollEpoch||0)===scroll;
+    this.refreshing=request;if(!quiet)this.status.textContent=this.t('正在读取消息…');
     try{
       const records=await this.localRecords(this.target),ids=records.map(r=>r.id);if(this.editor?.id)ids.push(this.editor.id);
       const data=await this.load(this.target,{ids:[...new Set(ids)]});if(!valid())return;
-      const remaining=await this.localRecords(this.target);if(!valid())return;this.data=data;this.local=remaining;this.status.textContent='';
+      const remaining=await this.localRecords(this.target);if(!valid())return;
+      this.status.textContent='';
+      if(data.nativeQueue===undefined)this.stopNativeRefresh();
+      else if(!this.nativeTimer)this.nativeTimer=setInterval(()=>this.refresh(true),3000);
+      if(quiet&&JSON.stringify([data,remaining])===JSON.stringify([this.data,this.local]))return;
+      this.data=data;this.local=remaining;
       if(this.editor?.status==='unknown'&&this.editApplied(data,this.editor)){await this.persistEditor(null);this.editor=null;}
       if(this.editor?.operation==='edit'&&this.editor.status==='editing'){
         const row=(data.queue||[]).find(row=>row.id===this.editor.sourceId);
@@ -42,10 +52,11 @@ class MessageManagement {
       }
       this.render();
     }catch(error){if(valid())this.status.textContent=error.message||String(error);}
+    finally{if(this.refreshing===request)this.refreshing=null;}
   }
   // Background state must not replace an actively edited list or its scroll position.
   update(){if(this.dialog.open&&!this.locked())return this.refresh();}
-  persistEditor(value){const target=structuredClone(this.target),snapshot=structuredClone(value);this.editorSave=Promise.resolve(this.editorSave).catch(()=>{}).then(async()=>{await this.saveEditor(target,snapshot,this.persistedEditor??null);this.persistedEditor=structuredClone(snapshot);});return this.editorSave;}
+  persistEditor(value){const target=this.cloneValue(this.target),snapshot=this.cloneValue(value);this.editorSave=Promise.resolve(this.editorSave).catch(()=>{}).then(async()=>{await this.saveEditor(target,snapshot,this.persistedEditor??null);this.persistedEditor=this.cloneValue(snapshot);});return this.editorSave;}
   async action(callback){
     if(this.busy||this.drag)return;this.busy=true;this.closeButton.disabled=true;this.refreshButton.disabled=true;this.content.inert=true;this.status.textContent='';
     try{await callback();return true;}catch(error){this.status.textContent=error.message||String(error);return false;}
@@ -53,7 +64,8 @@ class MessageManagement {
   }
   render(){
     const scroll=this.content.scrollTop;this.content.replaceChildren();
-    this.queue=this.data.queue||[];const queueSection=this.section('待发送队列');this.list=this.node('ol','message-management-queue');queueSection.append(this.list);
+    const native=this.data.nativeQueue,showNative=native===null||!!native?.length;
+    this.queue=this.data.queue||[];const queueSection=this.section(showNative?'网关待发送队列':'待发送队列');this.list=this.node('ol','message-management-queue');queueSection.append(this.list);
     if(!this.queue.length)this.empty(queueSection,'当前没有待发送消息');
     const canReorder=this.data.capabilities?.reorder!==false;
     for(const [index,row] of this.queue.entries()){
@@ -69,6 +81,20 @@ class MessageManagement {
       item.append(handle,copy,controls);this.list.append(item);
     }
     if((this.data.reason||this.data.capabilities?.reason)){const reason=this.node('p','muted');reason.textContent=this.t(this.data.reason||this.data.capabilities.reason);queueSection.append(reason);}
+    if(showNative){
+      const section=this.section('Codex 中待发送');
+      if(native===null)this.empty(section,'暂时无法读取 Codex 的待发送消息。');
+      else{
+        this.empty(section,'这些消息由 Codex 发送。请在电脑上的 Codex 中编辑、排序或撤回。');
+        const list=this.node('ol','message-management-queue');section.append(list);
+        for(const row of native){
+          const item=this.node('li','message-management-row'),copy=this.node('div','message-management-copy'),text=this.node('div','message-management-text');
+          text.textContent=row.text;copy.append(text);
+          if(row.attachments?.length){const names=this.node('small');names.textContent=row.attachments.join(' · ');copy.append(names);}
+          item.append(copy);list.append(item);
+        }
+      }
+    }
     const unknown=this.section('发送结果未确认');
     const server=this.data.unknown||[],serverIds=new Set(server.map(row=>row.id));
     for(const row of server)this.pendingRow(unknown,row,(this.local||[]).some(local=>local.id===row.id)?'服务端及此设备记录':'服务端记录',()=>this.ignoreServer(row));
@@ -93,7 +119,7 @@ class MessageManagement {
   async editRow(row){
     if(this.editor){this.status.textContent=this.t('请先完成或放弃当前编辑');return;}
     const ok=await this.action(async()=>{
-      const editor={id:row.id,sourceId:row.id,baseVersion:this.data.version,originalText:row.text||'',body:structuredClone(row),status:'editing',operation:'edit'};
+      const editor={id:row.id,sourceId:row.id,baseVersion:this.data.version,originalText:row.text||'',body:this.cloneValue(row),status:'editing',operation:'edit'};
       await this.persistEditor(editor);this.editor=editor;
     });if(ok){this.render();this.editInput?.focus({preventScroll:true});}
   }
@@ -155,6 +181,6 @@ class MessageManagement {
     this.doc.addEventListener('pointermove',move);this.doc.addEventListener('pointerup',end);this.doc.addEventListener('pointercancel',end);
   }
   cancelDrag(){const drag=this.drag;this.drag=null;drag?.cleanup?.();}
-  dispose(){this.generation++;this.cancelDrag();this.dialog.remove();}
+  dispose(){this.generation++;this.stopNativeRefresh();this.cancelDrag();this.dialog.remove();}
 }
 if(typeof module!=='undefined')module.exports={MessageManagement};

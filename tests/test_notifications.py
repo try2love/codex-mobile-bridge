@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.features.notifications.channels import Notifications, publish, publish_bark, publish_pushplus, publish_webhook, settings, save_settings, save_webhook_endpoint, channels, write_json, read_json, visible_webhook, destination, resolved_webhook_provider
+from bridge.features.notifications.channels import Notifications, publish, publish_bark, publish_pushplus, publish_webhook, settings, save_settings, save_webhook_endpoint, channels, write_json, read_json, read_status_json, visible_webhook, destination, resolved_webhook_provider
 from bridge.app.service import LiveSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +60,45 @@ class NotificationTests(unittest.TestCase):
         save_settings(self.directory, {'enabled': True, 'topic': 'test', 'token': 'secret-token',
                                        'includeTitle': False, 'mobileEnabled': False})
         self.manager.watch(self.thread, 'remote', True)
+
+    def test_opt_in_answer_preview_uses_completed_turn_and_excludes_tools(self):
+        self.manager.watch(self.thread, 'remote', True, True)
+        self.session.state = {'title': 'Title', 'requests': [], 'turns': []}
+        save_settings(self.directory, {'includeAnswer': True})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.scan()
+            self.session.state['turns'] = [{'turnId': 'answer-turn', 'status': 'inProgress', 'items': []}]
+            self.manager.scan()
+            self.session.state['turns'][0].update(status='completed', items=[
+                {'type': 'agentMessage', 'phase': 'commentary', 'text': 'private reasoning'},
+                {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Final answer ' * 40},
+                {'type': 'commandExecution', 'text': 'private command output'}])
+            self.manager.scan()
+            body = send.call_args.args[2]
+            self.assertTrue(body.startswith('Final answer'))
+            self.assertLessEqual(len(body), 281)
+            self.assertNotIn('private', body)
+
+    def test_queued_preview_obeys_disabled_setting_and_cannot_use_another_turn(self):
+        self.manager.watch(self.thread, 'remote', True, True)
+        row = {'id': self.thread, 'host': 'remote'}
+        config = settings(self.directory)
+        target = self.manager._targets(config)['ntfy']
+        key = self.manager._delivery_key(row, 'completed-turn', completion=True, target=target)
+        save_settings(self.directory, {'includeAnswer': True})
+        config = settings(self.directory)
+        self.manager._dispatch(config, row, 'Title', 'ntfy', target, [key], True,
+                               answer_previews={'other-turn': 'wrong answer'})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.deliver_pending()
+            self.assertNotIn('wrong answer', send.call_args.args[2])
+        self.manager.ledger.clear()
+        self.manager._dispatch(config, row, 'Title', 'ntfy', target, [key], True,
+                               answer_previews={'completed-turn': 'private answer'})
+        save_settings(self.directory, {'includeAnswer': False})
+        with patch('bridge.features.notifications.channels.publish') as send:
+            self.manager.deliver_pending()
+            self.assertNotIn('private answer', send.call_args.args[2])
 
     def test_global_defaults_monitor_unwatched_chats_without_loading_history(self):
         # Discovery finds a chat that was never explicitly watched.
@@ -1049,3 +1088,53 @@ class NotificationTests(unittest.TestCase):
             self.assertNotIn('token', captured[0][0])
         finally:
             server.shutdown();server.server_close()
+
+    def test_corrupt_notification_status_never_kills_workers_or_breaks_desktop_snapshot(self):
+        # 通知状态文件损坏或为非字典时，后台扫描/投递/推送线程与桌面端快照都必须保持存活，
+        # 同时 server-host-keys 等安全文件使用的严格 read_json() 契约维持不变。
+        status_path = self.directory/'notification-status.json'
+        for raw in ('{corrupt', '[]'):
+            with self.subTest(raw=raw):
+                status_path.write_text(raw, encoding='utf-8')
+                self.assertEqual(read_status_json(status_path, {}), {})
+                self.manager._report_worker_error(error='扫描异常')
+                saved = read_json(status_path, {})
+                self.assertEqual(saved['error'], '扫描异常')
+
+        # 模拟扫描/投递/推送线程各自进入异常处理后再进入下一轮循环，确认状态文件损坏
+        # 或写入 I/O 失败均不会导致守护线程提前退出。
+        status_path.write_text('{corrupt', encoding='utf-8')
+        scan_calls = []
+        deliver_calls = []
+        push_calls = []
+        with patch.object(self.manager, 'scan', side_effect=lambda **kw: (scan_calls.append(kw), (_ for _ in ()).throw(RuntimeError('boom')))[1]), \
+             patch.object(self.manager, 'deliver_pending', side_effect=lambda: (deliver_calls.append(1), (_ for _ in ()).throw(RuntimeError('boom')))[1]), \
+             patch.object(self.manager.mobile_push, 'drain', side_effect=lambda *a: (push_calls.append(a), (_ for _ in ()).throw(RuntimeError('boom')))[1]):
+            orig_closed, orig_wakeup, orig_delivery = self.manager.closed, self.manager.wakeup, self.manager.delivery_wakeup
+            def run_two_passes(method, tracker):
+                def is_closed():
+                    return len(tracker) >= 2
+                self.manager.closed = type('C', (), {
+                    'is_set': staticmethod(is_closed),
+                    'wait': staticmethod(lambda timeout: is_closed()),
+                    'set': staticmethod(lambda: None),
+                })()
+                self.manager.wakeup = type('W', (), {'wait': staticmethod(lambda t: True), 'clear': staticmethod(lambda: None)})()
+                self.manager.delivery_wakeup = type('D', (), {'wait': staticmethod(lambda t: True), 'clear': staticmethod(lambda: None)})()
+                getattr(self.manager, method)()
+                self.assertGreaterEqual(len(tracker), 2)
+
+            try:
+                run_two_passes('_run', scan_calls)
+                run_two_passes('_delivery_run', deliver_calls)
+                run_two_passes('_push_run', push_calls)
+            finally:
+                self.manager.closed, self.manager.wakeup, self.manager.delivery_wakeup = orig_closed, orig_wakeup, orig_delivery
+
+        with patch('bridge.features.notifications.channels.write_json', side_effect=OSError('disk full')):
+            self.manager._report_worker_error('nativePush', error='不可用')
+
+        status_path.write_text('{corrupt', encoding='utf-8')
+        self.assertEqual(read_status_json(status_path, {}), {})
+        with self.assertRaises(ValueError):
+            read_json(status_path, {})

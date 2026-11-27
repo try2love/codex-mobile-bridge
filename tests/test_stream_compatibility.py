@@ -20,6 +20,14 @@ class StreamCompatibilityTests(unittest.TestCase):
     def test_legacy_partial_snapshots_remain_readable(self):
         validate_stream_state(11, {'id': 'thread'})
 
+    def test_native_quota_failure_system_error_state_is_readable(self):
+        state = self.state()
+        state['threadRuntimeStatus'] = {'type': 'systemError'}
+        state['turns'] = [{'turnId': 'quota-turn', 'status': 'failed', 'items': [],
+                          'error': {'message': 'Your workspace is out of credits. Add credits to continue.',
+                                    'codexErrorInfo': 'usageLimitExceeded'}}]
+        validate_stream_state(13, state)
+
     def test_v13_requires_readable_control_state(self):
         for key, value in [('requests', None), ('threadRuntimeStatus', {'type': 'unknown'}),
                            ('turns', [{'status': 'new-status', 'items': []}])]:
@@ -29,6 +37,13 @@ class StreamCompatibilityTests(unittest.TestCase):
                 validate_stream_state(13, state)
         with self.assertRaises(StreamCompatibilityError):
             validate_stream_state(13, {'id': 'thread'})
+
+    def test_v13_accepts_native_system_error_after_a_failed_turn(self):
+        value = self.state()
+        value['threadRuntimeStatus'] = {'type': 'systemError'}
+        value['turns'] = [{'status': 'failed', 'completedAt': 1770000000000,
+                           'items': [{'type': 'agentMessage', 'text': 'upstream request failed'}]}]
+        validate_stream_state(13, value)
 
     def test_future_versions_accept_canonical_history_and_pending_approvals(self):
         value = self.state()

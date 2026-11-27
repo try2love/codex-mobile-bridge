@@ -293,7 +293,7 @@
 // Only a proven route for this gateway receives this checkpoint. Never execute a saved write.
 (() => {
   const key = 'bridge-channel-reading';
-  const localKey = name => name.startsWith('composer-v1:') || name === 'bridge-client' || name === 'bridge-appearance' || name.startsWith('navigation:');
+  const localKey = name => name.startsWith('composer-v1:') || name === 'bridge-client' || name === 'bridge-appearance' || name === 'bridge-composer-preferences' || name.startsWith('navigation:');
   const temporaryKey = name => /^(pending:|draft:|skills:|work-mode:|message-edit:|new-chat-attempt$)/.test(name);
   const pairs = (store, keep) => Object.fromEntries(Object.entries(store).filter(([name]) => keep(name)));
   function viewport() {
@@ -335,6 +335,85 @@
       history.replaceState(null,'',url);location.reload();
     }
   };
+  const resumeURL=location.href?.includes('offlineAnchor=') ? new URL(location.href) : null;
+  const encodedAnchor=resumeURL?.searchParams.get('offlineAnchor') ?? null;
+  if(encodedAnchor!==null){
+    resumeURL.searchParams.delete('offlineAnchor');
+    history.replaceState(history.state,'',resumeURL);
+    let anchor;
+    try { if(encodedAnchor.length<=2048)anchor=JSON.parse(encodedAnchor); } catch {}
+    if(anchor && typeof anchor.key==='string' && anchor.key.length>0 && anchor.key.length<=128 &&
+       Number.isFinite(anchor.offset) && Math.abs(anchor.offset)<=1000000 && resumeURL.hash){
+      restoreOfflineChat(resumeURL.hash,anchor);
+      return;
+    }
+  }
+  function restoreOfflineChat(hash,anchor){
+    const route=new URL(location.href);
+    route.hash=hash;
+    let id,host;
+    try{
+      const parts=route.hash.slice(1).split('~');
+      if(parts.length!==2)return;
+      id=decodeURIComponent(parts[0]);host=decodeURIComponent(parts[1]);
+    }catch{return;}
+    let reading=null,ready=false,stopped=false,frame=0,loading=false,attempted=false;
+    const timer=setTimeout(stop,30000);
+    const timeline=()=>host.startsWith('desktop:')?
+      (typeof desktopSessions!=='undefined'&&desktopSessions.isChatOpen&&desktopSessions.sid===id&&
+       'desktop:'+desktopSessions.provider===host&&desktopSessions.syncTimeline):
+      (typeof currentId!=='undefined'&&currentId===id&&currentHost===host&&typeof chatTimeline!=='undefined'&&chatTimeline);
+    // Desktop-client chats keep the selected route in history.state and clear the initial deep-link hash.
+    const stillHere=()=>!stopped&&!document.hidden&&(!location.hash||location.hash===hash);
+    const recordedKey=value=>typeof value==='string'&&/^(?:[0-9a-f]{24}-(?:\d+|error)|process-[0-9a-f]{24})$/.test(value);
+    const findKey=(view,key)=>view.findNode(key)||view.nodes.get('sync-process:'+key)?.node;
+    function visible(event){
+      if(event.detail?.threadId!==id||event.detail?.host!==host)return;
+      ready=true;schedule();
+    }
+    function schedule(){if(stillHere()&&ready&&!frame)frame=requestAnimationFrame(restore);}
+    function stop(){
+      stopped=true;clearTimeout(timer);cancelAnimationFrame(frame);
+      for(const event of ['pointerdown','wheel','keydown','hashchange','pagehide'])window.removeEventListener(event,stop,true);
+      document.removeEventListener('bridge-chat-visible',visible);
+    }
+    async function restore(){
+      frame=0;
+      const view=timeline();
+      if(!stillHere()||!ready||!view||view.cached||view.abort.signal.aborted||loading)return;
+      let selected=findKey(view,anchor.key);
+      if(!selected&&!attempted&&view.syncEnabled){
+        attempted=true;loading=true;
+        try{
+          for(const key of new Set([anchor.key,anchor.questionKey].filter(recordedKey))){
+            selected=findKey(view,key);
+            if(selected)break;
+            const page=await view.syncRead('range',{start:key,end:key,limit:1});
+            if(!stillHere()||timeline()!==view||!view.syncActive()||view.abort.signal.aborted)return;
+            if(page?.rows?.length){
+              view.applySync(page,{older:true,range:true});
+              if(page.range?.complete)view.syncRanges.set(page.range.start,page.range);
+              if(page.range?.start===key){view.before=key;view.hasMore=true;view.historyStatus();}
+              selected=findKey(view,key);
+              if(selected)break;
+            }
+          }
+        }catch{}finally{loading=false;}
+      }
+      if(!selected&&typeof anchor.turnId==='string'){
+        const nearby=[...view.rows.values()].find(({row})=>row.turnId===anchor.turnId&&row.role==='user');
+        if(nearby)selected=view.findNode(nearby.row.key);
+      }
+      if(!selected||selected.hidden||!stillHere())return;
+      reading={key:selected.dataset.key,offset:[anchor.key,'sync-process:'+anchor.key].includes(selected.dataset.key)?anchor.offset:0};
+      view.following=false;view.restore(reading,false);
+    }
+    window.BridgeMobileHandoff.readingAnchor=view=>stillHere()&&ready&&view===timeline()?reading:null;
+    for(const event of ['pointerdown','wheel','keydown','hashchange','pagehide'])window.addEventListener(event,stop,true);
+    document.addEventListener('bridge-chat-visible',visible);
+    const view=timeline();
+    if(view?.receivedFreshPage){ready=true;schedule();}
+  }
   let saved;
   try { saved=sessionStorage.getItem(key); } catch { return; }
   if(!saved)return;
@@ -385,4 +464,34 @@
   window.addEventListener('pointerdown',stop,true);window.addEventListener('wheel',stop,true);window.addEventListener('keydown',stop,true);
   document.addEventListener('bridge-chat-visible',schedule);
   observer.observe(document.body,{childList:true,subtree:true});schedule();
+})();
+
+// Private display storage follows the native verified computer binding, not a URL.
+(() => {
+  if(window.top!==window||window.BridgeMobileStorage)return;
+  const token='__BRIDGE_CLIPBOARD_TOKEN__',pending=new Map();let serial=0;
+  function request(op,key,value){return new Promise(resolve=>{
+    const id=String(++serial),timer=setTimeout(()=>{pending.delete(id);resolve(undefined);},5000);
+    pending.set(id,result=>{clearTimeout(timer);resolve(result);});
+    try{if(window.prompt('codexbridge-display:'+token,JSON.stringify({id,op,key,...(value===undefined?{}:{value})}))==='queued')return;}catch{}
+    pending.get(id)?.(undefined);pending.delete(id);
+  });}
+  window.BridgeMobileStorage={request,receive(secret,response){if(secret!==token)return;const done=pending.get(response?.id);pending.delete(response?.id);done?.(response.ok?response.value:undefined);}};
+  function preference(key, localKey, changed, restored, events) {
+    let edited=false;
+    events.addEventListener(changed,event=>{edited=true;request('write',key,event.detail);});
+    async function restore(){
+      const value=await request('read',key);
+      if(!edited&&value&&typeof value==='object'){
+        try{localStorage.setItem(localKey,JSON.stringify(value));}catch{}
+        events.dispatchEvent(new CustomEvent(restored,{detail:value}));
+      }else if(value===null&&!edited){
+        try{const local=JSON.parse(localStorage.getItem(localKey));if(local)await request('write',key,local);}catch{}
+      }
+    }
+    document.addEventListener('bridge-authenticated',restore);restore();
+  }
+  preference('appearance','bridge-appearance','bridge-appearance-change','bridge-appearance-restored',document);
+  preference('composer-preferences','bridge-composer-preferences','bridge-composer-preferences-change','bridge-composer-preferences-restored',window);
+  document.dispatchEvent(new Event('bridge-mobile-storage'));
 })();

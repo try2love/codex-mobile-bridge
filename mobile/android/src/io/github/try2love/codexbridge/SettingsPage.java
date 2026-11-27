@@ -49,6 +49,8 @@ final class SettingsPage extends Dialog implements SharedPreferences.OnSharedPre
   ui.hint(backgroundToggle.row,"后台通知功能说明",()->new AlertDialog.Builder(getContext()).setTitle(ui.L("后台通知功能说明")).setMessage(ui.L("后台通知仍在完善中，开启后可能增加耗电或发热。\n遇到问题或有改进建议，欢迎提交 Issue 或 PR。感谢支持！")).setPositiveButton(ui.L("关闭"),null).show());
   systemHost=ui.column();systemHost.setPadding(0,ui.dp(16),0,0);notificationHost.addView(systemHost);buildNotifications();
   LinearLayout app=ui.section(body,"应用");themeRow(app);
+  ui.action(app,"保留的离线记录","",owner::retainedOffline);
+  ui.action(app,"清除离线缓存","",owner::clearOffline);
   LinearLayout update=ui.action(app,"检查更新","",()->{});TextView value=ui.value(update,owner.appVersion());
   android.view.ViewGroup.LayoutParams valueLayout=value.getLayoutParams();update.removeView(value);update.addView(value,update.getChildCount()-1,valueLayout);
   update.setOnClickListener(v->owner.checkUpdate(this,update,value));

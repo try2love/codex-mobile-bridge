@@ -304,6 +304,7 @@ class RecentHistoryTests(unittest.TestCase):
         for limit in (None, 1):
             view = self.store.history('fixture', limit) if limit else self.store.history('fixture')
             self.assertEqual(view['turns'][-1]['startedAt'], '2026-11-09T09:24:00Z')
+            self.assertEqual(view['turns'][-1]['completedAt'], '2026-11-09T09:24:00Z')
             self.assertEqual([row['timestamp'] for row in view['turns'][-1]['items']],
                              ['2026-11-09T09:24:00Z'] * 2)
 

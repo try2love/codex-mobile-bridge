@@ -37,3 +37,13 @@ test('native app quit prompts and results translate in both desktop and mobile',
  const messages=["通过 Claude 原生菜单退出，菜单可能短暂出现；如有任务或保存确认，请在电脑端处理。","安装和登录请在电脑端完成。关闭接入时可选择保留或退出电脑 App。Claude 退出会短暂打开原生菜单。Claude 首次连接需在电脑端手动初始化。","此退出操作仅用于 Claude 桌面端","Claude 进程已变化，请重新检查后再退出","请在电脑端处理 Claude 的任务或保存提示后重试","Claude 尚未退出，请在电脑端处理任务或保存提示后重试","已取消 Claude 退出","找不到 Claude 的原生退出菜单，请在电脑端检查菜单后重试","Claude 退出菜单不唯一，请在电脑端检查后重试","Claude 主进程已改变，退出请求已停止","焦点已离开 Claude，退出请求已停止，请重试","Claude 有待处理的原生对话框，请在电脑端确认或取消","Claude 已正常退出","Claude 正在等待电脑端退出确认，请自行确认或取消","已请求 Claude 正常退出，正在等待保存和退出完成","缺少 Claude 原生退出组件，请重新构建或安装网关 App","无法启动 Claude 原生退出组件，请检查网关安装","Claude 原生退出请求超时，请在电脑端检查退出状态","Claude 原生退出组件未返回有效状态，请在电脑端检查退出状态","此退出操作仅用于 Harness 桌面端","当前 Harness 未提供可验证的后台退出通道，请更新桌面端后重试","Harness 运行实例的数据目录无法核对，请重新扫描后重试","Harness 正常退出请求尚未完成，请稍后重试","Harness 拒绝了正常退出请求，请在电脑端检查后重试"];
  i18n.setLanguage('en');for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/,source);assert.equal(desktop.translate(source,'en'),i18n.t(source));}i18n.setLanguage('zh');
 });
+
+test('Antigravity native command, compact, and work mode errors translate cleanly',()=>{
+ const messages=['所选 Skill 参数无效','Antigravity 工作模式无效','原会话正在等待交互确认，请先回应后再切换工作模式','Antigravity 暂不支持此目标状态操作，请在原对话继续交互','请输入目标内容','目标不能超过 4000 字','原会话正在等待交互确认，请先回应后再设定目标','请等待 Antigravity 原生会话空闲后再设定目标','当前 Antigravity 原生环境暂未提供 /goal 指令','当前 Antigravity 原生环境暂未提供 /plan 模式','当前 Antigravity 原生环境暂未提供 /teamwork 指令','原会话正在等待交互确认，请先回应后再压缩上下文','请等待 Antigravity 原生会话空闲后再压缩上下文','当前 Antigravity 原生环境暂未提供 /compact 指令','暂时无法读取 Antigravity 原生指令与 Skill 列表','原会话运行中，排队或插话暂不支持 /指令 与 Skill，请等待当前回复结束后直接发送'];
+ i18n.setLanguage('en');
+ for(const source of messages){assert.doesNotMatch(i18n.t(source),/[\u4e00-\u9fff]/,source);}
+ assert.equal(i18n.t('工作流'),'Workflow');
+ assert.equal(i18n.t('当前 Antigravity 原生环境暂未提供 /teamwork 指令'),'The current Antigravity native environment does not provide the /teamwork command.');
+ assert.equal(i18n.t('当前 Antigravity 原生环境暂未提供 /plan 模式'),'The current Antigravity native environment does not provide the /plan mode.');
+ i18n.setLanguage('zh');
+});
