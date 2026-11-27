@@ -12,6 +12,23 @@ spec.loader.exec_module(acceptance)
 
 
 class OfficialWindowsAcceptanceGuardTests(unittest.TestCase):
+    def test_native_bootstrap_only_adds_known_defaults_without_overwriting_configuration(self):
+        before = {'model_provider': 'isolated_acceptance',
+                  'plugins': {'pdf@openai-primary-runtime': {'enabled': True}}}
+        after = {**before, 'marketplaces': {'openai-primary-runtime': {'source_type': 'local', 'source': 'fixture'}}}
+        self.assertEqual(acceptance.native_bootstrap_additions(before, after), [
+            'marketplaces.openai-primary-runtime.source', 'marketplaces.openai-primary-runtime.source_type'])
+        invalid = [
+            {**after, 'model_provider': 'other'},
+            {**after, 'plugins': {'pdf@openai-primary-runtime': {'enabled': False}}},
+            {**after, 'openai_base_url': 'https://example.invalid'},
+            {**after, 'plugins': {'pdf@openai-primary-runtime': {'enabled': True},
+                                 'documents@openai-primary-runtime': {'enabled': False}}},
+        ]
+        for config in invalid:
+            with self.subTest(config=config), self.assertRaises(RuntimeError):
+                acceptance.native_bootstrap_additions(before, config)
+
     def test_daily_non_windows_and_self_hosted_do_not_reach_download_or_files(self):
         for platform, actions, runner in [('win32', '', ''), ('win32', 'true', 'self-hosted'),
                                           ('darwin', 'true', 'github-hosted')]:

@@ -31,6 +31,29 @@ def powershell(command):
         base64.b64encode(command.encode('utf-16le')).decode()], text=True, encoding='utf-8-sig')
 
 
+def config_leaves(value, prefix=''):
+    flattened = {}
+    for key, item in value.items():
+        path = prefix+'.'+key if prefix else key
+        flattened.update(config_leaves(item, path) if isinstance(item, dict) else {path: item})
+    return flattened
+
+
+def native_bootstrap_additions(before, after):
+    """First-run defaults only; never allow an existing fixture value to change."""
+    old, new = config_leaves(before), config_leaves(after)
+    if any(key not in new or new[key] != value for key, value in old.items()):
+        raise RuntimeError('Native first-run bootstrap changed an existing configuration value')
+    added = new.keys()-old.keys()
+    plugins = {f'plugins.{name}@openai-primary-runtime.enabled'
+               for name in ('documents', 'pdf', 'presentations', 'spreadsheets', 'template-creator')}
+    allowed = plugins | {'marketplaces.openai-primary-runtime.source',
+                         'marketplaces.openai-primary-runtime.source_type'}
+    if not added <= allowed or any(new[key] is not True for key in added & plugins):
+        raise RuntimeError('Native first-run bootstrap added unexpected configuration fields')
+    return sorted(added)
+
+
 def inspect_menu(helper, pid, *, advance_onboarding=False, skip_tutorial=False, confirm_skip=False):
     """Inspect this empty test App; optionally continue its known first-run page once."""
     return json.loads(powershell("$helper='"+str(helper).replace("'", "''")+"'; $target="+str(pid)+
@@ -251,14 +274,8 @@ def main():
                 result['fixtureObservation'] = {'changedFiles': changes, 'sessionFiles': sessions,
                                                 'syntheticApiPosts': LocalApi.posts}
                 if 'config.toml' in changes:
-                    def leaves(value, prefix=''):
-                        flattened = {}
-                        for key, item in value.items():
-                            path = prefix+'.'+key if prefix else key
-                            flattened.update(leaves(item, path) if isinstance(item, dict) else {path: item})
-                        return flattened
-                    old = leaves(tomllib.loads(fixtures['config.toml'].decode('utf-8')))
-                    new = leaves(tomllib.loads((home/'config.toml').read_text(encoding='utf-8')))
+                    old = config_leaves(tomllib.loads(fixtures['config.toml'].decode('utf-8')))
+                    new = config_leaves(tomllib.loads((home/'config.toml').read_text(encoding='utf-8')))
                     result['fixtureObservation']['configChangedKeys'] = sorted(
                         key for key in old.keys() | new.keys() if old.get(key) != new.get(key))
                 raise RuntimeError('Isolated account/configuration changed or a conversation request was made')
@@ -410,7 +427,22 @@ def main():
             if state.get('phase') == 'failed' and state.get('taskStateUnavailable'):
                 # This newly created profile has no login or chats. Exercise the
                 # existing explicit unavailable-state confirmation without faking an audit.
+                if attempt == 0:
+                    # The first audit returned before stop/configure/start. The
+                    # official App may finish registering built-in plugins during
+                    # that read-only phase. Preserve every existing value and
+                    # finish this native bootstrap before the actual restart.
+                    config = (home/'config.toml').read_bytes()
+                    additions = native_bootstrap_additions(
+                        tomllib.loads(fixtures['config.toml'].decode('utf-8')),
+                        tomllib.loads(config.decode('utf-8')))
+                    result['nativeFirstRunAdditions'] = additions
+                    if (home/'auth.json').read_bytes() != fixtures['auth.json']:
+                        raise RuntimeError('Native first-run bootstrap changed the isolated authentication')
+                    fixtures['config.toml'] = config
                 unchanged_fixture()
+                before, previous_processes = owner_snapshot()
+                previous = {pid: previous_processes[pid] for pid in before['mainPids']}
                 request.update(requestId=str(uuid.uuid4()), acknowledgeUnavailable=True)
                 state = bridge.initialize(request)
                 result['initializationStates'].append({
