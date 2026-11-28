@@ -101,6 +101,7 @@ function chatFinalAnswer(row){
 }
 // Use native turn and answer identities. Missing evidence keeps the flat rows visible.
 function chatTurnProcessRow(row){
+  if(row.kind==='imageGeneration'&&row.attachments?.length)return false;
   return !row.fileSummary&&(row.role==='user'&&row.interaction==='response'||row.role==='activity'||chatActivityKind(row)==='reasoning'||
     row.role==='assistant'&&row.phase==='commentary');
 }

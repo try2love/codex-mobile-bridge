@@ -43,6 +43,18 @@ def decode_tool_image(data, mime):
     return raw if len(raw) <= MAX_IMAGE_BYTES and image_type(raw) == mime else None
 
 
+def generated_image_content(result):
+    """Wrap the native image-generation result in the shared inline image format."""
+    if not isinstance(result, str):
+        return None
+    prefix = result.slice(0, 16) if isinstance(result, StoredString) else result[:16]
+    try:
+        mime = image_type(base64.b64decode(prefix, validate=True))
+    except (ValueError, binascii.Error):
+        return None
+    return {'type': 'image', 'mimeType': mime, 'data': result} if mime else None
+
+
 class _StoredImage:
     __slots__ = ('data', 'start')
 

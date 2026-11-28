@@ -1353,7 +1353,12 @@ class SessionStore:
                     # The response_item supplies display text; this separate
                     # persisted event supplies the native acceptance identity.
                     persisted_user_ids.append(item.get('client_id'))
-                if isinstance(item, dict) and item.get("type") in ("ImageView", "imageView"):
+                if (isinstance(item, dict) and item.get('type') == 'Extension' and
+                        item.get('kind') == 'image_gen.generation' and current is not None and
+                        payload.get('thread_id') == thread_id and payload.get('turn_id') == current['turnId']):
+                    items.append({**{key: item.get(key) for key in ('id', 'status', 'result')},
+                                  'type': 'imageGeneration'})
+                elif isinstance(item, dict) and item.get("type") in ("ImageView", "imageView"):
                     # ImageView evidence only exists in event records. Preserve it
                     # so saved history can still render the image after restart.
                     if current is None:

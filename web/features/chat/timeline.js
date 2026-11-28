@@ -93,6 +93,7 @@ class ChatTimeline {
   turnRetained(){return [...this.container.children].findLast(node=>node.__chatRetained);}
   rowVisible(row){
     if(row.kind==='syncProcessPage')return row.pageVisible&&(this.showProcess||this.showReasoning);
+    if(row.kind==='imageGeneration'&&row.attachments?.length)return this.showToolImages;
     if(row.role==='user')return row.interaction!=='response'||this.showProcess;
     if(row.role==='error')return true;
     if(chatActivityKind(row)==='reasoning')return this.showReasoning;
