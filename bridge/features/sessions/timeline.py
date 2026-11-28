@@ -433,6 +433,8 @@ def assistant_output(row):
 def process_row(row):
     if row.get('fileSummary') or row.get('role') in ('fileChanges', 'error'):
         return False
+    if row.get('kind') == 'imageGeneration' and row.get('attachments'):
+        return False
     return (row.get('role') in ('activity', 'reasoning') or row.get('kind') == 'reasoning'
             or row.get('role') == 'user' and row.get('interaction') == 'response'
             or row.get('role') == 'assistant' and row.get('phase') == 'commentary')

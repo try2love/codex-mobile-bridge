@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 import ntpath
 from bridge.clients.codex.ipc_json import StoredString, join_text, json_body
-from bridge.features.sessions.tool_images import extract_tool_images
+from bridge.features.sessions.tool_images import extract_tool_images, generated_image_content
 from bridge.features.sessions.store import items_array, native_file_changes, native_turn_file_changes, native_patch_counts
 
 
@@ -167,6 +167,14 @@ def normalize_item(item, *, image_cache=None, include_body=True, retain_transfer
         row['_syntheticId'] = True
     if kind == 'reasoning':
         row.update({field: item[field] for field in ('model', 'effort') if field in item})
+    if kind == 'imageGeneration':
+        row.update(role='activity', title='图片预览', text='')
+        if item.get('status') == 'completed' and (content := generated_image_content(item.get('result'))):
+            extract = image_cache.extract if image_cache is not None else extract_tool_images
+            _, images = extract(content)
+            if images:
+                row['attachments'] = images
+        return row
     if not include_body and kind not in ('userMessage', 'steeringUserMessage', 'agentMessage', 'assistantMessage', 'error', 'planImplementation'):
         titles = {'reasoning': '思考摘要', 'commandExecution': '执行命令', 'fileChange': '文件变更',
                   'FileChange': '文件变更', 'ImageView': '图片预览', 'imageView': '图片预览'}

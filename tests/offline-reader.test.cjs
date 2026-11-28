@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture(){
+function fixture({withGeneratedImage=false}={}){
   const window={},document={documentElement:{hasAttribute:()=>false,dataset:{}},dispatchEvent(){}};
   class CustomEvent{constructor(type,options){this.type=type;this.detail=options?.detail;}}
   const context=vm.createContext({window,document,CustomEvent,URL,URLSearchParams,setTimeout,clearTimeout});
@@ -15,6 +15,9 @@ function fixture(){
     message('tool','activity',3,{kind:'commandExecution'}),
     message('answer','assistant',4,{forkable:true}),
   ];
+  const image='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR7kAAAAASUVORK5CYII=';
+  if(withGeneratedImage)entries.push({...message('generated','activity',3.5,{kind:'imageGeneration'}),
+    attachments:[{type:'toolImage',dataUrl:image}]});
   const reader=window.OfflineChatReader;
   reader.enableHot(async(action,fields)=>{
     calls.push({action,...fields});
@@ -43,6 +46,11 @@ test('offline long-body lookup preserves native version and offsets',async()=>{
 test('offline final-answer presentation survives removing write capabilities',async()=>{
   const f=fixture();const page=await f.request('recent'),answer=page.rows.find(row=>row.key==='answer');
   assert.equal(answer.phase,'final_answer');assert.equal(answer.forkable,false);
+});
+test('offline generated image appears between the process and the answer',async()=>{
+  const f=fixture({withGeneratedImage:true});const page=await f.request('recent');
+  assert.deepEqual(Array.from(page.rows,row=>row.key),['question','generated','answer']);
+  assert.match(page.rows[1].attachments[0].offlineImage,/^data:image\/png;base64,/);
 });
 test('missing offline process is reported rather than silently returned as complete',async()=>{
   const f=fixture();await f.request('recent');await assert.rejects(f.request('process',{key:'other-epoch.missing'}));

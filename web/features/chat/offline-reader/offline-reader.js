@@ -94,7 +94,8 @@
       const rows=[],processes=[];
       let process;
       for(const row of entries){
-        if(row.kind==='processPage'||row.phase==='commentary'||row.role==='user'&&row.interaction==='response'||!['assistant','user','error','fileChanges'].includes(row.role)){
+        const generatedImage=row.kind==='imageGeneration'&&row.attachments?.length;
+        if(!generatedImage&&(row.kind==='processPage'||row.phase==='commentary'||row.role==='user'&&row.interaction==='response'||!['assistant','user','error','fileChanges'].includes(row.role))){
           if(!process){
             const key=row.kind==='processPage'?row.key:'offline-process:'+row.key;
             process={key,version:row.version,processCursor:row.kind==='processPage'?(row.processCursor||key):key,rows:[]};

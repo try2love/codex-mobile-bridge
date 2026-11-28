@@ -1,6 +1,18 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=file=>fs.readFileSync('web/'+file,'utf8');
+test('generated images stay in the conversation when process rows are hidden',()=>{
+ const ctx=vm.createContext({window:{}});
+ for(const name of ['activity','timeline'])vm.runInContext(source('features/chat/'+name+'.js'),ctx);
+ const {Type,isProcess}=vm.runInContext('({Type:ChatTimeline,isProcess:chatTurnProcessRow})',ctx);
+ const view=Object.assign(Object.create(Type.prototype),{showProcess:false,showToolImages:true});
+ const row={kind:'imageGeneration',role:'activity',attachments:[{type:'toolImage',desktopId:'image'}]};
+ assert.equal(isProcess(row),false);
+ assert.equal(view.rowVisible(row),true);
+ assert.equal(view.rowVisible({kind:'imageGeneration',role:'activity'}),false);
+ view.showToolImages=false;
+ assert.equal(view.rowVisible(row),false);
+});
 test('ordinary chat uses the bounded native timeline and the shared flat renderer',async()=>{
  const ctx=vm.createContext({window:{},AbortController,URLSearchParams,clearTimeout,setTimeout,BridgeI18n:{t:s=>s}});
  for(const name of ['activity','timeline'])vm.runInContext(source('features/chat/'+name+'.js'),ctx);

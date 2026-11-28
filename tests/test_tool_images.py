@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from bridge.features.sessions.model import normalize_item, normalize_state
+from bridge.features.sessions.store import SessionStore
 from bridge.features.sessions.timeline import Timeline, PAGE_BYTES, encoded
 from bridge.app.service import Bridge, LiveSession
 from bridge.features.sessions import tool_images
@@ -27,6 +28,53 @@ def result():
 
 
 class ToolImageTests(unittest.TestCase):
+    def test_native_generated_images_load_in_chat_from_live_and_rollout_history(self):
+        item = {'type': 'imageGeneration', 'id': 'generation', 'status': 'completed',
+                'result': PNG, 'savedPath': '/private/desktop/generated.png'}
+        saved_item = {**item, 'type': 'Extension', 'kind': 'image_gen.generation'}
+        records = [
+            {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'turn'}},
+            {'type': 'event_msg', 'payload': {'type': 'item_completed', 'thread_id': 'other',
+                                             'turn_id': 'turn', 'item': saved_item}},
+            {'type': 'event_msg', 'payload': {'type': 'item_completed', 'thread_id': 'thread',
+                                             'turn_id': 'turn', 'item': saved_item}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+                                                 'content': [{'type': 'output_text', 'text': 'Done'}]}},
+        ]
+        live = {'turns': [{'turnId': 'turn', 'items': [
+            item, {'type': 'agentMessage', 'text': 'Done'}]}]}
+        saved = SessionStore._decode_history('thread', {'cwd': '/workspace'}, records, True)
+        for source, state in [('live', live), ('saved', saved)]:
+            with self.subTest(source=source):
+                session = LiveSession('thread', image_cache=tool_images.ToolImageCache())
+                if source == 'live':
+                    session.state = state
+                    session.connected = True
+                else:
+                    with session.condition:
+                        session.set_history(state)
+                session.timeline.update(session.timeline_view(conversation=True), conversation=True)
+                page = session.timeline.page(projection='conversation')
+                generation, reply = page['rows']
+                self.assertEqual((generation['kind'], reply['text']), ('imageGeneration', 'Done'))
+                self.assertNotIn(PNG, encoded(page).decode())
+                self.assertNotIn('/private/desktop/generated.png', encoded(page).decode())
+                attachment, = generation['attachments']
+                bridge = Bridge.__new__(Bridge)
+                bridge.session = lambda *args, **kwargs: session
+                preview, _ = bridge.desktop_image_preview('thread', attachment['desktopId'])
+                self.assertEqual(preview['previewBytes'], base64.b64decode(PNG))
+
+    def test_generated_image_projection_keeps_unavailable_results_private(self):
+        for status, result in [('inProgress', PNG), ('failed', PNG),
+                               ('completed', PNG[:16] + '!!!!'), ('completed', None)]:
+            with self.subTest(status=status, result=result):
+                row = normalize_item({'type': 'imageGeneration', 'status': status, 'result': result,
+                                      'savedPath': '/private/desktop/generated.png'})
+                self.assertEqual(row['text'], '')
+                self.assertNotIn('attachments', row)
+                self.assertNotIn('/private/desktop/generated.png', json.dumps(row))
+
     def test_previewing_twenty_images_does_not_decode_the_whole_history_per_image(self):
         session = LiveSession('images', image_cache=tool_images.ToolImageCache())
         data = [base64.b64decode(PNG) + bytes([i]) for i in range(20)]
